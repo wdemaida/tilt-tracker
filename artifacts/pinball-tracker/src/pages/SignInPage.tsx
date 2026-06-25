@@ -15,6 +15,7 @@ export default function SignInPage() {
   const [loading, setLoading] = useState(false);
 
   async function handleClientTrust() {
+    if (!signIn) return;
     const factors = signIn.supportedFirstFactors ?? [];
     const emailFactor = factors.find((f: any) => f.strategy === 'email_code') as any;
     if (emailFactor) {
@@ -27,6 +28,7 @@ export default function SignInPage() {
   }
 
   async function afterAttempt(result: any) {
+    if (!signIn) return;
     if (result.status === 'complete') {
       await setActive({ session: result.createdSessionId });
       window.location.assign('/');
@@ -37,7 +39,7 @@ export default function SignInPage() {
         await signIn.prepareSecondFactor({ strategy: strategy as any });
       }
       setStep('mfa');
-    } else if (result.status === 'needs_client_trust') {
+    } else if ((result.status as string) === 'needs_client_trust') {
       await handleClientTrust();
     } else {
       setError('Unexpected sign-in status: ' + result.status);
@@ -50,12 +52,12 @@ export default function SignInPage() {
     setLoading(true);
     setError('');
     try {
-      const createResult = await signIn.create({ identifier: email });
-      if (createResult.status === 'needs_client_trust') {
+      const createResult = await signIn!.create({ identifier: email });
+      if ((createResult.status as string) === 'needs_client_trust') {
         await handleClientTrust();
         return;
       }
-      const result = await signIn.attemptFirstFactor({ strategy: 'password', password });
+      const result = await signIn!.attemptFirstFactor({ strategy: 'password', password });
       await afterAttempt(result);
     } catch (err: any) {
       setError(err?.errors?.[0]?.longMessage ?? err?.errors?.[0]?.message ?? 'Sign-in failed.');

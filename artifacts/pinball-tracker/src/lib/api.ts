@@ -22,7 +22,7 @@ export function createApi(getToken: () => Promise<string | null>) {
     scores: {
       list: () => request<any[]>('/scores'),
       create: async (body: Record<string, unknown>) =>
-        request('/scores', { method: 'POST', body: JSON.stringify(body) }, await tok()),
+        request<any>('/scores', { method: 'POST', body: JSON.stringify(body) }, await tok()),
       patch: async (id: number, body: { score?: number; type?: string; playedAt?: string }) =>
         request(`/scores/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, await tok()),
       delete: async (id: number) =>
@@ -33,7 +33,7 @@ export function createApi(getToken: () => Promise<string | null>) {
       get: (name: string) => request<any>(`/machines/${encodeURIComponent(name)}`),
       search: (q: string) => request<any[]>(`/machines/search?q=${encodeURIComponent(q)}`),
       upsert: async (body: Record<string, unknown>) =>
-        request('/machines', { method: 'POST', body: JSON.stringify(body) }, await tok()),
+        request<any>('/machines', { method: 'POST', body: JSON.stringify(body) }, await tok()),
       patch: async (id: number, body: { name?: string; manufacturer?: string; year?: number | null }) =>
         request(`/machines/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, await tok()),
       delete: async (id: number) =>

@@ -78,6 +78,8 @@ export default function AddScorePage() {
     enabled: selectedVenue?.venueId != null && selectedVenue?.pinballMapId != null,
   });
 
+  const canPostToPm = savedScore?.venueId != null && selectedVenue?.pinballMapId != null;
+
   // Check if the user has a stored PM token (only needed once we reach step 3)
   const { data: pmTokenData } = useQuery({
     queryKey: ['pm-token'],
@@ -196,8 +198,6 @@ export default function AddScorePage() {
       setPmSubmitting(false);
     }
   };
-
-  const canPostToPm = savedScore?.venueId != null && selectedVenue?.pinballMapId != null;
 
   return (
     <div className="max-w-lg mx-auto">
