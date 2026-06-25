@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__plugin_playwright_playwright__browser_navigate",
+      "PowerShell(node --version; npx playwright --version 2>$null)",
+      "Skill(run)",
+      "Bash(pnpm dev *)",
+      "WebFetch(domain:pinballmap.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(curl -s http://localhost:3000/api/venues)",
+      "Bash(python -m json.tool)",
+      "Bash(curl -s http://localhost:3000/api/scores)",
+      "Bash(curl -s \"https://pinballmap.com/api/v1/locations/closest_by_lat_lon.json?lat=41.66783&lon=-70.12349&max_distance=0.5&send_all_within_distance=true\")",
+      "Bash(curl -s \"https://pinballmap.com/api/v1/locations/closest_by_lat_lon.json?lat=41.765083&lon=-70.51227&max_distance=0.5&send_all_within_distance=true\")",
+      "Bash(curl -s \"https://pinballmap.com/api/v1/locations/closest_by_lat_lon.json?lat=41.66783&lon=-70.12349&max_distance=5&send_all_within_distance=true\")",
+      "Bash(curl -s \"https://pinballmap.com/api/v1/locations/closest_by_lat_lon.json?lat=41.765083&lon=-70.51227&max_distance=5&send_all_within_distance=true\")",
+      "Bash(curl -s http://localhost:3000/api/venues/2/machines)",
+      "Bash(curl -s \"https://pinballmap.com/api/v1/locations/20676/machine_details.json\")",
+      "Bash(curl -s \"https://pinballmap.com/api/v1/location_machine_xrefs.json?location_id=20676\")",
+      "Bash(curl -sv \"https://pinballmap.com/api/v1/location_machine_xrefs.json?location_id=20676\")",
+      "Bash(curl -s \"https://pinballmap.com/api/v1/locations/20676.json\")",
+      "Bash(curl -s \"https://pinballmap.com/api/v1/machines.json?region_id=108\")",
+      "Bash(curl -s \"https://pinballmap.com/api/v1/machines/3099.json\")",
+      "Bash(curl -s \"https://pinballmap.com/api/v1/machines.json?machine_name=Munsters\")",
+      "Bash(curl -s \"https://pinballmap.com/api/v1/machines.json?name=The+Munsters\")",
+      "Bash(curl -s \"https://pinballmap.com/api/v1/machines.json\")",
+      "Bash(python -c \"import sys,json; data=json.load\\(sys.stdin\\); print\\([m for m in data['machines'] if 'munsters' in m['name'].lower\\(\\) or 'venom' in m['name'].lower\\(\\)]\\)\")"
+    ]
+  }
+}

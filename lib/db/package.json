@@ -1,0 +1,22 @@
+{
+  "name": "@workspace/db",
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "db:push": "dotenv -e ../../artifacts/api-server/.env -- drizzle-kit push",
+    "db:generate": "dotenv -e ../../artifacts/api-server/.env -- drizzle-kit generate",
+    "db:studio": "dotenv -e ../../artifacts/api-server/.env -- drizzle-kit studio"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.38.0",
+    "postgres": "^3.4.5"
+  },
+  "devDependencies": {
+    "dotenv-cli": "^7.4.2",
+    "drizzle-kit": "^0.30.0",
+    "typescript": "^5.7.0"
+  }
+}

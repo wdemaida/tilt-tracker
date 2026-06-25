@@ -1,0 +1,27 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 240 10% 4%;
+  --foreground: 0 0% 98%;
+  --primary: 295 80% 60%;
+  --muted-foreground: 240 5% 50%;
+  --card: 240 10% 7%;
+  --border: 240 10% 14%;
+}
+
+* {
+  border-color: hsl(var(--border));
+}
+
+body {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: 'Inter', sans-serif;
+}
+
+/* Leaflet dark map override */
+.leaflet-container {
+  background: hsl(var(--background));
+}

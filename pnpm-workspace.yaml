@@ -1,0 +1,7 @@
+packages:
+  - 'artifacts/*'
+  - 'lib/*'
+allowBuilds:
+  '@clerk/shared': true
+  esbuild: true
+  exifreader: true

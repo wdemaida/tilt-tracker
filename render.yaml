@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: tilttrack-api
+    runtime: node
+    rootDir: .
+    buildCommand: npm install -g pnpm && pnpm install --frozen-lockfile && pnpm --filter api-server build
+    startCommand: node artifacts/api-server/dist/index.js
+    envVars:
+      - key: NODE_VERSION
+        value: 20.0.0
+      - key: DATABASE_URL
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: HERE_API_KEY
+        sync: false
+      - key: CLERK_SECRET_KEY
+        sync: false
+      - key: CLERK_PUBLISHABLE_KEY
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
