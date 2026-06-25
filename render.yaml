@@ -3,8 +3,8 @@ services:
     name: tilttrack-api
     runtime: node
     rootDir: .
-    buildCommand: npm install -g pnpm && pnpm install --frozen-lockfile && pnpm --filter api-server build
-    startCommand: node artifacts/api-server/dist/index.js
+    buildCommand: npm install -g pnpm && pnpm install --frozen-lockfile
+    startCommand: node_modules/.bin/tsx artifacts/api-server/src/index.ts
     envVars:
       - key: NODE_VERSION
         value: 20.0.0
