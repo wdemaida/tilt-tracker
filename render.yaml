@@ -4,7 +4,7 @@ services:
     runtime: node
     rootDir: .
     buildCommand: npm install -g pnpm && pnpm install --frozen-lockfile
-    startCommand: node_modules/.bin/tsx artifacts/api-server/src/index.ts
+    startCommand: pnpm --filter api-server start
     envVars:
       - key: NODE_VERSION
         value: 20.0.0
