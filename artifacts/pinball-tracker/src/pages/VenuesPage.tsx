@@ -3,9 +3,10 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import { MapPin, Trophy, X, ExternalLink, Pencil, Trash2 } from 'lucide-react';
 import { PinballIcon } from '../components/PinballIcon';
 import * as Dialog from '@radix-ui/react-dialog';
-import { api } from '../lib/api';
 import { useApi } from '../lib/useApi';
 import { useAppUser } from '../lib/useAppUser';
+import { useScopeContext } from '../lib/ScopeContext';
+import { ScopeToggle } from '../components/ScopeToggle';
 import { queryClient } from '../lib/queryClient';
 
 interface Venue {
@@ -36,6 +37,7 @@ export default function VenuesPage() {
   const authApi = useApi();
   const appUser = useAppUser();
   const isAdmin = appUser?.role === 'admin';
+  const { mine } = useScopeContext();
 
   const patchMutation = useMutation({
     mutationFn: ({ id, body }: { id: number; body: any }) => authApi.venues.patch(id, body),
@@ -48,8 +50,8 @@ export default function VenuesPage() {
   });
 
   const { data: venues = [], isLoading } = useQuery({
-    queryKey: ['venues'],
-    queryFn: api.venues.list,
+    queryKey: ['venues', mine],
+    queryFn: () => authApi.venues.list(mine),
   });
 
   const { data: machinesData, isLoading: machinesLoading } = useQuery<VenueMachinesData>({
@@ -60,9 +62,12 @@ export default function VenuesPage() {
 
   return (
     <div>
-      <h1 className="text-4xl font-black uppercase tracking-widest text-white mb-1">Venues</h1>
+      <div className="flex items-start justify-between gap-4 mb-1">
+        <h1 className="text-4xl font-black uppercase tracking-widest text-white">Venues</h1>
+        <ScopeToggle />
+      </div>
       <p className="text-sm text-muted-foreground mb-6">
-        {venues.length} {venues.length === 1 ? 'venue' : 'venues'} visited
+        {venues.length} {venues.length === 1 ? 'venue' : 'venues'} {mine ? 'you\'ve visited' : 'visited across site'}
       </p>
 
       {isLoading ? (

@@ -20,7 +20,8 @@ export function createApi(getToken: () => Promise<string | null>) {
 
   return {
     scores: {
-      list: () => request<any[]>('/scores'),
+      list: async (mine = false) =>
+        request<any[]>(mine ? '/scores?mine=true' : '/scores', undefined, mine ? await tok() : undefined),
       create: async (body: Record<string, unknown>) =>
         request<any>('/scores', { method: 'POST', body: JSON.stringify(body) }, await tok()),
       patch: async (id: number, body: { score?: number; type?: string; playedAt?: string }) =>
@@ -29,7 +30,8 @@ export function createApi(getToken: () => Promise<string | null>) {
         request(`/scores/${id}`, { method: 'DELETE' }, await tok()),
     },
     machines: {
-      list: () => request<any[]>('/machines'),
+      list: async (mine = false) =>
+        request<any[]>(mine ? '/machines?mine=true' : '/machines', undefined, mine ? await tok() : undefined),
       get: (name: string) => request<any>(`/machines/${encodeURIComponent(name)}`),
       search: (q: string) => request<any[]>(`/machines/search?q=${encodeURIComponent(q)}`),
       upsert: async (body: Record<string, unknown>) =>
@@ -46,10 +48,11 @@ export function createApi(getToken: () => Promise<string | null>) {
       get: (username: string) => request<any>(`/users/${username}`),
     },
     stats: {
-      get: async () => request<any>('/stats', undefined, await tok()),
+      get: async (mine = true) => request<any>(`/stats?mine=${mine}`, undefined, await tok()),
     },
     venues: {
-      list: () => request<any[]>('/venues'),
+      list: async (mine = false) =>
+        request<any[]>(mine ? '/venues?mine=true' : '/venues', undefined, mine ? await tok() : undefined),
       machines: (id: number) => request<any>(`/venues/${id}/machines`),
       patch: async (id: number, body: { name?: string; address?: string | null }) =>
         request(`/venues/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, await tok()),

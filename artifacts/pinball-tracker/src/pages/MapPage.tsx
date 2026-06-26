@@ -1,6 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
-import { api } from '../lib/api';
+import { useApi } from '../lib/useApi';
+import { useScopeContext } from '../lib/ScopeContext';
+import { ScopeToggle } from '../components/ScopeToggle';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 
@@ -13,7 +15,12 @@ L.Icon.Default.mergeOptions({
 });
 
 export default function MapPage() {
-  const { data: scores = [] } = useQuery({ queryKey: ['scores'], queryFn: api.scores.list });
+  const authApi = useApi();
+  const { mine } = useScopeContext();
+  const { data: scores = [] } = useQuery({
+    queryKey: ['scores', mine],
+    queryFn: () => authApi.scores.list(mine),
+  });
 
   const withGps = scores.filter((s: any) => s.latitude && s.longitude);
   const venues = withGps.reduce((acc: Record<string, any[]>, s: any) => {
@@ -30,9 +37,12 @@ export default function MapPage() {
 
   return (
     <div>
-      <h1 className="text-4xl font-black uppercase tracking-widest text-white mb-1">Map</h1>
+      <div className="flex items-start justify-between gap-4 mb-1">
+        <h1 className="text-4xl font-black uppercase tracking-widest text-white">Map</h1>
+        <ScopeToggle />
+      </div>
       <p className="text-sm text-muted-foreground mb-6">
-        {locations.length} locations · {withGps.length} scores with GPS
+        {locations.length} locations · {withGps.length} {mine ? 'your' : ''} scores with GPS
       </p>
 
       <div className="rounded-xl overflow-hidden border border-white/10" style={{ height: 480 }}>

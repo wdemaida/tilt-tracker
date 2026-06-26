@@ -2,10 +2,16 @@ import { useQuery } from '@tanstack/react-query';
 import { Trophy } from 'lucide-react';
 import { PinballIcon } from '../components/PinballIcon';
 import { useApi } from '../lib/useApi';
+import { useScopeContext } from '../lib/ScopeContext';
+import { ScopeToggle } from '../components/ScopeToggle';
 
 export default function StatsPage() {
   const api = useApi();
-  const { data: stats, isLoading } = useQuery({ queryKey: ['stats'], queryFn: api.stats.get });
+  const { mine } = useScopeContext();
+  const { data: stats, isLoading } = useQuery({
+    queryKey: ['stats', mine],
+    queryFn: () => api.stats.get(mine),
+  });
 
   if (isLoading) return <p className="text-muted-foreground">Loading...</p>;
   if (!stats) return null;
@@ -14,8 +20,11 @@ export default function StatsPage() {
 
   return (
     <div>
-      <h1 className="text-4xl font-black uppercase tracking-widest text-white mb-1">Player Stats</h1>
-      <p className="text-sm text-muted-foreground mb-8">Career metrics and performance analysis.</p>
+      <div className="flex items-start justify-between gap-4 mb-1">
+        <h1 className="text-4xl font-black uppercase tracking-widest text-white">{mine ? 'My Stats' : 'Site Stats'}</h1>
+        <ScopeToggle />
+      </div>
+      <p className="text-sm text-muted-foreground mb-8">{mine ? 'Career metrics and performance analysis.' : 'Aggregate stats across all players.'}</p>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8">
         <div className="rounded-xl border border-white/10 bg-card p-5">
@@ -70,7 +79,7 @@ export default function StatsPage() {
               </div>
             ))}
             <p className="text-xs text-muted-foreground mt-2">
-              Tournament games account for {stats.totalGames ? Math.round((stats.playStyle?.tournament / stats.totalGames) * 100) : 0}% of your total recorded plays.
+              Tournament games account for {stats.totalGames ? Math.round((stats.playStyle?.tournament / stats.totalGames) * 100) : 0}% of {mine ? 'your' : 'all'} recorded plays.
             </p>
           </div>
         </div>

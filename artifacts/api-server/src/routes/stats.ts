@@ -5,9 +5,10 @@ import { requireAppUser } from '../middleware/requireAuth.js';
 
 const router = Router();
 
-// GET /api/stats — stats for the authenticated user
+// GET /api/stats — stats for authenticated user (?mine=true, default) or site-wide (?mine=false)
 router.get('/', requireAppUser, async (req, res) => {
   const appUser = (req as any).appUser;
+  const mine = req.query.mine !== 'false';
 
   try {
     const allScores = await db
@@ -19,7 +20,7 @@ router.get('/', requireAppUser, async (req, res) => {
       })
       .from(scores)
       .innerJoin(machines, eq(scores.machineId, machines.id))
-      .where(eq(scores.userId, appUser.id));
+      .where(mine ? eq(scores.userId, appUser.id) : undefined);
 
     const totalGames = allScores.length;
     const best = allScores.reduce((a, b) => (b.score > a.score ? b : a), allScores[0] ?? { score: 0, machineName: null, venueName: null });

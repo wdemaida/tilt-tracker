@@ -4,11 +4,19 @@ import { eq, desc, sql } from 'drizzle-orm';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { getAuth } from '@clerk/express';
 
+async function resolveMinedUserId(req: any): Promise<number | undefined> {
+  const { userId: clerkId } = getAuth(req);
+  if (!clerkId) return undefined;
+  const [user] = await db.select({ id: users.id }).from(users).where(eq(users.clerkId, clerkId)).limit(1);
+  return user?.id;
+}
+
 const router = Router();
 
-// GET /api/scores — all scores, newest first
-router.get('/', async (_req, res) => {
+// GET /api/scores — all scores, newest first; ?mine=true filters to caller
+router.get('/', async (req, res) => {
   try {
+    const userId = req.query.mine === 'true' ? await resolveMinedUserId(req) : undefined;
     const rows = await db
       .select({
         id: scores.id,
@@ -29,6 +37,7 @@ router.get('/', async (_req, res) => {
       .from(scores)
       .innerJoin(machines, eq(scores.machineId, machines.id))
       .innerJoin(users, eq(scores.userId, users.id))
+      .where(userId !== undefined ? eq(scores.userId, userId) : undefined)
       .orderBy(desc(scores.playedAt));
     res.json(rows);
   } catch (err) {

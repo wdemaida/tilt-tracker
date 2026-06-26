@@ -3,6 +3,7 @@ import { Switch, Route, useLocation } from 'wouter';
 import { useAuth } from '@clerk/clerk-react';
 import { useQuery } from '@tanstack/react-query';
 import { useApi } from './lib/useApi';
+import { ScopeProvider } from './lib/ScopeContext';
 import Layout from './components/Layout';
 import HomePage from './pages/HomePage';
 import MachinesPage from './pages/MachinesPage';
@@ -66,6 +67,7 @@ function AdminGate({ children }: { children: React.ReactNode }) {
 
 export default function App() {
   return (
+    <ScopeProvider>
     <Layout>
       <Switch>
         <Route path="/" component={HomePage} />
@@ -94,5 +96,6 @@ export default function App() {
         <Route component={NotFoundPage} />
       </Switch>
     </Layout>
+    </ScopeProvider>
   );
 }

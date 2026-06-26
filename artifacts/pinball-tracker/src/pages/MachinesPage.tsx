@@ -4,9 +4,10 @@ import { Link } from 'wouter';
 import { ChevronRight, Star, Pencil, Trash2 } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
-import { api } from '../lib/api';
 import { useApi } from '../lib/useApi';
 import { useAppUser } from '../lib/useAppUser';
+import { useScopeContext } from '../lib/ScopeContext';
+import { ScopeToggle } from '../components/ScopeToggle';
 import { queryClient } from '../lib/queryClient';
 import { format } from 'date-fns';
 
@@ -36,8 +37,12 @@ export default function MachinesPage() {
   const authApi = useApi();
   const appUser = useAppUser();
   const isAdmin = appUser?.role === 'admin';
+  const { mine } = useScopeContext();
 
-  const { data: machines = [], isLoading } = useQuery({ queryKey: ['machines'], queryFn: api.machines.list });
+  const { data: machines = [], isLoading } = useQuery({
+    queryKey: ['machines', mine],
+    queryFn: () => authApi.machines.list(mine),
+  });
 
   const patchMutation = useMutation({
     mutationFn: ({ id, body }: { id: number; body: any }) => authApi.machines.patch(id, body),
@@ -59,8 +64,11 @@ export default function MachinesPage() {
 
   return (
     <div>
-      <h1 className="text-4xl font-black uppercase tracking-widest text-white mb-1">Machines</h1>
-      <p className="text-sm text-muted-foreground mb-6">{machines.length} machines played · tap to see full history</p>
+      <div className="flex items-start justify-between gap-4 mb-1">
+        <h1 className="text-4xl font-black uppercase tracking-widest text-white">Machines</h1>
+        <ScopeToggle />
+      </div>
+      <p className="text-sm text-muted-foreground mb-6">{machines.length} machines {mine ? 'you\'ve played' : 'played across site'} · tap to see full history</p>
 
       <div className="rounded-xl border border-white/10 bg-card p-3 mb-4">
         <input

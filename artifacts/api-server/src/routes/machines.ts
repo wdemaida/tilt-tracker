@@ -3,12 +3,21 @@ import { db, machines, scores, users } from '@workspace/db';
 import { eq, desc, max, count, sql } from 'drizzle-orm';
 import { searchMachines, getAllMachines } from '../lib/pinballMap.js';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
+import { getAuth } from '@clerk/express';
+
+async function resolveMinedUserId(req: any): Promise<number | undefined> {
+  const { userId: clerkId } = getAuth(req);
+  if (!clerkId) return undefined;
+  const [user] = await db.select({ id: users.id }).from(users).where(eq(users.clerkId, clerkId)).limit(1);
+  return user?.id;
+}
 
 const router = Router();
 
-// GET /api/machines — list with best score per machine
+// GET /api/machines — list with best score per machine; ?mine=true filters to caller
 router.get('/', async (req, res) => {
   try {
+    const userId = req.query.mine === 'true' ? await resolveMinedUserId(req) : undefined;
     const rows = await db
       .select({
         id: machines.id,
@@ -23,6 +32,7 @@ router.get('/', async (req, res) => {
       })
       .from(machines)
       .innerJoin(scores, eq(scores.machineId, machines.id))
+      .where(userId !== undefined ? eq(scores.userId, userId) : undefined)
       .groupBy(machines.id, machines.name, machines.variant, machines.manufacturer, machines.year, machines.imageUrl)
       .orderBy(desc(max(scores.score)));
     res.json(rows);

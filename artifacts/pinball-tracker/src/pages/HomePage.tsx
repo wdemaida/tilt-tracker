@@ -4,9 +4,10 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { X, PlusCircle } from 'lucide-react';
 import { Link } from 'wouter';
 import { SignedIn } from '@clerk/clerk-react';
-import { api } from '../lib/api';
 import { useApi } from '../lib/useApi';
 import { useAppUser } from '../lib/useAppUser';
+import { useScopeContext } from '../lib/ScopeContext';
+import { ScopeToggle } from '../components/ScopeToggle';
 import { queryClient } from '../lib/queryClient';
 import ScoreCard from '../components/ScoreCard';
 
@@ -37,8 +38,12 @@ export default function HomePage() {
   const authApi = useApi();
   const appUser = useAppUser();
   const isAdmin = appUser?.role === 'admin';
+  const { mine } = useScopeContext();
 
-  const { data: scores = [], isLoading } = useQuery({ queryKey: ['scores'], queryFn: api.scores.list });
+  const { data: scores = [], isLoading } = useQuery({
+    queryKey: ['scores', mine],
+    queryFn: () => authApi.scores.list(mine),
+  });
 
   const { data: machineSuggestions = [] } = useQuery({
     queryKey: ['machine-search-edit', editMachineSearch],
@@ -113,8 +118,11 @@ export default function HomePage() {
 
   return (
     <div>
-      <h1 className="text-4xl font-black uppercase tracking-widest text-white mb-1">Recent Scores</h1>
-      <p className="text-sm text-muted-foreground mb-4">Your latest plays across the grid.</p>
+      <div className="flex items-start justify-between gap-4 mb-1">
+        <h1 className="text-4xl font-black uppercase tracking-widest text-white">Recent Scores</h1>
+        <ScopeToggle />
+      </div>
+      <p className="text-sm text-muted-foreground mb-4">{mine ? 'Your plays only.' : 'All plays across the site.'}</p>
 
       <SignedIn>
         <Link
