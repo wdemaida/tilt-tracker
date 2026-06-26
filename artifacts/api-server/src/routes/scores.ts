@@ -38,7 +38,7 @@ router.get('/', async (req, res) => {
       .innerJoin(machines, eq(scores.machineId, machines.id))
       .innerJoin(users, eq(scores.userId, users.id))
       .where(userId !== undefined ? eq(scores.userId, userId) : undefined)
-      .orderBy(desc(scores.playedAt));
+      .orderBy(desc(scores.createdAt), desc(scores.playedAt));
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch scores' });

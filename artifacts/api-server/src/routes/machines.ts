@@ -69,11 +69,12 @@ router.get('/:name', async (req, res) => {
         venueName: scores.venueName,
         photoUrl: scores.photoUrl,
         username: users.username,
+        displayName: users.displayName,
       })
       .from(scores)
       .innerJoin(users, eq(scores.userId, users.id))
       .where(eq(scores.machineId, machine.id))
-      .orderBy(desc(scores.playedAt));
+      .orderBy(desc(scores.score));
 
     res.json({ machine, scores: scoreRows });
   } catch (err) {

@@ -85,6 +85,37 @@ router.get('/:id/machines', async (req, res) => {
   }
 });
 
+// GET /api/venues/:id/scores — all individual score entries at a venue
+router.get('/:id/scores', async (req, res) => {
+  const id = Number(req.params.id);
+  try {
+    const [venue] = await db.select({ id: venues.id, name: venues.name, address: venues.address })
+      .from(venues).where(eq(venues.id, id)).limit(1);
+    if (!venue) return void res.status(404).json({ error: 'Venue not found' });
+
+    const rows = await db
+      .select({
+        id: scores.id,
+        score: scores.score,
+        playedAt: scores.playedAt,
+        type: scores.type,
+        machineName: machines.name,
+        username: users.username,
+        displayName: users.displayName,
+      })
+      .from(scores)
+      .innerJoin(machines, eq(scores.machineId, machines.id))
+      .innerJoin(users, eq(scores.userId, users.id))
+      .where(eq(scores.venueId, id))
+      .orderBy(desc(scores.playedAt));
+
+    res.json({ venue, scores: rows });
+  } catch (err) {
+    console.error('Venue scores error:', err);
+    res.status(500).json({ error: 'Failed to fetch venue scores' });
+  }
+});
+
 // PATCH /api/venues/:id — admin-only
 router.patch('/:id', requireAppUser, requireAdmin, async (req, res) => {
   const id = Number(req.params.id);

@@ -10,6 +10,7 @@ import MachinesPage from './pages/MachinesPage';
 import MachinePage from './pages/MachinePage';
 import MapPage from './pages/MapPage';
 import VenuesPage from './pages/VenuesPage';
+import VenuePage from './pages/VenuePage';
 import StatsPage from './pages/StatsPage';
 import AddScorePage from './pages/AddScorePage';
 import SetupPage from './pages/SetupPage';
@@ -73,6 +74,7 @@ export default function App() {
         <Route path="/" component={HomePage} />
         <Route path="/machines" component={MachinesPage} />
         <Route path="/machines/:name" component={MachinePage} />
+        <Route path="/venues/:id" component={VenuePage} />
         <Route path="/venues" component={VenuesPage} />
         <Route path="/map" component={MapPage} />
         <Route path="/stats">

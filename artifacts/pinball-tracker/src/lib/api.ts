@@ -54,6 +54,7 @@ export function createApi(getToken: () => Promise<string | null>) {
       list: async (mine = false) =>
         request<any[]>(mine ? '/venues?mine=true' : '/venues', undefined, mine ? await tok() : undefined),
       machines: (id: number) => request<any>(`/venues/${id}/machines`),
+      scores: (id: number) => request<any>(`/venues/${id}/scores`),
       patch: async (id: number, body: { name?: string; address?: string | null }) =>
         request(`/venues/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, await tok()),
       delete: async (id: number) =>

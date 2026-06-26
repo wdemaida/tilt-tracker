@@ -14,13 +14,14 @@ interface ScoreCardProps {
   username: string;
   displayName: string;
   isHighScore?: boolean;
+  isCurrentUser?: boolean;
   onEdit?: () => void;
   onDelete?: () => void;
 }
 
-export default function ScoreCard({ id: _id, machineName, score, playedAt, type, venueName, photoThumbnail, username, isHighScore, onEdit, onDelete }: ScoreCardProps) {
+export default function ScoreCard({ id: _id, machineName, score, playedAt, type, venueName, photoThumbnail, username, isHighScore, isCurrentUser, onEdit, onDelete }: ScoreCardProps) {
   return (
-    <div className="rounded-xl border border-white/10 bg-card p-4 flex flex-col gap-3 hover:border-primary/40 transition-colors">
+    <div className={`rounded-xl border bg-card p-4 flex flex-col gap-3 hover:border-primary/40 transition-colors ${isCurrentUser ? 'border-yellow-400/60' : 'border-white/10'}`}>
       <div className="flex items-center justify-between">
         <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground border border-white/20 rounded px-2 py-0.5">
           {type}

@@ -60,6 +60,7 @@ export default function AddScorePage() {
   const [pmError, setPmError] = useState('');
   const [pmForceForm, setPmForceForm] = useState(false);
   const [thumbnail, setThumbnail] = useState<string | null>(null);
+  const thumbnailSucceeded = useRef(false);
   const machineAutoSelected = useRef(false);
   const [, navigate] = useLocation();
   const api = useApi();
@@ -186,7 +187,8 @@ export default function AddScorePage() {
   const handlePhoto = async (file: File) => {
     setAiLoading(true);
     setAiError('');
-    generateThumbnail(file).then(setThumbnail).catch(() => {});
+    thumbnailSucceeded.current = false;
+    generateThumbnail(file).then(t => { setThumbnail(t); thumbnailSucceeded.current = true; }).catch(() => {});
     try {
       const result = await api.upload(file);
       if (result.machineName) {
@@ -201,6 +203,9 @@ export default function AddScorePage() {
       if (result.playedAt) setValue('playedAt', new Date(result.playedAt).toISOString().slice(0, 16));
       if (result.latitude != null && result.longitude != null) {
         setGps({ latitude: result.latitude, longitude: result.longitude });
+      }
+      if (result.thumbnailBase64 && !thumbnailSucceeded.current) {
+        setThumbnail(result.thumbnailBase64);
       }
       if (result.venues?.length) {
         const first = result.venues[0];

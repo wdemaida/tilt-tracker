@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
+import { Link } from 'wouter';
 import { MapPin, Trophy, X, ExternalLink, Pencil, Trash2 } from 'lucide-react';
 import { PinballIcon } from '../components/PinballIcon';
 import * as Dialog from '@radix-ui/react-dialog';
@@ -90,7 +91,9 @@ export default function VenuesPage() {
                   <MapPin className="w-4 h-4 text-primary" />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="font-black uppercase tracking-wider text-white text-sm leading-tight">{venue.name}</p>
+                  <Link href={`/venues/${venue.id}`} className="font-black uppercase tracking-wider text-white text-sm leading-tight hover:text-primary transition-colors">
+                    {venue.name}
+                  </Link>
                   {venue.address && (
                     <p className="text-xs text-muted-foreground mt-0.5 truncate">{venue.address}</p>
                   )}

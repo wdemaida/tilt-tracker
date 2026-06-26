@@ -169,6 +169,7 @@ export default function HomePage() {
                 key={s.id}
                 {...s}
                 isHighScore={bestScores.get(s.machineId) === s.score}
+                isCurrentUser={!mine && !!appUser && s.username === appUser.username}
                 onEdit={isAdmin ? () => openEdit(s) : undefined}
                 onDelete={isAdmin ? () => setDeleteScoreId(s.id) : undefined}
               />

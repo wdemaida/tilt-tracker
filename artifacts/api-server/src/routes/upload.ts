@@ -90,11 +90,17 @@ router.post('/', requireAuth, upload.single('photo'), async (req, res) => {
     extractExifDatetime(originalBuffer),
   ]);
 
+  let thumbnailBase64: string | null = null;
   if (mimeType === 'image/heic' || mimeType === 'image/heif' || req.file.originalname.toLowerCase().endsWith('.heic')) {
     try {
       const heicConvert = (await import('heic-convert')).default;
-      buffer = Buffer.from(await heicConvert({ buffer, format: 'JPEG', quality: 0.9 }));
+      const [mainBuf, thumbBuf] = await Promise.all([
+        heicConvert({ buffer, format: 'JPEG', quality: 0.9 }),
+        heicConvert({ buffer, format: 'JPEG', quality: 0.12 }),
+      ]);
+      buffer = Buffer.from(mainBuf);
       mimeType = 'image/jpeg';
+      thumbnailBase64 = `data:image/jpeg;base64,${Buffer.from(thumbBuf).toString('base64')}`;
     } catch {
       return res.status(422).json({ error: 'Failed to convert HEIC image' });
     }
@@ -129,6 +135,7 @@ router.post('/', requireAuth, upload.single('photo'), async (req, res) => {
     latitude: gps?.latitude ?? null,
     longitude: gps?.longitude ?? null,
     venues: venueList,
+    thumbnailBase64,
   });
 });
 

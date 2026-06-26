@@ -1,21 +1,32 @@
 import { useQuery } from '@tanstack/react-query';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import { useApi } from '../lib/useApi';
+import { useAppUser } from '../lib/useAppUser';
 import { useScopeContext } from '../lib/ScopeContext';
 import { ScopeToggle } from '../components/ScopeToggle';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 
-// Fix Leaflet default marker icons
-delete (L.Icon.Default.prototype as any)._getIconUrl;
-L.Icon.Default.mergeOptions({
-  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
-  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
-  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
-});
+function makePinIcon(color: string) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 36" width="24" height="36">
+    <path d="M12 0C5.373 0 0 5.373 0 12c0 9 12 24 12 24s12-15 12-24C24 5.373 18.627 0 12 0z" fill="${color}" stroke="rgba(0,0,0,0.3)" stroke-width="1"/>
+    <circle cx="12" cy="12" r="5" fill="white" opacity="0.9"/>
+  </svg>`;
+  return L.divIcon({
+    html: svg,
+    className: '',
+    iconSize: [24, 36],
+    iconAnchor: [12, 36],
+    popupAnchor: [0, -36],
+  });
+}
+
+const PIN_MINE = makePinIcon('#facc15');
+const PIN_OTHERS = makePinIcon('#d946ef');
 
 export default function MapPage() {
   const authApi = useApi();
+  const appUser = useAppUser();
   const { mine } = useScopeContext();
   const { data: scores = [] } = useQuery({
     queryKey: ['scores', mine],
@@ -23,16 +34,17 @@ export default function MapPage() {
   });
 
   const withGps = scores.filter((s: any) => s.latitude && s.longitude);
-  const venues = withGps.reduce((acc: Record<string, any[]>, s: any) => {
+  const venueGroups = withGps.reduce((acc: Record<string, any[]>, s: any) => {
     const key = `${s.latitude},${s.longitude}`;
     if (!acc[key]) acc[key] = [];
     acc[key].push(s);
     return acc;
   }, {});
 
-  const locations = Object.entries(venues).map(([key, items]) => {
+  const locations = Object.entries(venueGroups).map(([key, items]) => {
     const [lat, lng] = key.split(',').map(Number);
-    return { lat, lng, scores: items as any[], venueName: (items[0] as any).venueName };
+    const hasMyScore = !!appUser && (items as any[]).some((s: any) => s.username === appUser.username);
+    return { lat, lng, scores: items as any[], venueName: (items[0] as any).venueName, hasMyScore };
   });
 
   return (
@@ -42,7 +54,7 @@ export default function MapPage() {
         <ScopeToggle />
       </div>
       <p className="text-sm text-muted-foreground mb-6">
-        {locations.length} locations · {withGps.length} {mine ? 'your' : ''} scores with GPS
+        {locations.length} {locations.length === 1 ? 'location' : 'locations'} · {withGps.length} {mine ? 'your ' : ''}scores with GPS
       </p>
 
       <div className="rounded-xl overflow-hidden border border-white/10" style={{ height: 480 }}>
@@ -55,8 +67,8 @@ export default function MapPage() {
             url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
             attribution='&copy; <a href="https://carto.com/">CARTO</a>'
           />
-          {locations.map(({ lat, lng, scores, venueName }) => (
-            <Marker key={`${lat},${lng}`} position={[lat, lng]}>
+          {locations.map(({ lat, lng, scores, venueName, hasMyScore }) => (
+            <Marker key={`${lat},${lng}`} position={[lat, lng]} icon={hasMyScore ? PIN_MINE : PIN_OTHERS}>
               <Popup>
                 <div className="text-sm">
                   <p className="font-bold">{venueName ?? 'Unknown venue'}</p>
