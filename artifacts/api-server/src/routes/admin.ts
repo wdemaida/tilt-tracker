@@ -116,7 +116,8 @@ router.get('/health', async (_req, res) => {
     // Anthropic — live key verification via /v1/models
     (async () => {
       const key = process.env.ANTHROPIC_API_KEY;
-      if (!key) return { status: 'error' as const, note: 'ANTHROPIC_API_KEY not set' };
+      const model = 'claude-sonnet-4-6';
+      if (!key) return { status: 'error' as const, note: 'ANTHROPIC_API_KEY not set', model };
       const start = Date.now();
       try {
         const r = await fetch('https://api.anthropic.com/v1/models', {
@@ -125,10 +126,10 @@ router.get('/health', async (_req, res) => {
         });
         const latencyMs = Date.now() - start;
         return r.ok
-          ? { status: 'ok' as const, latencyMs, note: 'Key verified' }
-          : { status: 'error' as const, latencyMs, error: `HTTP ${r.status}` };
+          ? { status: 'ok' as const, latencyMs, note: 'Key verified', model }
+          : { status: 'error' as const, latencyMs, error: `HTTP ${r.status}`, model };
       } catch (err) {
-        return { status: 'error' as const, latencyMs: Date.now() - start, error: String(err) };
+        return { status: 'error' as const, latencyMs: Date.now() - start, error: String(err), model };
       }
     })(),
 
