@@ -47,7 +47,7 @@ export default function HomePage() {
 
   const { data: machineSuggestions = [] } = useQuery({
     queryKey: ['machine-search-edit', editMachineSearch],
-    queryFn: () => api.machines.search(editMachineSearch),
+    queryFn: () => authApi.machines.search(editMachineSearch),
     enabled: !!editScore && editMachineSearch.length > 1 && editMachineSearch !== editScore?.machineName,
   });
 

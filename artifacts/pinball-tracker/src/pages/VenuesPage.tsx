@@ -56,7 +56,7 @@ export default function VenuesPage() {
 
   const { data: machinesData, isLoading: machinesLoading } = useQuery<VenueMachinesData>({
     queryKey: ['venue-machines', modalVenueId],
-    queryFn: () => api.venues.machines(modalVenueId!),
+    queryFn: () => authApi.venues.machines(modalVenueId!),
     enabled: modalVenueId != null,
   });
 

@@ -87,7 +87,7 @@ export default function AddScorePage() {
   // User's venue history for step 2
   const { data: venueHistory = [] } = useQuery({
     queryKey: ['venues'],
-    queryFn: publicApi.venues.list,
+    queryFn: () => publicApi.venues.list(),
   });
 
   // PM machines at selected venue (starts fetching as soon as venue is selected)
