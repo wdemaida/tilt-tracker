@@ -53,7 +53,7 @@ export function createApi(getToken: () => Promise<string | null>) {
     venues: {
       list: async (mine = false) =>
         request<any[]>(mine ? '/venues?mine=true' : '/venues', undefined, mine ? await tok() : undefined),
-      machines: (id: number) => request<any>(`/venues/${id}/machines`),
+      machines: async (id: number) => request<any>(`/venues/${id}/machines`, undefined, await tok()),
       pmMachines: (pmId: number) => request<any>(`/venues/pm-machines/${pmId}`),
       scores: (id: number) => request<any>(`/venues/${id}/scores`),
       patch: async (id: number, body: { name?: string; address?: string | null }) =>
