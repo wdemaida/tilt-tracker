@@ -21,6 +21,16 @@ async function extractGps(buffer: Buffer): Promise<{ latitude: number; longitude
   }
 }
 
+async function extractExifDatetime(buffer: Buffer): Promise<string | null> {
+  try {
+    const tags = await Exifr.parse(buffer, { DateTimeOriginal: true });
+    const dt = tags?.DateTimeOriginal;
+    return dt instanceof Date ? dt.toISOString() : null;
+  } catch {
+    return null;
+  }
+}
+
 async function getHistoryVenues(lat: number, lng: number): Promise<Venue[]> {
   // ~150 m bounding box
   const latDelta = 0.00135;
@@ -75,7 +85,10 @@ router.post('/', requireAuth, upload.single('photo'), async (req, res) => {
   let buffer = originalBuffer;
   let mimeType = req.file.mimetype;
 
-  const gps = await extractGps(originalBuffer);
+  const [gps, exifDatetime] = await Promise.all([
+    extractGps(originalBuffer),
+    extractExifDatetime(originalBuffer),
+  ]);
 
   if (mimeType === 'image/heic' || mimeType === 'image/heif' || req.file.originalname.toLowerCase().endsWith('.heic')) {
     try {
@@ -112,7 +125,7 @@ router.post('/', requireAuth, upload.single('photo'), async (req, res) => {
   res.json({
     machineName: extracted.machineName,
     score: extracted.score,
-    playedAt: extracted.playedAt,
+    playedAt: exifDatetime ?? extracted.playedAt,
     latitude: gps?.latitude ?? null,
     longitude: gps?.longitude ?? null,
     venues: venueList,
