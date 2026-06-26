@@ -2,7 +2,7 @@ import { useState, useRef, useMemo, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Camera, Loader2, CheckCircle2, ExternalLink, MapPin, Search } from 'lucide-react';
+import { Camera, Loader2, CheckCircle2, ExternalLink, MapPin, Search, X } from 'lucide-react';
 import { useLocation } from 'wouter';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useApi } from '../lib/useApi';
@@ -324,7 +324,7 @@ export default function AddScorePage() {
           {aiError && <p className="text-xs text-yellow-400 -mt-1">{aiError}</p>}
 
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+            {!venueSearch && <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />}
             <input
               value={venueSearch}
               onChange={e => {
@@ -333,8 +333,17 @@ export default function AddScorePage() {
                 setSelectedVenue(null);
               }}
               placeholder="Search or enter venue name..."
-              className="input pl-9"
+              className={`input ${venueSearch ? 'pr-8' : 'pl-9'}`}
             />
+            {venueSearch && (
+              <button
+                type="button"
+                onClick={() => { setVenueSearch(''); setValue('venueName', ''); setSelectedVenue(null); }}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-white transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
           </div>
 
           {/* Nearby venues from AI photo */}
