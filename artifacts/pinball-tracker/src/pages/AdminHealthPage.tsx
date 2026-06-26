@@ -1,6 +1,15 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link, useLocation } from 'wouter';
-import { ShieldCheck, RefreshCw, CheckCircle2, XCircle, HelpCircle, Database, Server, Cpu, Bot, ExternalLink } from 'lucide-react';
+import { ShieldCheck, RefreshCw, CheckCircle2, XCircle, HelpCircle, Database, Server, Cpu, ExternalLink } from 'lucide-react';
+
+const DASHBOARD_URLS: Record<string, string> = {
+  anthropic: 'https://console.anthropic.com/settings/billing',
+  here:      'https://platform.here.com/',
+  pm:        'https://pinballmap.com/',
+  clerk:     'https://dashboard.clerk.com/',
+  github:    'https://github.com/wdemaida/tilt-tracker',
+  vercel:    'https://vercel.com/wdemaida/tilttrack',
+};
 import { useApi } from '../lib/useApi';
 
 function StatusDot({ status }: { status: 'ok' | 'error' | 'unchecked' }) {
@@ -161,7 +170,19 @@ export default function AdminHealthPage() {
                 <div key={svc.id} className="rounded-xl border border-white/10 bg-card p-4 flex items-start gap-3">
                   <StatusDot status={svc.status} />
                   <div className="min-w-0 flex-1">
-                    <p className="font-black uppercase tracking-wider text-white text-sm">{svc.name}</p>
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-black uppercase tracking-wider text-white text-sm">{svc.name}</p>
+                      {DASHBOARD_URLS[svc.id] && (
+                        <a
+                          href={DASHBOARD_URLS[svc.id]}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1 text-primary hover:text-white transition-colors text-xs font-medium flex-shrink-0"
+                        >
+                          Dashboard <ExternalLink className="w-3 h-3" />
+                        </a>
+                      )}
+                    </div>
                     <p className="text-xs text-muted-foreground mt-0.5">
                       {svc.latencyMs != null && <span className="text-green-400 mr-2">{svc.latencyMs} ms</span>}
                       {svc.note ?? (svc.status === 'ok' ? 'OK' : svc.error ?? 'Error')}
@@ -213,50 +234,6 @@ export default function AdminHealthPage() {
               </div>
             </div>
           </section>
-
-          {/* Anthropic AI */}
-          {(() => {
-            const svc = (data.services as any[]).find((s: any) => s.id === 'anthropic');
-            if (!svc) return null;
-            return (
-              <section>
-                <h2 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-3 flex items-center gap-2">
-                  <Bot className="w-3.5 h-3.5" /> Anthropic AI
-                </h2>
-                <div className="rounded-xl border border-white/10 bg-card p-5">
-                  <div className="flex items-center justify-between mb-4">
-                    <div className="flex items-center gap-2.5">
-                      <StatusDot status={svc.status} />
-                      <span className="font-black uppercase tracking-wider text-white">API Key</span>
-                    </div>
-                    <div className="flex items-center gap-3 text-sm">
-                      {svc.status === 'ok' && <span className="text-green-400 font-medium">{svc.latencyMs} ms</span>}
-                      <span className={svc.status === 'ok' ? 'text-green-400' : 'text-red-400'}>
-                        {svc.status === 'ok' ? 'Verified' : (svc.error ?? 'Error')}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    <div className="flex justify-between text-sm">
-                      <span className="text-muted-foreground">Model</span>
-                      <span className="font-mono text-white text-xs">{svc.model ?? '—'}</span>
-                    </div>
-                    <div className="flex justify-between text-sm">
-                      <span className="text-muted-foreground">Billing &amp; Usage</span>
-                      <a
-                        href="https://console.anthropic.com/settings/billing"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex items-center gap-1 text-primary hover:text-white transition-colors text-xs font-medium"
-                      >
-                        console.anthropic.com <ExternalLink className="w-3 h-3" />
-                      </a>
-                    </div>
-                  </div>
-                </div>
-              </section>
-            );
-          })()}
 
           {/* Environment Variables */}
           <section>

@@ -86,7 +86,7 @@ router.get('/health', async (_req, res) => {
   })();
 
   // --- External service checks (run in parallel) ---
-  const [hereCheck, pmCheck, anthropicCheck, clerkCheck] = await Promise.all([
+  const [hereCheck, pmCheck, anthropicCheck, clerkCheck, githubCheck, vercelCheck] = await Promise.all([
     // HERE API
     (async () => {
       const key = process.env.HERE_API_KEY;
@@ -151,6 +151,43 @@ router.get('/health', async (_req, res) => {
         return { status: 'error' as const, latencyMs: Date.now() - start, error: String(err) };
       }
     })(),
+
+    // GitHub — public repo accessibility
+    (async () => {
+      const start = Date.now();
+      try {
+        const r = await fetch('https://api.github.com/repos/wdemaida/tilt-tracker', {
+          headers: { 'User-Agent': 'tilttrack-health-check' },
+          signal: AbortSignal.timeout(5000),
+        });
+        const latencyMs = Date.now() - start;
+        if (r.ok) {
+          const data = await r.json() as any;
+          const pushed = new Date(data.pushed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          return { status: 'ok' as const, latencyMs, note: `Last push ${pushed}` };
+        }
+        return { status: 'error' as const, latencyMs, error: `HTTP ${r.status}` };
+      } catch (err) {
+        return { status: 'error' as const, latencyMs: Date.now() - start, error: String(err) };
+      }
+    })(),
+
+    // Vercel — frontend production URL ping
+    (async () => {
+      const start = Date.now();
+      try {
+        const r = await fetch('https://tilttrack.vercel.app', {
+          method: 'HEAD',
+          signal: AbortSignal.timeout(5000),
+        });
+        const latencyMs = Date.now() - start;
+        return r.ok
+          ? { status: 'ok' as const, latencyMs, note: 'Frontend reachable' }
+          : { status: 'error' as const, latencyMs, error: `HTTP ${r.status}` };
+      } catch (err) {
+        return { status: 'error' as const, latencyMs: Date.now() - start, error: String(err) };
+      }
+    })(),
   ]);
 
   // --- Env vars ---
@@ -198,6 +235,8 @@ router.get('/health', async (_req, res) => {
     { id: 'here',      name: 'HERE Maps',    ...hereCheck },
     { id: 'pm',        name: 'Pinball Map',  ...pmCheck },
     { id: 'clerk',     name: 'Clerk Auth',   ...clerkCheck },
+    { id: 'github',    name: 'GitHub',       ...githubCheck },
+    { id: 'vercel',    name: 'Vercel',       ...vercelCheck },
   ];
 
   res.json({ server, database: dbCheck, services, envVars, frontend });
