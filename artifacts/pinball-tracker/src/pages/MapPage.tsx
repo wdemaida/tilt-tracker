@@ -1,5 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
+import { Link } from 'wouter';
+import { format } from 'date-fns';
 import { useApi } from '../lib/useApi';
 import { useAppUser } from '../lib/useAppUser';
 import { useScopeContext } from '../lib/ScopeContext';
@@ -43,8 +45,13 @@ export default function MapPage() {
 
   const locations = Object.entries(venueGroups).map(([key, items]) => {
     const [lat, lng] = key.split(',').map(Number);
-    const hasMyScore = !!appUser && (items as any[]).some((s: any) => s.username === appUser.username);
-    return { lat, lng, scores: items as any[], venueName: (items[0] as any).venueName, hasMyScore };
+    const list = items as any[];
+    const hasMyScore = !!appUser && list.some((s: any) => s.username === appUser.username);
+    // Most recent score: in MINE mode items are already own-only; in ALL mode show globally newest
+    const recent = mine && appUser
+      ? list.find((s: any) => s.username === appUser.username) ?? list[0]
+      : list[0];
+    return { lat, lng, total: list.length, venueName: list[0].venueName, venueId: list[0].venueId, recent, hasMyScore };
   });
 
   return (
@@ -67,12 +74,28 @@ export default function MapPage() {
             url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
             attribution='&copy; <a href="https://carto.com/">CARTO</a>'
           />
-          {locations.map(({ lat, lng, scores, venueName, hasMyScore }) => (
+          {locations.map(({ lat, lng, total, venueName, venueId, recent, hasMyScore }) => (
             <Marker key={`${lat},${lng}`} position={[lat, lng]} icon={hasMyScore ? PIN_MINE : PIN_OTHERS}>
               <Popup>
-                <div className="text-sm">
-                  <p className="font-bold">{venueName ?? 'Unknown venue'}</p>
-                  <p className="text-muted-foreground">{scores.length} scores</p>
+                <div style={{ minWidth: 180 }}>
+                  {venueId ? (
+                    <Link href={`/venues/${venueId}`} style={{ fontWeight: 700, fontSize: 13, color: '#d946ef', textDecoration: 'none' }}>
+                      {venueName ?? 'Unknown venue'}
+                    </Link>
+                  ) : (
+                    <p style={{ fontWeight: 700, fontSize: 13 }}>{venueName ?? 'Unknown venue'}</p>
+                  )}
+                  <p style={{ fontSize: 11, color: '#888', marginTop: 2 }}>{total} {total === 1 ? 'score' : 'scores'}</p>
+                  {recent && (
+                    <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid #333' }}>
+                      <p style={{ fontSize: 11, color: '#aaa', marginBottom: 2 }}>Most recent</p>
+                      <p style={{ fontWeight: 700, fontSize: 13 }}>{recent.machineName}</p>
+                      <p style={{ fontSize: 12, color: '#d946ef', fontWeight: 700 }}>{Number(recent.score).toLocaleString()}</p>
+                      <p style={{ fontSize: 11, color: '#888' }}>
+                        {recent.displayName ?? recent.username} · {format(new Date(recent.playedAt), 'M/d/yy')}
+                      </p>
+                    </div>
+                  )}
                 </div>
               </Popup>
             </Marker>
