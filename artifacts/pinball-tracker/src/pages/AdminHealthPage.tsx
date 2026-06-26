@@ -9,6 +9,17 @@ const DASHBOARD_URLS: Record<string, string> = {
   clerk:     'https://dashboard.clerk.com/',
   github:    'https://github.com/wdemaida/tilt-tracker',
   vercel:    'https://vercel.com/wdemaida/tilttrack',
+  render:    'https://dashboard.render.com/project/prj-d8uo90flk1mc73864fn0',
+};
+
+const SERVICE_DESCRIPTIONS: Record<string, string> = {
+  anthropic: 'Photo score extraction, AI image analysis',
+  here:      'Venue geocoding, nearby place search',
+  pm:        'Machine lists by venue, machine details',
+  clerk:     'User authentication, session management',
+  github:    'Source code repository, deployment trigger',
+  vercel:    'Frontend hosting, static site delivery',
+  render:    'API server hosting, backend runtime',
 };
 import { useApi } from '../lib/useApi';
 
@@ -188,6 +199,9 @@ export default function AdminHealthPage() {
                       {svc.note ?? (svc.status === 'ok' ? 'OK' : svc.error ?? 'Error')}
                       {svc.machineCount != null && ` · ${Number(svc.machineCount).toLocaleString()} machines cached`}
                     </p>
+                    {SERVICE_DESCRIPTIONS[svc.id] && (
+                      <p className="text-xs text-muted-foreground/60 mt-1 italic">{SERVICE_DESCRIPTIONS[svc.id]}</p>
+                    )}
                   </div>
                 </div>
               ))}

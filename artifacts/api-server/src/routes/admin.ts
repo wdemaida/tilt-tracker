@@ -246,6 +246,7 @@ router.get('/health', async (_req, res) => {
     { id: 'clerk',     name: 'Clerk Auth',   ...clerkCheck },
     { id: 'github',    name: 'GitHub',       ...githubCheck },
     { id: 'vercel',    name: 'Vercel',       ...vercelCheck },
+    { id: 'render',    name: 'Render',       status: 'ok' as const, note: 'API server is running here' },
   ];
 
   res.json({ server, database: dbCheck, services, envVars, frontend });
