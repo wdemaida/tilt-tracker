@@ -17,9 +17,9 @@ interface Machine {
   manufacturer?: string | null;
   year?: number | null;
   imageUrl?: string | null;
-  bestScore: number;
+  bestScore: number | null;
   playCount: number;
-  lastPlayed: string;
+  lastPlayed: string | null;
 }
 
 interface EditMachine {
@@ -75,8 +75,11 @@ export default function MachinesPage() {
       let cmp = 0;
       if (sortKey === 'name') cmp = a.name.localeCompare(b.name);
       else if (sortKey === 'playCount') cmp = a.playCount - b.playCount;
-      else if (sortKey === 'lastPlayed') cmp = new Date(a.lastPlayed).getTime() - new Date(b.lastPlayed).getTime();
-      else if (sortKey === 'bestScore') cmp = a.bestScore - b.bestScore;
+      else if (sortKey === 'lastPlayed') {
+        const at = a.lastPlayed ? new Date(a.lastPlayed).getTime() : -Infinity;
+        const bt = b.lastPlayed ? new Date(b.lastPlayed).getTime() : -Infinity;
+        cmp = at - bt;
+      } else if (sortKey === 'bestScore') cmp = (a.bestScore ?? -Infinity) - (b.bestScore ?? -Infinity);
       return sortDir === 'asc' ? cmp : -cmp;
     });
 
@@ -176,12 +179,12 @@ export default function MachinesPage() {
 
                   {/* Last Played */}
                   <td className="px-4 py-3 text-sm text-muted-foreground whitespace-nowrap">
-                    {format(new Date(m.lastPlayed), 'M/d/yyyy')}
+                    {m.lastPlayed ? format(new Date(m.lastPlayed), 'M/d/yyyy') : '—'}
                   </td>
 
                   {/* Best Score */}
                   <td className="px-4 py-3 text-right font-bold text-lg text-primary whitespace-nowrap">
-                    {Number(m.bestScore).toLocaleString()}
+                    {m.bestScore != null ? Number(m.bestScore).toLocaleString() : '—'}
                   </td>
 
                   {/* Admin buttons */}

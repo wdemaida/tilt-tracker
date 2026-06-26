@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db, machines, scores, users } from '@workspace/db';
-import { eq, desc, max, count, sql } from 'drizzle-orm';
+import { eq, desc, max, count, sql, isNotNull } from 'drizzle-orm';
 import { searchMachines, getAllMachines } from '../lib/pinballMap.js';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { getAuth } from '@clerk/express';
@@ -31,7 +31,7 @@ router.get('/', async (req, res) => {
         lastPlayed: max(scores.playedAt),
       })
       .from(machines)
-      .innerJoin(scores, eq(scores.machineId, machines.id))
+      .leftJoin(scores, eq(scores.machineId, machines.id))
       .where(userId !== undefined ? eq(scores.userId, userId) : undefined)
       .groupBy(machines.id, machines.name, machines.variant, machines.manufacturer, machines.year, machines.imageUrl)
       .orderBy(desc(max(scores.score)));
