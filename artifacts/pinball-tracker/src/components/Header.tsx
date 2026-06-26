@@ -86,12 +86,13 @@ export default function Header() {
 
           <div className="flex items-center gap-3">
             <SignedIn>
+              {/* Add Score hidden on mobile — accessible via hamburger menu */}
               <Link
                 href="/add"
-                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-white text-sm font-bold uppercase tracking-wider hover:opacity-90 transition-opacity"
+                className="hidden md:flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-white text-sm font-bold uppercase tracking-wider hover:opacity-90 transition-opacity"
               >
                 <PlusCircle className="w-4 h-4" />
-                <span className="hidden sm:inline">Add Score</span>
+                Add Score
               </Link>
               <UserButton afterSignOutUrl="/" />
             </SignedIn>
@@ -106,11 +107,11 @@ export default function Header() {
 
             {/* Hamburger — mobile only */}
             <button
-              className="md:hidden flex items-center justify-center w-10 h-10 rounded-lg border border-white/10 text-muted-foreground hover:text-white hover:border-white/30 transition-colors"
+              className="md:hidden flex items-center justify-center w-10 h-10 rounded-lg text-white hover:text-primary transition-colors"
               aria-label={menuOpen ? 'Close menu' : 'Open menu'}
               onClick={() => setMenuOpen((o) => !o)}
             >
-              {menuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+              {menuOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
             </button>
           </div>
         </div>
@@ -133,6 +134,18 @@ export default function Header() {
                 {label}
               </Link>
             ))}
+            <SignedIn>
+              <Link
+                href="/add"
+                onClick={() => setMenuOpen(false)}
+                className={`flex items-center gap-3 px-3 py-3 rounded-lg text-sm font-bold uppercase tracking-wider transition-colors hover:bg-white/5 hover:text-white ${
+                  location === '/add' ? 'text-primary bg-primary/10' : 'text-muted-foreground'
+                }`}
+              >
+                <PlusCircle className="w-5 h-5" aria-hidden />
+                Add Score
+              </Link>
+            </SignedIn>
             <SignedOut>
               <Link
                 href="/sign-in"
