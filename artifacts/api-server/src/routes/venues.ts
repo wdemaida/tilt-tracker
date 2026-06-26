@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db, scores, venues, machines, users } from '@workspace/db';
-import { eq, desc, count, sql } from 'drizzle-orm';
+import { eq, desc, count, sql, and } from 'drizzle-orm';
 import { getPmMachinesAtLocation } from '../lib/pinballmapApi.js';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { getAuth } from '@clerk/express';
@@ -66,10 +66,19 @@ router.get('/pm-machines/:pmId', async (req, res) => {
 // GET /api/venues/:id/machines — machines at a venue (ours + Pinball Map)
 router.get('/:id/machines', async (req, res) => {
   const id = Number(req.params.id);
+  const { userId: clerkId } = getAuth(req);
   try {
     const [venue] = await db.select().from(venues).where(eq(venues.id, id)).limit(1);
     if (!venue) return res.status(404).json({ error: 'Venue not found' });
 
+    // Resolve current user (optional — for per-user play counts)
+    let appUserId: number | undefined;
+    if (clerkId) {
+      const [u] = await db.select({ id: users.id }).from(users).where(eq(users.clerkId, clerkId)).limit(1);
+      appUserId = u?.id;
+    }
+
+    // Machines played at this venue by the current user (for play count badge)
     const ownMachines = await db
       .select({
         id: machines.id,
@@ -79,9 +88,20 @@ router.get('/:id/machines', async (req, res) => {
       })
       .from(scores)
       .innerJoin(machines, eq(scores.machineId, machines.id))
-      .where(eq(scores.venueId, id))
-      .groupBy(machines.id)
+      .where(appUserId
+        ? and(eq(scores.venueId, id), eq(scores.userId, appUserId))
+        : eq(scores.venueId, id))
+      .groupBy(machines.id, machines.name)
       .orderBy(desc(sql<number>`max(${scores.score})`));
+
+    // All machine names played at this venue by anyone (for TT tag)
+    const ttRows = await db
+      .select({ name: machines.name })
+      .from(scores)
+      .innerJoin(machines, eq(scores.machineId, machines.id))
+      .where(eq(scores.venueId, id))
+      .groupBy(machines.name);
+    const ttMachineNames = ttRows.map(r => r.name);
 
     let pmMachines: Array<{ xrefId: number; id: number; name: string; manufacturer?: string; year?: number }> = [];
     if (venue.pinballMapId) {
@@ -98,7 +118,7 @@ router.get('/:id/machines', async (req, res) => {
       }
     }
 
-    res.json({ venue, ownMachines, pmMachines });
+    res.json({ venue, ownMachines, pmMachines, ttMachineNames });
   } catch (err) {
     console.error('Venue machines error:', err);
     res.status(500).json({ error: 'Failed to fetch venue machines' });

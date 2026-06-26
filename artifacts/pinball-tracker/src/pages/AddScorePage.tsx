@@ -2,11 +2,10 @@ import { useState, useRef, useMemo, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Camera, Loader2, CheckCircle2, ExternalLink, MapPin, Search, X } from 'lucide-react';
+import { Camera, Loader2, CheckCircle2, ExternalLink, MapPin, Search, X, ChevronDown } from 'lucide-react';
 import { useLocation } from 'wouter';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useApi } from '../lib/useApi';
-import { api as publicApi } from '../lib/api';
 import { queryClient } from '../lib/queryClient';
 import { PinballIcon } from '../components/PinballIcon';
 
@@ -59,7 +58,10 @@ export default function AddScorePage() {
   const [pmResult, setPmResult] = useState<'success' | 'error' | null>(null);
   const [pmError, setPmError] = useState('');
   const [pmForceForm, setPmForceForm] = useState(false);
+  const [pmLoginExpanded, setPmLoginExpanded] = useState(false);
   const [thumbnail, setThumbnail] = useState<string | null>(null);
+  const [showMachineConfirm, setShowMachineConfirm] = useState(false);
+  const [pendingFormData, setPendingFormData] = useState<FormData | null>(null);
   const thumbnailSucceeded = useRef(false);
   const machineAutoSelected = useRef(false);
   const [, navigate] = useLocation();
@@ -90,11 +92,16 @@ export default function AddScorePage() {
     });
   }
 
-  // User's venue history for step 2
+  // Current user's venues (for V tag)
   const { data: venueHistory = [] } = useQuery({
-    queryKey: ['venues'],
-    queryFn: () => publicApi.venues.list(),
+    queryKey: ['venues', 'mine'],
+    queryFn: () => api.venues.list(true),
   });
+
+  const myVenueIds = useMemo(
+    () => new Set((venueHistory as any[]).map((v: any) => v.id)),
+    [venueHistory]
+  );
 
   // PM machines at selected venue (starts fetching as soon as venue is selected)
   const { data: venueData, isLoading: venueDataLoading } = useQuery({
@@ -110,22 +117,26 @@ export default function AddScorePage() {
     enabled: selectedVenue?.venueId == null && selectedVenue?.pinballMapId != null,
   });
 
-  // Deduplicated machine list: played machines first, then unplayed PM machines
+  // Deduplicated machine list: user's played machines first, then unplayed PM machines
   const allVenueMachines = useMemo(() => {
     if (venueData) {
-      const playedNames = new Set((venueData.ownMachines as any[]).map((m: any) => m.name.toLowerCase()));
+      const ownNames = new Set((venueData.ownMachines as any[]).map((m: any) => m.name.toLowerCase()));
+      const ttNames = new Set(((venueData.ttMachineNames as string[]) ?? []).map((n: string) => n.toLowerCase()));
       return [
         ...(venueData.ownMachines as any[]).map((m: any) => ({
-          name: m.name as string, played: true, playCount: m.playCount as number,
+          name: m.name as string, played: true, playCount: m.playCount as number, inTiltTrack: true,
         })),
         ...(venueData.pmMachines as any[])
-          .filter((m: any) => !playedNames.has(m.name.toLowerCase()))
-          .map((m: any) => ({ name: m.name as string, played: false, playCount: 0 })),
+          .filter((m: any) => !ownNames.has(m.name.toLowerCase()))
+          .map((m: any) => ({
+            name: m.name as string, played: false, playCount: 0,
+            inTiltTrack: ttNames.has(m.name.toLowerCase()),
+          })),
       ];
     }
     if (pmOnlyData) {
       return (pmOnlyData.pmMachines as any[]).map((m: any) => ({
-        name: m.name as string, played: false, playCount: 0,
+        name: m.name as string, played: false, playCount: 0, inTiltTrack: false,
       }));
     }
     return [];
@@ -150,10 +161,10 @@ export default function AddScorePage() {
   const { data: machineSuggestions = [] } = useQuery({
     queryKey: ['machine-search', machineSearch],
     queryFn: () => api.machines.search(machineSearch),
-    enabled: allVenueMachines.length === 0 && !venueDataLoading && machineSearch.length > 1,
+    enabled: allVenueMachines.length === 0 && !venueDataLoading && !pmOnlyLoading && machineSearch.length > 1,
   });
 
-  // Filtered venue history for step 2
+  // Filtered venue history for step 2 (user's venues only)
   const filteredVenueHistory = useMemo(() => {
     const q = venueSearch.toLowerCase();
     return (venueHistory as any[]).filter(
@@ -176,6 +187,11 @@ export default function AddScorePage() {
   });
 
   const venueName = watch('venueName');
+
+  // True when the selected machine name isn't in the PM/TT machine list for this venue
+  const machineNotInPm = selectedMachine.length > 0
+    && allVenueMachines.length > 0
+    && !allVenueMachines.some(m => m.name.toLowerCase() === selectedMachine.toLowerCase());
 
   const createScore = useMutation({
     mutationFn: async (data: FormData) => {
@@ -232,7 +248,6 @@ export default function AddScorePage() {
       if (result.venues?.length) {
         const first = result.venues[0];
         setValue('venueName', first.name);
-        // Don't pre-fill venueSearch — it filters the list, so all nearby venues would collapse to one
         setSelectedVenue({
           venueId: first.venueId,
           hereId: first.hereId ?? undefined,
@@ -299,6 +314,11 @@ export default function AddScorePage() {
       setPmSubmitting(false);
     }
   };
+
+  // Badge components for venue tags
+  const TagTT = () => <span className="text-xs px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 font-medium">TT</span>;
+  const TagV = () => <span className="text-xs px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-300 font-medium">V</span>;
+  const TagPM = () => <span className="text-xs px-1.5 py-0.5 rounded bg-green-500/20 text-green-300 font-medium">PM</span>;
 
   return (
     <div className="max-w-lg mx-auto">
@@ -379,6 +399,8 @@ export default function AddScorePage() {
                     const isSelected = selectedVenue?.venueId != null
                       ? selectedVenue.venueId === v.venueId
                       : selectedVenue?.hereId != null && selectedVenue.hereId === v.hereId;
+                    const userVisited = v.venueId != null && myVenueIds.has(v.venueId);
+                    const inSystem = v.source === 'history';
                     return (
                       <button
                         key={v.venueId ?? v.hereId ?? v.name}
@@ -389,8 +411,8 @@ export default function AddScorePage() {
                         <div className="flex items-center gap-2">
                           <MapPin className={`w-3.5 h-3.5 flex-shrink-0 ${isSelected ? 'text-primary' : 'text-muted-foreground'}`} />
                           <span className={`text-sm font-bold ${isSelected ? 'text-white' : 'text-white/80'}`}>{v.name}</span>
-                          {v.source === 'history' && <span className="text-xs px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 font-medium">visited</span>}
-                          {v.pinballMapId && <span className="text-xs px-1.5 py-0.5 rounded bg-green-500/20 text-green-300 font-medium">PM</span>}
+                          {userVisited ? <TagV /> : inSystem ? <TagTT /> : null}
+                          {v.pinballMapId && <TagPM />}
                           <span className="text-xs text-muted-foreground ml-auto">{v.distance}m</span>
                         </div>
                         {v.address && <p className="text-xs text-muted-foreground truncate mt-0.5 pl-5">{v.address}</p>}
@@ -401,7 +423,7 @@ export default function AddScorePage() {
             </div>
           )}
 
-          {/* Venue history */}
+          {/* Venue history (user's visited venues only) */}
           {(() => {
             const nearbyIds = new Set(nearbyVenues.map(v => v.venueId).filter(Boolean));
             const historyToShow = filteredVenueHistory.filter((v: any) => !nearbyIds.has(v.id));
@@ -424,7 +446,8 @@ export default function AddScorePage() {
                         <div className="flex items-center gap-2">
                           <MapPin className={`w-3.5 h-3.5 flex-shrink-0 ${isSelected ? 'text-primary' : 'text-muted-foreground'}`} />
                           <span className={`text-sm font-bold ${isSelected ? 'text-white' : 'text-white/80'}`}>{v.name}</span>
-                          {v.pinballMapId && <span className="text-xs px-1.5 py-0.5 rounded bg-green-500/20 text-green-300 font-medium">PM</span>}
+                          <TagV />
+                          {v.pinballMapId && <TagPM />}
                           <span className="text-xs text-muted-foreground ml-auto">{v.scoreCount} {v.scoreCount === 1 ? 'score' : 'scores'}</span>
                         </div>
                         {v.address && <p className="text-xs text-muted-foreground truncate mt-0.5 pl-5">{v.address}</p>}
@@ -457,12 +480,25 @@ export default function AddScorePage() {
           >
             Skip — no venue
           </button>
+          {/* Tag legend */}
+          <div className="flex items-center justify-center gap-4 text-xs text-muted-foreground pt-1">
+            <span className="flex items-center gap-1"><TagTT /> In TiltTrack</span>
+            <span className="flex items-center gap-1"><TagPM /> In Pinball Map</span>
+            <span className="flex items-center gap-1"><TagV /> You've visited</span>
+          </div>
         </div>
       )}
 
       {/* Step 3: Score details */}
       {step === 3 && (
-        <form onSubmit={handleSubmit(d => createScore.mutate(d))} className="rounded-xl border border-white/10 bg-card p-6 flex flex-col gap-4">
+        <form onSubmit={handleSubmit(d => {
+          if (machineNotInPm) {
+            setPendingFormData(d);
+            setShowMachineConfirm(true);
+            return;
+          }
+          createScore.mutate(d);
+        })} className="rounded-xl border border-white/10 bg-card p-6 flex flex-col gap-4">
           {createScore.isError && (
             <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-400">
               {(createScore.error as any)?.message ?? 'Failed to save score — please try again'}
@@ -485,7 +521,7 @@ export default function AddScorePage() {
             {allVenueMachines.length > 0 || venueDataLoading || pmOnlyLoading ? (
               <div className="flex flex-col gap-2">
                 <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+                  {!machineSearch && <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />}
                   <input
                     value={machineSearch}
                     onChange={e => {
@@ -495,10 +531,19 @@ export default function AddScorePage() {
                       if (selectedMachine && val.toLowerCase() !== selectedMachine.toLowerCase()) setSelectedMachine('');
                     }}
                     placeholder="Filter or type machine name..."
-                    className="input pl-9"
+                    className={`input ${machineSearch ? 'pr-8' : 'pl-9'}`}
                   />
+                  {machineSearch && (
+                    <button
+                      type="button"
+                      onClick={() => { setMachineSearch(''); setValue('machineName', ''); setSelectedMachine(''); }}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-white transition-colors"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
-                {venueDataLoading ? (
+                {venueDataLoading || pmOnlyLoading ? (
                   <div className="flex items-center gap-2 py-3 px-1 text-muted-foreground text-sm">
                     <Loader2 className="w-4 h-4 animate-spin" />
                     Loading machines at this venue...
@@ -517,6 +562,9 @@ export default function AddScorePage() {
                           <div className="flex items-center gap-2">
                             <PinballIcon className={`w-3.5 h-3.5 flex-shrink-0 ${isSelected ? 'text-primary' : 'text-muted-foreground'}`} />
                             <span className={`text-sm font-bold ${isSelected ? 'text-white' : 'text-white/80'}`}>{m.name}</span>
+                            {m.inTiltTrack && !m.played && (
+                              <span className="text-xs px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 font-medium">TT</span>
+                            )}
                             {m.played && (
                               <span className="text-xs px-1.5 py-0.5 rounded bg-primary/20 text-primary font-medium ml-auto">
                                 {m.playCount} {m.playCount === 1 ? 'play' : 'plays'}
@@ -543,7 +591,7 @@ export default function AddScorePage() {
               <div>
                 <input
                   value={machineSearch}
-                  onChange={e => { setMachineSearch(e.target.value); setValue('machineName', e.target.value); }}
+                  onChange={e => { setMachineSearch(e.target.value); setValue('machineName', e.target.value); setSelectedMachine(''); }}
                   placeholder="e.g. The Munsters"
                   className="input"
                 />
@@ -561,9 +609,9 @@ export default function AddScorePage() {
               </div>
             )}
             {errors.machineName && <p className="err">{errors.machineName.message}</p>}
-            {selectedMachine && allVenueMachines.length > 0 && !allVenueMachines.some(m => m.name.toLowerCase() === selectedMachine.toLowerCase()) && (
+            {machineNotInPm && (
               <p className="text-xs text-yellow-400 mt-1">
-                "{selectedMachine}" wasn't found in the Pinball Map machine list for this venue — double-check the name.
+                "{selectedMachine}" wasn't found in the Pinball Map machine list for this venue — you'll be asked to confirm before saving.
               </p>
             )}
           </div>
@@ -614,6 +662,33 @@ export default function AddScorePage() {
         </form>
       )}
 
+      {/* Machine name confirmation dialog */}
+      {showMachineConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={() => setShowMachineConfirm(false)} />
+          <div className="relative z-10 w-full max-w-sm rounded-2xl border border-white/10 bg-card p-6 shadow-2xl">
+            <h3 className="text-lg font-black uppercase tracking-wider text-white mb-2">Machine Not Found</h3>
+            <p className="text-sm text-muted-foreground mb-5">
+              "{selectedMachine}" wasn't found in the Pinball Map machine list for this venue. Continue anyway?
+            </p>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={() => { setShowMachineConfirm(false); if (pendingFormData) createScore.mutate(pendingFormData); }}
+                className="py-2.5 rounded-lg bg-primary text-white font-bold text-sm uppercase tracking-wider hover:opacity-90 transition-opacity"
+              >
+                Yes, Save Score Anyway
+              </button>
+              <button
+                onClick={() => { setShowMachineConfirm(false); setPendingFormData(null); }}
+                className="py-2.5 rounded-lg border border-white/10 text-sm text-muted-foreground hover:text-white transition-colors"
+              >
+                No, I'll Update It
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Step 4: Success + Pinball Map post */}
       {step === 4 && savedScore && (
         <div className="rounded-xl border border-white/10 bg-card p-6 flex flex-col gap-5">
@@ -632,7 +707,6 @@ export default function AddScorePage() {
                 <ExternalLink className="w-4 h-4 text-violet-400" />
                 <p className="text-sm font-bold text-violet-300 uppercase tracking-wider">Post to Pinball Map</p>
               </div>
-              <p className="text-xs text-muted-foreground">Share your score with the Pinball Map community leaderboard.</p>
 
               {pmResult === 'success' ? (
                 <div className="flex items-center gap-2 text-green-400">
@@ -655,14 +729,21 @@ export default function AddScorePage() {
                     </button>
                   </div>
                 </>
+              ) : !pmLoginExpanded ? (
+                <button
+                  onClick={() => setPmLoginExpanded(true)}
+                  className="flex items-center gap-1.5 text-sm text-violet-400 hover:text-violet-300 transition-colors self-start"
+                >
+                  <ChevronDown className="w-4 h-4" />
+                  Log in to post score
+                </button>
               ) : (
                 <>
                   <div className="flex flex-col gap-2">
                     <input type="email" placeholder="Pinball Map email" value={pmEmail} onChange={e => setPmEmail(e.target.value)} className="input" />
                     <input type="password" placeholder="Pinball Map password" value={pmPassword} onChange={e => setPmPassword(e.target.value)} className="input" />
                   </div>
-                  {pmResult === 'error' && <p className="text-xs text-red-400">{pmError}</p>}
-                  {pmError && pmResult !== 'error' && <p className="text-xs text-red-400">{pmError}</p>}
+                  {(pmResult === 'error' || pmError) && <p className="text-xs text-red-400">{pmError}</p>}
                   <button onClick={handlePmSubmit} disabled={pmSubmitting || !pmEmail || !pmPassword}
                     className="py-2.5 rounded-lg bg-violet-600 text-white font-bold uppercase tracking-wider text-sm hover:opacity-90 transition-opacity disabled:opacity-50">
                     {pmSubmitting ? 'Posting...' : 'Post Score'}
