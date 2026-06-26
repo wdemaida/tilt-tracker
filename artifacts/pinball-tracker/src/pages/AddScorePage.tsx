@@ -165,6 +165,17 @@ export default function AddScorePage() {
     return allVenueMachines.filter(m => m.name.toLowerCase().includes(machineSearch.toLowerCase()));
   }, [allVenueMachines, machineSearch]);
 
+  // For PM list mode: all machines, AI-matching ones floated to top
+  const sortedVenueMachines = useMemo(() => {
+    if (!aiDetectedMachine) return allVenueMachines;
+    const ai = aiDetectedMachine.toLowerCase();
+    return [...allVenueMachines].sort((a, b) => {
+      const aMatch = a.name.toLowerCase().includes(ai) ? 0 : 1;
+      const bMatch = b.name.toLowerCase().includes(ai) ? 0 : 1;
+      return aMatch - bMatch;
+    });
+  }, [allVenueMachines, aiDetectedMachine]);
+
   // Fallback machine search (used when no PM machine data available)
   const { data: machineSuggestions = [] } = useQuery({
     queryKey: ['machine-search', machineSearch],
@@ -541,73 +552,46 @@ export default function AddScorePage() {
                   </div>
                 )}
 
-                <div className="relative">
-                  {!machineSearch && <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />}
-                  <input
-                    value={machineSearch}
-                    onChange={e => {
-                      const val = e.target.value;
-                      setMachineSearch(val);
-                      setValue('machineName', val);
-                      if (selectedMachine && val.toLowerCase() !== selectedMachine.toLowerCase()) setSelectedMachine('');
-                    }}
-                    placeholder="Filter or type machine name..."
-                    className={`input ${machineSearch ? 'pr-8' : 'pl-9'}`}
-                  />
-                  {machineSearch && (
-                    <button
-                      type="button"
-                      onClick={() => { setMachineSearch(''); setValue('machineName', ''); setSelectedMachine(''); }}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-white transition-colors"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  )}
-                </div>
                 {venueDataLoading || pmOnlyLoading ? (
                   <div className="flex items-center gap-2 py-3 px-1 text-muted-foreground text-sm">
                     <Loader2 className="w-4 h-4 animate-spin" />
                     Loading machines at this venue...
                   </div>
                 ) : (
-                  <div className="flex flex-col gap-1.5 max-h-52 overflow-y-auto pr-1">
-                    {filteredVenueMachines.map(m => {
-                      const isSelected = selectedMachine === m.name;
-                      return (
-                        <button
-                          key={m.name}
-                          type="button"
-                          onClick={() => selectMachine(m.name, m.manufacturer, m.year)}
-                          className={`text-left px-3 py-2.5 rounded-lg border transition-colors ${isSelected ? 'border-primary/60 bg-primary/10' : 'border-white/10 hover:border-primary/40 hover:bg-white/5'}`}
-                        >
-                          <div className="flex items-center gap-2">
-                            <PinballIcon className={`w-3.5 h-3.5 flex-shrink-0 ${isSelected ? 'text-primary' : 'text-muted-foreground'}`} />
-                            <span className={`text-sm font-bold ${isSelected ? 'text-white' : 'text-white/80'}`}>{m.name}</span>
-                            {m.inTiltTrack && !m.played && (
-                              <span className="text-xs px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 font-medium">TT</span>
-                            )}
-                            {m.played && (
-                              <span className="text-xs px-1.5 py-0.5 rounded bg-primary/20 text-primary font-medium ml-auto">
-                                {m.playCount} {m.playCount === 1 ? 'play' : 'plays'}
-                              </span>
-                            )}
-                          </div>
-                        </button>
-                      );
-                    })}
-                    {filteredVenueMachines.length === 0 && machineSearch && (
-                      <button
-                        type="button"
-                        onClick={() => selectMachine(machineSearch)}
-                        className="text-left px-3 py-2.5 rounded-lg border border-dashed border-white/20 hover:border-primary/40 text-sm text-muted-foreground hover:text-white transition-colors"
-                      >
-                        Add "{machineSearch}" as new machine
-                      </button>
-                    )}
-                  </div>
+                  <>
+                    <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                      Suggested machines
+                    </p>
+                    <div className="flex flex-col gap-1.5 max-h-52 overflow-y-auto pr-1">
+                      {sortedVenueMachines.map(m => {
+                        const isSelected = selectedMachine === m.name;
+                        return (
+                          <button
+                            key={m.name}
+                            type="button"
+                            onClick={() => selectMachine(m.name, m.manufacturer, m.year)}
+                            className={`text-left px-3 py-2.5 rounded-lg border transition-colors ${isSelected ? 'border-primary/60 bg-primary/10' : 'border-white/10 hover:border-primary/40 hover:bg-white/5'}`}
+                          >
+                            <div className="flex items-center gap-2">
+                              <PinballIcon className={`w-3.5 h-3.5 flex-shrink-0 ${isSelected ? 'text-primary' : 'text-muted-foreground'}`} />
+                              <span className={`text-sm font-bold ${isSelected ? 'text-white' : 'text-white/80'}`}>{m.name}</span>
+                              {m.inTiltTrack && !m.played && (
+                                <span className="text-xs px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 font-medium">TT</span>
+                              )}
+                              {m.played && (
+                                <span className="text-xs px-1.5 py-0.5 rounded bg-primary/20 text-primary font-medium ml-auto">
+                                  {m.playCount} {m.playCount === 1 ? 'play' : 'plays'}
+                                </span>
+                              )}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
                 )}
 
-                {/* Use AI name directly — only when banner is showing and list has loaded */}
+                {/* Use AI name directly — escape hatch when no PM match exists */}
                 {aiDetectedMachine && !selectedMachine && !venueDataLoading && !pmOnlyLoading && allVenueMachines.length > 0 && (
                   <button
                     type="button"
