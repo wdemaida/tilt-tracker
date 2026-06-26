@@ -156,8 +156,10 @@ router.get('/health', async (_req, res) => {
     (async () => {
       const start = Date.now();
       try {
+        const ghHeaders: Record<string, string> = { 'User-Agent': 'tilttrack-health-check' };
+        if (process.env.GITHUB_TOKEN) ghHeaders['Authorization'] = `Bearer ${process.env.GITHUB_TOKEN}`;
         const r = await fetch('https://api.github.com/repos/wdemaida/tilt-tracker', {
-          headers: { 'User-Agent': 'tilttrack-health-check' },
+          headers: ghHeaders,
           signal: AbortSignal.timeout(5000),
         });
         const latencyMs = Date.now() - start;
@@ -166,11 +168,12 @@ router.get('/health', async (_req, res) => {
           const pushed = new Date(data.pushed_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
           return { status: 'ok' as const, latencyMs, note: `Last push ${pushed}` };
         }
-        if (r.status === 404) {
-          // Private repo — use server start time as "live as of" proxy (Render restarts on each deploy)
+        if (r.status === 404 || r.status === 403) {
+          // 404 = private repo (no token), 403 = rate-limited (no token) — fall back to server start time
           const deployedAt = new Date(Date.now() - process.uptime() * 1000)
             .toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-          return { status: 'ok' as const, latencyMs, note: `Private repo · live as of ${deployedAt}` };
+          const reason = r.status === 403 ? 'Rate limited' : 'Private repo';
+          return { status: 'ok' as const, latencyMs, note: `${reason} · live as of ${deployedAt}` };
         }
         return { status: 'error' as const, latencyMs, error: `HTTP ${r.status}` };
       } catch (err) {
