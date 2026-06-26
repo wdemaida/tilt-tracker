@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import { Link } from 'wouter';
 import { format } from 'date-fns';
+import { MapPin, Clock, User } from 'lucide-react';
 import { useApi } from '../lib/useApi';
 import { useAppUser } from '../lib/useAppUser';
 import { useScopeContext } from '../lib/ScopeContext';
@@ -76,24 +77,43 @@ export default function MapPage() {
           />
           {locations.map(({ lat, lng, total, venueName, venueId, recent, hasMyScore }) => (
             <Marker key={`${lat},${lng}`} position={[lat, lng]} icon={hasMyScore ? PIN_MINE : PIN_OTHERS}>
-              <Popup>
-                <div style={{ minWidth: 180 }}>
-                  {venueId ? (
-                    <Link href={`/venues/${venueId}`} style={{ fontWeight: 700, fontSize: 13, color: '#d946ef', textDecoration: 'none' }}>
-                      {venueName ?? 'Unknown venue'}
-                    </Link>
-                  ) : (
-                    <p style={{ fontWeight: 700, fontSize: 13 }}>{venueName ?? 'Unknown venue'}</p>
-                  )}
-                  <p style={{ fontSize: 11, color: '#888', marginTop: 2 }}>{total} {total === 1 ? 'score' : 'scores'}</p>
+              <Popup minWidth={220}>
+                <div className="p-3">
+                  {/* Venue header */}
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="w-7 h-7 rounded-md bg-primary/10 border border-primary/30 flex items-center justify-center flex-shrink-0">
+                      <MapPin className="w-3.5 h-3.5 text-primary" />
+                    </div>
+                    <div className="min-w-0">
+                      {venueId ? (
+                        <Link href={`/venues/${venueId}`} className="block font-black uppercase tracking-wider text-white text-xs leading-tight hover:text-primary transition-colors truncate">
+                          {venueName ?? 'Unknown venue'}
+                        </Link>
+                      ) : (
+                        <p className="font-black uppercase tracking-wider text-white text-xs leading-tight truncate">{venueName ?? 'Unknown venue'}</p>
+                      )}
+                      <p className="text-xs text-muted-foreground mt-0.5">{total} {total === 1 ? 'score' : 'scores'}</p>
+                    </div>
+                  </div>
+
+                  {/* Most recent score */}
                   {recent && (
-                    <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid #333' }}>
-                      <p style={{ fontSize: 11, color: '#aaa', marginBottom: 2 }}>Most recent</p>
-                      <p style={{ fontWeight: 700, fontSize: 13 }}>{recent.machineName}</p>
-                      <p style={{ fontSize: 12, color: '#d946ef', fontWeight: 700 }}>{Number(recent.score).toLocaleString()}</p>
-                      <p style={{ fontSize: 11, color: '#888' }}>
-                        {recent.displayName ?? recent.username} · {format(new Date(recent.playedAt), 'M/d/yy')}
-                      </p>
+                    <div className="pt-2 border-t border-white/10">
+                      <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-1.5">Most recent</p>
+                      <Link href={`/machines/${encodeURIComponent(recent.machineName)}`} className="block text-xs font-bold uppercase tracking-wider text-muted-foreground hover:text-white transition-colors truncate">
+                        {recent.machineName}
+                      </Link>
+                      <p className="text-xl font-bold text-primary mt-0.5">{Number(recent.score).toLocaleString()}</p>
+                      <div className="flex flex-col gap-0.5 mt-1">
+                        <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                          <User className="w-3 h-3 flex-shrink-0" />
+                          <span>@{recent.username}</span>
+                        </div>
+                        <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                          <Clock className="w-3 h-3 flex-shrink-0" />
+                          <span>{format(new Date(recent.playedAt), 'M/d/yy · h:mm a')}</span>
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>

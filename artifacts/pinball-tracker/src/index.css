@@ -25,3 +25,31 @@ body {
 .leaflet-container {
   background: hsl(var(--background));
 }
+
+/* Dark-theme popup shell */
+.leaflet-popup-content-wrapper {
+  background: hsl(var(--card)) !important;
+  border: 1px solid hsl(var(--border)) !important;
+  border-radius: 0.75rem !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6) !important;
+  color: hsl(var(--foreground)) !important;
+  padding: 0 !important;
+}
+.leaflet-popup-content {
+  margin: 0 !important;
+}
+.leaflet-popup-tip {
+  background: hsl(var(--card)) !important;
+  box-shadow: none !important;
+}
+.leaflet-popup-close-button {
+  color: hsl(var(--muted-foreground)) !important;
+  top: 6px !important;
+  right: 8px !important;
+  font-size: 18px !important;
+  line-height: 1 !important;
+}
+.leaflet-popup-close-button:hover {
+  color: hsl(var(--foreground)) !important;
+  background: transparent !important;
+}
