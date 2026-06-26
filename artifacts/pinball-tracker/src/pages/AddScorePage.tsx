@@ -182,6 +182,9 @@ export default function AddScorePage() {
       setSavedScore({ id: row.id, venueId: row.venueId, machineName: data.machineName, score: data.score });
       setStep(4);
     },
+    onError: (err: any) => {
+      console.error('Save score failed:', err);
+    },
   });
 
   const handlePhoto = async (file: File) => {
@@ -210,7 +213,7 @@ export default function AddScorePage() {
       if (result.venues?.length) {
         const first = result.venues[0];
         setValue('venueName', first.name);
-        setVenueSearch(first.name);
+        // Don't pre-fill venueSearch — it filters the list, so all nearby venues would collapse to one
         setSelectedVenue({
           venueId: first.venueId,
           hereId: first.hereId ?? undefined,
@@ -441,6 +444,11 @@ export default function AddScorePage() {
       {/* Step 3: Score details */}
       {step === 3 && (
         <form onSubmit={handleSubmit(d => createScore.mutate(d))} className="rounded-xl border border-white/10 bg-card p-6 flex flex-col gap-4">
+          {createScore.isError && (
+            <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+              {(createScore.error as any)?.message ?? 'Failed to save score — please try again'}
+            </div>
+          )}
           <div>
             <h2 className="text-xl font-black uppercase tracking-widest text-white">Score Details</h2>
             {venueName && (
@@ -520,8 +528,9 @@ export default function AddScorePage() {
                   placeholder="e.g. The Munsters"
                   className="input"
                 />
-                {(machineSuggestions as any[]).length > 0 && machineSearch && (
+                {(machineSuggestions as any[]).length > 0 && machineSearch && !selectedMachine && (
                   <div className="mt-1 rounded-lg border border-white/10 bg-background overflow-hidden">
+                    <p className="px-4 pt-2.5 pb-1 text-xs font-bold uppercase tracking-widest text-muted-foreground">Did you mean?</p>
                     {(machineSuggestions as any[]).slice(0, 5).map((s: any) => (
                       <button key={s.id} type="button" onClick={() => selectMachine(s.name)}
                         className="w-full text-left px-4 py-2 text-sm text-white hover:bg-white/10 transition-colors">
@@ -567,8 +576,6 @@ export default function AddScorePage() {
               <option value="tournament">Tournament</option>
             </select>
           </div>
-
-          {createScore.isError && <p className="err">{(createScore.error as any)?.message}</p>}
 
           <div className="flex gap-3 pt-2">
             <button type="button" onClick={() => setStep(2)}
