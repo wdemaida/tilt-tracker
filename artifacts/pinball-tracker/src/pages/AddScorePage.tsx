@@ -1,16 +1,14 @@
-import { useState, useRef, useMemo } from 'react';
+import { useState, useRef, useMemo, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Camera, Loader2, CheckCircle2, ExternalLink, AlertTriangle } from 'lucide-react';
+import { Camera, Loader2, CheckCircle2, ExternalLink, MapPin, Search } from 'lucide-react';
 import { useLocation } from 'wouter';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useApi } from '../lib/useApi';
+import { api as publicApi } from '../lib/api';
 import { queryClient } from '../lib/queryClient';
-
-const VARIANT_RE = /\s*\((Pro|Premium(?:\s+Plus)?|LE|Limited Edition|SE|Vault Edition|Home Edition|Topper Edition)\)\s*$/i;
-function stripVariant(name: string) { return name.replace(VARIANT_RE, '').trim(); }
-function getVariant(name: string) { return (name.match(VARIANT_RE) ?? [])[1] ?? null; }
+import { PinballIcon } from '../components/PinballIcon';
 
 const schema = z.object({
   machineName: z.string().min(1, 'Required'),
@@ -21,8 +19,7 @@ const schema = z.object({
 });
 
 type FormData = z.infer<typeof schema>;
-
-type Step = 1 | 2 | 3;
+type Step = 1 | 2 | 3 | 4;
 
 interface SelectedVenue {
   venueId?: number;
@@ -51,7 +48,9 @@ export default function AddScorePage() {
   }>>([]);
   const [selectedVenue, setSelectedVenue] = useState<SelectedVenue | null>(null);
   const [gps, setGps] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [venueSearch, setVenueSearch] = useState('');
   const [machineSearch, setMachineSearch] = useState('');
+  const [selectedMachine, setSelectedMachine] = useState('');
   const [scoreDisplay, setScoreDisplay] = useState('');
   const [savedScore, setSavedScore] = useState<SavedScore | null>(null);
   const [pmEmail, setPmEmail] = useState('');
@@ -60,8 +59,8 @@ export default function AddScorePage() {
   const [pmResult, setPmResult] = useState<'success' | 'error' | null>(null);
   const [pmError, setPmError] = useState('');
   const [pmForceForm, setPmForceForm] = useState(false);
-  const [mismatchDismissed, setMismatchDismissed] = useState<string | null>(null);
   const [thumbnail, setThumbnail] = useState<string | null>(null);
+  const machineAutoSelected = useRef(false);
   const [, navigate] = useLocation();
   const api = useApi();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -85,47 +84,78 @@ export default function AddScorePage() {
     });
   }
 
-  const { data: suggestions = [] } = useQuery({
-    queryKey: ['machine-search', machineSearch],
-    queryFn: () => api.machines.search(machineSearch),
-    enabled: machineSearch.length > 1,
+  // User's venue history for step 2
+  const { data: venueHistory = [] } = useQuery({
+    queryKey: ['venues'],
+    queryFn: publicApi.venues.list,
   });
 
-  // Fetch PM machines at the selected venue to detect Pro/Premium mismatches
-  const { data: venueData } = useQuery({
+  // PM machines at selected venue (starts fetching as soon as venue is selected)
+  const { data: venueData, isLoading: venueDataLoading } = useQuery({
     queryKey: ['venue-machines', selectedVenue?.venueId],
     queryFn: () => api.venues.machines(selectedVenue!.venueId!),
     enabled: selectedVenue?.venueId != null && selectedVenue?.pinballMapId != null,
   });
 
+  // Deduplicated machine list: played machines first, then unplayed PM machines
+  const allVenueMachines = useMemo(() => {
+    if (!venueData) return [];
+    const playedNames = new Set((venueData.ownMachines as any[]).map((m: any) => m.name.toLowerCase()));
+    return [
+      ...(venueData.ownMachines as any[]).map((m: any) => ({
+        name: m.name as string, played: true, playCount: m.playCount as number,
+      })),
+      ...(venueData.pmMachines as any[])
+        .filter((m: any) => !playedNames.has(m.name.toLowerCase()))
+        .map((m: any) => ({ name: m.name as string, played: false, playCount: 0 })),
+    ];
+  }, [venueData]);
+
+  // Auto-select the AI-prefilled machine once PM data arrives
+  useEffect(() => {
+    if (machineAutoSelected.current || !machineSearch || allVenueMachines.length === 0 || selectedMachine) return;
+    const match = allVenueMachines.find(m => m.name.toLowerCase() === machineSearch.toLowerCase());
+    if (match) {
+      setSelectedMachine(match.name);
+      machineAutoSelected.current = true;
+    }
+  }, [allVenueMachines]);
+
+  const filteredVenueMachines = useMemo(() => {
+    if (!machineSearch) return allVenueMachines;
+    return allVenueMachines.filter(m => m.name.toLowerCase().includes(machineSearch.toLowerCase()));
+  }, [allVenueMachines, machineSearch]);
+
+  // Fallback machine search (used when no PM machine data available)
+  const { data: machineSuggestions = [] } = useQuery({
+    queryKey: ['machine-search', machineSearch],
+    queryFn: () => api.machines.search(machineSearch),
+    enabled: allVenueMachines.length === 0 && !venueDataLoading && machineSearch.length > 1,
+  });
+
+  // Filtered venue history for step 2
+  const filteredVenueHistory = useMemo(() => {
+    const q = venueSearch.toLowerCase();
+    return (venueHistory as any[]).filter(
+      (v: any) => !q || v.name.toLowerCase().includes(q) || (v.address ?? '').toLowerCase().includes(q)
+    );
+  }, [venueHistory, venueSearch]);
+
   const canPostToPm = savedScore?.venueId != null && selectedVenue?.pinballMapId != null;
 
-  // Check if the user has a stored PM token (only needed once we reach step 3)
   const { data: pmTokenData } = useQuery({
     queryKey: ['pm-token'],
     queryFn: () => api.pinballmap.getToken(),
-    enabled: step === 3 && canPostToPm,
+    enabled: step === 4 && canPostToPm,
     staleTime: Infinity,
   });
-
-  const pmMismatch = useMemo(() => {
-    if (!machineSearch || machineSearch === mismatchDismissed) return null;
-    const pmMachines: any[] = venueData?.pmMachines ?? [];
-    if (!pmMachines.length) return null;
-    const userBase = stripVariant(machineSearch).toLowerCase();
-    const match = pmMachines.find((m: any) => {
-      const pmBase = stripVariant(m.name).toLowerCase();
-      return pmBase === userBase || pmBase.includes(userBase) || userBase.includes(pmBase);
-    });
-    if (!match) return null;
-    if (match.name.toLowerCase() === machineSearch.toLowerCase()) return null;
-    return match as { name: string; manufacturer?: string; year?: number };
-  }, [machineSearch, venueData, mismatchDismissed]);
 
   const { register, handleSubmit, setValue, watch, formState: { errors, isSubmitting } } = useForm<FormData>({
     resolver: zodResolver(schema),
     defaultValues: { type: 'casual', playedAt: new Date().toISOString().slice(0, 16) },
   });
+
+  const venueName = watch('venueName');
 
   const createScore = useMutation({
     mutationFn: async (data: FormData) => {
@@ -149,7 +179,7 @@ export default function AddScorePage() {
       queryClient.invalidateQueries({ queryKey: ['stats'] });
       queryClient.invalidateQueries({ queryKey: ['venues'] });
       setSavedScore({ id: row.id, venueId: row.venueId, machineName: data.machineName, score: data.score });
-      setStep(3);
+      setStep(4);
     },
   });
 
@@ -159,7 +189,11 @@ export default function AddScorePage() {
     generateThumbnail(file).then(setThumbnail).catch(() => {});
     try {
       const result = await api.upload(file);
-      if (result.machineName) { setValue('machineName', result.machineName); setMachineSearch(result.machineName); }
+      if (result.machineName) {
+        setValue('machineName', result.machineName);
+        setMachineSearch(result.machineName);
+        setSelectedMachine(result.machineName);
+      }
       if (result.score) {
         setValue('score', result.score);
         setScoreDisplay(Number(result.score).toLocaleString());
@@ -171,6 +205,7 @@ export default function AddScorePage() {
       if (result.venues?.length) {
         const first = result.venues[0];
         setValue('venueName', first.name);
+        setVenueSearch(first.name);
         setSelectedVenue({
           venueId: first.venueId,
           hereId: first.hereId ?? undefined,
@@ -190,6 +225,25 @@ export default function AddScorePage() {
     }
   };
 
+  function selectVenueCard(v: { id?: number; name: string; address?: string | null; hereId?: string | null; venueLat?: number; venueLng?: number; pinballMapId?: number | null }) {
+    setValue('venueName', v.name);
+    setVenueSearch(v.name);
+    setSelectedVenue({
+      venueId: v.id,
+      hereId: v.hereId ?? undefined,
+      address: v.address ?? undefined,
+      venueLat: v.venueLat,
+      venueLng: v.venueLng,
+      pinballMapId: v.pinballMapId ?? undefined,
+    });
+  }
+
+  function selectMachine(name: string) {
+    setSelectedMachine(name);
+    setMachineSearch(name);
+    setValue('machineName', name);
+  }
+
   const pmUseStored = !pmForceForm && !!pmTokenData?.hasToken;
 
   const handlePmSubmit = async () => {
@@ -199,9 +253,7 @@ export default function AddScorePage() {
     setPmResult(null);
     setPmError('');
     try {
-      if (!pmUseStored) {
-        await api.pinballmap.auth(pmEmail, pmPassword);
-      }
+      if (!pmUseStored) await api.pinballmap.auth(pmEmail, pmPassword);
       await api.pinballmap.submitScore({
         venueId: savedScore.venueId!,
         machineName: savedScore.machineName,
@@ -224,104 +276,252 @@ export default function AddScorePage() {
   return (
     <div className="max-w-lg mx-auto">
       {/* Step indicator */}
-      <div className="flex items-center justify-center gap-4 mb-8">
-        {([1, 2, 3] as Step[]).map((s) => (
+      <div className="flex items-center justify-center gap-3 mb-8">
+        {([1, 2, 3, 4] as Step[]).map((s) => (
           <div key={s} className="flex items-center gap-2">
             <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold border-2 ${
               s === step ? 'border-primary text-primary' : s < step ? 'border-primary/40 bg-primary/10 text-primary/60' : 'border-white/20 text-muted-foreground'
             }`}>{s}</div>
-            {s < 3 && <div className="w-12 h-0.5 bg-white/10" />}
+            {s < 4 && <div className="w-8 h-0.5 bg-white/10" />}
           </div>
         ))}
       </div>
 
+      {/* Step 1: Photo upload */}
       {step === 1 && (
         <div className="rounded-xl border border-white/10 bg-card p-8 flex flex-col items-center gap-6">
           <h2 className="text-2xl font-black uppercase tracking-widest text-white">Upload Evidence</h2>
           <p className="text-sm text-muted-foreground text-center">
             Snap a pic of the DMD or score screen. Our AI will extract the machine name, score, time, and location.
           </p>
-
           <button
             onClick={() => fileRef.current?.click()}
             disabled={aiLoading}
             className="w-full rounded-xl border-2 border-dashed border-primary/50 p-12 flex flex-col items-center gap-3 hover:border-primary transition-colors disabled:opacity-50"
           >
-            {aiLoading ? (
-              <Loader2 className="w-12 h-12 text-primary animate-spin" />
-            ) : (
-              <Camera className="w-12 h-12 text-primary" />
-            )}
+            {aiLoading ? <Loader2 className="w-12 h-12 text-primary animate-spin" /> : <Camera className="w-12 h-12 text-primary" />}
             <span className="font-black uppercase tracking-wider text-white">
               {aiLoading ? 'Analyzing...' : 'Tap to Take Photo'}
             </span>
             {!aiLoading && <span className="text-xs text-muted-foreground">or choose from camera roll</span>}
           </button>
           <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handlePhoto(f); }} />
-
           <button onClick={() => setStep(2)} className="text-sm text-muted-foreground hover:text-white transition-colors uppercase tracking-wider">
             Skip AI & Enter Manually ›
           </button>
         </div>
       )}
 
+      {/* Step 2: Venue */}
       {step === 2 && (
-        <form onSubmit={handleSubmit(d => createScore.mutate(d))} className="rounded-xl border border-white/10 bg-card p-6 flex flex-col gap-4">
-          <h2 className="text-xl font-black uppercase tracking-widest text-white mb-2">Confirm Details</h2>
+        <div className="rounded-xl border border-white/10 bg-card p-6 flex flex-col gap-4">
+          <h2 className="text-xl font-black uppercase tracking-widest text-white mb-2">Where Did You Play?</h2>
           {aiError && <p className="text-xs text-yellow-400 -mt-1">{aiError}</p>}
 
-          <div>
-            <label className="label">Machine Name</label>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
             <input
-              {...register('machineName')}
-              value={machineSearch}
-              onChange={e => { setMachineSearch(e.target.value); setValue('machineName', e.target.value); }}
-              placeholder="e.g. The Munsters"
-              className="input"
+              value={venueSearch}
+              onChange={e => {
+                setVenueSearch(e.target.value);
+                setValue('venueName', e.target.value);
+                setSelectedVenue(null);
+              }}
+              placeholder="Search or enter venue name..."
+              className="input pl-9"
             />
-            {suggestions.length > 0 && machineSearch && (
-              <div className="mt-1 rounded-lg border border-white/10 bg-background overflow-hidden">
-                {suggestions.slice(0, 5).map((s: any) => (
-                  <button key={s.id} type="button" onClick={() => { setValue('machineName', s.name); setMachineSearch(s.name); }}
-                    className="w-full text-left px-4 py-2 text-sm text-white hover:bg-white/10 transition-colors">
-                    {s.name}
-                  </button>
-                ))}
-              </div>
-            )}
-            {errors.machineName && <p className="err">{errors.machineName.message}</p>}
+          </div>
 
-            {pmMismatch && (
-              <div className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 flex flex-col gap-2">
-                <div className="flex items-center gap-1.5">
-                  <AlertTriangle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
-                  <p className="text-xs font-bold text-amber-300 uppercase tracking-wider">Heads up</p>
-                </div>
-                <p className="text-xs text-white">
-                  Pinball Map lists this machine as <strong>{pmMismatch.name}</strong> at this venue
-                  {pmMismatch.manufacturer && ` (${pmMismatch.manufacturer}${pmMismatch.year ? `, ${pmMismatch.year}` : ''})`}.
-                  Is that the cabinet you played?
+          {/* Nearby venues from AI photo */}
+          {nearbyVenues.filter(v => !venueSearch || v.name.toLowerCase().includes(venueSearch.toLowerCase())).length > 0 && (
+            <div>
+              <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">Nearby</p>
+              <div className="flex flex-col gap-1.5">
+                {nearbyVenues
+                  .filter(v => !venueSearch || v.name.toLowerCase().includes(venueSearch.toLowerCase()))
+                  .map(v => {
+                    const isSelected = selectedVenue?.venueId != null
+                      ? selectedVenue.venueId === v.venueId
+                      : selectedVenue?.hereId != null && selectedVenue.hereId === v.hereId;
+                    return (
+                      <button
+                        key={v.venueId ?? v.hereId ?? v.name}
+                        type="button"
+                        onClick={() => selectVenueCard({ id: v.venueId, name: v.name, address: v.address, hereId: v.hereId, venueLat: v.venueLat, venueLng: v.venueLng, pinballMapId: v.pinballMapId })}
+                        className={`text-left px-3 py-2.5 rounded-lg border transition-colors ${isSelected ? 'border-primary/60 bg-primary/10' : 'border-white/10 hover:border-primary/40 hover:bg-white/5'}`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <MapPin className={`w-3.5 h-3.5 flex-shrink-0 ${isSelected ? 'text-primary' : 'text-muted-foreground'}`} />
+                          <span className={`text-sm font-bold ${isSelected ? 'text-white' : 'text-white/80'}`}>{v.name}</span>
+                          {v.source === 'history' && <span className="text-xs px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 font-medium">visited</span>}
+                          {v.pinballMapId && <span className="text-xs px-1.5 py-0.5 rounded bg-green-500/20 text-green-300 font-medium">PM</span>}
+                          <span className="text-xs text-muted-foreground ml-auto">{v.distance}m</span>
+                        </div>
+                        {v.address && <p className="text-xs text-muted-foreground truncate mt-0.5 pl-5">{v.address}</p>}
+                      </button>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
+
+          {/* Venue history */}
+          {(() => {
+            const nearbyIds = new Set(nearbyVenues.map(v => v.venueId).filter(Boolean));
+            const historyToShow = filteredVenueHistory.filter((v: any) => !nearbyIds.has(v.id));
+            if (historyToShow.length === 0) return null;
+            return (
+              <div>
+                <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">
+                  {nearbyVenues.length > 0 ? 'Your Other Venues' : 'Your Venues'}
                 </p>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => { setValue('machineName', pmMismatch.name); setMachineSearch(pmMismatch.name); setMismatchDismissed(pmMismatch.name); }}
-                    className="flex-1 py-1.5 rounded-lg bg-amber-500/20 border border-amber-500/40 text-xs font-bold text-amber-300 hover:bg-amber-500/30 transition-colors"
-                  >
-                    Yes — switch to {getVariant(pmMismatch.name) ?? pmMismatch.name}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setMismatchDismissed(machineSearch)}
-                    className="px-3 py-1.5 rounded-lg border border-white/10 text-xs text-muted-foreground hover:text-white transition-colors"
-                  >
-                    No, keep {getVariant(machineSearch) ?? 'mine'}
-                  </button>
+                <div className="flex flex-col gap-1.5 max-h-64 overflow-y-auto pr-1">
+                  {historyToShow.map((v: any) => {
+                    const isSelected = selectedVenue?.venueId === v.id;
+                    return (
+                      <button
+                        key={v.id}
+                        type="button"
+                        onClick={() => selectVenueCard(v)}
+                        className={`text-left px-3 py-2.5 rounded-lg border transition-colors ${isSelected ? 'border-primary/60 bg-primary/10' : 'border-white/10 hover:border-primary/40 hover:bg-white/5'}`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <MapPin className={`w-3.5 h-3.5 flex-shrink-0 ${isSelected ? 'text-primary' : 'text-muted-foreground'}`} />
+                          <span className={`text-sm font-bold ${isSelected ? 'text-white' : 'text-white/80'}`}>{v.name}</span>
+                          {v.pinballMapId && <span className="text-xs px-1.5 py-0.5 rounded bg-green-500/20 text-green-300 font-medium">PM</span>}
+                          <span className="text-xs text-muted-foreground ml-auto">{v.scoreCount} {v.scoreCount === 1 ? 'score' : 'scores'}</span>
+                        </div>
+                        {v.address && <p className="text-xs text-muted-foreground truncate mt-0.5 pl-5">{v.address}</p>}
+                      </button>
+                    );
+                  })}
                 </div>
+              </div>
+            );
+          })()}
+
+          {filteredVenueHistory.length === 0 && nearbyVenues.length === 0 && !venueSearch && (
+            <p className="text-sm text-muted-foreground text-center py-2">Type a venue name above to add a new one</p>
+          )}
+
+          <div className="flex gap-3 pt-2">
+            <button type="button" onClick={() => setStep(1)}
+              className="flex-1 py-2.5 rounded-lg border border-white/10 text-sm text-muted-foreground hover:text-white transition-colors">
+              Back
+            </button>
+            <button type="button" onClick={() => setStep(3)}
+              className="flex-1 py-2.5 rounded-lg bg-primary text-white font-bold uppercase tracking-wider text-sm hover:opacity-90 transition-opacity">
+              Continue
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => { setSelectedVenue(null); setValue('venueName', ''); setVenueSearch(''); setStep(3); }}
+            className="text-xs text-muted-foreground hover:text-white transition-colors text-center"
+          >
+            Skip — no venue
+          </button>
+        </div>
+      )}
+
+      {/* Step 3: Score details */}
+      {step === 3 && (
+        <form onSubmit={handleSubmit(d => createScore.mutate(d))} className="rounded-xl border border-white/10 bg-card p-6 flex flex-col gap-4">
+          <div>
+            <h2 className="text-xl font-black uppercase tracking-widest text-white">Score Details</h2>
+            {venueName && (
+              <div className="flex items-center gap-1.5 mt-1">
+                <MapPin className="w-3 h-3 text-primary flex-shrink-0" />
+                <p className="text-sm text-primary font-medium truncate">{venueName}</p>
               </div>
             )}
           </div>
 
+          {/* Machine */}
+          <div>
+            <label className="label">Machine</label>
+
+            {allVenueMachines.length > 0 || venueDataLoading ? (
+              <div className="flex flex-col gap-2">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+                  <input
+                    value={machineSearch}
+                    onChange={e => {
+                      const val = e.target.value;
+                      setMachineSearch(val);
+                      setValue('machineName', val);
+                      if (selectedMachine && val.toLowerCase() !== selectedMachine.toLowerCase()) setSelectedMachine('');
+                    }}
+                    placeholder="Filter or type machine name..."
+                    className="input pl-9"
+                  />
+                </div>
+                {venueDataLoading ? (
+                  <div className="flex items-center gap-2 py-3 px-1 text-muted-foreground text-sm">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Loading machines at this venue...
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-1.5 max-h-52 overflow-y-auto pr-1">
+                    {filteredVenueMachines.map(m => {
+                      const isSelected = selectedMachine === m.name;
+                      return (
+                        <button
+                          key={m.name}
+                          type="button"
+                          onClick={() => selectMachine(m.name)}
+                          className={`text-left px-3 py-2.5 rounded-lg border transition-colors ${isSelected ? 'border-primary/60 bg-primary/10' : 'border-white/10 hover:border-primary/40 hover:bg-white/5'}`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <PinballIcon className={`w-3.5 h-3.5 flex-shrink-0 ${isSelected ? 'text-primary' : 'text-muted-foreground'}`} />
+                            <span className={`text-sm font-bold ${isSelected ? 'text-white' : 'text-white/80'}`}>{m.name}</span>
+                            {m.played && (
+                              <span className="text-xs px-1.5 py-0.5 rounded bg-primary/20 text-primary font-medium ml-auto">
+                                {m.playCount} {m.playCount === 1 ? 'play' : 'plays'}
+                              </span>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+                    {filteredVenueMachines.length === 0 && machineSearch && (
+                      <button
+                        type="button"
+                        onClick={() => selectMachine(machineSearch)}
+                        className="text-left px-3 py-2.5 rounded-lg border border-dashed border-white/20 hover:border-primary/40 text-sm text-muted-foreground hover:text-white transition-colors"
+                      >
+                        Add "{machineSearch}" as new machine
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* Fallback: free-text search when no PM data */
+              <div>
+                <input
+                  value={machineSearch}
+                  onChange={e => { setMachineSearch(e.target.value); setValue('machineName', e.target.value); }}
+                  placeholder="e.g. The Munsters"
+                  className="input"
+                />
+                {(machineSuggestions as any[]).length > 0 && machineSearch && (
+                  <div className="mt-1 rounded-lg border border-white/10 bg-background overflow-hidden">
+                    {(machineSuggestions as any[]).slice(0, 5).map((s: any) => (
+                      <button key={s.id} type="button" onClick={() => selectMachine(s.name)}
+                        className="w-full text-left px-4 py-2 text-sm text-white hover:bg-white/10 transition-colors">
+                        {s.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {errors.machineName && <p className="err">{errors.machineName.message}</p>}
+          </div>
+
+          {/* Score */}
           <div>
             <label className="label">Score</label>
             <input
@@ -339,11 +539,13 @@ export default function AddScorePage() {
             {errors.score && <p className="err">{errors.score.message}</p>}
           </div>
 
+          {/* Date & Time */}
           <div>
             <label className="label">Date & Time</label>
             <input {...register('playedAt')} type="datetime-local" className="input" />
           </div>
 
+          {/* Type */}
           <div>
             <label className="label">Type</label>
             <select {...register('type')} className="input">
@@ -352,53 +554,11 @@ export default function AddScorePage() {
             </select>
           </div>
 
-          <div>
-            <label className="label">Venue (optional)</label>
-            <input {...register('venueName')} placeholder="e.g. Pastime Pinball" className="input"
-              onChange={e => { register('venueName').onChange(e); setSelectedVenue(null); }} />
-            {nearbyVenues.length > 1 && (
-              <div className="mt-2">
-                <p className="text-xs text-muted-foreground mb-1.5">Nearby venues — tap to select:</p>
-                <div className="flex flex-col gap-1">
-                  {nearbyVenues.map(v => (
-                    <button
-                      key={v.venueId ?? v.hereId ?? v.name}
-                      type="button"
-                      onClick={() => {
-                        setValue('venueName', v.name);
-                        setSelectedVenue({
-                          venueId: v.venueId,
-                          hereId: v.hereId ?? undefined,
-                          address: v.address,
-                          venueLat: v.venueLat,
-                          venueLng: v.venueLng,
-                          pinballMapId: v.pinballMapId,
-                        });
-                      }}
-                      className="text-left px-3 py-2 rounded-lg border border-white/10 hover:border-primary/50 hover:bg-primary/10 transition-colors"
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm text-white font-medium">{v.name}</span>
-                        {v.source === 'history' && (
-                          <span className="text-xs px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 font-medium">visited</span>
-                        )}
-                        {v.pinballMapId && (
-                          <span className="text-xs px-1.5 py-0.5 rounded bg-green-500/20 text-green-300 font-medium">PM</span>
-                        )}
-                        <span className="text-xs text-muted-foreground ml-auto">{v.distance}m</span>
-                      </div>
-                      {v.address && <p className="text-xs text-muted-foreground truncate">{v.address}</p>}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-
           {createScore.isError && <p className="err">{(createScore.error as any)?.message}</p>}
 
           <div className="flex gap-3 pt-2">
-            <button type="button" onClick={() => setStep(1)} className="flex-1 py-2.5 rounded-lg border border-white/10 text-sm text-muted-foreground hover:text-white transition-colors">
+            <button type="button" onClick={() => setStep(2)}
+              className="flex-1 py-2.5 rounded-lg border border-white/10 text-sm text-muted-foreground hover:text-white transition-colors">
               Back
             </button>
             <button type="submit" disabled={isSubmitting || createScore.isPending}
@@ -409,7 +569,8 @@ export default function AddScorePage() {
         </form>
       )}
 
-      {step === 3 && savedScore && (
+      {/* Step 4: Success + Pinball Map post */}
+      {step === 4 && savedScore && (
         <div className="rounded-xl border border-white/10 bg-card p-6 flex flex-col gap-5">
           <div className="flex flex-col items-center gap-3 py-2">
             <CheckCircle2 className="w-12 h-12 text-green-400" />
@@ -440,17 +601,11 @@ export default function AddScorePage() {
                   </p>
                   {pmError && <p className="text-xs text-red-400">{pmError}</p>}
                   <div className="flex items-center gap-3">
-                    <button
-                      onClick={handlePmSubmit}
-                      disabled={pmSubmitting}
-                      className="flex-1 py-2.5 rounded-lg bg-violet-600 text-white font-bold uppercase tracking-wider text-sm hover:opacity-90 transition-opacity disabled:opacity-50"
-                    >
+                    <button onClick={handlePmSubmit} disabled={pmSubmitting}
+                      className="flex-1 py-2.5 rounded-lg bg-violet-600 text-white font-bold uppercase tracking-wider text-sm hover:opacity-90 transition-opacity disabled:opacity-50">
                       {pmSubmitting ? 'Posting...' : 'Post Score'}
                     </button>
-                    <button
-                      onClick={() => setPmForceForm(true)}
-                      className="text-xs text-muted-foreground hover:text-white transition-colors"
-                    >
+                    <button onClick={() => setPmForceForm(true)} className="text-xs text-muted-foreground hover:text-white transition-colors">
                       Use different account
                     </button>
                   </div>
@@ -458,28 +613,13 @@ export default function AddScorePage() {
               ) : (
                 <>
                   <div className="flex flex-col gap-2">
-                    <input
-                      type="email"
-                      placeholder="Pinball Map email"
-                      value={pmEmail}
-                      onChange={e => setPmEmail(e.target.value)}
-                      className="input"
-                    />
-                    <input
-                      type="password"
-                      placeholder="Pinball Map password"
-                      value={pmPassword}
-                      onChange={e => setPmPassword(e.target.value)}
-                      className="input"
-                    />
+                    <input type="email" placeholder="Pinball Map email" value={pmEmail} onChange={e => setPmEmail(e.target.value)} className="input" />
+                    <input type="password" placeholder="Pinball Map password" value={pmPassword} onChange={e => setPmPassword(e.target.value)} className="input" />
                   </div>
                   {pmResult === 'error' && <p className="text-xs text-red-400">{pmError}</p>}
                   {pmError && pmResult !== 'error' && <p className="text-xs text-red-400">{pmError}</p>}
-                  <button
-                    onClick={handlePmSubmit}
-                    disabled={pmSubmitting || !pmEmail || !pmPassword}
-                    className="py-2.5 rounded-lg bg-violet-600 text-white font-bold uppercase tracking-wider text-sm hover:opacity-90 transition-opacity disabled:opacity-50"
-                  >
+                  <button onClick={handlePmSubmit} disabled={pmSubmitting || !pmEmail || !pmPassword}
+                    className="py-2.5 rounded-lg bg-violet-600 text-white font-bold uppercase tracking-wider text-sm hover:opacity-90 transition-opacity disabled:opacity-50">
                     {pmSubmitting ? 'Posting...' : 'Post Score'}
                   </button>
                 </>
@@ -487,10 +627,8 @@ export default function AddScorePage() {
             </div>
           )}
 
-          <button
-            onClick={() => navigate('/')}
-            className="py-2.5 rounded-lg border border-white/10 text-sm text-muted-foreground hover:text-white transition-colors"
-          >
+          <button onClick={() => navigate('/')}
+            className="py-2.5 rounded-lg border border-white/10 text-sm text-muted-foreground hover:text-white transition-colors">
             Done
           </button>
         </div>

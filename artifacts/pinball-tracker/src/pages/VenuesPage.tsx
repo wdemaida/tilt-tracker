@@ -15,6 +15,7 @@ interface Venue {
   latitude: number | null;
   longitude: number | null;
   pinballMapId: number | null;
+  pmMachineCount: number | null;
   scoreCount: number;
   machineCount: number;
 }
@@ -123,7 +124,9 @@ export default function VenuesPage() {
                 >
                   <PinballIcon className="w-3 h-3 text-primary" />
                   <span className="text-xs text-primary font-bold">
-                    {venue.machineCount} {venue.machineCount === 1 ? 'machine' : 'machines'}
+                    {venue.pmMachineCount != null
+                      ? `${venue.machineCount}/${venue.pmMachineCount} machines`
+                      : `${venue.machineCount} ${venue.machineCount === 1 ? 'machine' : 'machines'}`}
                   </span>
                 </button>
 

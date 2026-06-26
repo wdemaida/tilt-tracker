@@ -17,6 +17,7 @@ router.get('/', async (_req, res) => {
         latitude: venues.latitude,
         longitude: venues.longitude,
         pinballMapId: venues.pinballMapId,
+        pmMachineCount: venues.pmMachineCount,
         scoreCount: count(scores.id),
         machineCount: sql<number>`count(distinct ${scores.machineId})`,
       })
@@ -62,6 +63,9 @@ router.get('/:id/machines', async (req, res) => {
         manufacturer: x.machine.manufacturer,
         year: x.machine.year,
       }));
+      if (venue.pmMachineCount !== pmMachines.length) {
+        await db.update(venues).set({ pmMachineCount: pmMachines.length }).where(eq(venues.id, id));
+      }
     }
 
     res.json({ venue, ownMachines, pmMachines });

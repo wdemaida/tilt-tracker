@@ -1,7 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
-import { X } from 'lucide-react';
+import { X, PlusCircle } from 'lucide-react';
+import { Link } from 'wouter';
+import { SignedIn } from '@clerk/clerk-react';
 import { api } from '../lib/api';
 import { useApi } from '../lib/useApi';
 import { useAppUser } from '../lib/useAppUser';
@@ -22,6 +24,7 @@ interface EditScore {
 export default function HomePage() {
   const [filter, setFilter] = useState<Filter>('all');
   const [search, setSearch] = useState('');
+  const [visibleCount, setVisibleCount] = useState(10);
   const [editScore, setEditScore] = useState<EditScore | null>(null);
   const [deleteScoreId, setDeleteScoreId] = useState<number | null>(null);
 
@@ -63,11 +66,24 @@ export default function HomePage() {
     },
   });
 
-  const filtered = scores.filter((s: any) => {
+  // Reset pagination when search or filter changes
+  useEffect(() => { setVisibleCount(10); }, [filter, search]);
+
+  // Per-machine best score for trophy icon
+  const bestScores = useMemo(() => {
+    const map = new Map<number, number>();
+    (scores as any[]).forEach((s: any) => {
+      if (s.score > (map.get(s.machineId) ?? 0)) map.set(s.machineId, s.score);
+    });
+    return map;
+  }, [scores]);
+
+  const filtered = (scores as any[]).filter((s: any) => {
     if (filter !== 'all' && s.type !== filter) return false;
     if (search && !s.machineName.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
+  const visible = filtered.slice(0, visibleCount);
 
   function openEdit(s: any) {
     setEditScore({ id: s.id, machineId: s.machineId, machineName: s.machineName, score: s.score, type: s.type, playedAt: s.playedAt });
@@ -97,8 +113,18 @@ export default function HomePage() {
 
   return (
     <div>
-      <h1 className="text-4xl font-black uppercase tracking-widest text-white mb-1">High Scores</h1>
-      <p className="text-sm text-muted-foreground mb-6">Track your flipper dominance across the grid.</p>
+      <h1 className="text-4xl font-black uppercase tracking-widest text-white mb-1">Recent Scores</h1>
+      <p className="text-sm text-muted-foreground mb-4">Your latest plays across the grid.</p>
+
+      <SignedIn>
+        <Link
+          href="/add"
+          className="md:hidden flex items-center justify-center gap-2 w-full px-4 py-3 rounded-xl bg-primary text-white font-black uppercase tracking-widest text-sm hover:opacity-90 transition-opacity mb-6"
+        >
+          <PlusCircle className="w-5 h-5" />
+          Add Score
+        </Link>
+      </SignedIn>
 
       <div className="flex flex-col sm:flex-row gap-3 mb-6">
         <input
@@ -128,16 +154,29 @@ export default function HomePage() {
       ) : filtered.length === 0 ? (
         <p className="text-muted-foreground">No scores yet.</p>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filtered.map((s: any) => (
-            <ScoreCard
-              key={s.id}
-              {...s}
-              onEdit={isAdmin ? () => openEdit(s) : undefined}
-              onDelete={isAdmin ? () => setDeleteScoreId(s.id) : undefined}
-            />
-          ))}
-        </div>
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {visible.map((s: any) => (
+              <ScoreCard
+                key={s.id}
+                {...s}
+                isHighScore={bestScores.get(s.machineId) === s.score}
+                onEdit={isAdmin ? () => openEdit(s) : undefined}
+                onDelete={isAdmin ? () => setDeleteScoreId(s.id) : undefined}
+              />
+            ))}
+          </div>
+          {filtered.length > visibleCount && (
+            <div className="mt-6 flex justify-center">
+              <button
+                onClick={() => setVisibleCount(c => c + 10)}
+                className="px-6 py-2.5 rounded-lg border border-white/10 text-sm font-bold uppercase tracking-wider text-muted-foreground hover:text-white hover:border-white/30 transition-colors"
+              >
+                Load more ({filtered.length - visibleCount} remaining)
+              </button>
+            </div>
+          )}
+        </>
       )}
 
       {/* Edit dialog */}

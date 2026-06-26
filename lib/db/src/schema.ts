@@ -34,6 +34,7 @@ export const venues = pgTable('venues', {
   address: text('address'),
   hereId: text('here_id').unique(),
   pinballMapId: integer('pinball_map_id'),
+  pmMachineCount: integer('pm_machine_count'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
