@@ -165,13 +165,13 @@ router.get('/health', async (_req, res) => {
         const latencyMs = Date.now() - start;
         if (r.ok) {
           const data = await r.json() as any;
-          const pushed = new Date(data.pushed_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+          const pushed = new Date(data.pushed_at).toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
           return { status: 'ok' as const, latencyMs, note: `Last push ${pushed}` };
         }
         if (r.status === 404 || r.status === 403) {
           // 404 = private repo (no token), 403 = rate-limited (no token) — fall back to server start time
           const deployedAt = new Date(Date.now() - process.uptime() * 1000)
-            .toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+            .toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
           const reason = r.status === 403 ? 'Rate limited' : 'Private repo';
           return { status: 'ok' as const, latencyMs, note: `${reason} · live as of ${deployedAt}` };
         }
