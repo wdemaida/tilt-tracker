@@ -71,6 +71,8 @@ export function createApi(getToken: () => Promise<string | null>) {
     admin: {
       users: async () => request<any[]>('/admin/users', undefined, await tok()),
       health: async () => request<any>('/admin/health', undefined, await tok()),
+      updateUser: async (id: number, data: { role?: string; displayName?: string; username?: string }) =>
+        request<any>(`/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) }, await tok()),
     },
     upload: async (file: File) => {
       const token = await tok();

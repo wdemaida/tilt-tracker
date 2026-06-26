@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { db, users, scores, machines, venues } from '@workspace/db';
-import { desc, count, sql } from 'drizzle-orm';
+import { desc, count, sql, eq } from 'drizzle-orm';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { getAllMachines } from '../lib/pinballMap.js';
 
@@ -13,13 +13,44 @@ router.use(requireAppUser, requireAdmin);
 router.get('/users', async (_req, res) => {
   try {
     const rows = await db
-      .select({ id: users.id, username: users.username, displayName: users.displayName, role: users.role, createdAt: users.createdAt })
+      .select({ id: users.id, username: users.username, displayName: users.displayName, role: users.role, createdAt: users.createdAt, pinballMapUsername: users.pinballMapUsername })
       .from(users)
       .orderBy(desc(users.createdAt));
     res.json(rows);
   } catch (err) {
     console.error('admin/users error:', err);
     res.status(500).json({ error: 'Failed to fetch users' });
+  }
+});
+
+// PATCH /api/admin/users/:id — update a user's role and/or displayName
+router.patch('/users/:id', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return void res.status(400).json({ error: 'Invalid user id' });
+
+  const { role, displayName, username } = req.body as { role?: string; displayName?: string; username?: string };
+  const allowed = ['admin', 'user'];
+  if (role && !allowed.includes(role)) return void res.status(400).json({ error: 'Invalid role' });
+
+  const updates: Record<string, any> = {};
+  if (role) updates.role = role;
+  if (displayName !== undefined) updates.displayName = displayName.trim();
+  if (username !== undefined) updates.username = username.trim();
+
+  if (Object.keys(updates).length === 0) return void res.status(400).json({ error: 'Nothing to update' });
+
+  try {
+    const [updated] = await db
+      .update(users)
+      .set(updates)
+      .where(eq(users.id, id))
+      .returning({ id: users.id, username: users.username, displayName: users.displayName, role: users.role, createdAt: users.createdAt, pinballMapUsername: users.pinballMapUsername });
+    if (!updated) return void res.status(404).json({ error: 'User not found' });
+    res.json(updated);
+  } catch (err: any) {
+    if (err?.code === '23505') return void res.status(409).json({ error: 'Username already taken' });
+    console.error('admin/users PATCH error:', err);
+    res.status(500).json({ error: 'Failed to update user' });
   }
 });
 
