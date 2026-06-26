@@ -59,20 +59,20 @@ export default function StatsPage() {
           </div>
           {/* Baseline */}
           <div className="border-t border-white/10" />
-          {/* Labels at 45° reading upward-right */}
-          <div className="flex justify-around" style={{ height: 80 }}>
+          {/* Labels at 45° — end of name anchored at bar center */}
+          <div className="flex justify-around" style={{ height: 110 }}>
             {top5.map((m: any) => (
               <div key={m.name} className="flex-1 relative" style={{ overflow: 'visible' }}>
                 <span
                   className="absolute text-muted-foreground"
                   style={{
                     bottom: 0,
-                    left: '50%',
+                    right: '50%',
                     fontSize: 10,
                     lineHeight: 1,
                     whiteSpace: 'nowrap',
-                    transformOrigin: 'left bottom',
-                    transform: 'rotate(-45deg)',
+                    transformOrigin: 'right bottom',
+                    transform: 'rotate(45deg)',
                   }}
                 >
                   {m.name.split(':')[0]}
