@@ -54,7 +54,13 @@ export default function HomePage() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => authApi.scores.delete(id),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['scores'] }); setDeleteScoreId(null); },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['scores'] });
+      queryClient.invalidateQueries({ queryKey: ['machines'] });
+      queryClient.invalidateQueries({ queryKey: ['venues'] });
+      queryClient.invalidateQueries({ queryKey: ['stats'] });
+      setDeleteScoreId(null);
+    },
   });
 
   const filtered = scores.filter((s: any) => {
