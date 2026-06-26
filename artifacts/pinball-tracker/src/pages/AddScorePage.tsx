@@ -66,22 +66,27 @@ export default function AddScorePage() {
   const api = useApi();
   const fileRef = useRef<HTMLInputElement>(null);
 
-  function generateThumbnail(file: File): Promise<string> {
+  function resizeImage(src: string, maxPx = 160): Promise<string> {
     return new Promise((resolve, reject) => {
       const img = new Image();
-      const url = URL.createObjectURL(file);
       img.onload = () => {
-        const MAX = 160;
-        const ratio = Math.min(MAX / img.width, MAX / img.height);
+        const ratio = Math.min(maxPx / img.width, maxPx / img.height);
         const canvas = document.createElement('canvas');
         canvas.width = Math.round(img.width * ratio);
         canvas.height = Math.round(img.height * ratio);
         canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height);
-        URL.revokeObjectURL(url);
         resolve(canvas.toDataURL('image/jpeg', 0.65));
       };
-      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Image load failed')); };
-      img.src = url;
+      img.onerror = reject;
+      img.src = src;
+    });
+  }
+
+  function generateThumbnail(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      resizeImage(url).then(data => { URL.revokeObjectURL(url); resolve(data); })
+        .catch(() => { URL.revokeObjectURL(url); reject(new Error('Image load failed')); });
     });
   }
 
@@ -98,19 +103,33 @@ export default function AddScorePage() {
     enabled: selectedVenue?.venueId != null && selectedVenue?.pinballMapId != null,
   });
 
+  // Fallback: load PM machines by pinballMapId when the venue isn't in our DB yet
+  const { data: pmOnlyData, isLoading: pmOnlyLoading } = useQuery({
+    queryKey: ['pm-only-machines', selectedVenue?.pinballMapId],
+    queryFn: () => api.venues.pmMachines(selectedVenue!.pinballMapId!),
+    enabled: selectedVenue?.venueId == null && selectedVenue?.pinballMapId != null,
+  });
+
   // Deduplicated machine list: played machines first, then unplayed PM machines
   const allVenueMachines = useMemo(() => {
-    if (!venueData) return [];
-    const playedNames = new Set((venueData.ownMachines as any[]).map((m: any) => m.name.toLowerCase()));
-    return [
-      ...(venueData.ownMachines as any[]).map((m: any) => ({
-        name: m.name as string, played: true, playCount: m.playCount as number,
-      })),
-      ...(venueData.pmMachines as any[])
-        .filter((m: any) => !playedNames.has(m.name.toLowerCase()))
-        .map((m: any) => ({ name: m.name as string, played: false, playCount: 0 })),
-    ];
-  }, [venueData]);
+    if (venueData) {
+      const playedNames = new Set((venueData.ownMachines as any[]).map((m: any) => m.name.toLowerCase()));
+      return [
+        ...(venueData.ownMachines as any[]).map((m: any) => ({
+          name: m.name as string, played: true, playCount: m.playCount as number,
+        })),
+        ...(venueData.pmMachines as any[])
+          .filter((m: any) => !playedNames.has(m.name.toLowerCase()))
+          .map((m: any) => ({ name: m.name as string, played: false, playCount: 0 })),
+      ];
+    }
+    if (pmOnlyData) {
+      return (pmOnlyData.pmMachines as any[]).map((m: any) => ({
+        name: m.name as string, played: false, playCount: 0,
+      }));
+    }
+    return [];
+  }, [venueData, pmOnlyData]);
 
   // Auto-select the AI-prefilled machine once PM data arrives
   useEffect(() => {
@@ -208,7 +227,7 @@ export default function AddScorePage() {
         setGps({ latitude: result.latitude, longitude: result.longitude });
       }
       if (result.thumbnailBase64 && !thumbnailSucceeded.current) {
-        setThumbnail(result.thumbnailBase64);
+        resizeImage(result.thumbnailBase64).then(setThumbnail).catch(() => setThumbnail(result.thumbnailBase64));
       }
       if (result.venues?.length) {
         const first = result.venues[0];
@@ -463,7 +482,7 @@ export default function AddScorePage() {
           <div>
             <label className="label">Machine</label>
 
-            {allVenueMachines.length > 0 || venueDataLoading ? (
+            {allVenueMachines.length > 0 || venueDataLoading || pmOnlyLoading ? (
               <div className="flex flex-col gap-2">
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
@@ -542,6 +561,11 @@ export default function AddScorePage() {
               </div>
             )}
             {errors.machineName && <p className="err">{errors.machineName.message}</p>}
+            {selectedMachine && allVenueMachines.length > 0 && !allVenueMachines.some(m => m.name.toLowerCase() === selectedMachine.toLowerCase()) && (
+              <p className="text-xs text-yellow-400 mt-1">
+                "{selectedMachine}" wasn't found in the Pinball Map machine list for this venue — double-check the name.
+              </p>
+            )}
           </div>
 
           {/* Score */}

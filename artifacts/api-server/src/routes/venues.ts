@@ -43,6 +43,26 @@ router.get('/', async (req, res) => {
   }
 });
 
+// GET /api/venues/pm-machines/:pmId — PM machine list without needing a DB venue record
+router.get('/pm-machines/:pmId', async (req, res) => {
+  const pmId = Number(req.params.pmId);
+  if (!pmId) return res.status(400).json({ error: 'Invalid pmId' });
+  try {
+    const xrefs = await getPmMachinesAtLocation(pmId);
+    const pmMachines = xrefs.map(x => ({
+      xrefId: x.id,
+      id: x.machine.id,
+      name: x.machine.name,
+      manufacturer: x.machine.manufacturer,
+      year: x.machine.year,
+    }));
+    res.json({ pmMachines });
+  } catch (err) {
+    console.error('PM machines by pmId error:', err);
+    res.status(500).json({ error: 'Failed to fetch PM machines' });
+  }
+});
+
 // GET /api/venues/:id/machines — machines at a venue (ours + Pinball Map)
 router.get('/:id/machines', async (req, res) => {
   const id = Number(req.params.id);

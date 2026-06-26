@@ -17,7 +17,7 @@ const PORT = process.env.PORT ?? 3000;
 
 const allowedOrigins = (process.env.FRONTEND_URL ?? 'http://localhost:5173,http://localhost:5174').split(',');
 app.use(cors({ origin: (origin, cb) => cb(null, !origin || allowedOrigins.some(o => origin.startsWith(o))), credentials: true }));
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 app.use(clerkMiddleware());
 
 app.use('/api/scores', scoresRouter);
