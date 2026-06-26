@@ -16,7 +16,8 @@ export default function StatsPage() {
   if (isLoading) return <p className="text-muted-foreground">Loading...</p>;
   if (!stats) return null;
 
-  const maxPlays = Math.max(...(stats.mostPlayed?.map((m: any) => m.plays) ?? [1]));
+  const top5 = (stats.mostPlayed ?? []).slice(0, 5);
+  const maxPlays = Math.max(...top5.map((m: any) => m.plays), 1);
 
   return (
     <div>
@@ -45,14 +46,37 @@ export default function StatsPage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="rounded-xl border border-white/10 bg-card p-5">
           <h2 className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-4">Most Played Machines</h2>
-          <div className="flex items-end gap-3 h-32">
-            {stats.mostPlayed?.map((m: any) => (
-              <div key={m.name} className="flex-1 flex flex-col items-center gap-1">
+          {/* Bars — equal fixed width per column */}
+          <div className="flex items-end justify-around" style={{ height: 120 }}>
+            {top5.map((m: any) => (
+              <div key={m.name} className="flex-1 flex justify-center items-end h-full">
                 <div
-                  className="w-full rounded-t bg-primary"
-                  style={{ height: `${(m.plays / maxPlays) * 100}%`, minHeight: 4 }}
+                  className="rounded-t bg-primary"
+                  style={{ width: 28, height: `${(m.plays / maxPlays) * 100}%`, minHeight: 4 }}
                 />
-                <p className="text-xs text-muted-foreground text-center truncate w-full">{m.name.split(':')[0]}</p>
+              </div>
+            ))}
+          </div>
+          {/* Baseline */}
+          <div className="border-t border-white/10" />
+          {/* Labels at 45° reading upward-right */}
+          <div className="flex justify-around" style={{ height: 80 }}>
+            {top5.map((m: any) => (
+              <div key={m.name} className="flex-1 relative" style={{ overflow: 'visible' }}>
+                <span
+                  className="absolute text-muted-foreground"
+                  style={{
+                    bottom: 0,
+                    left: '50%',
+                    fontSize: 10,
+                    lineHeight: 1,
+                    whiteSpace: 'nowrap',
+                    transformOrigin: 'left bottom',
+                    transform: 'rotate(-45deg)',
+                  }}
+                >
+                  {m.name.split(':')[0]}
+                </span>
               </div>
             ))}
           </div>
