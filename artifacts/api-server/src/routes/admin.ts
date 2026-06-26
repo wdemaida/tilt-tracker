@@ -152,7 +152,7 @@ router.get('/health', async (_req, res) => {
       }
     })(),
 
-    // GitHub — public repo accessibility
+    // GitHub — repo check (public) or graceful fallback for private repos
     (async () => {
       const start = Date.now();
       try {
@@ -163,8 +163,14 @@ router.get('/health', async (_req, res) => {
         const latencyMs = Date.now() - start;
         if (r.ok) {
           const data = await r.json() as any;
-          const pushed = new Date(data.pushed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+          const pushed = new Date(data.pushed_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
           return { status: 'ok' as const, latencyMs, note: `Last push ${pushed}` };
+        }
+        if (r.status === 404) {
+          // Private repo — use server start time as "live as of" proxy (Render restarts on each deploy)
+          const deployedAt = new Date(Date.now() - process.uptime() * 1000)
+            .toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+          return { status: 'ok' as const, latencyMs, note: `Private repo · live as of ${deployedAt}` };
         }
         return { status: 'error' as const, latencyMs, error: `HTTP ${r.status}` };
       } catch (err) {
