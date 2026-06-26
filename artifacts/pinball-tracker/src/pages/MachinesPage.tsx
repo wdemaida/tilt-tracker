@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
-import { Link } from 'wouter';
-import { ChevronRight, Star, Pencil, Trash2 } from 'lucide-react';
+import { Link, useLocation } from 'wouter';
+import { Star, Pencil, Trash2, ChevronUp, ChevronDown } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { useApi } from '../lib/useApi';
@@ -29,10 +29,16 @@ interface EditMachine {
   year: string;
 }
 
+type SortKey = 'name' | 'playCount' | 'lastPlayed' | 'bestScore';
+type SortDir = 'asc' | 'desc';
+
 export default function MachinesPage() {
   const [search, setSearch] = useState('');
+  const [sortKey, setSortKey] = useState<SortKey>('bestScore');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [editMachine, setEditMachine] = useState<EditMachine | null>(null);
   const [deleteMachineId, setDeleteMachineId] = useState<number | null>(null);
+  const [, navigate] = useLocation();
 
   const authApi = useApi();
   const appUser = useAppUser();
@@ -54,12 +60,50 @@ export default function MachinesPage() {
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['machines'] }); setDeleteMachineId(null); },
   });
 
-  const filtered = (machines as Machine[]).filter(m =>
-    m.name.toLowerCase().includes(search.toLowerCase())
-  );
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortKey(key);
+      setSortDir(key === 'name' ? 'asc' : 'desc');
+    }
+  }
 
-  function openEdit(m: Machine) {
+  const filtered = (machines as Machine[])
+    .filter(m => m.name.toLowerCase().includes(search.toLowerCase()))
+    .sort((a, b) => {
+      let cmp = 0;
+      if (sortKey === 'name') cmp = a.name.localeCompare(b.name);
+      else if (sortKey === 'playCount') cmp = a.playCount - b.playCount;
+      else if (sortKey === 'lastPlayed') cmp = new Date(a.lastPlayed).getTime() - new Date(b.lastPlayed).getTime();
+      else if (sortKey === 'bestScore') cmp = a.bestScore - b.bestScore;
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+
+  function openEdit(m: Machine, e: React.MouseEvent) {
+    e.stopPropagation();
     setEditMachine({ id: m.id, name: m.name, manufacturer: m.manufacturer ?? '', year: m.year != null ? String(m.year) : '' });
+  }
+
+  function SortIcon({ col }: { col: SortKey }) {
+    if (sortKey !== col) return <ChevronUp className="w-3 h-3 opacity-20" />;
+    return sortDir === 'asc'
+      ? <ChevronUp className="w-3 h-3 text-primary" />
+      : <ChevronDown className="w-3 h-3 text-primary" />;
+  }
+
+  function SortableHeader({ col, label, align = 'left' }: { col: SortKey; label: string; align?: 'left' | 'right' }) {
+    return (
+      <th className={`py-3 px-4 ${align === 'right' ? 'text-right' : 'text-left'}`}>
+        <button
+          onClick={() => toggleSort(col)}
+          className={`flex items-center gap-1 text-xs font-bold uppercase tracking-wider transition-colors ${sortKey === col ? 'text-primary' : 'text-muted-foreground hover:text-white'} ${align === 'right' ? 'ml-auto' : ''}`}
+        >
+          {label}
+          <SortIcon col={col} />
+        </button>
+      </th>
+    );
   }
 
   return (
@@ -68,7 +112,9 @@ export default function MachinesPage() {
         <h1 className="text-4xl font-black uppercase tracking-widest text-white">Machines</h1>
         <ScopeToggle />
       </div>
-      <p className="text-sm text-muted-foreground mb-6">{machines.length} machines {mine ? 'you\'ve played' : 'played across site'} · tap to see full history</p>
+      <p className="text-sm text-muted-foreground mb-6">
+        {machines.length} {(machines as Machine[]).length === 1 ? 'machine' : 'machines'} {mine ? 'you\'ve played' : 'played across site'} · click a row to see full history
+      </p>
 
       <div className="rounded-xl border border-white/10 bg-card p-3 mb-4">
         <input
@@ -80,54 +126,89 @@ export default function MachinesPage() {
         />
       </div>
 
-      {isLoading ? <p className="text-muted-foreground">Loading...</p> : (
-        <div className="flex flex-col gap-2">
-          {filtered.map((m, i) => (
-            <div
-              key={m.id}
-              className="flex items-center gap-3 rounded-xl border border-white/10 bg-card px-4 py-3 hover:border-primary/40 transition-colors"
-            >
-              {/* Backglass thumbnail */}
-              {m.imageUrl ? (
-                <img src={m.imageUrl} alt={m.name} className="w-10 h-10 rounded-lg object-cover flex-shrink-0 border border-white/10" />
-              ) : (
-                <div className="w-10 h-10 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center flex-shrink-0">
-                  {i === 0
-                    ? <Star className="w-4 h-4 text-yellow-400 fill-yellow-400" />
-                    : <span className="text-xs font-bold text-muted-foreground">#{i + 1}</span>
-                  }
-                </div>
-              )}
+      {isLoading ? <p className="text-muted-foreground">Loading...</p> : filtered.length === 0 ? (
+        <p className="text-muted-foreground">No machines found.</p>
+      ) : (
+        <div className="rounded-xl border border-white/10 bg-card overflow-x-auto">
+          <table className="w-full text-sm min-w-[560px]">
+            <thead>
+              <tr className="border-b border-white/10">
+                <SortableHeader col="name" label="Machine" />
+                <SortableHeader col="playCount" label="Plays" />
+                <SortableHeader col="lastPlayed" label="Last Played" />
+                <SortableHeader col="bestScore" label="Best Score" align="right" />
+                {isAdmin && <th className="w-16" />}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((m, i) => (
+                <tr
+                  key={m.id}
+                  onClick={() => navigate(`/machines/${encodeURIComponent(m.name)}`)}
+                  className="border-b border-white/5 hover:bg-white/5 transition-colors cursor-pointer"
+                >
+                  {/* Machine name + image + mfr/year */}
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-3">
+                      {m.imageUrl ? (
+                        <img src={m.imageUrl} alt={m.name} className="w-9 h-9 rounded-lg object-cover flex-shrink-0 border border-white/10" />
+                      ) : (
+                        <div className="w-9 h-9 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center flex-shrink-0">
+                          {i === 0 && sortKey === 'bestScore' && sortDir === 'desc'
+                            ? <Star className="w-4 h-4 text-yellow-400 fill-yellow-400" />
+                            : <span className="text-xs font-bold text-muted-foreground">#{i + 1}</span>
+                          }
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <p className="text-sm font-black uppercase tracking-wider text-white truncate">{m.name}</p>
+                        {(m.manufacturer || m.year) && (
+                          <p className="text-xs text-muted-foreground">{[m.manufacturer, m.year].filter(Boolean).join(' · ')}</p>
+                        )}
+                      </div>
+                    </div>
+                  </td>
 
-              <Link href={`/machines/${encodeURIComponent(m.name)}`} className="flex-1 min-w-0">
-                <p className="text-sm font-black uppercase tracking-wider text-white truncate">{m.name}</p>
-                <p className="text-xs text-muted-foreground">
-                  {[m.manufacturer, m.year].filter(Boolean).join(' · ')}
-                  {(m.manufacturer || m.year) && ' · '}
-                  {m.playCount} {m.playCount === 1 ? 'play' : 'plays'} · last {format(new Date(m.lastPlayed), 'M/d/yyyy')}
-                </p>
-              </Link>
+                  {/* Plays */}
+                  <td className="px-4 py-3 text-sm text-muted-foreground whitespace-nowrap">
+                    {m.playCount}
+                  </td>
 
-              <div className="flex items-center gap-2 flex-shrink-0">
-                <div className="text-right">
-                  <p className="text-xs text-muted-foreground uppercase tracking-wider">Best</p>
-                  <p className="text-lg font-bold text-primary">{Number(m.bestScore).toLocaleString()}</p>
-                </div>
-                {isAdmin ? (
-                  <div className="flex flex-col gap-1">
-                    <button onClick={() => openEdit(m)} className="p-1 rounded text-muted-foreground hover:text-white hover:bg-white/10 transition-colors" aria-label="Edit machine">
-                      <Pencil className="w-3.5 h-3.5" />
-                    </button>
-                    <button onClick={() => setDeleteMachineId(m.id)} className="p-1 rounded text-muted-foreground hover:text-red-400 hover:bg-red-400/10 transition-colors" aria-label="Delete machine">
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                ) : (
-                  <ChevronRight className="w-4 h-4 text-muted-foreground" />
-                )}
-              </div>
-            </div>
-          ))}
+                  {/* Last Played */}
+                  <td className="px-4 py-3 text-sm text-muted-foreground whitespace-nowrap">
+                    {format(new Date(m.lastPlayed), 'M/d/yyyy')}
+                  </td>
+
+                  {/* Best Score */}
+                  <td className="px-4 py-3 text-right font-bold text-lg text-primary whitespace-nowrap">
+                    {Number(m.bestScore).toLocaleString()}
+                  </td>
+
+                  {/* Admin buttons */}
+                  {isAdmin && (
+                    <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          onClick={e => openEdit(m, e)}
+                          className="p-1 rounded text-muted-foreground hover:text-white hover:bg-white/10 transition-colors"
+                          aria-label="Edit machine"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={e => { e.stopPropagation(); setDeleteMachineId(m.id); }}
+                          className="p-1 rounded text-muted-foreground hover:text-red-400 hover:bg-red-400/10 transition-colors"
+                          aria-label="Delete machine"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 
