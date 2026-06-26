@@ -67,11 +67,11 @@ export default function StatsPage() {
                   className="absolute text-muted-foreground"
                   style={{
                     bottom: 0,
-                    left: '50%',
+                    right: '50%',
                     fontSize: 10,
                     lineHeight: 1,
                     whiteSpace: 'nowrap',
-                    transformOrigin: 'left bottom',
+                    transformOrigin: 'right bottom',
                     transform: 'rotate(-45deg)',
                   }}
                 >
