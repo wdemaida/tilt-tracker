@@ -31,6 +31,7 @@ router.get('/', async (req, res) => {
         photoThumbnail: scores.photoThumbnail,
         machineId: scores.machineId,
         machineName: machines.name,
+        machineImageUrl: machines.imageUrl,
         username: users.username,
         displayName: users.displayName,
       })
