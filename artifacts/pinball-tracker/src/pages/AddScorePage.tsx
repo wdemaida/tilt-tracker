@@ -50,6 +50,8 @@ export default function AddScorePage() {
   const [venueSearch, setVenueSearch] = useState('');
   const [machineSearch, setMachineSearch] = useState('');
   const [selectedMachine, setSelectedMachine] = useState('');
+  const [aiDetectedMachine, setAiDetectedMachine] = useState('');
+  const [selectedMachineExtra, setSelectedMachineExtra] = useState<{ manufacturer?: string; year?: number } | null>(null);
   const [scoreDisplay, setScoreDisplay] = useState('');
   const [savedScore, setSavedScore] = useState<SavedScore | null>(null);
   const [pmEmail, setPmEmail] = useState('');
@@ -125,32 +127,38 @@ export default function AddScorePage() {
       return [
         ...(venueData.ownMachines as any[]).map((m: any) => ({
           name: m.name as string, played: true, playCount: m.playCount as number, inTiltTrack: true,
+          manufacturer: undefined as string | undefined, year: undefined as number | undefined,
         })),
         ...(venueData.pmMachines as any[])
           .filter((m: any) => !ownNames.has(m.name.toLowerCase()))
           .map((m: any) => ({
             name: m.name as string, played: false, playCount: 0,
             inTiltTrack: ttNames.has(m.name.toLowerCase()),
+            manufacturer: m.manufacturer as string | undefined, year: m.year as number | undefined,
           })),
       ];
     }
     if (pmOnlyData) {
       return (pmOnlyData.pmMachines as any[]).map((m: any) => ({
         name: m.name as string, played: false, playCount: 0, inTiltTrack: false,
+        manufacturer: m.manufacturer as string | undefined, year: m.year as number | undefined,
       }));
     }
     return [];
   }, [venueData, pmOnlyData]);
 
-  // Auto-select the AI-prefilled machine once PM data arrives
+  // Auto-select once PM data loads if the AI-detected name is an exact match
   useEffect(() => {
-    if (machineAutoSelected.current || !machineSearch || allVenueMachines.length === 0 || selectedMachine) return;
-    const match = allVenueMachines.find(m => m.name.toLowerCase() === machineSearch.toLowerCase());
+    if (machineAutoSelected.current || !aiDetectedMachine || allVenueMachines.length === 0) return;
+    const match = allVenueMachines.find(m => m.name.toLowerCase() === aiDetectedMachine.toLowerCase());
     if (match) {
       setSelectedMachine(match.name);
+      setMachineSearch(match.name);
+      setValue('machineName', match.name);
+      if (match.manufacturer || match.year) setSelectedMachineExtra({ manufacturer: match.manufacturer, year: match.year });
       machineAutoSelected.current = true;
     }
-  }, [allVenueMachines]);
+  }, [allVenueMachines, aiDetectedMachine]);
 
   const filteredVenueMachines = useMemo(() => {
     if (!machineSearch) return allVenueMachines;
@@ -188,14 +196,15 @@ export default function AddScorePage() {
 
   const venueName = watch('venueName');
 
-  // True when the selected machine name isn't in the PM/TT machine list for this venue
-  const machineNotInPm = selectedMachine.length > 0
+  // True when the effective machine name (selected or AI-detected) isn't in the PM list for this venue
+  const effectiveMachineName = selectedMachine || aiDetectedMachine;
+  const machineNotInPm = effectiveMachineName.length > 0
     && allVenueMachines.length > 0
-    && !allVenueMachines.some(m => m.name.toLowerCase() === selectedMachine.toLowerCase());
+    && !allVenueMachines.some(m => m.name.toLowerCase() === effectiveMachineName.toLowerCase());
 
   const createScore = useMutation({
     mutationFn: async (data: FormData) => {
-      const machine = await api.machines.upsert({ name: data.machineName });
+      const machine = await api.machines.upsert({ name: data.machineName, ...selectedMachineExtra });
       return api.scores.create({
         ...data,
         machineId: machine.id,
@@ -232,7 +241,8 @@ export default function AddScorePage() {
       if (result.machineName) {
         setValue('machineName', result.machineName);
         setMachineSearch(result.machineName);
-        setSelectedMachine(result.machineName);
+        setAiDetectedMachine(result.machineName);
+        // Don't pre-select — auto-select handles exact PM matches; banner guides the rest
       }
       if (result.score) {
         setValue('score', result.score);
@@ -280,10 +290,11 @@ export default function AddScorePage() {
     });
   }
 
-  function selectMachine(name: string) {
+  function selectMachine(name: string, manufacturer?: string, year?: number) {
     setSelectedMachine(name);
     setMachineSearch(name);
     setValue('machineName', name);
+    setSelectedMachineExtra(manufacturer || year ? { manufacturer, year } : null);
   }
 
   const pmUseStored = !pmForceForm && !!pmTokenData?.hasToken;
@@ -520,6 +531,16 @@ export default function AddScorePage() {
 
             {allVenueMachines.length > 0 || venueDataLoading || pmOnlyLoading ? (
               <div className="flex flex-col gap-2">
+
+                {/* AI detection context — shown when AI found a name but no exact PM match yet */}
+                {aiDetectedMachine && !selectedMachine && (
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-500/25 bg-amber-500/10 text-sm">
+                    <span className="text-xs font-bold uppercase tracking-wider text-amber-400 whitespace-nowrap">AI read</span>
+                    <span className="text-white/80 font-medium truncate">"{aiDetectedMachine}"</span>
+                    <span className="text-xs text-muted-foreground ml-auto whitespace-nowrap">select version below</span>
+                  </div>
+                )}
+
                 <div className="relative">
                   {!machineSearch && <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />}
                   <input
@@ -556,7 +577,7 @@ export default function AddScorePage() {
                         <button
                           key={m.name}
                           type="button"
-                          onClick={() => selectMachine(m.name)}
+                          onClick={() => selectMachine(m.name, m.manufacturer, m.year)}
                           className={`text-left px-3 py-2.5 rounded-lg border transition-colors ${isSelected ? 'border-primary/60 bg-primary/10' : 'border-white/10 hover:border-primary/40 hover:bg-white/5'}`}
                         >
                           <div className="flex items-center gap-2">
@@ -585,6 +606,17 @@ export default function AddScorePage() {
                     )}
                   </div>
                 )}
+
+                {/* Use AI name directly — only when banner is showing and list has loaded */}
+                {aiDetectedMachine && !selectedMachine && !venueDataLoading && !pmOnlyLoading && allVenueMachines.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => selectMachine(aiDetectedMachine)}
+                    className="text-xs text-center text-muted-foreground hover:text-white/70 transition-colors py-0.5"
+                  >
+                    Use "{aiDetectedMachine}" directly →
+                  </button>
+                )}
               </div>
             ) : (
               /* Fallback: free-text search when no PM data */
@@ -611,7 +643,7 @@ export default function AddScorePage() {
             {errors.machineName && <p className="err">{errors.machineName.message}</p>}
             {machineNotInPm && (
               <p className="text-xs text-yellow-400 mt-1">
-                "{selectedMachine}" wasn't found in the Pinball Map machine list for this venue — you'll be asked to confirm before saving.
+                "{effectiveMachineName}" wasn't found in the Pinball Map machine list for this venue — you'll be asked to confirm before saving.
               </p>
             )}
           </div>
@@ -669,7 +701,7 @@ export default function AddScorePage() {
           <div className="relative z-10 w-full max-w-sm rounded-2xl border border-white/10 bg-card p-6 shadow-2xl">
             <h3 className="text-lg font-black uppercase tracking-wider text-white mb-2">Machine Not Found</h3>
             <p className="text-sm text-muted-foreground mb-5">
-              "{selectedMachine}" wasn't found in the Pinball Map machine list for this venue. Continue anyway?
+              "{effectiveMachineName}" wasn't found in the Pinball Map machine list for this venue. Continue anyway?
             </p>
             <div className="flex flex-col gap-2">
               <button

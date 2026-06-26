@@ -84,10 +84,10 @@ router.get('/:name', async (req, res) => {
 
 // POST /api/machines — upsert a machine, enriching with PM data
 router.post('/', async (req, res) => {
-  const { name, opdbId, ipdbId, variant } = req.body;
+  const { name, opdbId, ipdbId, variant, manufacturer: callerManufacturer, year: callerYear } = req.body;
   if (!name) return res.status(400).json({ error: 'name is required' });
   try {
-    // Enrich from Pinball Map cache (non-blocking; ignore errors)
+    // Enrich from Pinball Map cache; callerManufacturer/callerYear are fallbacks when PM lookup misses
     const pmAll = await getAllMachines().catch(() => []);
     const pm = pmAll.find(m => m.name.toLowerCase() === name.toLowerCase());
 
@@ -98,8 +98,8 @@ router.post('/', async (req, res) => {
         opdbId: opdbId ?? pm?.opdb_id ?? null,
         ipdbId: ipdbId ?? null,
         variant: variant ?? null,
-        manufacturer: pm?.manufacturer ?? null,
-        year: pm?.year ?? null,
+        manufacturer: pm?.manufacturer ?? callerManufacturer ?? null,
+        year: pm?.year ?? callerYear ?? null,
         imageUrl: pm?.opdb_img ?? null,
       })
       .onConflictDoUpdate({
