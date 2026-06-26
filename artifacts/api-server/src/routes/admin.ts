@@ -25,13 +25,17 @@ router.get('/users', async (_req, res) => {
 
 // GET /api/admin/health — system health dashboard data
 router.get('/health', async (_req, res) => {
-  // --- Database check ---
+  // --- Database check (includes size) ---
   const dbCheck = await (async () => {
     const start = Date.now();
     try {
-      const versionResult = await db.execute(sql`SELECT version()`);
+      const [versionResult, sizeResult] = await Promise.all([
+        db.execute(sql`SELECT version()`),
+        db.execute(sql`SELECT pg_database_size(current_database()) as size_bytes`),
+      ]);
       const latencyMs = Date.now() - start;
       const postgresVersion = (versionResult[0] as any)?.version?.split(' ').slice(0, 2).join(' ') ?? 'unknown';
+      const sizeBytes = Number((sizeResult[0] as any)?.size_bytes ?? 0);
       const [sc, mc, vc, uc] = await Promise.all([
         db.select({ total: count() }).from(scores),
         db.select({ total: count() }).from(machines),
@@ -42,6 +46,7 @@ router.get('/health', async (_req, res) => {
         status: 'ok' as const,
         latencyMs,
         postgresVersion,
+        sizeBytes,
         counts: { scores: sc[0].total, machines: mc[0].total, venues: vc[0].total, users: uc[0].total },
       };
     } catch (err) {
@@ -49,34 +54,72 @@ router.get('/health', async (_req, res) => {
     }
   })();
 
-  // --- HERE API check ---
-  const hereCheck = await (async () => {
-    const key = process.env.HERE_API_KEY;
-    if (!key) return { status: 'unchecked' as const, note: 'HERE_API_KEY not set' };
-    const start = Date.now();
-    try {
-      const url = `https://browse.search.hereapi.com/v1/browse?at=40.7484,-73.9967&limit=1&apiKey=${key}`;
-      const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
-      const latencyMs = Date.now() - start;
-      return r.ok
-        ? { status: 'ok' as const, latencyMs }
-        : { status: 'error' as const, latencyMs, error: `HTTP ${r.status}` };
-    } catch (err) {
-      return { status: 'error' as const, latencyMs: Date.now() - start, error: String(err) };
-    }
-  })();
+  // --- External service checks (run in parallel) ---
+  const [hereCheck, pmCheck, anthropicCheck, clerkCheck] = await Promise.all([
+    // HERE API
+    (async () => {
+      const key = process.env.HERE_API_KEY;
+      if (!key) return { status: 'unchecked' as const, note: 'HERE_API_KEY not set' };
+      const start = Date.now();
+      try {
+        const r = await fetch(`https://browse.search.hereapi.com/v1/browse?at=40.7484,-73.9967&limit=1&apiKey=${key}`, { signal: AbortSignal.timeout(5000) });
+        const latencyMs = Date.now() - start;
+        return r.ok ? { status: 'ok' as const, latencyMs } : { status: 'error' as const, latencyMs, error: `HTTP ${r.status}` };
+      } catch (err) {
+        return { status: 'error' as const, latencyMs: Date.now() - start, error: String(err) };
+      }
+    })(),
 
-  // --- Pinball Map cache check ---
-  const pmCheck = await (async () => {
-    try {
-      const all = await getAllMachines();
-      return all.length > 0
-        ? { status: 'ok' as const, machineCount: all.length }
-        : { status: 'error' as const, error: 'Cache empty' };
-    } catch (err) {
-      return { status: 'error' as const, error: String(err) };
-    }
-  })();
+    // Pinball Map cache
+    (async () => {
+      try {
+        const all = await getAllMachines();
+        return all.length > 0
+          ? { status: 'ok' as const, machineCount: all.length }
+          : { status: 'error' as const, error: 'Cache empty' };
+      } catch (err) {
+        return { status: 'error' as const, error: String(err) };
+      }
+    })(),
+
+    // Anthropic — live key verification via /v1/models
+    (async () => {
+      const key = process.env.ANTHROPIC_API_KEY;
+      if (!key) return { status: 'error' as const, note: 'ANTHROPIC_API_KEY not set' };
+      const start = Date.now();
+      try {
+        const r = await fetch('https://api.anthropic.com/v1/models', {
+          headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+          signal: AbortSignal.timeout(5000),
+        });
+        const latencyMs = Date.now() - start;
+        return r.ok
+          ? { status: 'ok' as const, latencyMs, note: 'Key verified' }
+          : { status: 'error' as const, latencyMs, error: `HTTP ${r.status}` };
+      } catch (err) {
+        return { status: 'error' as const, latencyMs: Date.now() - start, error: String(err) };
+      }
+    })(),
+
+    // Clerk — live key verification via backend API
+    (async () => {
+      const key = process.env.CLERK_SECRET_KEY;
+      if (!key) return { status: 'error' as const, note: 'CLERK_SECRET_KEY not set' };
+      const start = Date.now();
+      try {
+        const r = await fetch('https://api.clerk.com/v1/users?limit=1', {
+          headers: { 'Authorization': `Bearer ${key}` },
+          signal: AbortSignal.timeout(5000),
+        });
+        const latencyMs = Date.now() - start;
+        return r.ok
+          ? { status: 'ok' as const, latencyMs, note: 'Key verified' }
+          : { status: 'error' as const, latencyMs, error: `HTTP ${r.status}` };
+      } catch (err) {
+        return { status: 'error' as const, latencyMs: Date.now() - start, error: String(err) };
+      }
+    })(),
+  ]);
 
   // --- Env vars ---
   const ENV_DEFS = [
@@ -119,10 +162,10 @@ router.get('/health', async (_req, res) => {
 
   // --- Service summary ---
   const services = [
-    { id: 'anthropic', name: 'Anthropic AI', status: process.env.ANTHROPIC_API_KEY ? 'ok' : 'error', note: process.env.ANTHROPIC_API_KEY ? 'Key configured' : 'ANTHROPIC_API_KEY missing' },
+    { id: 'anthropic', name: 'Anthropic AI', ...anthropicCheck },
     { id: 'here',      name: 'HERE Maps',    ...hereCheck },
     { id: 'pm',        name: 'Pinball Map',  ...pmCheck },
-    { id: 'clerk',     name: 'Clerk Auth',   status: (process.env.CLERK_SECRET_KEY && process.env.CLERK_PUBLISHABLE_KEY) ? 'ok' : 'error', note: (process.env.CLERK_SECRET_KEY && process.env.CLERK_PUBLISHABLE_KEY) ? 'Keys configured' : 'One or more keys missing' },
+    { id: 'clerk',     name: 'Clerk Auth',   ...clerkCheck },
   ];
 
   res.json({ server, database: dbCheck, services, envVars, frontend });

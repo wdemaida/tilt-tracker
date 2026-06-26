@@ -15,6 +15,15 @@ function StatusIcon({ status }: { status: 'ok' | 'error' | 'unchecked' }) {
   return <HelpCircle className="w-4 h-4 text-yellow-400" />;
 }
 
+const NEON_FREE_LIMIT_BYTES = 512 * 1024 * 1024; // 512 MB
+
+function formatBytes(bytes: number) {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+
 function formatUptime(seconds: number) {
   const d = Math.floor(seconds / 86400);
   const h = Math.floor((seconds % 86400) / 3600);
@@ -110,14 +119,34 @@ export default function AdminHealthPage() {
                 </div>
               </div>
               {data.database.status === 'ok' && (
-                <div className="grid grid-cols-4 gap-3">
-                  {Object.entries(data.database.counts).map(([table, n]) => (
-                    <div key={table} className="rounded-lg bg-white/5 border border-white/10 p-3 text-center">
-                      <p className="text-2xl font-black text-primary">{n as number}</p>
-                      <p className="text-xs text-muted-foreground uppercase tracking-wider mt-0.5">{table}</p>
-                    </div>
-                  ))}
-                </div>
+                <>
+                  <div className="grid grid-cols-4 gap-3 mb-4">
+                    {Object.entries(data.database.counts).map(([table, n]) => (
+                      <div key={table} className="rounded-lg bg-white/5 border border-white/10 p-3 text-center">
+                        <p className="text-2xl font-black text-primary">{n as number}</p>
+                        <p className="text-xs text-muted-foreground uppercase tracking-wider mt-0.5">{table}</p>
+                      </div>
+                    ))}
+                  </div>
+                  {data.database.sizeBytes != null && (() => {
+                    const pct = Math.min(100, (data.database.sizeBytes / NEON_FREE_LIMIT_BYTES) * 100);
+                    const color = pct > 80 ? 'bg-red-500' : pct > 60 ? 'bg-yellow-500' : 'bg-green-500';
+                    return (
+                      <div>
+                        <div className="flex justify-between text-xs text-muted-foreground mb-1.5">
+                          <span>Storage used</span>
+                          <span className="font-medium text-white">
+                            {formatBytes(data.database.sizeBytes)} / 512 MB free tier
+                            <span className="text-muted-foreground ml-1">({pct.toFixed(1)}%)</span>
+                          </span>
+                        </div>
+                        <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
+                          <div className={`h-full rounded-full transition-all ${color}`} style={{ width: `${pct}%` }} />
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </>
               )}
             </div>
           </section>
