@@ -2,7 +2,8 @@ import { useQuery } from '@tanstack/react-query';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import { Link } from 'wouter';
 import { format } from 'date-fns';
-import { Building2, Clock, User } from 'lucide-react';
+import { Clock, User } from 'lucide-react';
+import { PinballIcon } from '../components/PinballIcon';
 import { useApi } from '../lib/useApi';
 import { useAppUser } from '../lib/useAppUser';
 import { useScopeContext } from '../lib/ScopeContext';
@@ -48,11 +49,12 @@ export default function MapPage() {
     const [lat, lng] = key.split(',').map(Number);
     const list = items as any[];
     const hasMyScore = !!appUser && list.some((s: any) => s.username === appUser.username);
-    // Most recent score: in MINE mode items are already own-only; in ALL mode show globally newest
     const recent = mine && appUser
       ? list.find((s: any) => s.username === appUser.username) ?? list[0]
       : list[0];
-    return { lat, lng, total: list.length, venueName: list[0].venueName, venueId: list[0].venueId, recent, hasMyScore };
+    const machineCount = new Set(list.map((s: any) => s.machineId)).size;
+    const visits = new Set(list.map((s: any) => new Date(s.playedAt).toDateString())).size;
+    return { lat, lng, venueName: list[0].venueName, venueId: list[0].venueId, recent, hasMyScore, machineCount, visits };
   });
 
   return (
@@ -75,57 +77,56 @@ export default function MapPage() {
             url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
             attribution='&copy; <a href="https://carto.com/">CARTO</a>'
           />
-          {locations.map(({ lat, lng, total, venueName, venueId, recent, hasMyScore }) => (
+          {locations.map(({ lat, lng, venueName, venueId, recent, hasMyScore, machineCount, visits }) => (
             <Marker key={`${lat},${lng}`} position={[lat, lng]} icon={hasMyScore ? PIN_MINE : PIN_OTHERS}>
-              <Popup minWidth={230}>
-                <div className="p-3">
-                  {/* Venue header */}
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="w-7 h-7 rounded-md bg-primary/10 border border-primary/30 flex items-center justify-center flex-shrink-0">
-                      <Building2 className="w-3.5 h-3.5 text-primary" />
+              <Popup minWidth={220}>
+                {/* Location section */}
+                <div className="px-4 pt-3 pb-3">
+                  <div className="text-center mb-3">
+                    {venueId ? (
+                      <Link href={`/venues/${venueId}`} className="font-black uppercase tracking-wider text-white text-sm hover:text-primary transition-colors leading-tight">
+                        {venueName ?? 'Unknown venue'}
+                      </Link>
+                    ) : (
+                      <p className="font-black uppercase tracking-wider text-white text-sm leading-tight">{venueName ?? 'Unknown venue'}</p>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1">
+                      <PinballIcon className="w-3 h-3 text-primary" />
+                      <span className="text-xs text-primary font-bold">
+                        {machineCount} {machineCount === 1 ? 'machine' : 'machines'}
+                      </span>
                     </div>
-                    <div className="flex-1 min-w-0 flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        {venueId ? (
-                          <Link href={`/venues/${venueId}`} className="block font-black uppercase tracking-wider text-white text-xs leading-tight hover:text-primary transition-colors truncate">
-                            {venueName ?? 'Unknown venue'}
-                          </Link>
-                        ) : (
-                          <p className="font-black uppercase tracking-wider text-white text-xs leading-tight truncate">{venueName ?? 'Unknown venue'}</p>
-                        )}
-                      </div>
-                      <p className="text-xs text-muted-foreground whitespace-nowrap flex-shrink-0">{total} {total === 1 ? 'score' : 'scores'}</p>
+                    <div className="text-xs text-muted-foreground">
+                      <span className="font-bold text-white">{visits}</span> {visits === 1 ? 'visit' : 'visits'}
                     </div>
                   </div>
+                </div>
 
-                  {/* Most recent score */}
-                  {recent && (
-                    <div className="pt-2 border-t border-white/10">
-                      <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">Most recent</p>
-                      <div className="flex items-center gap-2 mb-1">
-                        {recent.machineImageUrl && (
-                          <img src={recent.machineImageUrl} alt={recent.machineName} className="w-10 h-10 rounded-lg object-cover flex-shrink-0 border border-white/10" />
-                        )}
-                        <div className="min-w-0">
-                          <Link href={`/machines/${encodeURIComponent(recent.machineName)}`} className="block text-sm font-black uppercase tracking-wider text-primary hover:opacity-80 transition-opacity truncate leading-tight">
-                            {recent.machineName}
-                          </Link>
-                          <p className="text-xl font-bold text-primary mt-0.5">{Number(recent.score).toLocaleString()}</p>
-                        </div>
+                {/* Play info section */}
+                {recent && (
+                  <div className="border-t border-white/10 px-4 pt-3 pb-3 text-center">
+                    <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">Most Recent Play</p>
+                    <Link
+                      href={`/machines/${encodeURIComponent(recent.machineName)}`}
+                      className="block text-sm font-black uppercase tracking-wider text-primary hover:opacity-80 transition-opacity leading-tight mb-2"
+                    >
+                      {recent.machineName}
+                    </Link>
+                    <p className="text-2xl font-bold text-primary mb-3">{Number(recent.score).toLocaleString()}</p>
+                    <div className="flex flex-col items-center gap-0.5">
+                      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                        <User className="w-3 h-3 flex-shrink-0" />
+                        <span>@{recent.username}</span>
                       </div>
-                      <div className="flex flex-col gap-0.5 mt-1">
-                        <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                          <User className="w-3 h-3 flex-shrink-0" />
-                          <span>@{recent.username}</span>
-                        </div>
-                        <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                          <Clock className="w-3 h-3 flex-shrink-0" />
-                          <span>{format(new Date(recent.playedAt), 'M/d/yy · h:mm a')}</span>
-                        </div>
+                      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                        <Clock className="w-3 h-3 flex-shrink-0" />
+                        <span>{format(new Date(recent.playedAt), 'M/d/yy · h:mm a')}</span>
                       </div>
                     </div>
-                  )}
-                </div>
+                  </div>
+                )}
               </Popup>
             </Marker>
           ))}
