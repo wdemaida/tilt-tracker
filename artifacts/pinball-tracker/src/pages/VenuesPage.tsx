@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
-import { MapPin, Gamepad2, Trophy, X, ExternalLink, Pencil, Trash2 } from 'lucide-react';
+import { MapPin, Trophy, X, ExternalLink, Pencil, Trash2 } from 'lucide-react';
+import { PinballIcon } from '../components/PinballIcon';
 import * as Dialog from '@radix-ui/react-dialog';
 import { api } from '../lib/api';
 import { useApi } from '../lib/useApi';
@@ -120,7 +121,7 @@ export default function VenuesPage() {
                   onClick={() => setModalVenueId(venue.id)}
                   className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary/10 border border-primary/30 hover:bg-primary/20 hover:border-primary/60 transition-colors"
                 >
-                  <Gamepad2 className="w-3 h-3 text-primary" />
+                  <PinballIcon className="w-3 h-3 text-primary" />
                   <span className="text-xs text-primary font-bold">
                     {venue.machineCount} {venue.machineCount === 1 ? 'machine' : 'machines'}
                   </span>
@@ -259,7 +260,7 @@ export default function VenuesPage() {
                             className="flex items-center justify-between rounded-lg border border-white/10 bg-background px-4 py-3"
                           >
                             <div className="flex items-center gap-2">
-                              <Gamepad2 className="w-3.5 h-3.5 text-primary flex-shrink-0" />
+                              <PinballIcon className="w-3.5 h-3.5 text-primary flex-shrink-0" />
                               <span className="text-sm font-bold text-white">{m.name}</span>
                               <span className="text-xs text-muted-foreground">
                                 {m.playCount} {m.playCount === 1 ? 'play' : 'plays'}
@@ -290,7 +291,7 @@ export default function VenuesPage() {
                             className="flex items-center justify-between rounded-lg border border-violet-500/20 bg-violet-500/5 px-4 py-3"
                           >
                             <div className="flex items-center gap-2">
-                              <Gamepad2 className="w-3.5 h-3.5 text-violet-400 flex-shrink-0" />
+                              <PinballIcon className="w-3.5 h-3.5 text-violet-400 flex-shrink-0" />
                               <span className="text-sm font-bold text-white">{m.name}</span>
                             </div>
                             {(m.manufacturer || m.year) && (

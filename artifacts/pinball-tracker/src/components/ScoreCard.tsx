@@ -1,5 +1,5 @@
 import { Link } from 'wouter';
-import { MapPin, Clock, Image, Pencil, Trash2 } from 'lucide-react';
+import { MapPin, Clock, Pencil, Trash2 } from 'lucide-react';
 import { format } from 'date-fns';
 
 interface ScoreCardProps {
@@ -10,13 +10,14 @@ interface ScoreCardProps {
   type: 'casual' | 'tournament';
   venueName?: string | null;
   photoUrl?: string | null;
+  photoThumbnail?: string | null;
   username: string;
   displayName: string;
   onEdit?: () => void;
   onDelete?: () => void;
 }
 
-export default function ScoreCard({ id: _id, machineName, score, playedAt, type, venueName, photoUrl, username, onEdit, onDelete }: ScoreCardProps) {
+export default function ScoreCard({ id: _id, machineName, score, playedAt, type, venueName, photoUrl, photoThumbnail, username, onEdit, onDelete }: ScoreCardProps) {
   return (
     <div className="rounded-xl border border-white/10 bg-card p-4 flex flex-col gap-3 hover:border-primary/40 transition-colors">
       <div className="flex items-center justify-between">
@@ -24,7 +25,6 @@ export default function ScoreCard({ id: _id, machineName, score, playedAt, type,
           {type}
         </span>
         <div className="flex items-center gap-2">
-          {photoUrl && <Image className="w-4 h-4 text-muted-foreground" />}
           {onEdit && (
             <button
               onClick={onEdit}
@@ -66,11 +66,18 @@ export default function ScoreCard({ id: _id, machineName, score, playedAt, type,
         )}
       </div>
 
+      {photoThumbnail && (
+        <img
+          src={photoThumbnail}
+          alt="Score proof"
+          className="w-full rounded-lg object-cover max-h-40"
+        />
+      )}
+
       <div className="pt-1 border-t border-white/10">
         <Link href={`/users/${username}`} className="text-xs text-muted-foreground hover:text-white transition-colors">
           {username}
         </Link>
-        {photoUrl && <p className="text-xs text-muted-foreground mt-0.5">PROOF ATTACHED</p>}
       </div>
     </div>
   );

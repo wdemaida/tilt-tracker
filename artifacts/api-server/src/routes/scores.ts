@@ -20,6 +20,7 @@ router.get('/', async (_req, res) => {
         latitude: scores.latitude,
         longitude: scores.longitude,
         photoUrl: scores.photoUrl,
+        photoThumbnail: scores.photoThumbnail,
         machineId: scores.machineId,
         machineName: machines.name,
         username: users.username,
@@ -38,7 +39,7 @@ router.get('/', async (_req, res) => {
 // POST /api/scores — create a score
 router.post('/', requireAppUser, async (req, res) => {
   const appUser = (req as any).appUser;
-  const { machineId, score, playedAt, type, venueName, venueId: rawVenueId, venueHereId, venueAddress, venueLat, venueLng, venuePinballMapId, latitude, longitude, photoUrl } = req.body;
+  const { machineId, score, playedAt, type, venueName, venueId: rawVenueId, venueHereId, venueAddress, venueLat, venueLng, venuePinballMapId, latitude, longitude, photoUrl, photoThumbnail } = req.body;
 
   if (!machineId || !score || !playedAt) {
     return res.status(400).json({ error: 'machineId, score, and playedAt are required' });
@@ -92,6 +93,7 @@ router.post('/', requireAppUser, async (req, res) => {
       latitude: latitude ?? null,
       longitude: longitude ?? null,
       photoUrl: photoUrl ?? null,
+      photoThumbnail: photoThumbnail ?? null,
     }).returning();
     res.status(201).json(row);
   } catch (err) {

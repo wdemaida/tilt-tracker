@@ -49,6 +49,7 @@ export const scores = pgTable('scores', {
   latitude: real('latitude'),
   longitude: real('longitude'),
   photoUrl: text('photo_url'),
+  photoThumbnail: text('photo_thumbnail'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 

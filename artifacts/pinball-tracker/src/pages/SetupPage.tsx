@@ -3,7 +3,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { useLocation } from 'wouter';
-import { Gamepad2 } from 'lucide-react';
+import { PinballIcon } from '../components/PinballIcon';
 import { useAuth } from '@clerk/clerk-react';
 import { useApi } from '../lib/useApi';
 import { queryClient } from '../lib/queryClient';
@@ -42,7 +42,7 @@ export default function SetupPage() {
     <div className="max-w-md mx-auto mt-12">
       <div className="flex flex-col items-center mb-8 gap-3">
         <div className="w-16 h-16 rounded-2xl bg-primary/20 flex items-center justify-center border border-primary/50">
-          <Gamepad2 className="w-8 h-8 text-primary" />
+          <PinballIcon className="w-8 h-8" />
         </div>
         <h1 className="text-3xl font-black uppercase tracking-widest text-white text-center">Set Up Your Profile</h1>
         <p className="text-sm text-muted-foreground text-center">Choose a username and display name to get started</p>

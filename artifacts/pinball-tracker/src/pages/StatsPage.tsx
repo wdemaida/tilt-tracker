@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
-import { Trophy, Gamepad2 } from 'lucide-react';
+import { Trophy } from 'lucide-react';
+import { PinballIcon } from '../components/PinballIcon';
 import { useApi } from '../lib/useApi';
 
 export default function StatsPage() {
@@ -19,20 +20,16 @@ export default function StatsPage() {
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8">
         <div className="rounded-xl border border-white/10 bg-card p-5">
           <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">
-            <Gamepad2 className="w-4 h-4" /> Total Games Logged
+            <PinballIcon className="w-4 h-4" /> Total Games Logged
           </div>
           <p className="text-5xl font-black text-white">{stats.totalGames}</p>
         </div>
 
         <div className="rounded-xl border border-white/10 bg-card p-5">
           <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">
-            <Trophy className="w-4 h-4" /> All-Time High Score
+            <Trophy className="w-4 h-4" /> Unique Machines
           </div>
-          <p className="text-4xl font-black text-primary">{Number(stats.allTimeHigh?.score ?? 0).toLocaleString()}</p>
-          <p className="text-sm text-white mt-1">{stats.allTimeHigh?.machineName}</p>
-          {stats.allTimeHigh?.venueName && (
-            <p className="text-xs text-muted-foreground">Achieved at {stats.allTimeHigh.venueName}</p>
-          )}
+          <p className="text-5xl font-black text-white">{stats.mostPlayed?.length ?? 0}</p>
         </div>
       </div>
 

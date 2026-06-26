@@ -61,9 +61,29 @@ export default function AddScorePage() {
   const [pmError, setPmError] = useState('');
   const [pmForceForm, setPmForceForm] = useState(false);
   const [mismatchDismissed, setMismatchDismissed] = useState<string | null>(null);
+  const [thumbnail, setThumbnail] = useState<string | null>(null);
   const [, navigate] = useLocation();
   const api = useApi();
   const fileRef = useRef<HTMLInputElement>(null);
+
+  function generateThumbnail(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        const MAX = 160;
+        const ratio = Math.min(MAX / img.width, MAX / img.height);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * ratio);
+        canvas.height = Math.round(img.height * ratio);
+        canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(url);
+        resolve(canvas.toDataURL('image/jpeg', 0.65));
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Image load failed')); };
+      img.src = url;
+    });
+  }
 
   const { data: suggestions = [] } = useQuery({
     queryKey: ['machine-search', machineSearch],
@@ -120,6 +140,7 @@ export default function AddScorePage() {
         venueLat: selectedVenue?.venueLat,
         venueLng: selectedVenue?.venueLng,
         venuePinballMapId: selectedVenue?.pinballMapId,
+        photoThumbnail: thumbnail ?? undefined,
       });
     },
     onSuccess: (row, data) => {
@@ -135,6 +156,7 @@ export default function AddScorePage() {
   const handlePhoto = async (file: File) => {
     setAiLoading(true);
     setAiError('');
+    generateThumbnail(file).then(setThumbnail).catch(() => {});
     try {
       const result = await api.upload(file);
       if (result.machineName) { setValue('machineName', result.machineName); setMachineSearch(result.machineName); }

@@ -1,5 +1,6 @@
 import { Link, useLocation } from 'wouter';
-import { Trophy, Gamepad2, Map, BarChart2, PlusCircle, Building2, ShieldCheck, Menu, X } from 'lucide-react';
+import { Trophy, Map, BarChart2, PlusCircle, Building2, ShieldCheck, Menu, X } from 'lucide-react';
+import { PinballIcon } from './PinballIcon';
 import { SignedIn, SignedOut, UserButton, useAuth } from '@clerk/clerk-react';
 import { useQuery } from '@tanstack/react-query';
 import { useApi } from '../lib/useApi';
@@ -7,7 +8,7 @@ import { useState, useEffect, useRef } from 'react';
 
 const navItems = [
   { href: '/', label: 'Scores', Icon: Trophy },
-  { href: '/machines', label: 'Machines', Icon: Gamepad2 },
+  { href: '/machines', label: 'Machines', Icon: PinballIcon },
   { href: '/venues', label: 'Venues', Icon: Building2 },
   { href: '/map', label: 'Map', Icon: Map },
   { href: '/stats', label: 'Stats', Icon: BarChart2 },
