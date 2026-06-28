@@ -66,6 +66,7 @@ router.get('/:name', async (req, res) => {
         score: scores.score,
         playedAt: scores.playedAt,
         type: scores.type,
+        venueId: scores.venueId,
         venueName: scores.venueName,
         photoUrl: scores.photoUrl,
         username: users.username,
