@@ -1,18 +1,113 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'wouter';
-import { Trophy, ArrowLeft, MapPin, PlusCircle, ChevronUp, ChevronDown } from 'lucide-react';
-import { format } from 'date-fns';
+import { Trophy, ArrowLeft, MapPin, PlusCircle, ChevronUp, ChevronDown, TrendingUp } from 'lucide-react';
+import { format, parseISO } from 'date-fns';
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, Legend,
+} from 'recharts';
 import { api } from '../lib/api';
+import { useApi } from '../lib/useApi';
 
 type SortKey = 'playedAt' | 'username' | 'type' | 'score';
 type SortDir = 'asc' | 'desc';
+type ChartMode = 'date' | 'session';
+
+// Yellow = current user (matches app convention); rest are accent colors
+const PALETTE = ['#facc15', '#a855f7', '#22d3ee', '#f97316', '#34d399', '#f472b6', '#60a5fa'];
+
+function formatScore(v: number) {
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `${Math.round(v / 1_000)}K`;
+  return String(v);
+}
+
+function computeChartData(scores: any[], usernames: string[], mode: ChartMode) {
+  if (scores.length < 2) return [];
+
+  if (mode === 'date') {
+    const dateMap = new Map<string, Record<string, any>>();
+    for (const s of scores) {
+      const key = format(new Date(s.playedAt), 'yyyy-MM-dd');
+      if (!dateMap.has(key)) dateMap.set(key, { x: key });
+      const entry = dateMap.get(key)!;
+      if (entry[s.username] === undefined || s.score > entry[s.username]) {
+        entry[s.username] = s.score;
+        entry[`${s.username}_date`] = s.playedAt;
+        entry[`${s.username}_venue`] = s.venueName;
+      }
+    }
+    return [...dateMap.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([, v]) => v);
+  }
+
+  // Session mode — per-user chronological sessions
+  const sessions: Record<string, any[]> = {};
+  for (const u of usernames) {
+    sessions[u] = scores
+      .filter(s => s.username === u)
+      .sort((a, b) => new Date(a.playedAt).getTime() - new Date(b.playedAt).getTime());
+  }
+  const maxLen = Math.max(...usernames.map(u => sessions[u].length));
+  return Array.from({ length: maxLen }, (_, i) => {
+    const entry: any = { x: i + 1 };
+    for (const u of usernames) {
+      const s = sessions[u][i];
+      if (s) {
+        entry[u] = s.score;
+        entry[`${u}_date`] = s.playedAt;
+        entry[`${u}_venue`] = s.venueName;
+      }
+    }
+    return entry;
+  });
+}
+
+function CustomTooltip({ active, payload, label, mode }: any) {
+  if (!active || !payload?.length) return null;
+  const visible = payload.filter((p: any) => p.value != null);
+  if (!visible.length) return null;
+  return (
+    <div className="rounded-lg border border-white/20 bg-zinc-900/95 p-3 text-xs shadow-xl min-w-[160px]">
+      <p className="font-bold text-white mb-2">
+        {mode === 'date'
+          ? format(parseISO(String(label)), 'MMM d, yyyy')
+          : `Session ${label}`}
+      </p>
+      {visible.map((p: any) => (
+        <div key={p.dataKey} className="flex flex-col mb-1.5 last:mb-0">
+          <div className="flex items-center gap-1.5">
+            <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: p.color }} />
+            <span style={{ color: p.color }} className="font-semibold">{p.dataKey}</span>
+          </div>
+          <div className="pl-3.5 text-white font-bold">{Number(p.value).toLocaleString()}</div>
+          {p.payload[`${p.dataKey}_date`] && (
+            <div className="pl-3.5 text-muted-foreground">
+              {format(new Date(p.payload[`${p.dataKey}_date`]), 'MMM d, yyyy')}
+              {p.payload[`${p.dataKey}_venue`] && ` · ${p.payload[`${p.dataKey}_venue`]}`}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export default function MachinePage() {
   const { name } = useParams<{ name: string }>();
   const decodedName = decodeURIComponent(name);
   const [sortKey, setSortKey] = useState<SortKey>('score');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
+  const [chartMode, setChartMode] = useState<ChartMode>('date');
+
+  const authApi = useApi();
+  const { data: me } = useQuery({
+    queryKey: ['me'],
+    queryFn: authApi.users.me,
+    retry: false,
+  });
 
   const { data, isLoading } = useQuery({
     queryKey: ['machine', decodedName],
@@ -24,6 +119,16 @@ export default function MachinePage() {
 
   const { machine, scores } = data;
   const best = scores.reduce((a: any, b: any) => (b.score > a.score ? b : a), scores[0]);
+
+  // Build ordered username list: current user first (yellow), then others
+  const myUsername = (me as any)?.username;
+  const allUsernames = [...new Set<string>(scores.map((s: any) => s.username))] as string[];
+  const orderedUsernames = myUsername
+    ? [myUsername, ...allUsernames.filter(u => u !== myUsername)]
+    : allUsernames;
+
+  const chartData = computeChartData(scores, orderedUsernames, chartMode);
+  const showChart = scores.length >= 2;
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) {
@@ -70,7 +175,7 @@ export default function MachinePage() {
         <ArrowLeft className="w-4 h-4" /> All Machines
       </Link>
 
-      {/* Header with optional backglass image */}
+      {/* Header */}
       <div className="flex items-start gap-5 mb-6">
         {machine.imageUrl && (
           <img
@@ -100,6 +205,7 @@ export default function MachinePage() {
         </div>
       </div>
 
+      {/* Top Score */}
       {best && (
         <div className="rounded-xl border border-primary/30 bg-primary/10 p-5 flex items-center gap-4 mb-6">
           <div className="w-12 h-12 rounded-xl bg-primary/20 flex items-center justify-center border border-primary/50">
@@ -118,6 +224,91 @@ export default function MachinePage() {
         </div>
       )}
 
+      {/* Trend Chart */}
+      {showChart && (
+        <div className="rounded-xl border border-white/10 bg-card p-5 mb-6">
+          <div className="flex items-center justify-between mb-4 gap-3">
+            <div className="flex items-center gap-2">
+              <TrendingUp className="w-4 h-4 text-primary" />
+              <h2 className="text-sm font-bold uppercase tracking-wider text-white">Score Trend</h2>
+            </div>
+            <div className="flex items-center bg-white/5 rounded-lg p-0.5 border border-white/10 text-xs font-bold uppercase tracking-wider">
+              <button
+                onClick={() => setChartMode('date')}
+                className={`px-3 py-1.5 rounded-md transition-colors ${chartMode === 'date' ? 'bg-primary text-white' : 'text-muted-foreground hover:text-white'}`}
+              >
+                By Date
+              </button>
+              <button
+                onClick={() => setChartMode('session')}
+                className={`px-3 py-1.5 rounded-md transition-colors ${chartMode === 'session' ? 'bg-primary text-white' : 'text-muted-foreground hover:text-white'}`}
+              >
+                By Session
+              </button>
+            </div>
+          </div>
+
+          <ResponsiveContainer width="100%" height={240}>
+            <LineChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+              <XAxis
+                dataKey="x"
+                tick={{ fill: '#71717a', fontSize: 11 }}
+                tickLine={false}
+                axisLine={false}
+                tickFormatter={chartMode === 'date'
+                  ? (v) => format(parseISO(String(v)), 'MMM d')
+                  : (v) => `#${v}`}
+              />
+              <YAxis
+                tick={{ fill: '#71717a', fontSize: 11 }}
+                tickLine={false}
+                axisLine={false}
+                tickFormatter={formatScore}
+                width={48}
+              />
+              <Tooltip
+                content={<CustomTooltip mode={chartMode} />}
+                cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }}
+              />
+              {orderedUsernames.length > 1 && (
+                <Legend
+                  formatter={(value) => (
+                    <span style={{ color: PALETTE[orderedUsernames.indexOf(value)] ?? '#888', fontSize: 11 }}>
+                      {value}
+                    </span>
+                  )}
+                />
+              )}
+              {orderedUsernames.map((u, i) => (
+                <Line
+                  key={u}
+                  type="monotone"
+                  dataKey={u}
+                  stroke={PALETTE[i] ?? '#888'}
+                  strokeWidth={i === 0 && myUsername ? 2.5 : 1.5}
+                  dot={{ fill: PALETTE[i] ?? '#888', r: 4, strokeWidth: 0 }}
+                  activeDot={{ r: 6, strokeWidth: 0 }}
+                  connectNulls={false}
+                />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+
+          {chartMode === 'session' && (
+            <p className="text-xs text-muted-foreground text-center mt-2">
+              Sessions are numbered chronologically per player — gaps in calendar time are not shown.
+            </p>
+          )}
+          {chartMode === 'date' && (
+            <p className="text-xs text-muted-foreground text-center mt-2">
+              X-axis is actual calendar date — gaps in play appear as spacing.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Scores Table */}
       <div className="rounded-xl border border-white/10 bg-card overflow-x-auto">
         <table className="w-full text-sm min-w-[500px]">
           <thead>
