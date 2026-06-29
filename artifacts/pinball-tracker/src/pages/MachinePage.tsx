@@ -387,14 +387,32 @@ export default function MachinePage() {
     ).values()];
   }, [scores]);
 
+  const machineAvgScore = useMemo(() => {
+    if (!scores.length) return 0;
+    return Math.round(scores.reduce((s: number, r: any) => s + Number(r.score), 0) / scores.length);
+  }, [scores]);
+
   const venueDifficulty = useMemo(() => {
     if (uniqueVenues.length < 2) return [];
-    const globalAvg = scores.reduce((s: number, r: any) => s + Number(r.score), 0) / scores.length;
-    return uniqueVenues.map(v => {
-      const vs = scores.filter(s => s.venueId === v.venueId).map(s => Number(s.score));
-      const avg = vs.reduce((a, b) => a + b, 0) / vs.length;
-      return { ...v, avgScore: Math.round(avg), count: vs.length, diffPct: ((avg - globalAvg) / globalAvg) * 100 };
-    }).sort((a, b) => a.diffPct - b.diffPct);
+    // Build each player's average score on this machine across all venues
+    const playerAvgs: Record<string, number> = {};
+    for (const u of [...new Set<string>(scores.map((s: any) => s.username as string))]) {
+      const ps = scores.filter((s: any) => s.username === u).map((s: any) => Number(s.score));
+      playerAvgs[u] = ps.reduce((a: number, b: number) => a + b, 0) / ps.length;
+    }
+    return uniqueVenues.flatMap(v => {
+      const vs = scores.filter((s: any) => s.venueId === v.venueId);
+      // Normalize each score by that player's own average — controls for skill differences across venues
+      const ratios = vs
+        .filter((s: any) => (playerAvgs[s.username] ?? 0) > 0)
+        .map((s: any) => Number(s.score) / playerAvgs[s.username]);
+      if (!ratios.length) return [];
+      const avgRatio = ratios.reduce((a: number, b: number) => a + b, 0) / ratios.length;
+      // positive diffPct = scores below player baseline = harder venue
+      const diffPct = (1 - avgRatio) * 100;
+      const avgScore = Math.round(vs.reduce((a: number, s: any) => a + Number(s.score), 0) / vs.length);
+      return [{ ...v, avgScore, count: vs.length, diffPct }];
+    }).sort((a, b) => b.diffPct - a.diffPct);
   }, [scores, uniqueVenues]);
 
   const lineResult = useMemo(() => {
@@ -700,15 +718,20 @@ export default function MachinePage() {
       {/* Venue Difficulty */}
       {venueDifficulty.length > 0 && (
         <div className="rounded-xl border border-white/10 bg-card p-5 mb-6">
-          <h2 className="text-sm font-bold uppercase tracking-wider text-white mb-1">Venue Difficulty</h2>
+          <h2 className="text-sm font-bold uppercase tracking-wider text-white mb-1">
+            Venue Difficulty{' '}
+            <span className="normal-case font-normal text-muted-foreground">
+              (vs. machine overall average of {formatScore(machineAvgScore)})
+            </span>
+          </h2>
           <p className="text-xs text-muted-foreground mb-4">
-            Relative score averages across venues — lower scores indicate harder local setup (steeper slope, tighter tilt, etc.).
+            Player-normalized: each score is compared to that player's own average on this machine, controlling for skill differences across venues.
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {venueDifficulty.map(v => {
               const { text, color } = difficultyLabel(v.diffPct);
               return (
-                <div key={v.venueId} className="rounded-lg border border-white/10 bg-white/3 p-3">
+                <div key={v.venueId} className="rounded-lg border border-yellow-400/40 bg-white/3 p-3">
                   <div className="flex items-start justify-between gap-2 mb-1">
                     <p className="text-sm font-semibold text-white truncate">{v.venueName}</p>
                     <span className="text-xs font-bold px-2 py-0.5 rounded flex-shrink-0" style={{ color, background: `${color}20` }}>{text}</span>

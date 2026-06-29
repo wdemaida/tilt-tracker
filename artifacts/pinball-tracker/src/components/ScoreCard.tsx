@@ -51,7 +51,7 @@ export default function ScoreCard({ id: _id, machineName, score, playedAt, creat
 
       <div className="flex gap-3 items-start">
         <div className="flex-1 min-w-0">
-          <Link href={`/machines/${encodeURIComponent(machineName)}`} className="text-sm font-bold uppercase tracking-wider text-muted-foreground hover:text-white transition-colors">
+          <Link href={`/machines/${encodeURIComponent(machineName)}`} className="text-sm font-bold uppercase tracking-wider text-machine hover:text-machine/80 transition-colors">
             {machineName}
           </Link>
           <div className="flex items-center gap-2 mt-1">
@@ -81,7 +81,7 @@ export default function ScoreCard({ id: _id, machineName, score, playedAt, creat
       </div>
 
       <div className="pt-1 border-t border-white/10 flex items-center justify-between">
-        <Link href={`/users/${username}`} className="text-xs text-muted-foreground hover:text-white transition-colors">
+        <Link href={`/users/${username}`} className="text-xs text-yellow-400 hover:text-yellow-300 transition-colors">
           @{username}
         </Link>
         {createdAt && (

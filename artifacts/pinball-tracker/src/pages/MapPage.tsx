@@ -93,8 +93,8 @@ export default function MapPage() {
                   </div>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1">
-                      <PinballIcon className="w-3 h-3 text-primary" />
-                      <span className="text-xs text-primary font-bold">
+                      <PinballIcon className="w-3 h-3 text-machine" />
+                      <span className="text-xs text-machine font-bold">
                         {machineCount} {machineCount === 1 ? 'machine' : 'machines'}
                       </span>
                     </div>
@@ -110,7 +110,7 @@ export default function MapPage() {
                     <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">Most Recent Play</p>
                     <Link
                       href={`/machines/${encodeURIComponent(recent.machineName)}`}
-                      className="block text-sm font-black uppercase tracking-wider text-primary hover:opacity-80 transition-opacity leading-tight mb-2"
+                      className="block text-sm font-black uppercase tracking-wider text-machine hover:text-machine/80 transition-colors leading-tight mb-2"
                     >
                       {recent.machineName}
                     </Link>

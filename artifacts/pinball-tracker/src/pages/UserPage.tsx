@@ -31,15 +31,21 @@ export default function UserPage() {
       <div className="flex flex-col gap-3">
         {scores.map((s: any) => (
           <div key={s.id} className="flex items-center gap-4 rounded-xl border border-white/10 bg-card p-4">
-            <div className="w-12 h-12 rounded-lg bg-white/5 flex items-center justify-center flex-shrink-0 text-xs text-muted-foreground font-bold text-center leading-tight">
-              {s.machineName.split(' ').slice(0, 2).join('\n')}
+            <div className="w-12 h-12 rounded-lg overflow-hidden flex-shrink-0 border border-white/10 bg-white/5">
+              {s.machineImageUrl ? (
+                <img src={s.machineImageUrl} alt={s.machineName} className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-xs text-muted-foreground font-bold text-center leading-tight p-1">
+                  {s.machineName.split(' ').slice(0, 2).join('\n')}
+                </div>
+              )}
             </div>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 mb-0.5">
                 <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground border border-white/10 rounded px-1.5 py-0.5">
                   {s.type}
                 </span>
-                <Link href={`/machines/${encodeURIComponent(s.machineName)}`} className="text-sm font-bold uppercase tracking-wider text-white hover:text-primary transition-colors truncate">
+                <Link href={`/machines/${encodeURIComponent(s.machineName)}`} className="text-sm font-bold uppercase tracking-wider text-machine hover:text-machine/80 transition-colors truncate">
                   {s.machineName}
                 </Link>
               </div>
