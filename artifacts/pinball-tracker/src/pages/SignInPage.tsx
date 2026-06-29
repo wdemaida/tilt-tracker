@@ -1,11 +1,13 @@
 import { useState } from 'react';
-import { useSignIn } from '@clerk/clerk-react';
-import { Link } from 'wouter';
+import { useSignIn, useAuth } from '@clerk/clerk-react';
+import { Link, useLocation } from 'wouter';
 
 type Step = 'credentials' | 'mfa' | 'verify_device';
 
 export default function SignInPage() {
   const { isLoaded, signIn, setActive } = useSignIn();
+  const { isSignedIn } = useAuth();
+  const [, navigate] = useLocation();
   const [step, setStep] = useState<Step>('credentials');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -86,6 +88,8 @@ export default function SignInPage() {
       setLoading(false);
     }
   }
+
+  if (isSignedIn) { navigate('/'); return null; }
 
   const inputClass = 'border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-violet-500 w-full';
 

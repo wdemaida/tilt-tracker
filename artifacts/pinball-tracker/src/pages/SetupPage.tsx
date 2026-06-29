@@ -10,13 +10,13 @@ import { queryClient } from '../lib/queryClient';
 
 const schema = z.object({
   displayName: z.string().min(1, 'Required'),
-  username: z.string().min(2).regex(/^[a-z0-9_]+$/, 'Letters, numbers, and underscores only'),
+  username: z.string().min(2).regex(/^[a-zA-Z0-9_]+$/, 'Letters, numbers, and underscores only'),
 });
 
 type FormData = z.infer<typeof schema>;
 
 export default function SetupPage() {
-  const { isSignedIn } = useAuth();
+  const { isSignedIn, isLoaded } = useAuth();
   const api = useApi();
   const [, navigate] = useLocation();
   const [error, setError] = useState('');
@@ -36,6 +36,7 @@ export default function SetupPage() {
     }
   };
 
+  if (!isLoaded) return null;
   if (!isSignedIn) { navigate('/sign-in'); return null; }
 
   return (
