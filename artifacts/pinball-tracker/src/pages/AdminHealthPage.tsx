@@ -267,7 +267,7 @@ export default function AdminHealthPage() {
                     Open <ExternalLink className="w-3 h-3" />
                   </a>
                 </div>
-                <p className="text-xs text-muted-foreground/60 mt-1 italic">Browse and edit database tables — run <span className="font-mono not-italic">npx drizzle-kit studio</span> from <span className="font-mono not-italic">artifacts/api-server</span> first</p>
+                <p className="text-xs text-muted-foreground/60 mt-1 italic">Browse and edit database tables — run <span className="font-mono not-italic">npx drizzle-kit studio</span> from <span className="font-mono not-italic">artifacts/api-server</span> first, then enable Local Network Access in Edge/Chrome site settings</p>
               </div>
             </div>
           </section>
