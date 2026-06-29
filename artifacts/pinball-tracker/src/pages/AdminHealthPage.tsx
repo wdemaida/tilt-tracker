@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link, useLocation } from 'wouter';
-import { ShieldCheck, RefreshCw, CheckCircle2, XCircle, HelpCircle, Database, Server, Cpu, ExternalLink } from 'lucide-react';
+import { ShieldCheck, RefreshCw, CheckCircle2, XCircle, HelpCircle, Database, Server, Cpu, ExternalLink, Wrench } from 'lucide-react';
 
 const DASHBOARD_URLS: Record<string, string> = {
   anthropic: 'https://console.anthropic.com/settings/billing',
@@ -245,6 +245,29 @@ export default function AdminHealthPage() {
                     </div>
                   ))}
                 </div>
+              </div>
+            </div>
+          </section>
+
+          {/* Dev Tools */}
+          <section>
+            <h2 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-3 flex items-center gap-2">
+              <Wrench className="w-3.5 h-3.5" /> Dev Tools
+            </h2>
+            <div className="rounded-xl border border-white/10 bg-card p-4 flex items-start gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="font-black uppercase tracking-wider text-white text-sm">Drizzle Studio</p>
+                  <a
+                    href="https://local.drizzle.studio"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1 text-primary hover:text-white transition-colors text-xs font-medium flex-shrink-0"
+                  >
+                    Open <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+                <p className="text-xs text-muted-foreground/60 mt-1 italic">Browse and edit database tables — run <span className="font-mono not-italic">npx drizzle-kit studio</span> from <span className="font-mono not-italic">artifacts/api-server</span> first</p>
               </div>
             </div>
           </section>
