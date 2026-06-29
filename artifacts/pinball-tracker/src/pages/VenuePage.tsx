@@ -110,7 +110,7 @@ export default function VenuePage() {
                   </td>
                   <td className="px-3 py-3">
                     <Link href={`/users/${s.username}`} className="text-sm text-muted-foreground hover:text-white transition-colors">
-                      {s.displayName ?? s.username}
+                      {s.displayName ?? `@${s.username}`}
                     </Link>
                   </td>
                   <td className="px-3 py-3 text-right font-bold text-lg text-primary whitespace-nowrap">

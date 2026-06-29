@@ -7,6 +7,7 @@ interface ScoreCardProps {
   machineName: string;
   score: number;
   playedAt: string;
+  createdAt?: string | null;
   type: 'casual' | 'tournament';
   venueName?: string | null;
   photoUrl?: string | null;
@@ -19,7 +20,7 @@ interface ScoreCardProps {
   onDelete?: () => void;
 }
 
-export default function ScoreCard({ id: _id, machineName, score, playedAt, type, venueName, photoThumbnail, username, isHighScore, isCurrentUser, onEdit, onDelete }: ScoreCardProps) {
+export default function ScoreCard({ id: _id, machineName, score, playedAt, createdAt, type, venueName, photoThumbnail, username, isHighScore, isCurrentUser, onEdit, onDelete }: ScoreCardProps) {
   return (
     <div className={`rounded-xl border bg-card p-4 flex flex-col gap-3 hover:border-primary/40 transition-colors ${isCurrentUser ? 'border-yellow-400/60' : 'border-white/10'}`}>
       <div className="flex items-center justify-between">
@@ -79,10 +80,15 @@ export default function ScoreCard({ id: _id, machineName, score, playedAt, type,
         )}
       </div>
 
-      <div className="pt-1 border-t border-white/10">
+      <div className="pt-1 border-t border-white/10 flex items-center justify-between">
         <Link href={`/users/${username}`} className="text-xs text-muted-foreground hover:text-white transition-colors">
-          {username}
+          @{username}
         </Link>
+        {createdAt && (
+          <span className="text-xs text-muted-foreground/60">
+            added: {format(new Date(createdAt), 'MMM d · h:mm a')}
+          </span>
+        )}
       </div>
     </div>
   );

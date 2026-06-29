@@ -281,7 +281,7 @@ function ScatterTooltip({ active, payload }: any) {
       <p className="font-bold text-white">{Number(d.y).toLocaleString()}</p>
       {d.playedAt && <p className="text-muted-foreground">{format(new Date(d.playedAt), 'MMM d, yyyy · h:mm a')}</p>}
       {d.venue    && <p className="text-muted-foreground">{d.venue}</p>}
-      {d.username && <p className="text-muted-foreground">{d.username}</p>}
+      {d.username && <p className="text-muted-foreground">@{d.username}</p>}
     </div>
   );
 }
@@ -755,7 +755,7 @@ export default function MachinePage() {
                 </td>
                 <td className="px-3 py-3">
                   <Link href={`/users/${s.username}`} className="text-sm text-muted-foreground hover:text-white transition-colors">
-                    {s.displayName ?? s.username}
+                    {s.displayName ?? `@${s.username}`}
                   </Link>
                 </td>
                 <td className="px-3 py-3">

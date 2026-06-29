@@ -34,6 +34,7 @@ router.get('/', async (req, res) => {
         machineImageUrl: machines.imageUrl,
         username: users.username,
         displayName: users.displayName,
+        createdAt: scores.createdAt,
       })
       .from(scores)
       .innerJoin(machines, eq(scores.machineId, machines.id))
