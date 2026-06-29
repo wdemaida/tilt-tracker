@@ -1,4 +1,4 @@
-import { useState } from 'react';
+﻿import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'wouter';
 import { ArrowLeft, ChevronUp, ChevronDown } from 'lucide-react';
@@ -70,7 +70,7 @@ export default function VenuePage() {
       </Link>
 
       <div className="mb-6">
-        <h1 className="text-3xl font-black uppercase tracking-widest text-white leading-tight">{venue.name}</h1>
+        <h1 className="text-3xl font-black uppercase tracking-widest text-venue leading-tight">{venue.name}</h1>
         {venue.address && (
           <p className="text-sm text-muted-foreground mt-1">{venue.address}</p>
         )}
@@ -109,8 +109,8 @@ export default function VenuePage() {
                     </span>
                   </td>
                   <td className="px-3 py-3">
-                    <Link href={`/users/${s.username}`} className="text-sm text-muted-foreground hover:text-white transition-colors">
-                      {s.displayName ?? `@${s.username}`}
+                    <Link href={`/users/${s.username}`} className="text-sm text-username hover:text-username/80 transition-colors">
+                      @{s.username}
                     </Link>
                   </td>
                   <td className="px-3 py-3 text-right font-bold text-lg text-primary whitespace-nowrap">
@@ -125,3 +125,4 @@ export default function VenuePage() {
     </div>
   );
 }
+

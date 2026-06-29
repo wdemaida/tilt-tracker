@@ -531,8 +531,10 @@ export default function MachinePage() {
           <div>
             <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Top Score</p>
             <p className="text-3xl font-black text-primary">{Number(best.score).toLocaleString()}</p>
-            <p className="text-xs text-muted-foreground">
-              {best.displayName ?? best.username}{' · '}{format(new Date(best.playedAt), 'MMM d, yyyy')}{best.venueName && ` · ${best.venueName}`}
+            <p className="text-xs text-muted-foreground mt-1">
+              <Link href={`/users/${best.username}`} className="text-username hover:text-username/80 transition-colors">@{best.username}</Link>
+              {' · '}{format(new Date(best.playedAt), 'MMM d, yyyy')}
+              {best.venueName && <> · <span className="text-venue">{best.venueName}</span></>}
             </p>
           </div>
         </div>
@@ -733,9 +735,9 @@ export default function MachinePage() {
             {venueDifficulty.map(v => {
               const { text, color } = difficultyLabel(v.diffPct);
               return (
-                <div key={v.venueId} className="rounded-lg border border-yellow-400/40 bg-white/3 p-3">
+                <div key={v.venueId} className="rounded-lg border border-venue/30 bg-white/3 p-3">
                   <div className="flex items-start justify-between gap-2 mb-1">
-                    <p className="text-sm font-semibold text-white truncate">{v.venueName}</p>
+                    <p className="text-sm font-semibold text-venue truncate">{v.venueName}</p>
                     <span className="text-xs font-bold px-2 py-0.5 rounded flex-shrink-0" style={{ color, background: `${color}20` }}>{text}</span>
                   </div>
                   <p className="text-xs text-muted-foreground">
@@ -772,15 +774,15 @@ export default function MachinePage() {
                       {s.id === best?.id && <span className="ml-2 text-xs font-bold bg-primary text-white px-1.5 py-0.5 rounded">BEST</span>}
                     </p>
                     {s.venueName && (
-                      <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
+                      <p className="text-xs text-venue flex items-center gap-1 mt-0.5">
                         <MapPin className="w-3 h-3" />{s.venueName}
                       </p>
                     )}
                   </div>
                 </td>
                 <td className="px-3 py-3">
-                  <Link href={`/users/${s.username}`} className="text-sm text-muted-foreground hover:text-white transition-colors">
-                    {s.displayName ?? `@${s.username}`}
+                  <Link href={`/users/${s.username}`} className="text-sm text-username hover:text-username/80 transition-colors">
+                    @{s.username}
                   </Link>
                 </td>
                 <td className="px-3 py-3">

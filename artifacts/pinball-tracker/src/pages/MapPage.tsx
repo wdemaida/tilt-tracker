@@ -84,7 +84,7 @@ export default function MapPage() {
                 <div className="px-4 pt-3 pb-3">
                   <div className="text-center mb-3">
                     {venueId ? (
-                      <Link href={`/venues/${venueId}`} className="font-black uppercase tracking-wider text-white text-sm hover:text-primary transition-colors leading-tight">
+                      <Link href={`/venues/${venueId}`} className="font-black uppercase tracking-wider text-venue text-sm hover:text-venue/80 transition-colors leading-tight">
                         {venueName ?? 'Unknown venue'}
                       </Link>
                     ) : (
@@ -116,10 +116,10 @@ export default function MapPage() {
                     </Link>
                     <p className="text-2xl font-bold text-primary mb-3">{Number(recent.score).toLocaleString()}</p>
                     <div className="flex flex-col items-center gap-0.5">
-                      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                      <Link href={`/users/${recent.username}`} className="flex items-center gap-1 text-xs text-username hover:text-username/80 transition-colors">
                         <User className="w-3 h-3 flex-shrink-0" />
                         <span>@{recent.username}</span>
-                      </div>
+                      </Link>
                       <div className="flex items-center gap-1 text-xs text-muted-foreground">
                         <Clock className="w-3 h-3 flex-shrink-0" />
                         <span>{format(new Date(recent.playedAt), 'M/d/yy · h:mm a')}</span>

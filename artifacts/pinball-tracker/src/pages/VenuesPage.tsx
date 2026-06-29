@@ -241,7 +241,7 @@ export default function VenuesPage() {
             <div className="flex items-center justify-between px-6 py-4 border-b border-white/10">
               <div>
                 <p className="text-xs text-muted-foreground uppercase tracking-wider font-bold">Machines at</p>
-                <h2 className="text-lg font-black uppercase tracking-wider text-white leading-tight">
+                <h2 className="text-lg font-black uppercase tracking-wider text-venue leading-tight">
                   {machinesData?.venue.name ?? '...'}
                 </h2>
               </div>
@@ -271,8 +271,8 @@ export default function VenuesPage() {
                             className="flex items-center justify-between rounded-lg border border-white/10 bg-background px-4 py-3"
                           >
                             <div className="flex items-center gap-2">
-                              <PinballIcon className="w-3.5 h-3.5 text-primary flex-shrink-0" />
-                              <span className="text-sm font-bold text-white">{m.name}</span>
+                              <PinballIcon className="w-3.5 h-3.5 text-machine flex-shrink-0" />
+                              <span className="text-sm font-bold text-machine">{m.name}</span>
                               <span className="text-xs text-muted-foreground">
                                 {m.playCount} {m.playCount === 1 ? 'play' : 'plays'}
                               </span>
@@ -299,11 +299,11 @@ export default function VenuesPage() {
                         {machinesData.pmMachines.map(m => (
                           <div
                             key={m.xrefId}
-                            className="flex items-center justify-between rounded-lg border border-violet-500/20 bg-violet-500/5 px-4 py-3"
+                            className="flex items-center justify-between rounded-lg border border-machine/20 bg-machine/5 px-4 py-3"
                           >
                             <div className="flex items-center gap-2">
-                              <PinballIcon className="w-3.5 h-3.5 text-violet-400 flex-shrink-0" />
-                              <span className="text-sm font-bold text-white">{m.name}</span>
+                              <PinballIcon className="w-3.5 h-3.5 text-machine flex-shrink-0" />
+                              <span className="text-sm font-bold text-machine">{m.name}</span>
                             </div>
                             {(m.manufacturer || m.year) && (
                               <span className="text-xs text-muted-foreground">
