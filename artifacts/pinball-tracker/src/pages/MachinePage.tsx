@@ -411,7 +411,9 @@ export default function MachinePage() {
       // positive diffPct = scores below player baseline = harder venue
       const diffPct = (1 - avgRatio) * 100;
       const avgScore = Math.round(vs.reduce((a: number, s: any) => a + Number(s.score), 0) / vs.length);
-      return [{ ...v, avgScore, count: vs.length, diffPct }];
+      const globalAvg = scores.reduce((a: number, s: any) => a + Number(s.score), 0) / scores.length;
+      const rawDiffPct = globalAvg ? ((avgScore - globalAvg) / globalAvg) * 100 : 0;
+      return [{ ...v, avgScore, count: vs.length, diffPct, rawDiffPct }];
     }).sort((a, b) => b.diffPct - a.diffPct);
   }, [scores, uniqueVenues]);
 
@@ -507,7 +509,7 @@ export default function MachinePage() {
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h1 className="text-3xl font-black uppercase tracking-widest text-white leading-tight">{machine.name}</h1>
+              <h1 className="text-3xl font-black uppercase tracking-widest text-machine leading-tight">{machine.name}</h1>
               {(machine.manufacturer || machine.year) && (
                 <p className="text-sm text-muted-foreground mt-0.5">{[machine.manufacturer, machine.year].filter(Boolean).join(' · ')}</p>
               )}
@@ -721,7 +723,7 @@ export default function MachinePage() {
           <h2 className="text-sm font-bold uppercase tracking-wider text-white mb-1">
             Venue Difficulty{' '}
             <span className="normal-case font-normal text-muted-foreground">
-              (vs. machine overall average of {formatScore(machineAvgScore)})
+              (vs. machine overall average of <span className="text-primary font-semibold">{formatScore(machineAvgScore)}</span>)
             </span>
           </h2>
           <p className="text-xs text-muted-foreground mb-4">
@@ -738,7 +740,7 @@ export default function MachinePage() {
                   </div>
                   <p className="text-xs text-muted-foreground">
                     Avg {formatScore(v.avgScore)} · {v.count} score{v.count !== 1 ? 's' : ''}
-                    {v.diffPct !== 0 && <> · {v.diffPct > 0 ? '+' : ''}{v.diffPct.toFixed(1)}% vs avg</>}
+                    {v.rawDiffPct !== 0 && <> · {v.rawDiffPct > 0 ? '+' : ''}{v.rawDiffPct.toFixed(1)}% vs avg</>}
                     {v.count < 3 && <span className="ml-1 opacity-60">(low confidence)</span>}
                   </p>
                 </div>

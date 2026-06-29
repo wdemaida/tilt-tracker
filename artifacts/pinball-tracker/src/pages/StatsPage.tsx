@@ -102,7 +102,7 @@ export default function StatsPage() {
                 {top5.map((m: any) => (
                   <div key={m.name} className="flex-1 relative" style={{ overflow: 'visible' }}>
                     <span
-                      className="absolute text-muted-foreground"
+                      className="absolute text-machine"
                       style={{
                         top: 0,
                         right: '50%',

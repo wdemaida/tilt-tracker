@@ -164,7 +164,7 @@ export default function MachinesPage() {
                         </div>
                       )}
                       <div className="min-w-0">
-                        <p className="text-sm font-black uppercase tracking-wider text-white truncate">{m.name}</p>
+                        <p className="text-sm font-black uppercase tracking-wider text-machine truncate">{m.name}</p>
                         {(m.manufacturer || m.year) && (
                           <p className="text-xs text-muted-foreground">{[m.manufacturer, m.year].filter(Boolean).join(' · ')}</p>
                         )}

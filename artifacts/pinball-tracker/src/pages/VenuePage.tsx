@@ -99,7 +99,7 @@ export default function VenuePage() {
                     <span className="block text-xs opacity-60">{format(new Date(s.playedAt), 'h:mm a')}</span>
                   </td>
                   <td className="px-3 py-3">
-                    <Link href={`/machines/${encodeURIComponent(s.machineName)}`} className="font-semibold text-white hover:text-primary transition-colors">
+                    <Link href={`/machines/${encodeURIComponent(s.machineName)}`} className="font-semibold text-machine hover:text-machine/80 transition-colors">
                       {s.machineName}
                     </Link>
                   </td>
