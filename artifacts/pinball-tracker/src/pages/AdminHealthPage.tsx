@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { Link, useLocation } from 'wouter';
+import AdminNav from '../components/AdminNav';
 import { ShieldCheck, RefreshCw, CheckCircle2, XCircle, HelpCircle, Database, Server, Cpu, ExternalLink, Wrench } from 'lucide-react';
 
 const DASHBOARD_URLS: Record<string, string> = {
@@ -55,22 +55,6 @@ function formatUptime(seconds: number) {
   return `${s}s`;
 }
 
-function AdminNav() {
-  const [location] = useLocation();
-  const tabs = [
-    { href: '/admin', label: 'Users' },
-    { href: '/admin/health', label: 'Health' },
-  ];
-  return (
-    <div className="flex gap-1 border-b border-white/10 mb-8">
-      {tabs.map(t => (
-        <Link key={t.href} href={t.href} className={`px-4 py-2.5 text-sm font-bold uppercase tracking-wider border-b-2 -mb-px transition-colors ${
-          location === t.href ? 'border-primary text-white' : 'border-transparent text-muted-foreground hover:text-white'
-        }`}>{t.label}</Link>
-      ))}
-    </div>
-  );
-}
 
 export default function AdminHealthPage() {
   const api = useApi();

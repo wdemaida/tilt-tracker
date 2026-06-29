@@ -84,14 +84,14 @@ export default function VenuesPage() {
           {(venues as Venue[]).map(venue => (
             <div
               key={venue.id}
-              className="rounded-xl border border-white/10 bg-card p-5 flex flex-col gap-3 hover:border-primary/30 transition-colors"
+              className="rounded-xl border border-white/10 bg-card p-5 flex flex-col gap-3 hover:border-venue/30 transition-colors"
             >
               <div className="flex items-start gap-3">
-                <div className="w-9 h-9 rounded-lg bg-primary/10 border border-primary/30 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <MapPin className="w-4 h-4 text-primary" />
+                <div className="w-9 h-9 rounded-lg bg-venue/10 border border-venue/30 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <MapPin className="w-4 h-4 text-venue" />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <Link href={`/venues/${venue.id}`} className="font-black uppercase tracking-wider text-white text-sm leading-tight hover:text-primary transition-colors">
+                  <Link href={`/venues/${venue.id}`} className="font-black uppercase tracking-wider text-white text-sm leading-tight hover:text-venue transition-colors">
                     {venue.name}
                   </Link>
                   {venue.address && (

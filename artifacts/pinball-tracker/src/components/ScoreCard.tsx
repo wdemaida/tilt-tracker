@@ -22,7 +22,7 @@ interface ScoreCardProps {
 
 export default function ScoreCard({ id: _id, machineName, score, playedAt, createdAt, type, venueName, photoThumbnail, username, isHighScore, isCurrentUser, onEdit, onDelete }: ScoreCardProps) {
   return (
-    <div className={`rounded-xl border bg-card p-4 flex flex-col gap-3 hover:border-primary/40 transition-colors ${isCurrentUser ? 'border-yellow-400/60' : 'border-white/10'}`}>
+    <div className={`rounded-xl border bg-card p-4 flex flex-col gap-3 hover:border-primary/40 transition-colors ${isCurrentUser ? 'border-username/60' : 'border-white/10'}`}>
       <div className="flex items-center justify-between">
         <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground border border-white/20 rounded px-2 py-0.5">
           {type}
@@ -56,7 +56,7 @@ export default function ScoreCard({ id: _id, machineName, score, playedAt, creat
           </Link>
           <div className="flex items-center gap-2 mt-1">
             <p className="text-3xl font-bold text-primary">{score.toLocaleString()}</p>
-            {isHighScore && <Trophy className="w-4 h-4 text-yellow-400 flex-shrink-0" />}
+            {isHighScore && <Trophy className="w-4 h-4 text-username flex-shrink-0" />}
           </div>
           <div className="flex flex-col gap-1 text-xs text-muted-foreground mt-2">
             <div className="flex items-center gap-1">
@@ -64,7 +64,7 @@ export default function ScoreCard({ id: _id, machineName, score, playedAt, creat
               <span>{format(new Date(playedAt), 'MMM d, yyyy · h:mm a')}</span>
             </div>
             {venueName && (
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-1 text-venue">
                 <MapPin className="w-3 h-3 flex-shrink-0" />
                 <span className="truncate">{venueName}</span>
               </div>
@@ -81,7 +81,7 @@ export default function ScoreCard({ id: _id, machineName, score, playedAt, creat
       </div>
 
       <div className="pt-1 border-t border-white/10 flex items-center justify-between">
-        <Link href={`/users/${username}`} className="text-xs text-yellow-400 hover:text-yellow-300 transition-colors">
+        <Link href={`/users/${username}`} className="text-xs text-username hover:text-username/80 transition-colors">
           @{username}
         </Link>
         {createdAt && (

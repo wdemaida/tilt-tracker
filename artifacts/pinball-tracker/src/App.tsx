@@ -20,6 +20,7 @@ import SignUpPage from './pages/SignUpPage';
 import NotFoundPage from './pages/NotFoundPage';
 import AdminPage from './pages/AdminPage';
 import AdminHealthPage from './pages/AdminHealthPage';
+import AdminConfigPage from './pages/AdminConfigPage';
 
 function AuthGate({ children }: { children: React.ReactNode }) {
   const { isSignedIn, isLoaded } = useAuth();
@@ -94,6 +95,9 @@ export default function App() {
         </Route>
         <Route path="/admin/health">
           <AdminGate><AdminHealthPage /></AdminGate>
+        </Route>
+        <Route path="/admin/config">
+          <AdminGate><AdminConfigPage /></AdminGate>
         </Route>
         <Route component={NotFoundPage} />
       </Switch>

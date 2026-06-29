@@ -428,10 +428,10 @@ export default function AddScorePage() {
                         key={v.venueId ?? v.hereId ?? v.name}
                         type="button"
                         onClick={() => selectVenueCard({ id: v.venueId, name: v.name, address: v.address, hereId: v.hereId, venueLat: v.venueLat, venueLng: v.venueLng, pinballMapId: v.pinballMapId })}
-                        className={`text-left px-3 py-2.5 rounded-lg border transition-colors ${isSelected ? 'border-primary/60 bg-primary/10' : 'border-white/10 hover:border-primary/40 hover:bg-white/5'}`}
+                        className={`text-left px-3 py-2.5 rounded-lg border transition-colors ${isSelected ? 'border-venue/60 bg-venue/10' : 'border-white/10 hover:border-venue/40 hover:bg-white/5'}`}
                       >
                         <div className="flex items-center gap-2">
-                          <MapPin className={`w-3.5 h-3.5 flex-shrink-0 ${isSelected ? 'text-primary' : 'text-muted-foreground'}`} />
+                          <MapPin className={`w-3.5 h-3.5 flex-shrink-0 ${isSelected ? 'text-venue' : 'text-muted-foreground'}`} />
                           <span className={`text-sm font-bold ${isSelected ? 'text-white' : 'text-white/80'}`}>{v.name}</span>
                           {userVisited ? <TagV /> : inSystem ? <TagTT /> : null}
                           {v.pinballMapId && <TagPM />}
@@ -463,10 +463,10 @@ export default function AddScorePage() {
                         key={v.id}
                         type="button"
                         onClick={() => selectVenueCard(v)}
-                        className={`text-left px-3 py-2.5 rounded-lg border transition-colors ${isSelected ? 'border-primary/60 bg-primary/10' : 'border-white/10 hover:border-primary/40 hover:bg-white/5'}`}
+                        className={`text-left px-3 py-2.5 rounded-lg border transition-colors ${isSelected ? 'border-venue/60 bg-venue/10' : 'border-white/10 hover:border-venue/40 hover:bg-white/5'}`}
                       >
                         <div className="flex items-center gap-2">
-                          <MapPin className={`w-3.5 h-3.5 flex-shrink-0 ${isSelected ? 'text-primary' : 'text-muted-foreground'}`} />
+                          <MapPin className={`w-3.5 h-3.5 flex-shrink-0 ${isSelected ? 'text-venue' : 'text-muted-foreground'}`} />
                           <span className={`text-sm font-bold ${isSelected ? 'text-white' : 'text-white/80'}`}>{v.name}</span>
                           <TagV />
                           {v.pinballMapId && <TagPM />}
@@ -530,8 +530,8 @@ export default function AddScorePage() {
             <h2 className="text-xl font-black uppercase tracking-widest text-white">Score Details</h2>
             {venueName && (
               <div className="flex items-center gap-1.5 mt-1">
-                <MapPin className="w-3 h-3 text-primary flex-shrink-0" />
-                <p className="text-sm text-primary font-medium truncate">{venueName}</p>
+                <MapPin className="w-3 h-3 text-venue flex-shrink-0" />
+                <p className="text-sm text-venue font-medium truncate">{venueName}</p>
               </div>
             )}
           </div>
