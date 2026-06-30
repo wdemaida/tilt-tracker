@@ -688,7 +688,7 @@ export default function MachinePage() {
                 <XAxis dataKey="x" type="number" scale="time" domain={['auto', 'auto']}
                   tick={AXIS_STYLE} tickLine={false} axisLine={false}
                   tickFormatter={v => format(new Date(v), 'MMM d')} />
-                <YAxis tick={AXIS_STYLE} tickLine={false} axisLine={false} tickFormatter={formatScore} width={48} />
+                <YAxis dataKey="y" type="number" domain={['auto', 'auto']} tick={AXIS_STYLE} tickLine={false} axisLine={false} tickFormatter={formatScore} width={48} />
                 <Tooltip content={<ScatterTooltip />} cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }} />
 
                 {scatterResult.type === 'aggregate' && (
