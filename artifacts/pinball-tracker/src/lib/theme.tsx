@@ -44,6 +44,7 @@ export const DEFAULT_COLORS = {
   machine:  '199 89% 60%',
   venue:    '84 81% 44%',
   username: '48 96% 53%',
+  field:    '270 91% 65%',
 } as const;
 
 export type ColorKey = keyof typeof DEFAULT_COLORS;

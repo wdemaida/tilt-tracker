@@ -7,6 +7,7 @@ const COLOR_CONFIG: { key: ColorKey; label: string; description: string }[] = [
   { key: 'machine',  label: 'Machines', description: 'Machine names across all pages' },
   { key: 'venue',    label: 'Venues',   description: 'Venue names and venue-related UI' },
   { key: 'username', label: 'Players',  description: 'Usernames, trophies, and your card borders' },
+  { key: 'field',    label: 'All Players Graph Assets', description: 'Other players\' dots and trendlines on trend charts when "All Players" is toggled' },
 ];
 
 function ColorRow({ item }: { item: typeof COLOR_CONFIG[number] }) {

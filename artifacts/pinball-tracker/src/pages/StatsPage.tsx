@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { Trophy } from 'lucide-react';
+import { Trophy, Repeat, CalendarDays, MapPin, UploadCloud } from 'lucide-react';
 import { PinballIcon } from '../components/PinballIcon';
 import { useApi } from '../lib/useApi';
 import { useScopeContext } from '../lib/ScopeContext';
@@ -53,7 +53,37 @@ export default function StatsPage() {
           <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">
             <Trophy className="w-4 h-4" /> Unique Machines
           </div>
-          <p className="text-5xl font-black text-white">{stats.mostPlayed?.length ?? 0}</p>
+          <p className="text-5xl font-black text-white">{stats.uniqueMachines ?? 0}</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
+        <div className="rounded-xl border border-white/10 bg-card p-5">
+          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">
+            <Repeat className="w-4 h-4" /> Plays / Visit
+          </div>
+          <p className="text-3xl font-black text-white">{(stats.playHabits?.avgPlaysPerVisit ?? 0).toFixed(1)}</p>
+        </div>
+
+        <div className="rounded-xl border border-white/10 bg-card p-5">
+          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">
+            <CalendarDays className="w-4 h-4" /> Plays / Month
+          </div>
+          <p className="text-3xl font-black text-white">{(stats.playHabits?.avgPlaysPerMonth ?? 0).toFixed(1)}</p>
+        </div>
+
+        <div className="rounded-xl border border-white/10 bg-card p-5">
+          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">
+            <MapPin className="w-4 h-4" /> Visits / Month
+          </div>
+          <p className="text-3xl font-black text-white">{(stats.playHabits?.avgVisitsPerMonth ?? 0).toFixed(1)}</p>
+        </div>
+
+        <div className="rounded-xl border border-white/10 bg-card p-5">
+          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">
+            <UploadCloud className="w-4 h-4" /> Scores Submitted / Day
+          </div>
+          <p className="text-3xl font-black text-white">{(stats.playHabits?.avgScoresSubmittedPerDay ?? 0).toFixed(1)}</p>
         </div>
       </div>
 

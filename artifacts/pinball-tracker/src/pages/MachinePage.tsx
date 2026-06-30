@@ -17,7 +17,6 @@ import { useApi } from '../lib/useApi';
 // ─── constants ────────────────────────────────────────────────────────────────
 
 const VENUE_COLORS  = ['#22d3ee', '#f97316', '#34d399', '#f472b6', '#60a5fa', '#e879f9'];
-const USER_COLORS   = ['#a855f7', '#22d3ee', '#f97316', '#34d399', '#f472b6', '#60a5fa'];
 const VISIT_GAP_MS  = 6 * 3600 * 1000; // 6-hour gap = new visit
 const ROLLING_WINDOW = 5;
 
@@ -173,7 +172,6 @@ function buildScatterData(
   scores: any[],
   myUsername: string | null,
   selectedVenueIds: number[],
-  viewMode: ViewMode,
 ) {
   const filtered = selectedVenueIds.length
     ? scores.filter(s => selectedVenueIds.includes(s.venueId))
@@ -181,19 +179,6 @@ function buildScatterData(
   const sorted = [...filtered].sort(
     (a, b) => new Date(a.playedAt).getTime() - new Date(b.playedAt).getTime(),
   );
-
-  if (viewMode === 'chaos') {
-    const users = [...new Set<string>(sorted.map(s => s.username as string))];
-    const ordered = myUsername ? [myUsername, ...users.filter(u => u !== myUsername)] : users;
-    const perUser = ordered.map(u => ({
-      username: u,
-      dots: sorted.filter(s => s.username === u).map(s => ({
-        x: new Date(s.playedAt).getTime(), y: Number(s.score),
-        venue: s.venueName, playedAt: s.playedAt,
-      })),
-    }));
-    return { type: 'chaos' as const, perUser, trendLine: [] };
-  }
 
   if (selectedVenueIds.length > 0) {
     const venues = [...new Map<number, string>(
@@ -205,20 +190,21 @@ function buildScatterData(
         x: new Date(s.playedAt).getTime(), y: Number(s.score), playedAt: s.playedAt,
       })),
     }));
-    return { type: 'venue' as const, perVenue, trendLine: [] };
+    return { type: 'venue' as const, perVenue };
   }
 
-  // aggregate
+  // aggregate — mine (always) + field (only rendered when "All Players" is on)
   const myDots = sorted.filter(s => s.username === myUsername).map(s => ({
     x: new Date(s.playedAt).getTime(), y: Number(s.score),
     venue: s.venueName, playedAt: s.playedAt,
   }));
   const fieldDots = sorted.filter(s => s.username !== myUsername).map(s => ({
     x: new Date(s.playedAt).getTime(), y: Number(s.score),
-    username: s.username, playedAt: s.playedAt,
+    venue: s.venueName, username: s.username, playedAt: s.playedAt,
   }));
-  const trendLine = rollingAvg(myDots);
-  return { type: 'aggregate' as const, myDots, fieldDots, trendLine };
+  const trendLine = rollingAvg(myDots).map(p => ({ ...p, owner: 'me' as const }));
+  const fieldTrendLine = rollingAvg(fieldDots).map(p => ({ ...p, owner: 'field' as const }));
+  return { type: 'aggregate' as const, myDots, fieldDots, trendLine, fieldTrendLine };
 }
 
 // ─── tooltips ─────────────────────────────────────────────────────────────────
@@ -246,11 +232,11 @@ function LineTooltip({ active, payload, label, chartMode, visitAgg, myUsername, 
               <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: p.color }} />
               <span style={{ color: p.color }} className="font-semibold truncate max-w-[140px]">{display}</span>
             </div>
-            <div className="pl-3.5 font-bold text-white">{Number(p.value).toLocaleString()}</div>
+            <div className="pl-3.5 font-bold text-primary">{Number(p.value).toLocaleString()}</div>
             {dateVal && (
               <div className="pl-3.5 text-muted-foreground">
                 {format(new Date(dateVal), 'MMM d, yyyy')}
-                {venue ? ` · ${venue}` : ''}
+                {venue ? <> · <span className="text-venue">{venue}</span></> : ''}
                 {count && count > 1 ? ` · ${count} plays` : ''}
                 {chartMode === 'visit' && visitAgg === 'average' ? ' (avg)' : ''}
               </div>
@@ -268,20 +254,21 @@ function ScatterTooltip({ active, payload }: any) {
   if (!d) return null;
   // trend line hover
   if ('trend' in d) {
+    const isField = d.owner === 'field';
     return (
       <div className="rounded-lg border border-white/20 bg-zinc-900/95 p-2.5 text-xs shadow-xl">
-        <p className="text-muted-foreground">Rolling avg ({ROLLING_WINDOW}-play)</p>
-        <p className="font-bold text-white">{Number(d.trend).toLocaleString()}</p>
+        <p className="text-muted-foreground">{isField ? "Others'" : 'Your'} rolling avg ({ROLLING_WINDOW}-play)</p>
+        <p className={`font-bold ${isField ? 'text-field' : 'text-primary'}`}>{Number(d.trend).toLocaleString()}</p>
         <p className="text-muted-foreground">{format(new Date(d.x), 'MMM d, yyyy')}</p>
       </div>
     );
   }
   return (
     <div className="rounded-lg border border-white/20 bg-zinc-900/95 p-2.5 text-xs shadow-xl">
-      <p className="font-bold text-white">{Number(d.y).toLocaleString()}</p>
+      <p className="font-bold text-primary">{Number(d.y).toLocaleString()}</p>
       {d.playedAt && <p className="text-muted-foreground">{format(new Date(d.playedAt), 'MMM d, yyyy · h:mm a')}</p>}
-      {d.venue    && <p className="text-muted-foreground">{d.venue}</p>}
-      {d.username && <p className="text-muted-foreground">@{d.username}</p>}
+      {d.venue    && <p className="text-venue">{d.venue}</p>}
+      {d.username && <p className="text-username">@{d.username}</p>}
     </div>
   );
 }
@@ -433,8 +420,8 @@ export default function MachinePage() {
 
   const scatterResult = useMemo(() => {
     if (chartMode !== 'scatter' || scores.length < 2) return null;
-    return buildScatterData(scores, myUsername, selectedVenueIds, viewMode);
-  }, [scores, chartMode, myUsername, selectedVenueIds, viewMode]);
+    return buildScatterData(scores, myUsername, selectedVenueIds);
+  }, [chartMode, scores, myUsername, selectedVenueIds]);
 
   // ── guards ──────────────────────────────────────────────────────────────────
 
@@ -487,7 +474,7 @@ export default function MachinePage() {
     const venueNote = selectedVenueIds.length > 0 ? ' (filtered by selected venue' + (selectedVenueIds.length > 1 ? 's' : '') + ')' : '';
     if (chartMode === 'scatter') {
       return viewMode === 'chaos'
-        ? `Every individual play as a dot on its actual date. Multiple dots close together are plays from the same visit${venueNote}.`
+        ? `Every individual play as a dot on its actual date — yours in yellow, everyone else's in purple. Dashed lines are each group's ${ROLLING_WINDOW}-play rolling average${venueNote}.`
         : `Every individual play as a dot on its actual date. Multiple dots on the same day are plays from the same visit. The dashed line is a ${ROLLING_WINDOW}-play rolling average${venueNote}.`;
     }
     if (chartMode === 'visit') {
@@ -617,19 +604,27 @@ export default function MachinePage() {
             <div className="flex items-center gap-4 mb-3 text-xs">
               {myUsername && <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 rounded bg-yellow-400" /><span className="text-muted-foreground">You ({myUsername})</span></div>}
               <div className="flex items-center gap-1.5">
-                <svg width="16" height="6"><line x1="0" y1="3" x2="16" y2="3" stroke="#a855f7" strokeWidth="1.5" strokeDasharray="4 3" /></svg>
+                <svg width="16" height="6"><line x1="0" y1="3" x2="16" y2="3" stroke="hsl(var(--field))" strokeWidth="1.5" strokeDasharray="4 3" /></svg>
                 <span className="text-muted-foreground">Field median</span>
               </div>
             </div>
           )}
-          {viewMode === 'aggregate' && chartMode === 'scatter' && scatterResult?.type === 'aggregate' && myUsername && (
-            <div className="flex items-center gap-4 mb-3 text-xs">
+          {chartMode === 'scatter' && scatterResult?.type === 'aggregate' && myUsername && (
+            <div className="flex items-center gap-4 mb-3 text-xs flex-wrap">
               <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-yellow-400" /><span className="text-muted-foreground">Your plays</span></div>
-              <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-purple-500 opacity-40" /><span className="text-muted-foreground">Others</span></div>
               <div className="flex items-center gap-1.5">
                 <svg width="16" height="6"><line x1="0" y1="3" x2="16" y2="3" stroke="#facc15" strokeWidth="1.5" strokeDasharray="4 3" /></svg>
                 <span className="text-muted-foreground">{ROLLING_WINDOW}-play rolling avg</span>
               </div>
+              {viewMode === 'chaos' && (
+                <>
+                  <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-field opacity-40" /><span className="text-muted-foreground">Others' plays</span></div>
+                  <div className="flex items-center gap-1.5">
+                    <svg width="16" height="6"><line x1="0" y1="3" x2="16" y2="3" stroke="hsl(var(--field))" strokeWidth="1.5" strokeDasharray="4 3" /></svg>
+                    <span className="text-muted-foreground">Others' rolling avg</span>
+                  </div>
+                </>
+              )}
             </div>
           )}
 
@@ -659,7 +654,7 @@ export default function MachinePage() {
                 />
                 {lineResult.type === 'aggregate' && (
                   <>
-                    <Line type="monotone" dataKey="field" stroke="#a855f7" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls={false} />
+                    <Line type="monotone" dataKey="field" stroke="hsl(var(--field))" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls={false} />
                     {myUsername && (
                       <Line type="monotone" dataKey="my" stroke="#facc15" strokeWidth={2.5}
                         dot={{ fill: '#facc15', r: 4, strokeWidth: 0 }} activeDot={{ r: 6, strokeWidth: 0 }} connectNulls={false} />
@@ -683,7 +678,11 @@ export default function MachinePage() {
               </LineChart>
             ) : scatterResult ? (
               <ComposedChart margin={{ top: 4, right: 8, left: 0, bottom: 4 }}
-                data={scatterResult.type === 'aggregate' ? scatterResult.trendLine : []}>
+                data={
+                  scatterResult.type === 'venue'
+                    ? scatterResult.perVenue.flatMap(v => v.dots)
+                    : [...scatterResult.myDots, ...(viewMode === 'chaos' ? scatterResult.fieldDots : [])]
+                }>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
                 <XAxis dataKey="x" type="number" scale="time" domain={['auto', 'auto']}
                   tick={AXIS_STYLE} tickLine={false} axisLine={false}
@@ -693,24 +692,22 @@ export default function MachinePage() {
 
                 {scatterResult.type === 'aggregate' && (
                   <>
-                    {scatterResult.fieldDots.length > 0 && (
-                      <Scatter data={scatterResult.fieldDots} fill="#a855f7" fillOpacity={0.25} />
+                    {viewMode === 'chaos' && scatterResult.fieldDots.length > 0 && (
+                      <Scatter dataKey="y" data={scatterResult.fieldDots} name="Others" fill="hsl(var(--field))" fillOpacity={0.4} />
                     )}
                     {scatterResult.myDots.length > 0 && (
-                      <Scatter data={scatterResult.myDots} fill="#facc15" />
+                      <Scatter dataKey="y" data={scatterResult.myDots} name={myUsername ?? 'You'} fill="#facc15" />
                     )}
                     {scatterResult.trendLine.length >= 2 && (
-                      <Line dataKey="trend" stroke="#facc15" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
+                      <Line dataKey="trend" data={scatterResult.trendLine} stroke="#facc15" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
+                    )}
+                    {viewMode === 'chaos' && scatterResult.fieldTrendLine.length >= 2 && (
+                      <Line dataKey="trend" data={scatterResult.fieldTrendLine} stroke="hsl(var(--field))" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
                     )}
                   </>
                 )}
-                {scatterResult.type === 'chaos' && scatterResult.perUser.map((u, i) => (
-                  <Scatter key={u.username} data={u.dots}
-                    fill={u.username === myUsername ? '#facc15' : USER_COLORS[i % USER_COLORS.length]}
-                    fillOpacity={u.username === myUsername ? 1 : 0.5} />
-                ))}
                 {scatterResult.type === 'venue' && scatterResult.perVenue.map((v, i) => (
-                  <Scatter key={v.venueName} data={v.dots} fill={VENUE_COLORS[i % VENUE_COLORS.length]} />
+                  <Scatter key={v.venueName} dataKey="y" data={v.dots} name={v.venueName} fill={VENUE_COLORS[i % VENUE_COLORS.length]} />
                 ))}
               </ComposedChart>
             ) : (
