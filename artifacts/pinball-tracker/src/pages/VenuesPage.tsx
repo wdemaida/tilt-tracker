@@ -91,7 +91,7 @@ export default function VenuesPage() {
                   <MapPin className="w-4 h-4 text-venue" />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <Link href={`/venues/${venue.id}`} className="font-black uppercase tracking-wider text-white text-sm leading-tight hover:text-venue transition-colors">
+                  <Link href={`/venues/${venue.id}`} className="font-black uppercase tracking-wider text-venue text-sm leading-tight hover:text-venue/80 transition-colors">
                     {venue.name}
                   </Link>
                   {venue.address && (

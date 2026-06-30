@@ -394,15 +394,23 @@ export default function MachinePage() {
 
   const venueDifficulty = useMemo(() => {
     if (uniqueVenues.length < 2) return [];
-    // Build each player's average score on this machine across all venues
+    // Only include players who have played this machine at 2+ venues — single-venue players
+    // always produce a ratio of 1.0 (their average equals their score there), adding pure noise.
+    const playerVenueIds: Record<string, Set<number>> = {};
+    for (const s of scores as any[]) {
+      if (s.venueId == null) continue;
+      if (!playerVenueIds[s.username]) playerVenueIds[s.username] = new Set();
+      playerVenueIds[s.username].add(s.venueId);
+    }
     const playerAvgs: Record<string, number> = {};
-    for (const u of [...new Set<string>(scores.map((s: any) => s.username as string))]) {
-      const ps = scores.filter((s: any) => s.username === u).map((s: any) => Number(s.score));
+    for (const u of [...new Set<string>((scores as any[]).map((s: any) => s.username as string))]) {
+      if ((playerVenueIds[u]?.size ?? 0) < 2) continue; // skip single-venue players
+      const ps = (scores as any[]).filter((s: any) => s.username === u).map((s: any) => Number(s.score));
       playerAvgs[u] = ps.reduce((a: number, b: number) => a + b, 0) / ps.length;
     }
     return uniqueVenues.flatMap(v => {
-      const vs = scores.filter((s: any) => s.venueId === v.venueId);
-      // Normalize each score by that player's own average — controls for skill differences across venues
+      const vs = (scores as any[]).filter((s: any) => s.venueId === v.venueId);
+      // Normalize each score by that player's own cross-venue average
       const ratios = vs
         .filter((s: any) => (playerAvgs[s.username] ?? 0) > 0)
         .map((s: any) => Number(s.score) / playerAvgs[s.username]);
@@ -411,9 +419,9 @@ export default function MachinePage() {
       // positive diffPct = scores below player baseline = harder venue
       const diffPct = (1 - avgRatio) * 100;
       const avgScore = Math.round(vs.reduce((a: number, s: any) => a + Number(s.score), 0) / vs.length);
-      const globalAvg = scores.reduce((a: number, s: any) => a + Number(s.score), 0) / scores.length;
+      const globalAvg = (scores as any[]).reduce((a: number, s: any) => a + Number(s.score), 0) / scores.length;
       const rawDiffPct = globalAvg ? ((avgScore - globalAvg) / globalAvg) * 100 : 0;
-      return [{ ...v, avgScore, count: vs.length, diffPct, rawDiffPct }];
+      return [{ ...v, avgScore, count: vs.length, diffPct, rawDiffPct, crossVenueCount: ratios.length }];
     }).sort((a, b) => b.diffPct - a.diffPct);
   }, [scores, uniqueVenues]);
 
@@ -729,11 +737,12 @@ export default function MachinePage() {
             </span>
           </h2>
           <p className="text-xs text-muted-foreground mb-4">
-            Player-normalized: each score is compared to that player's own average on this machine, controlling for skill differences across venues.
+            Player-normalized: based on players who have played this machine at multiple venues, isolating venue difficulty from player skill.
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {venueDifficulty.map(v => {
               const { text, color } = difficultyLabel(v.diffPct);
+              const lowConf = v.crossVenueCount < 3;
               return (
                 <div key={v.venueId} className="rounded-lg border border-venue/30 bg-white/3 p-3">
                   <div className="flex items-start justify-between gap-2 mb-1">
@@ -743,7 +752,7 @@ export default function MachinePage() {
                   <p className="text-xs text-muted-foreground">
                     Avg {formatScore(v.avgScore)} · {v.count} score{v.count !== 1 ? 's' : ''}
                     {v.rawDiffPct !== 0 && <> · {v.rawDiffPct > 0 ? '+' : ''}{v.rawDiffPct.toFixed(1)}% vs avg</>}
-                    {v.count < 3 && <span className="ml-1 opacity-60">(low confidence)</span>}
+                    {lowConf && <span className="ml-1 opacity-60">(low confidence)</span>}
                   </p>
                 </div>
               );
