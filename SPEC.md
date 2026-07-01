@@ -114,21 +114,39 @@ A pinball high score tracker called **TILTTRACK**. Users photograph their pinbal
 - MOST PLAYED MACHINES: bar chart (machine name on x-axis, play count on y-axis), pink bars
 - PLAY STYLE panel: Casual Drops count + bar, Tournament Play count + bar, "Tournament games account for X% of your total recorded plays."
 
-### Add Score — 2-Step Wizard (`/add`)
+### Add Score — 4-Step Wizard (`/add`)
+
 **Step 1 — Upload Evidence:**
 - Dashed-border dropzone (pink outline)
 - Camera icon + "TAP TO TAKE PHOTO / or choose from camera roll"
 - Hidden `<input type="file" accept="image/*">`
-- HEIC conversion handled server-side before sending to AI
+- HEIC conversion handled server-side; GPS extracted from EXIF *before* conversion (conversion strips it)
+- AI extracts: machine name, score, `DateTimeOriginal` timestamp, GPS coordinates
 - Escape hatch: "SKIP AI & ENTER MANUALLY >" link
 
-**Step 2 — Confirm / Edit Details (after AI or manual skip):**
-- AI extracts from photo: machine name, score, timestamp, GPS coordinates
-- Machine name typeahead searches Pinball Map API (~2,261 machines); user picks correct variant (e.g. Metallica Pro vs LE vs Premium)
-- Selected machine upserted to local `machines` table, linked to the score
-- GPS coordinates → HERE Places API call for nearby venue name
-- User confirms/edits all fields before saving
-- Type selection: CASUAL or TOURNAMENT
+**Step 2 — Venue:**
+- Nearby venues listed (from AI GPS → HERE API browse endpoint, commercial categories)
+- Venue tiles show tags: **TT** (violet) = already in TiltTrack system, **V** (yellow) = current user has scored there, **PM** (green) = linked to Pinball Map
+- Legend below "Skip — no venue" explains TT / PM / V
+- User's other venues listed below nearby, always showing V tag
+- Selecting a venue pre-fetches its Pinball Map machine inventory in background
+
+**Step 3 — Score Details:**
+- Machine section uses three-stage design:
+  1. **AI read banner** (amber) — shows what AI detected from the photo; only visible when no PM exact match was auto-selected
+  2. **"Suggested machines"** list — all PM machines at venue, with AI-matching ones sorted to the top; highlighted row = final selection; no text input visible
+  3. **"Use [name] directly →"** escape hatch — lets user accept AI-scraped name even if not in PM list (triggers PM mismatch confirmation on save)
+- Auto-select: if AI-detected name exactly matches a PM machine name, it's selected silently (no banner needed)
+- Save guard: if effective machine name isn't in PM list, "Machine Not Found" confirmation dialog fires before saving ("Yes, Save Score Anyway" / "No, I'll Update It")
+- Machine upsert passes `manufacturer` + `year` from PM selection for data quality (fallback if PM global cache lookup misses)
+- Score, Date/Time, Type (Casual / Tournament) fields below machine picker
+
+**Step 4 — Pinball Map Cross-post:**
+- Success screen with score summary
+- "Post to Pinball Map" amber panel appears if venue has a PM id
+- PM login form collapsed by default; "Log in to post score ›" chevron expands it
+- Stored PM token reused if available (no re-entry required); force re-entry on expiry
+- "Done" button navigates home
 
 ### New User Onboarding (`/setup`)
 - Triggered automatically after first Clerk login if no profile exists
@@ -165,10 +183,13 @@ A pinball high score tracker called **TILTTRACK**. Users photograph their pinbal
 | Field | Type | Notes |
 |-------|------|-------|
 | id | serial | primary key |
-| name | string | e.g. "The Munsters" |
-| opdb_id | string | from Pinball Map API |
-| ipdb_id | string | from Pinball Map API |
+| name | string | unique; e.g. "The Munsters Pro" — always the exact PM name when available |
+| opdb_id | string | from Pinball Map global cache |
+| ipdb_id | string | from Pinball Map global cache |
 | variant | string | Pro / LE / Premium / Standard |
+| manufacturer | string | e.g. "Stern Pinball" — enriched from PM cache on upsert |
+| year | integer | release year — enriched from PM cache on upsert |
+| image_url | string | OPDB flyer URL — enriched from PM cache on upsert |
 | created_at | timestamp | |
 
 ### `scores`

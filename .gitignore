@@ -24,3 +24,11 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+.claude/settings.local.json
+
+# Playwright MCP debug snapshots
+.playwright-mcp/
+
+# Dev scratch: seed scripts + reference images (not part of shipped app)
+artifacts/api-server/seedData/
+context-images/
