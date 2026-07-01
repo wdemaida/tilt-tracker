@@ -10,4 +10,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Ping API health endpoint
-        run: curl -fsS --max-time 20 https://tilt-tracker.onrender.com/ping
+        run: curl -fsS --max-time 50 https://tilt-tracker.onrender.com/ping
