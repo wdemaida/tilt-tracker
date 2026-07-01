@@ -38,7 +38,7 @@ function statsMedian(arr: number[]): number | null {
   if (!arr.length) return null;
   const s = [...arr].sort((a, b) => a - b);
   const m = Math.floor(s.length / 2);
-  return s.length % 2 === 0 ? (s[m - 1] + s[m]) / 2 : s[m];
+  return s.length % 2 === 0 ? Math.round((s[m - 1] + s[m]) / 2) : s[m];
 }
 
 function clusterVisits(plays: any[]): any[][] {
@@ -58,7 +58,7 @@ function clusterVisits(plays: any[]): any[][] {
 function rollingAvg(plays: { x: number; y: number }[], window = ROLLING_WINDOW) {
   return plays.map((p, i) => {
     const slice = plays.slice(Math.max(0, i - window + 1), i + 1);
-    return { x: p.x, trend: slice.reduce((s, d) => s + d.y, 0) / slice.length };
+    return { x: p.x, trend: Math.round(slice.reduce((s, d) => s + d.y, 0) / slice.length) };
   });
 }
 
@@ -250,7 +250,10 @@ function LineTooltip({ active, payload, label, chartMode, visitAgg, myUsername, 
 
 function ScatterTooltip({ active, payload }: any) {
   if (!active || !payload?.length) return null;
-  const d = payload[0]?.payload;
+  // recharts always puts the trend-line entry first when a dot and a trend
+  // point share the same x — prefer an actual dot's payload when one is present.
+  const dotEntry = payload.find((p: any) => p.payload && !('trend' in p.payload));
+  const d = (dotEntry ?? payload[0])?.payload;
   if (!d) return null;
   // trend line hover
   if ('trend' in d) {
@@ -466,7 +469,7 @@ export default function MachinePage() {
 
   // ── chaos color helpers ─────────────────────────────────────────────────────
 
-  function chaosLineColor(u: string) { return u === myUsername ? '#facc15' : '#a855f7'; }
+  function chaosLineColor(u: string) { return u === myUsername ? 'hsl(var(--username))' : 'hsl(var(--field))'; }
 
   // ── chart description ───────────────────────────────────────────────────────
 
@@ -602,7 +605,7 @@ export default function MachinePage() {
           {/* Aggregate mode legend */}
           {viewMode === 'aggregate' && chartMode !== 'scatter' && lineResult?.type === 'aggregate' && (
             <div className="flex items-center gap-4 mb-3 text-xs">
-              {myUsername && <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 rounded bg-yellow-400" /><span className="text-muted-foreground">You ({myUsername})</span></div>}
+              {myUsername && <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 rounded bg-username" /><span className="text-muted-foreground">You ({myUsername})</span></div>}
               <div className="flex items-center gap-1.5">
                 <svg width="16" height="6"><line x1="0" y1="3" x2="16" y2="3" stroke="hsl(var(--field))" strokeWidth="1.5" strokeDasharray="4 3" /></svg>
                 <span className="text-muted-foreground">Field median</span>
@@ -611,9 +614,9 @@ export default function MachinePage() {
           )}
           {chartMode === 'scatter' && scatterResult?.type === 'aggregate' && myUsername && (
             <div className="flex items-center gap-4 mb-3 text-xs flex-wrap">
-              <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-yellow-400" /><span className="text-muted-foreground">Your plays</span></div>
+              <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-username" /><span className="text-muted-foreground">Your plays</span></div>
               <div className="flex items-center gap-1.5">
-                <svg width="16" height="6"><line x1="0" y1="3" x2="16" y2="3" stroke="#facc15" strokeWidth="1.5" strokeDasharray="4 3" /></svg>
+                <svg width="16" height="6"><line x1="0" y1="3" x2="16" y2="3" stroke="hsl(var(--username))" strokeWidth="1.5" strokeDasharray="4 3" /></svg>
                 <span className="text-muted-foreground">{ROLLING_WINDOW}-play rolling avg</span>
               </div>
               {viewMode === 'chaos' && (
@@ -656,8 +659,8 @@ export default function MachinePage() {
                   <>
                     <Line type="monotone" dataKey="field" stroke="hsl(var(--field))" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls={false} />
                     {myUsername && (
-                      <Line type="monotone" dataKey="my" stroke="#facc15" strokeWidth={2.5}
-                        dot={{ fill: '#facc15', r: 4, strokeWidth: 0 }} activeDot={{ r: 6, strokeWidth: 0 }} connectNulls={false} />
+                      <Line type="monotone" dataKey="my" stroke="hsl(var(--username))" strokeWidth={2.5}
+                        dot={{ fill: 'hsl(var(--username))', r: 4, strokeWidth: 0 }} activeDot={{ r: 6, strokeWidth: 0 }} connectNulls={false} />
                     )}
                   </>
                 )}
@@ -696,10 +699,10 @@ export default function MachinePage() {
                       <Scatter dataKey="y" data={scatterResult.fieldDots} name="Others" fill="hsl(var(--field))" fillOpacity={0.4} />
                     )}
                     {scatterResult.myDots.length > 0 && (
-                      <Scatter dataKey="y" data={scatterResult.myDots} name={myUsername ?? 'You'} fill="#facc15" />
+                      <Scatter dataKey="y" data={scatterResult.myDots} name={myUsername ?? 'You'} fill="hsl(var(--username))" />
                     )}
                     {scatterResult.trendLine.length >= 2 && (
-                      <Line dataKey="trend" data={scatterResult.trendLine} stroke="#facc15" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
+                      <Line dataKey="trend" data={scatterResult.trendLine} stroke="hsl(var(--username))" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
                     )}
                     {viewMode === 'chaos' && scatterResult.fieldTrendLine.length >= 2 && (
                       <Line dataKey="trend" data={scatterResult.fieldTrendLine} stroke="hsl(var(--field))" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />

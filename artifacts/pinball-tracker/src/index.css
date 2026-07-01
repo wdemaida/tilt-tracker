@@ -30,6 +30,18 @@ body {
   background: hsl(var(--background));
 }
 
+/*
+ * Leaflet's bundled CSS sets ".leaflet-container a { color: #0078A8 }" which,
+ * by specificity, beats our single-class Tailwind color utilities (text-venue,
+ * text-machine, text-username) on links inside popups. Bump those utilities'
+ * specificity within Leaflet containers so branded colors still win.
+ */
+.leaflet-container .text-venue { color: hsl(var(--venue)); }
+.leaflet-container .text-machine { color: hsl(var(--machine)); }
+.leaflet-container .text-username { color: hsl(var(--username)); }
+.leaflet-container .text-primary { color: hsl(var(--primary)); }
+.leaflet-container .text-field { color: hsl(var(--field)); }
+
 /* Dark-theme popup shell */
 .leaflet-popup-content-wrapper {
   background: hsl(var(--card)) !important;
