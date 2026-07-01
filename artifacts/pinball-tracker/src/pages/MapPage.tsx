@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import { Link, useSearch } from 'wouter';
@@ -78,6 +78,16 @@ export default function MapPage() {
   const mapCenter: [number, number] = locations[0] ? [locations[0].lat, locations[0].lng] : [42.36, -71.06];
   const mapZoom = filterVenueId ? 15 : (locations.length ? 8 : 4);
 
+  // react-leaflet's Popup binds itself to the marker inside a useEffect, which runs
+  // after ref callbacks fire — calling openPopup() straight from the Marker ref (as
+  // this used to) fires before that bind exists, so it silently no-ops. Routing the
+  // instance through state defers the openPopup() call to our own effect, which runs
+  // after the Popup's bind effect has already committed.
+  const [autoPopupMarker, setAutoPopupMarker] = useState<L.Marker | null>(null);
+  useEffect(() => {
+    autoPopupMarker?.openPopup();
+  }, [autoPopupMarker]);
+
   return (
     <div>
       <div className="flex items-start justify-between gap-4 mb-1">
@@ -108,7 +118,7 @@ export default function MapPage() {
               key={`${lat},${lng}`}
               position={[lat, lng]}
               icon={hasMyScore ? PIN_MINE : PIN_OTHERS}
-              ref={filterVenueId ? (instance) => { instance?.openPopup(); } : undefined}
+              ref={filterVenueId ? setAutoPopupMarker : undefined}
             >
               <Popup minWidth={220}>
                 {/* Location section */}
