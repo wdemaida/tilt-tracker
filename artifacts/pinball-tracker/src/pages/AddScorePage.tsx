@@ -119,28 +119,43 @@ export default function AddScorePage() {
     enabled: selectedVenue?.venueId == null && selectedVenue?.pinballMapId != null,
   });
 
-  // Deduplicated machine list: user's played machines first, then unplayed PM machines
+  // Recently-removed machines still count as valid suggestions — e.g. a photo taken Friday
+  // night might not get uploaded until Monday, after an operator swap already hit Pinball Map.
+  const RECENTLY_LEFT_DAYS = 90;
+
+  // Deduplicated machine list: user's played machines first, then unplayed PM machines,
+  // then recently-removed machines (so a late upload of a since-rotated machine still matches)
   const allVenueMachines = useMemo(() => {
     if (venueData) {
       const ownNames = new Set((venueData.ownMachines as any[]).map((m: any) => m.name.toLowerCase()));
       const ttNames = new Set(((venueData.ttMachineNames as string[]) ?? []).map((n: string) => n.toLowerCase()));
+      const pmNames = new Set((venueData.pmMachines as any[]).map((m: any) => m.name.toLowerCase()));
+      const cutoff = Date.now() - RECENTLY_LEFT_DAYS * 24 * 60 * 60 * 1000;
       return [
         ...(venueData.ownMachines as any[]).map((m: any) => ({
-          name: m.name as string, played: true, playCount: m.playCount as number, inTiltTrack: true,
+          name: m.name as string, played: true, playCount: m.playCount as number, inTiltTrack: true, recentlyLeft: false,
           manufacturer: undefined as string | undefined, year: undefined as number | undefined,
         })),
         ...(venueData.pmMachines as any[])
           .filter((m: any) => !ownNames.has(m.name.toLowerCase()))
           .map((m: any) => ({
             name: m.name as string, played: false, playCount: 0,
-            inTiltTrack: ttNames.has(m.name.toLowerCase()),
+            inTiltTrack: ttNames.has(m.name.toLowerCase()), recentlyLeft: false,
+            manufacturer: m.manufacturer as string | undefined, year: m.year as number | undefined,
+          })),
+        ...((venueData.formerMachines as any[]) ?? [])
+          .filter((m: any) => !ownNames.has(m.name.toLowerCase()) && !pmNames.has(m.name.toLowerCase()))
+          .filter((m: any) => new Date(m.removedAt).getTime() >= cutoff)
+          .map((m: any) => ({
+            name: m.name as string, played: false, playCount: 0,
+            inTiltTrack: ttNames.has(m.name.toLowerCase()), recentlyLeft: true,
             manufacturer: m.manufacturer as string | undefined, year: m.year as number | undefined,
           })),
       ];
     }
     if (pmOnlyData) {
       return (pmOnlyData.pmMachines as any[]).map((m: any) => ({
-        name: m.name as string, played: false, playCount: 0, inTiltTrack: false,
+        name: m.name as string, played: false, playCount: 0, inTiltTrack: false, recentlyLeft: false,
         manufacturer: m.manufacturer as string | undefined, year: m.year as number | undefined,
       }));
     }
@@ -575,6 +590,9 @@ export default function AddScorePage() {
                             <div className="flex items-center gap-2">
                               <PinballIcon className={`w-3.5 h-3.5 flex-shrink-0 ${isSelected ? 'text-primary' : 'text-muted-foreground'}`} />
                               <span className={`text-sm font-bold ${isSelected ? 'text-white' : 'text-white/80'}`}>{m.name}</span>
+                              {m.recentlyLeft && (
+                                <span className="text-xs px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-medium">Recently left</span>
+                              )}
                               {m.inTiltTrack && !m.played && (
                                 <span className="text-xs px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 font-medium">TT</span>
                               )}

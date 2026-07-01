@@ -1,4 +1,4 @@
-import { pgTable, serial, text, bigint, timestamp, real, integer, pgEnum } from 'drizzle-orm/pg-core';
+import { pgTable, serial, text, bigint, timestamp, real, integer, pgEnum, uniqueIndex } from 'drizzle-orm/pg-core';
 
 export const scoreTypeEnum = pgEnum('score_type', ['casual', 'tournament']);
 export const userRoleEnum = pgEnum('user_role', ['admin', 'user']);
@@ -54,6 +54,17 @@ export const scores = pgTable('scores', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
+export const venueMachineHistory = pgTable('venue_machine_history', {
+  id: serial('id').primaryKey(),
+  venueId: integer('venue_id').references(() => venues.id).notNull(),
+  machineId: integer('machine_id').references(() => machines.id).notNull(),
+  firstSeenAt: timestamp('first_seen_at').defaultNow().notNull(),
+  lastSeenAt: timestamp('last_seen_at').defaultNow().notNull(),
+  removedAt: timestamp('removed_at'),
+}, (table) => ({
+  venueMachineUnique: uniqueIndex('venue_machine_history_venue_machine_idx').on(table.venueId, table.machineId),
+}));
+
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 export type Machine = typeof machines.$inferSelect;
@@ -62,3 +73,5 @@ export type Venue = typeof venues.$inferSelect;
 export type NewVenue = typeof venues.$inferInsert;
 export type Score = typeof scores.$inferSelect;
 export type NewScore = typeof scores.$inferInsert;
+export type VenueMachineHistory = typeof venueMachineHistory.$inferSelect;
+export type NewVenueMachineHistory = typeof venueMachineHistory.$inferInsert;

@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { db, machines, scores, users } from '@workspace/db';
-import { eq, desc, max, count, sql, isNotNull } from 'drizzle-orm';
-import { searchMachines, getAllMachines } from '../lib/pinballMap.js';
+import { eq, desc, max, count, isNotNull } from 'drizzle-orm';
+import { searchMachines } from '../lib/pinballMap.js';
+import { upsertMachineByName } from '../lib/machineUpsert.js';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { getAuth } from '@clerk/express';
 
@@ -85,37 +86,10 @@ router.get('/:name', async (req, res) => {
 
 // POST /api/machines — upsert a machine, enriching with PM data
 router.post('/', async (req, res) => {
-  const { name, opdbId, ipdbId, variant, manufacturer: callerManufacturer, year: callerYear } = req.body;
+  const { name, opdbId, ipdbId, variant, manufacturer, year } = req.body;
   if (!name) return res.status(400).json({ error: 'name is required' });
   try {
-    // Enrich from Pinball Map cache; callerManufacturer/callerYear are fallbacks when PM lookup misses
-    const pmAll = await getAllMachines().catch(() => []);
-    const pm = pmAll.find(m => m.name.toLowerCase() === name.toLowerCase());
-
-    const [row] = await db
-      .insert(machines)
-      .values({
-        name,
-        opdbId: opdbId ?? pm?.opdb_id ?? null,
-        ipdbId: ipdbId ?? null,
-        variant: variant ?? null,
-        manufacturer: pm?.manufacturer ?? callerManufacturer ?? null,
-        year: pm?.year ?? callerYear ?? null,
-        imageUrl: pm?.opdb_img ?? null,
-      })
-      .onConflictDoUpdate({
-        target: machines.name,
-        set: {
-          name: sql`excluded.name`,
-          ...(opdbId !== undefined && { opdbId }),
-          ...(ipdbId !== undefined && { ipdbId }),
-          ...(variant !== undefined && { variant }),
-          manufacturer: sql`COALESCE(machines.manufacturer, excluded.manufacturer)`,
-          year: sql`COALESCE(machines.year, excluded.year)`,
-          imageUrl: sql`COALESCE(machines.image_url, excluded.image_url)`,
-        },
-      })
-      .returning();
+    const row = await upsertMachineByName(name, { opdbId, ipdbId, variant, manufacturer, year });
     res.status(201).json(row);
   } catch (err) {
     console.error('Upsert machine error:', err);

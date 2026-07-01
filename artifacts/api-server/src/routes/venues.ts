@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { db, scores, venues, machines, users } from '@workspace/db';
 import { eq, desc, count, sql, and } from 'drizzle-orm';
 import { getPmMachinesAtLocation } from '../lib/pinballmapApi.js';
+import { syncVenueMachineHistory, getFormerMachines } from '../lib/venueHistory.js';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { getAuth } from '@clerk/express';
 
@@ -104,6 +105,7 @@ router.get('/:id/machines', async (req, res) => {
     const ttMachineNames = ttRows.map(r => r.name);
 
     let pmMachines: Array<{ xrefId: number; id: number; name: string; manufacturer?: string; year?: number }> = [];
+    let formerMachines: Awaited<ReturnType<typeof getFormerMachines>> = [];
     if (venue.pinballMapId) {
       const xrefs = await getPmMachinesAtLocation(venue.pinballMapId);
       pmMachines = xrefs.map(x => ({
@@ -116,9 +118,12 @@ router.get('/:id/machines', async (req, res) => {
       if (venue.pmMachineCount !== pmMachines.length) {
         await db.update(venues).set({ pmMachineCount: pmMachines.length }).where(eq(venues.id, id));
       }
+      // Best-effort — a history sync failure shouldn't break the machine list the page needs
+      await syncVenueMachineHistory(id, xrefs).catch(err => console.error('Venue history sync error:', err));
+      formerMachines = await getFormerMachines(id);
     }
 
-    res.json({ venue, ownMachines, pmMachines, ttMachineNames });
+    res.json({ venue, ownMachines, pmMachines, ttMachineNames, formerMachines });
   } catch (err) {
     console.error('Venue machines error:', err);
     res.status(500).json({ error: 'Failed to fetch venue machines' });

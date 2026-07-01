@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { Link } from 'wouter';
 import { MapPin, Trophy, X, ExternalLink, Pencil, Trash2 } from 'lucide-react';
+import { format } from 'date-fns';
 import { PinballIcon } from '../components/PinballIcon';
 import * as Dialog from '@radix-ui/react-dialog';
 import { useApi } from '../lib/useApi';
@@ -26,6 +27,7 @@ interface VenueMachinesData {
   venue: Venue;
   ownMachines: Array<{ id: number; name: string; bestScore: number; playCount: number }>;
   pmMachines: Array<{ xrefId: number; id: number; name: string; manufacturer?: string; year?: number }>;
+  formerMachines: Array<{ id: number; name: string; manufacturer?: string; year?: number; firstSeenAt: string; removedAt: string }>;
 }
 
 interface EditVenue { id: number; name: string; address: string; }
@@ -316,7 +318,32 @@ export default function VenuesPage() {
                     </div>
                   )}
 
-                  {machinesData && machinesData.ownMachines.length === 0 && machinesData.pmMachines.length === 0 && (
+                  {/* Formerly here — inferred from Pinball Map's removal history */}
+                  {machinesData && machinesData.formerMachines.length > 0 && (
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-3">
+                        Formerly here
+                      </p>
+                      <div className="flex flex-col gap-2">
+                        {machinesData.formerMachines.map(m => (
+                          <div
+                            key={m.id}
+                            className="flex items-center justify-between rounded-lg border border-white/10 bg-background/50 px-4 py-3 opacity-70"
+                          >
+                            <div className="flex items-center gap-2">
+                              <PinballIcon className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+                              <span className="text-sm font-bold text-muted-foreground">{m.name}</span>
+                            </div>
+                            <span className="text-xs text-muted-foreground whitespace-nowrap">
+                              left {format(new Date(m.removedAt), 'MMM yyyy')}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {machinesData && machinesData.ownMachines.length === 0 && machinesData.pmMachines.length === 0 && machinesData.formerMachines.length === 0 && (
                     <p className="text-sm text-muted-foreground text-center py-4">No machine data available</p>
                   )}
                 </>
