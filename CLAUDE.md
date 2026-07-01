@@ -79,6 +79,8 @@ Claude is authorized to commit and push to `main` directly — no need to ask pe
 
 **Git identity must be `wdemaida` / `wdemaida@gmail.com`** — the remote is `https://wdemaida@github.com/wdemaida/tilt-tracker.git`. If Vercel deployments start failing with "not a member" errors, check `git config user.name/email` in the repo.
 
+**Push credential:** the user's `gh` CLI is often authenticated as a different GitHub account (`WillDeMaidaNymbl`, used for other repos/Actions work) and the global `~/.gitconfig` routes all `github.com` auth through `gh auth git-credential` — which silently fails to produce a `wdemaida` credential and `git push` errors with a `/dev/tty` / "could not read Password" failure. Fixed via a **repo-local** override (in this repo's `.git/config` only, not global) that routes `github.com` auth back through Windows Credential Manager (`manager`), which has a `wdemaida` fine-grained PAT cached for this repo. This does not affect other repos on the machine (they still use the global `gh`-based flow). If push ever fails again with a `/dev/tty` error, check `git config --local --get-all credential.https://github.com.helper` returns `manager`; if the cached credential expired (PAT is set to expire ~1yr from 2026-06-30), the user needs to generate a new fine-grained PAT (Contents: Read/write, scoped to just this repo) and re-seed it via one interactive `git push` from a real terminal window (not through Claude Code — GCM's prompt needs a real console).
+
 ---
 
 ## Production architecture
