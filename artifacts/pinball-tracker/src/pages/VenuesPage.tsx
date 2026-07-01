@@ -63,6 +63,9 @@ export default function VenuesPage() {
     enabled: modalVenueId != null,
   });
 
+  const ownNames = new Set((machinesData?.ownMachines ?? []).map(m => m.name.toLowerCase()));
+  const pmMachinesExcludingOwn = (machinesData?.pmMachines ?? []).filter(m => !ownNames.has(m.name.toLowerCase()));
+
   return (
     <div>
       <div className="flex items-start justify-between gap-4 mb-1">
@@ -89,11 +92,8 @@ export default function VenuesPage() {
               className="rounded-xl border border-white/10 bg-card p-5 flex flex-col gap-3 hover:border-venue/30 transition-colors"
             >
               <div className="flex items-start gap-3">
-                <div className="w-9 h-9 rounded-lg bg-venue/10 border border-venue/30 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <MapPin className="w-4 h-4 text-venue" />
-                </div>
                 <div className="flex-1 min-w-0">
-                  <Link href={`/venues/${venue.id}`} className="font-black uppercase tracking-wider text-venue text-sm leading-tight hover:text-venue/80 transition-colors">
+                  <Link href={`/map?venueId=${venue.id}`} className="font-black uppercase tracking-wider text-venue text-sm leading-tight hover:text-venue/80 transition-colors">
                     {venue.name}
                   </Link>
                   {venue.address && (
@@ -121,19 +121,22 @@ export default function VenuesPage() {
               </div>
 
               <div className="flex items-center gap-2 flex-wrap">
-                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/5 border border-white/10">
-                  <Trophy className="w-3 h-3 text-muted-foreground" />
-                  <span className="text-xs text-muted-foreground font-medium">
+                <Link
+                  href={`/venues/${venue.id}`}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary/10 border border-primary/30 hover:bg-primary/20 hover:border-primary/60 transition-colors"
+                >
+                  <Trophy className="w-3 h-3 text-primary" />
+                  <span className="text-xs text-primary font-bold">
                     {venue.scoreCount} {venue.scoreCount === 1 ? 'score' : 'scores'}
                   </span>
-                </div>
+                </Link>
 
                 <button
                   onClick={() => setModalVenueId(venue.id)}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary/10 border border-primary/30 hover:bg-primary/20 hover:border-primary/60 transition-colors"
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-machine/10 border border-machine/30 hover:bg-machine/20 hover:border-machine/60 transition-colors"
                 >
-                  <PinballIcon className="w-3 h-3 text-primary" />
-                  <span className="text-xs text-primary font-bold">
+                  <PinballIcon className="w-3 h-3 text-machine" />
+                  <span className="text-xs text-machine font-bold">
                     {venue.pmMachineCount != null
                       ? `${venue.machineCount}/${venue.pmMachineCount} machines`
                       : `${venue.machineCount} ${venue.machineCount === 1 ? 'machine' : 'machines'}`}
@@ -287,18 +290,18 @@ export default function VenuesPage() {
                   )}
 
                   {/* Pinball Map machines */}
-                  {machinesData && machinesData.pmMachines.length > 0 && (
+                  {pmMachinesExcludingOwn.length > 0 && (
                     <div>
                       <div className="flex items-center gap-2 mb-3">
                         <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
                           Also on Pinball Map
                         </p>
                         <span className="text-xs px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 font-medium">
-                          {machinesData.pmMachines.length} machines
+                          {pmMachinesExcludingOwn.length} machines
                         </span>
                       </div>
                       <div className="flex flex-col gap-2">
-                        {machinesData.pmMachines.map(m => (
+                        {pmMachinesExcludingOwn.map(m => (
                           <div
                             key={m.xrefId}
                             className="flex items-center justify-between rounded-lg border border-machine/20 bg-machine/5 px-4 py-3"
@@ -343,7 +346,7 @@ export default function VenuesPage() {
                     </div>
                   )}
 
-                  {machinesData && machinesData.ownMachines.length === 0 && machinesData.pmMachines.length === 0 && machinesData.formerMachines.length === 0 && (
+                  {machinesData && machinesData.ownMachines.length === 0 && pmMachinesExcludingOwn.length === 0 && machinesData.formerMachines.length === 0 && (
                     <p className="text-sm text-muted-foreground text-center py-4">No machine data available</p>
                   )}
                 </>

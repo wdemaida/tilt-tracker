@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
-import { Link } from 'wouter';
+import { Link, useSearch } from 'wouter';
 import { format } from 'date-fns';
 import { Clock, User } from 'lucide-react';
 import { PinballIcon } from '../components/PinballIcon';
@@ -32,6 +32,8 @@ export default function MapPage() {
   const authApi = useApi();
   const appUser = useAppUser();
   const { mine } = useScopeContext();
+  const search = useSearch();
+  const filterVenueId = new URLSearchParams(search).get('venueId');
   const { data: scores = [] } = useQuery({
     queryKey: ['scores', mine],
     queryFn: () => authApi.scores.list(mine),
@@ -45,7 +47,7 @@ export default function MapPage() {
     return acc;
   }, {});
 
-  const locations = Object.entries(venueGroups).map(([key, items]) => {
+  const allLocations = Object.entries(venueGroups).map(([key, items]) => {
     const [lat, lng] = key.split(',').map(Number);
     const list = items as any[];
     const hasMyScore = !!appUser && list.some((s: any) => s.username === appUser.username);
@@ -57,6 +59,10 @@ export default function MapPage() {
     return { lat, lng, venueName: list[0].venueName, venueId: list[0].venueId, recent, hasMyScore, machineCount, visits };
   });
 
+  const locations = filterVenueId
+    ? allLocations.filter(loc => String(loc.venueId) === filterVenueId)
+    : allLocations;
+
   return (
     <div>
       <div className="flex items-start justify-between gap-4 mb-1">
@@ -64,13 +70,17 @@ export default function MapPage() {
         <ScopeToggle />
       </div>
       <p className="text-sm text-muted-foreground mb-6">
-        {locations.length} {locations.length === 1 ? 'location' : 'locations'} · {withGps.length} {mine ? 'your ' : ''}scores with GPS
+        {filterVenueId ? (
+          <>Showing <span className="text-venue font-bold">{locations[0]?.venueName ?? 'this venue'}</span> only · <Link href="/map" className="text-primary hover:text-primary/80 transition-colors">clear filter</Link></>
+        ) : (
+          <>{locations.length} {locations.length === 1 ? 'location' : 'locations'} · {withGps.length} {mine ? 'your ' : ''}scores with GPS</>
+        )}
       </p>
 
       <div className="rounded-xl overflow-hidden border border-white/10" style={{ height: 480 }}>
         <MapContainer
           center={locations[0] ? [locations[0].lat, locations[0].lng] : [42.36, -71.06]}
-          zoom={locations.length ? 8 : 4}
+          zoom={filterVenueId ? 15 : (locations.length ? 8 : 4)}
           style={{ height: '100%', width: '100%' }}
         >
           <TileLayer
@@ -78,7 +88,12 @@ export default function MapPage() {
             attribution='&copy; <a href="https://carto.com/">CARTO</a>'
           />
           {locations.map(({ lat, lng, venueName, venueId, recent, hasMyScore, machineCount, visits }) => (
-            <Marker key={`${lat},${lng}`} position={[lat, lng]} icon={hasMyScore ? PIN_MINE : PIN_OTHERS}>
+            <Marker
+              key={`${lat},${lng}`}
+              position={[lat, lng]}
+              icon={hasMyScore ? PIN_MINE : PIN_OTHERS}
+              ref={filterVenueId ? (instance) => { instance?.openPopup(); } : undefined}
+            >
               <Popup minWidth={220}>
                 {/* Location section */}
                 <div className="px-4 pt-3 pb-3">

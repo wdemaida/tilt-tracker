@@ -1,13 +1,14 @@
 import { useMemo, useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { Link, useLocation } from 'wouter';
-import { Gamepad2, Pencil, Trash2 } from 'lucide-react';
+import { Pencil, Trash2 } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { useApi } from '../lib/useApi';
 import { useAppUser } from '../lib/useAppUser';
 import { useScopeContext } from '../lib/ScopeContext';
 import { ScopeToggle } from '../components/ScopeToggle';
+import { PinballIcon } from '../components/PinballIcon';
 import { queryClient } from '../lib/queryClient';
 import { format } from 'date-fns';
 
@@ -141,7 +142,7 @@ export default function MachinesPage() {
                         <img src={m.imageUrl} alt={m.name} className="w-9 h-9 rounded-lg object-cover flex-shrink-0 border border-white/10" />
                       ) : (
                         <div className="w-9 h-9 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center flex-shrink-0">
-                          <Gamepad2 className="w-4 h-4 text-muted-foreground" />
+                          <PinballIcon className="w-4 h-4 text-muted-foreground" />
                         </div>
                       )}
                       <div className="min-w-0">
