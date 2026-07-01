@@ -88,7 +88,10 @@ export default function VenuesPage() {
   );
 
   const filteredVenues = (venues as Venue[])
-    .filter(v => v.name.toLowerCase().includes(search.toLowerCase()))
+    .filter(v => {
+      const q = search.toLowerCase();
+      return v.name.toLowerCase().includes(q) || (v.address ?? '').toLowerCase().includes(q);
+    })
     .filter(v => !stateFilter || parseState(v.address) === stateFilter)
     .sort((a, b) => a.name.localeCompare(b.name));
 

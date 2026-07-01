@@ -1,5 +1,6 @@
+import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import { Link, useSearch } from 'wouter';
 import { format } from 'date-fns';
 import { Clock, User } from 'lucide-react';
@@ -27,6 +28,17 @@ function makePinIcon(color: string) {
 
 const PIN_MINE = makePinIcon('#facc15');
 const PIN_OTHERS = makePinIcon('#d946ef');
+
+// MapContainer's center/zoom props only set the initial view on mount (react-leaflet
+// doesn't re-apply them on prop changes) — this keeps the view in sync once async
+// score data (and therefore the real center) arrives after first paint.
+function MapViewSync({ center, zoom }: { center: [number, number]; zoom: number }) {
+  const map = useMap();
+  useEffect(() => {
+    map.setView(center, zoom);
+  }, [center[0], center[1], zoom]);
+  return null;
+}
 
 export default function MapPage() {
   const authApi = useApi();
@@ -63,6 +75,9 @@ export default function MapPage() {
     ? allLocations.filter(loc => String(loc.venueId) === filterVenueId)
     : allLocations;
 
+  const mapCenter: [number, number] = locations[0] ? [locations[0].lat, locations[0].lng] : [42.36, -71.06];
+  const mapZoom = filterVenueId ? 15 : (locations.length ? 8 : 4);
+
   return (
     <div>
       <div className="flex items-start justify-between gap-4 mb-1">
@@ -79,10 +94,11 @@ export default function MapPage() {
 
       <div className="rounded-xl overflow-hidden border border-white/10" style={{ height: 480 }}>
         <MapContainer
-          center={locations[0] ? [locations[0].lat, locations[0].lng] : [42.36, -71.06]}
-          zoom={filterVenueId ? 15 : (locations.length ? 8 : 4)}
+          center={mapCenter}
+          zoom={mapZoom}
           style={{ height: '100%', width: '100%' }}
         >
+          <MapViewSync center={mapCenter} zoom={mapZoom} />
           <TileLayer
             url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
             attribution='&copy; <a href="https://carto.com/">CARTO</a>'
