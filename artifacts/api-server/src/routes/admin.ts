@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { spawn } from 'child_process';
 import { db, users, scores, machines, venues } from '@workspace/db';
 import { desc, count, sql, eq } from 'drizzle-orm';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
@@ -250,6 +251,33 @@ router.get('/health', async (_req, res) => {
   ];
 
   res.json({ server, database: dbCheck, services, envVars, frontend });
+});
+
+// POST /api/admin/drizzle-studio/start — spawn `drizzle-kit studio` on this machine (local dev only)
+router.post('/drizzle-studio/start', async (_req, res) => {
+  if (process.env.RENDER) {
+    return void res.status(403).json({ error: 'Drizzle Studio can only be launched from a local dev server, not Render' });
+  }
+
+  // Drizzle Studio's local API listens on 4983 — if it's already answering, don't spawn a second instance.
+  try {
+    await fetch('http://localhost:4983', { signal: AbortSignal.timeout(800) });
+    return void res.json({ status: 'already-running' });
+  } catch {
+    // not reachable yet — fall through and spawn it
+  }
+
+  const dbDir = join(process.cwd(), '../../lib/db');
+  const child = spawn('pnpm', ['run', 'db:studio'], {
+    cwd: dbDir,
+    shell: true,
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  child.unref();
+
+  res.json({ status: 'starting' });
 });
 
 export default router;

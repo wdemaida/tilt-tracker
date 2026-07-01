@@ -1,6 +1,7 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import AdminNav from '../components/AdminNav';
-import { ShieldCheck, RefreshCw, CheckCircle2, XCircle, HelpCircle, Database, Server, Cpu, ExternalLink, Wrench } from 'lucide-react';
+import { ShieldCheck, RefreshCw, CheckCircle2, XCircle, HelpCircle, Database, Server, Cpu, ExternalLink, Wrench, Play, Loader2 } from 'lucide-react';
 
 const DASHBOARD_URLS: Record<string, string> = {
   anthropic: 'https://console.anthropic.com/settings/billing',
@@ -65,6 +66,22 @@ export default function AdminHealthPage() {
     staleTime: 0,
     refetchOnWindowFocus: false,
   });
+
+  const [studioLaunching, setStudioLaunching] = useState(false);
+  const [studioError, setStudioError] = useState<string | null>(null);
+
+  async function launchDrizzleStudio() {
+    setStudioLaunching(true);
+    setStudioError(null);
+    try {
+      await api.admin.startDrizzleStudio();
+      window.open('https://local.drizzle.studio', '_blank', 'noopener,noreferrer');
+    } catch (err: any) {
+      setStudioError(err?.message ?? 'Failed to launch Drizzle Studio');
+    } finally {
+      setStudioLaunching(false);
+    }
+  }
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -242,16 +259,29 @@ export default function AdminHealthPage() {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-2">
                   <p className="font-black uppercase tracking-wider text-white text-sm">Drizzle Studio</p>
-                  <a
-                    href="https://local.drizzle.studio"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center gap-1 text-primary hover:text-white transition-colors text-xs font-medium flex-shrink-0"
-                  >
-                    Open <ExternalLink className="w-3 h-3" />
-                  </a>
+                  <div className="flex items-center gap-3 flex-shrink-0">
+                    <button
+                      onClick={launchDrizzleStudio}
+                      disabled={studioLaunching}
+                      className="flex items-center gap-1 text-primary hover:text-white transition-colors text-xs font-medium disabled:opacity-50"
+                    >
+                      {studioLaunching ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                      Launch
+                    </button>
+                    <a
+                      href="https://local.drizzle.studio"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1 text-muted-foreground hover:text-white transition-colors text-xs font-medium"
+                    >
+                      Open <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
                 </div>
-                <p className="text-xs text-muted-foreground/60 mt-1 italic">Browse and edit database tables — run <span className="font-mono not-italic">npx drizzle-kit studio</span> from <span className="font-mono not-italic">artifacts/api-server</span> first, then enable Local Network Access in Edge/Chrome site settings</p>
+                <p className="text-xs text-muted-foreground/60 mt-1 italic">
+                  Launch starts <span className="font-mono not-italic">drizzle-kit studio</span> on this machine and opens it in a new tab — local dev server only, disabled on Render. First time, you'll still need to enable Local Network Access in Edge/Chrome site settings.
+                </p>
+                {studioError && <p className="text-xs text-red-400 mt-1">{studioError}</p>}
               </div>
             </div>
           </section>

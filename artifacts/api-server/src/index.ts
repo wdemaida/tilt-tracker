@@ -16,7 +16,15 @@ const app = express();
 const PORT = process.env.PORT ?? 3000;
 
 const allowedOrigins = (process.env.FRONTEND_URL ?? 'http://localhost:5173,http://localhost:5174').split(',');
-app.use(cors({ origin: (origin, cb) => cb(null, !origin || allowedOrigins.some(o => origin.startsWith(o))), credentials: true }));
+// The Drizzle Studio launcher is a loopback-only dev tool (blocked on Render via process.env.RENDER,
+// and still gated by Clerk admin auth) — it needs to be callable from the deployed Vercel origin too,
+// since the button lives on the same admin page whether you're on localhost or the live site.
+app.use(cors((req, cb) => {
+  const isDrizzleStudioRoute = req.path === '/api/admin/drizzle-studio/start';
+  const origin = req.header('Origin');
+  const allowed = isDrizzleStudioRoute || !origin || allowedOrigins.some(o => origin.startsWith(o));
+  cb(null, { origin: allowed, credentials: true });
+}));
 app.use(express.json({ limit: '2mb' }));
 app.use(clerkMiddleware());
 
