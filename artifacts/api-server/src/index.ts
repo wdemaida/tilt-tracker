@@ -20,6 +20,8 @@ app.use(cors({ origin: (origin, cb) => cb(null, !origin || allowedOrigins.some(o
 app.use(express.json({ limit: '2mb' }));
 app.use(clerkMiddleware());
 
+app.get('/ping', (_req, res) => res.status(200).send('ok'));
+
 app.use('/api/scores', scoresRouter);
 app.use('/api/machines', machinesRouter);
 app.use('/api/users', usersRouter);
