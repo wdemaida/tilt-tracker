@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { Link, useLocation } from 'wouter';
-import { Star, Pencil, Trash2, ChevronUp, ChevronDown } from 'lucide-react';
+import { Gamepad2, Pencil, Trash2 } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { useApi } from '../lib/useApi';
@@ -29,13 +29,10 @@ interface EditMachine {
   year: string;
 }
 
-type SortKey = 'name' | 'playCount' | 'lastPlayed' | 'bestScore';
-type SortDir = 'asc' | 'desc';
-
 export default function MachinesPage() {
   const [search, setSearch] = useState('');
-  const [sortKey, setSortKey] = useState<SortKey>('bestScore');
-  const [sortDir, setSortDir] = useState<SortDir>('desc');
+  const [manufacturerFilter, setManufacturerFilter] = useState('');
+  const [yearFilter, setYearFilter] = useState('');
   const [editMachine, setEditMachine] = useState<EditMachine | null>(null);
   const [deleteMachineId, setDeleteMachineId] = useState<number | null>(null);
   const [, navigate] = useLocation();
@@ -60,53 +57,24 @@ export default function MachinesPage() {
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['machines'] }); setDeleteMachineId(null); },
   });
 
-  function toggleSort(key: SortKey) {
-    if (sortKey === key) {
-      setSortDir(d => d === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortKey(key);
-      setSortDir(key === 'name' ? 'asc' : 'desc');
-    }
-  }
+  const manufacturers = useMemo(
+    () => Array.from(new Set((machines as Machine[]).map(m => m.manufacturer).filter((v): v is string => !!v))).sort(),
+    [machines]
+  );
+  const years = useMemo(
+    () => Array.from(new Set((machines as Machine[]).map(m => m.year).filter((v): v is number => v != null))).sort((a, b) => b - a),
+    [machines]
+  );
 
   const filtered = (machines as Machine[])
     .filter(m => m.name.toLowerCase().includes(search.toLowerCase()))
-    .sort((a, b) => {
-      let cmp = 0;
-      if (sortKey === 'name') cmp = a.name.localeCompare(b.name);
-      else if (sortKey === 'playCount') cmp = a.playCount - b.playCount;
-      else if (sortKey === 'lastPlayed') {
-        const at = a.lastPlayed ? new Date(a.lastPlayed).getTime() : -Infinity;
-        const bt = b.lastPlayed ? new Date(b.lastPlayed).getTime() : -Infinity;
-        cmp = at - bt;
-      } else if (sortKey === 'bestScore') cmp = (a.bestScore ?? -Infinity) - (b.bestScore ?? -Infinity);
-      return sortDir === 'asc' ? cmp : -cmp;
-    });
+    .filter(m => !manufacturerFilter || m.manufacturer === manufacturerFilter)
+    .filter(m => !yearFilter || String(m.year) === yearFilter)
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   function openEdit(m: Machine, e: React.MouseEvent) {
     e.stopPropagation();
     setEditMachine({ id: m.id, name: m.name, manufacturer: m.manufacturer ?? '', year: m.year != null ? String(m.year) : '' });
-  }
-
-  function SortIcon({ col }: { col: SortKey }) {
-    if (sortKey !== col) return <ChevronUp className="w-3 h-3 opacity-20" />;
-    return sortDir === 'asc'
-      ? <ChevronUp className="w-3 h-3 text-primary" />
-      : <ChevronDown className="w-3 h-3 text-primary" />;
-  }
-
-  function SortableHeader({ col, label, align = 'left' }: { col: SortKey; label: string; align?: 'left' | 'right' }) {
-    return (
-      <th className={`py-3 px-4 ${align === 'right' ? 'text-right' : 'text-left'}`}>
-        <button
-          onClick={() => toggleSort(col)}
-          className={`flex items-center gap-1 text-xs font-bold uppercase tracking-wider transition-colors ${sortKey === col ? 'text-primary' : 'text-muted-foreground hover:text-white'} ${align === 'right' ? 'ml-auto' : ''}`}
-        >
-          {label}
-          <SortIcon col={col} />
-        </button>
-      </th>
-    );
   }
 
   return (
@@ -116,17 +84,33 @@ export default function MachinesPage() {
         <ScopeToggle />
       </div>
       <p className="text-sm text-muted-foreground mb-6">
-        {machines.length} {(machines as Machine[]).length === 1 ? 'machine' : 'machines'} {mine ? 'you\'ve played' : 'played across site'} · click a row to see full history
+        {filtered.length} {filtered.length === 1 ? 'machine' : 'machines'} {mine ? 'you\'ve played' : 'played across site'} · click a row to see full history
       </p>
 
-      <div className="rounded-xl border border-white/10 bg-card p-3 mb-4">
+      <div className="rounded-xl border border-white/10 bg-card p-3 mb-4 flex flex-col sm:flex-row gap-3">
         <input
           type="text"
           placeholder="Search machines..."
           value={search}
           onChange={e => setSearch(e.target.value)}
-          className="w-full bg-transparent text-sm text-white placeholder:text-muted-foreground focus:outline-none px-2 py-1"
+          className="flex-1 min-w-0 bg-transparent text-sm text-white placeholder:text-muted-foreground focus:outline-none px-2 py-1"
         />
+        <select
+          value={manufacturerFilter}
+          onChange={e => setManufacturerFilter(e.target.value)}
+          className="bg-transparent text-sm text-white focus:outline-none px-2 py-1 border-t sm:border-t-0 sm:border-l border-white/10 sm:pl-3"
+        >
+          <option value="" className="bg-card">All Manufacturers</option>
+          {manufacturers.map(mfr => <option key={mfr} value={mfr} className="bg-card">{mfr}</option>)}
+        </select>
+        <select
+          value={yearFilter}
+          onChange={e => setYearFilter(e.target.value)}
+          className="bg-transparent text-sm text-white focus:outline-none px-2 py-1 border-t sm:border-t-0 sm:border-l border-white/10 sm:pl-3"
+        >
+          <option value="" className="bg-card">All Years</option>
+          {years.map(y => <option key={y} value={y} className="bg-card">{y}</option>)}
+        </select>
       </div>
 
       {isLoading ? <p className="text-muted-foreground">Loading...</p> : filtered.length === 0 ? (
@@ -136,15 +120,15 @@ export default function MachinesPage() {
           <table className="w-full text-sm min-w-[560px]">
             <thead>
               <tr className="border-b border-white/10">
-                <SortableHeader col="name" label="Machine" />
-                <SortableHeader col="playCount" label="Plays" />
-                <SortableHeader col="lastPlayed" label="Last Played" />
-                <SortableHeader col="bestScore" label="Best Score" align="right" />
+                <th className="py-3 px-4 text-left text-xs font-bold uppercase tracking-wider text-muted-foreground">Machine</th>
+                <th className="py-3 px-4 text-left text-xs font-bold uppercase tracking-wider text-muted-foreground">Plays</th>
+                <th className="py-3 px-4 text-left text-xs font-bold uppercase tracking-wider text-muted-foreground">Last Played</th>
+                <th className="py-3 px-4 text-right text-xs font-bold uppercase tracking-wider text-muted-foreground">Best Score</th>
                 {isAdmin && <th className="w-16" />}
               </tr>
             </thead>
             <tbody>
-              {filtered.map((m, i) => (
+              {filtered.map(m => (
                 <tr
                   key={m.id}
                   onClick={() => navigate(`/machines/${encodeURIComponent(m.name)}`)}
@@ -157,10 +141,7 @@ export default function MachinesPage() {
                         <img src={m.imageUrl} alt={m.name} className="w-9 h-9 rounded-lg object-cover flex-shrink-0 border border-white/10" />
                       ) : (
                         <div className="w-9 h-9 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center flex-shrink-0">
-                          {i === 0 && sortKey === 'bestScore' && sortDir === 'desc'
-                            ? <Star className="w-4 h-4 text-yellow-400 fill-yellow-400" />
-                            : <span className="text-xs font-bold text-muted-foreground">#{i + 1}</span>
-                          }
+                          <Gamepad2 className="w-4 h-4 text-muted-foreground" />
                         </div>
                       )}
                       <div className="min-w-0">
