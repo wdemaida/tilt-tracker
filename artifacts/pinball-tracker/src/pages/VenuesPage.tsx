@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { Link } from 'wouter';
 import { MapPin, Trophy, X, ExternalLink, Pencil, Trash2 } from 'lucide-react';
@@ -28,11 +28,26 @@ interface VenueMachinesData {
   ownMachines: Array<{ id: number; name: string; bestScore: number; playCount: number }>;
   pmMachines: Array<{ xrefId: number; id: number; name: string; manufacturer?: string; year?: number }>;
   formerMachines: Array<{ id: number; name: string; manufacturer?: string; year?: number; firstSeenAt: string; removedAt: string }>;
+  ttMachineNames: string[];
 }
 
 interface EditVenue { id: number; name: string; address: string; }
 
+// Addresses look like "..., City, ST" or "..., City, ST ZIP, United States" — the state
+// abbreviation is whichever comma-separated segment starts with two uppercase letters.
+function parseState(address: string | null): string | null {
+  if (!address) return null;
+  const segments = address.split(',').map(s => s.trim());
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const m = segments[i].match(/^([A-Z]{2})\b/);
+    if (m) return m[1];
+  }
+  return null;
+}
+
 export default function VenuesPage() {
+  const [search, setSearch] = useState('');
+  const [stateFilter, setStateFilter] = useState('');
   const [modalVenueId, setModalVenueId] = useState<number | null>(null);
   const [editVenue, setEditVenue] = useState<EditVenue | null>(null);
   const [deleteVenueId, setDeleteVenueId] = useState<number | null>(null);
@@ -65,6 +80,17 @@ export default function VenuesPage() {
 
   const ownNames = new Set((machinesData?.ownMachines ?? []).map(m => m.name.toLowerCase()));
   const pmMachinesExcludingOwn = (machinesData?.pmMachines ?? []).filter(m => !ownNames.has(m.name.toLowerCase()));
+  const ttNamesLower = new Set((machinesData?.ttMachineNames ?? []).map(n => n.toLowerCase()));
+
+  const states = useMemo(
+    () => Array.from(new Set((venues as Venue[]).map(v => parseState(v.address)).filter((v): v is string => !!v))).sort(),
+    [venues]
+  );
+
+  const filteredVenues = (venues as Venue[])
+    .filter(v => v.name.toLowerCase().includes(search.toLowerCase()))
+    .filter(v => !stateFilter || parseState(v.address) === stateFilter)
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   return (
     <div>
@@ -73,8 +99,26 @@ export default function VenuesPage() {
         <ScopeToggle />
       </div>
       <p className="text-sm text-muted-foreground mb-6">
-        {venues.length} {venues.length === 1 ? 'venue' : 'venues'} {mine ? 'you\'ve visited' : 'visited across site'}
+        {filteredVenues.length} {filteredVenues.length === 1 ? 'venue' : 'venues'} {mine ? 'you\'ve visited' : 'visited across site'}
       </p>
+
+      <div className="rounded-xl border border-white/10 bg-card p-3 mb-4 flex flex-col sm:flex-row gap-3">
+        <input
+          type="text"
+          placeholder="Search venues..."
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          className="flex-1 min-w-0 bg-transparent text-sm text-white placeholder:text-muted-foreground focus:outline-none px-2 py-1"
+        />
+        <select
+          value={stateFilter}
+          onChange={e => setStateFilter(e.target.value)}
+          className="bg-transparent text-sm text-white focus:outline-none px-2 py-1 border-t sm:border-t-0 sm:border-l border-white/10 sm:pl-3"
+        >
+          <option value="" className="bg-card">All States</option>
+          {states.map(s => <option key={s} value={s} className="bg-card">{s}</option>)}
+        </select>
+      </div>
 
       {isLoading ? (
         <p className="text-muted-foreground">Loading...</p>
@@ -84,9 +128,11 @@ export default function VenuesPage() {
           <p className="text-white font-bold uppercase tracking-wider">No venues yet</p>
           <p className="text-sm text-muted-foreground mt-1">Add a score with a venue to see it here</p>
         </div>
+      ) : filteredVenues.length === 0 ? (
+        <p className="text-muted-foreground">No venues found.</p>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {(venues as Venue[]).map(venue => (
+          {filteredVenues.map(venue => (
             <div
               key={venue.id}
               className="rounded-xl border border-white/10 bg-card p-5 flex flex-col gap-3 hover:border-venue/30 transition-colors"
@@ -309,6 +355,9 @@ export default function VenuesPage() {
                             <div className="flex items-center gap-2">
                               <PinballIcon className="w-3.5 h-3.5 text-machine flex-shrink-0" />
                               <span className="text-sm font-bold text-machine">{m.name}</span>
+                              {ttNamesLower.has(m.name.toLowerCase()) && (
+                                <span title="In TiltTrack" className="text-xs px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 font-medium">TT</span>
+                              )}
                             </div>
                             {(m.manufacturer || m.year) && (
                               <span className="text-xs text-muted-foreground">
