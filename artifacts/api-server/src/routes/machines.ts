@@ -36,7 +36,22 @@ router.get('/', async (req, res) => {
       .where(userId !== undefined ? eq(scores.userId, userId) : undefined)
       .groupBy(machines.id, machines.name, machines.variant, machines.manufacturer, machines.year, machines.imageUrl)
       .orderBy(desc(max(scores.score)));
-    res.json(rows);
+
+    // Who holds the top score per machine — pointless to show when already scoped to "mine"
+    let topScorerByMachineId = new Map<number, string>();
+    if (userId === undefined) {
+      const topScorers = await db
+        .selectDistinctOn([scores.machineId], {
+          machineId: scores.machineId,
+          username: users.username,
+        })
+        .from(scores)
+        .innerJoin(users, eq(scores.userId, users.id))
+        .orderBy(scores.machineId, desc(scores.score), scores.playedAt);
+      topScorerByMachineId = new Map(topScorers.map(t => [t.machineId, t.username]));
+    }
+
+    res.json(rows.map(r => ({ ...r, topScorerUsername: topScorerByMachineId.get(r.id) ?? null })));
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch machines' });
   }

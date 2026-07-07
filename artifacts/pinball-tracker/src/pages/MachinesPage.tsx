@@ -21,6 +21,7 @@ interface Machine {
   bestScore: number | null;
   playCount: number;
   lastPlayed: string | null;
+  topScorerUsername: string | null;
 }
 
 interface EditMachine {
@@ -68,7 +69,10 @@ export default function MachinesPage() {
   );
 
   const filtered = (machines as Machine[])
-    .filter(m => m.name.toLowerCase().includes(search.toLowerCase()))
+    .filter(m => {
+      const q = search.toLowerCase();
+      return m.name.toLowerCase().includes(q) || (m.topScorerUsername?.toLowerCase().includes(q) ?? false);
+    })
     .filter(m => !manufacturerFilter || m.manufacturer === manufacturerFilter)
     .filter(m => !yearFilter || String(m.year) === yearFilter)
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -91,7 +95,7 @@ export default function MachinesPage() {
       <div className="rounded-xl border border-white/10 bg-card p-3 mb-4 flex flex-col sm:flex-row gap-3">
         <input
           type="text"
-          placeholder="Search machines..."
+          placeholder="Search machines or players..."
           value={search}
           onChange={e => setSearch(e.target.value)}
           className="flex-1 min-w-0 bg-transparent text-sm text-white placeholder:text-muted-foreground focus:outline-none px-2 py-1"
@@ -165,8 +169,19 @@ export default function MachinesPage() {
                   </td>
 
                   {/* Best Score */}
-                  <td className="px-4 py-3 text-right font-bold text-lg text-primary whitespace-nowrap">
-                    {m.bestScore != null ? Number(m.bestScore).toLocaleString() : '—'}
+                  <td className="px-4 py-3 text-right whitespace-nowrap">
+                    <p className="font-bold text-lg text-primary">
+                      {m.bestScore != null ? Number(m.bestScore).toLocaleString() : '—'}
+                    </p>
+                    {m.topScorerUsername && (
+                      <Link
+                        href={`/users/${m.topScorerUsername}`}
+                        onClick={e => e.stopPropagation()}
+                        className="text-xs text-username hover:text-username/80 transition-colors"
+                      >
+                        @{m.topScorerUsername}
+                      </Link>
+                    )}
                   </td>
 
                   {/* Admin buttons */}
