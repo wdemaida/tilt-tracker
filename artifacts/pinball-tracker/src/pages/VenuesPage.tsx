@@ -25,7 +25,7 @@ interface Venue {
 
 interface VenueMachinesData {
   venue: Venue;
-  ownMachines: Array<{ id: number; name: string; bestScore: number; playCount: number }>;
+  ownMachines: Array<{ id: number; name: string; manufacturer?: string; year?: number; bestScore: number; playCount: number }>;
   pmMachines: Array<{ xrefId: number; id: number; name: string; manufacturer?: string; year?: number }>;
   formerMachines: Array<{ id: number; name: string; manufacturer?: string; year?: number; firstSeenAt: string; removedAt: string }>;
   ttMachineNames: string[];
@@ -322,16 +322,25 @@ export default function VenuesPage() {
                         {machinesData.ownMachines.map(m => (
                           <div
                             key={m.id}
-                            className="flex items-center justify-between rounded-lg border border-white/10 bg-background px-4 py-3"
+                            className="flex flex-col gap-2 rounded-lg border border-white/10 bg-background px-4 py-3"
                           >
-                            <div className="flex items-center gap-2">
-                              <PinballIcon className="w-3.5 h-3.5 text-machine flex-shrink-0" />
-                              <span className="text-sm font-bold text-machine">{m.name}</span>
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex items-start gap-2 min-w-0">
+                                <PinballIcon className="w-3.5 h-3.5 text-machine flex-shrink-0 mt-0.5" />
+                                <span className="text-sm font-bold text-machine leading-snug">{m.name}</span>
+                              </div>
+                              <span className="text-sm font-bold text-primary whitespace-nowrap flex-shrink-0">
+                                {Number(m.bestScore).toLocaleString()}
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between gap-3">
                               <span className="text-xs text-muted-foreground">
+                                {[m.manufacturer, m.year].filter(Boolean).join(' · ') || ' '}
+                              </span>
+                              <span className="text-xs text-muted-foreground whitespace-nowrap flex-shrink-0">
                                 {m.playCount} {m.playCount === 1 ? 'play' : 'plays'}
                               </span>
                             </div>
-                            <span className="text-sm font-bold text-primary">{Number(m.bestScore).toLocaleString()}</span>
                           </div>
                         ))}
                       </div>
@@ -353,20 +362,22 @@ export default function VenuesPage() {
                         {pmMachinesExcludingOwn.map(m => (
                           <div
                             key={m.xrefId}
-                            className="flex items-center justify-between rounded-lg border border-machine/20 bg-machine/5 px-4 py-3"
+                            className="flex flex-col gap-2 rounded-lg border border-machine/20 bg-machine/5 px-4 py-3"
                           >
-                            <div className="flex items-center gap-2">
-                              <PinballIcon className="w-3.5 h-3.5 text-machine flex-shrink-0" />
-                              <span className="text-sm font-bold text-machine">{m.name}</span>
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex items-start gap-2 min-w-0">
+                                <PinballIcon className="w-3.5 h-3.5 text-machine flex-shrink-0 mt-0.5" />
+                                <span className="text-sm font-bold text-machine leading-snug">{m.name}</span>
+                              </div>
                               {ttNamesLower.has(m.name.toLowerCase()) && (
-                                <span title="In TiltTrack" className="text-xs px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 font-medium">TT</span>
+                                <div className="flex items-center gap-1 flex-shrink-0">
+                                  <span title="In TiltTrack" className="text-xs px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 font-medium">TT</span>
+                                </div>
                               )}
                             </div>
-                            {(m.manufacturer || m.year) && (
-                              <span className="text-xs text-muted-foreground">
-                                {[m.manufacturer, m.year].filter(Boolean).join(' · ')}
-                              </span>
-                            )}
+                            <span className="text-xs text-muted-foreground">
+                              {[m.manufacturer, m.year].filter(Boolean).join(' · ') || ' '}
+                            </span>
                           </div>
                         ))}
                       </div>

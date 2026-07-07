@@ -84,6 +84,8 @@ router.get('/:id/machines', async (req, res) => {
       .select({
         id: machines.id,
         name: machines.name,
+        manufacturer: machines.manufacturer,
+        year: machines.year,
         bestScore: sql<number>`max(${scores.score})`,
         playCount: count(scores.id),
       })
@@ -92,7 +94,7 @@ router.get('/:id/machines', async (req, res) => {
       .where(appUserId
         ? and(eq(scores.venueId, id), eq(scores.userId, appUserId))
         : eq(scores.venueId, id))
-      .groupBy(machines.id, machines.name)
+      .groupBy(machines.id, machines.name, machines.manufacturer, machines.year)
       .orderBy(desc(sql<number>`max(${scores.score})`));
 
     // All machine names played at this venue by anyone (for TT tag)
