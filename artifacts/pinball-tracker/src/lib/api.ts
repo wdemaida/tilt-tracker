@@ -78,6 +78,16 @@ export function createApi(getToken: () => Promise<string | null>) {
       health: async () => request<any>('/admin/health', undefined, await tok()),
       updateUser: async (id: number, data: { role?: string; displayName?: string; username?: string }) =>
         request<any>(`/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) }, await tok()),
+      stats: async () => request<any[]>('/admin/stats', undefined, await tok()),
+      statHistory: async (days = 60) => request<any[]>(`/admin/stats/history?days=${days}`, undefined, await tok()),
+      createStat: async (body: { key: string; label: string; description?: string }) =>
+        request<any>('/admin/stats', { method: 'POST', body: JSON.stringify(body) }, await tok()),
+      updateStat: async (id: number, body: { label?: string; description?: string }) =>
+        request<any>(`/admin/stats/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, await tok()),
+      deleteStat: async (id: number) =>
+        request(`/admin/stats/${id}`, { method: 'DELETE' }, await tok()),
+      runStatSnapshot: async () =>
+        request<{ periodDate: string; values: Record<string, number> }>('/admin/stats/snapshot', { method: 'POST' }, await tok()),
       // Always targets the local loopback API directly (not BASE) — Drizzle Studio can only ever
       // run on the machine driving this browser, whether the page itself is served from
       // localhost:5174 or the deployed tilttrack.vercel.app.

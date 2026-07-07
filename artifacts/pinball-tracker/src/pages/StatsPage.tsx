@@ -67,16 +67,16 @@ export default function StatsPage() {
 
         <div className="rounded-xl border border-white/10 bg-card p-5">
           <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">
-            <CalendarDays className="w-4 h-4" /> Plays / Month
+            <CalendarDays className="w-4 h-4" /> Plays This Month
           </div>
-          <p className="text-3xl font-black text-white">{(stats.playHabits?.avgPlaysPerMonth ?? 0).toFixed(1)}</p>
+          <p className="text-3xl font-black text-white">{(stats.playHabits?.playsThisMonth ?? 0).toLocaleString()}</p>
         </div>
 
         <div className="rounded-xl border border-white/10 bg-card p-5">
           <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">
-            <MapPin className="w-4 h-4" /> Visits / Month
+            <MapPin className="w-4 h-4" /> Visits This Month
           </div>
-          <p className="text-3xl font-black text-white">{(stats.playHabits?.avgVisitsPerMonth ?? 0).toFixed(1)}</p>
+          <p className="text-3xl font-black text-white">{(stats.playHabits?.visitsThisMonth ?? 0).toLocaleString()}</p>
         </div>
 
         <div className="rounded-xl border border-white/10 bg-card p-5">

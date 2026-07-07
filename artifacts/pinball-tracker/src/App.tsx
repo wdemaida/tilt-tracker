@@ -21,6 +21,7 @@ import NotFoundPage from './pages/NotFoundPage';
 import AdminPage from './pages/AdminPage';
 import AdminHealthPage from './pages/AdminHealthPage';
 import AdminConfigPage from './pages/AdminConfigPage';
+import AdminStatsPage from './pages/AdminStatsPage';
 
 function AuthGate({ children }: { children: React.ReactNode }) {
   const { isSignedIn, isLoaded } = useAuth();
@@ -98,6 +99,9 @@ export default function App() {
         </Route>
         <Route path="/admin/config">
           <AdminGate><AdminConfigPage /></AdminGate>
+        </Route>
+        <Route path="/admin/stats">
+          <AdminGate><AdminStatsPage /></AdminGate>
         </Route>
         <Route component={NotFoundPage} />
       </Switch>

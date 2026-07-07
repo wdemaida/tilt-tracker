@@ -2,22 +2,11 @@ import { Router } from 'express';
 import { db, scores, machines, users } from '@workspace/db';
 import { eq, desc, max, count, sql } from 'drizzle-orm';
 import { requireAppUser } from '../middleware/requireAuth.js';
+import { countVisits, computeCurrentMonthCounts } from '../lib/statsCalc.js';
 
 const router = Router();
 
-const VISIT_GAP_MS = 6 * 3600 * 1000; // 6-hour gap = new visit
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-const DAYS_PER_MONTH = 30.44;
-
-// Number of visits in a sorted-by-time-asc series of timestamps for one player
-function countVisits(sortedMs: number[]): number {
-  if (!sortedMs.length) return 0;
-  let visits = 1;
-  for (let i = 1; i < sortedMs.length; i++) {
-    if (sortedMs[i] - sortedMs[i - 1] > VISIT_GAP_MS) visits++;
-  }
-  return visits;
-}
 
 // Days between earliest/latest timestamp, floored at 1 day so rates never divide by ~0
 function daySpan(msList: number[]): number {
@@ -72,12 +61,12 @@ router.get('/', requireAppUser, async (req, res) => {
     }
     const avgPlaysPerVisit = totalVisits ? totalGames / totalVisits : 0;
 
-    const playedMs = allScores.map(s => new Date(s.playedAt).getTime());
     const createdMs = allScores.map(s => new Date(s.createdAt).getTime());
-    const monthSpanPlayed = daySpan(playedMs) / DAYS_PER_MONTH;
-    const avgPlaysPerMonth = totalGames / monthSpanPlayed;
-    const avgVisitsPerMonth = totalVisits / monthSpanPlayed;
     const avgScoresSubmittedPerDay = totalGames / daySpan(createdMs);
+
+    // Literal current-calendar-month totals (America/New_York) — not an extrapolated rate, so
+    // these reset at the start of each month rather than averaging over all-time history.
+    const thisMonth = computeCurrentMonthCounts(allScores);
 
     res.json({
       totalGames,
@@ -87,9 +76,10 @@ router.get('/', requireAppUser, async (req, res) => {
       playStyle: { casual: casualCount, tournament: tournamentCount },
       playHabits: {
         avgPlaysPerVisit,
-        avgPlaysPerMonth,
-        avgVisitsPerMonth,
         avgScoresSubmittedPerDay,
+        playsThisMonth: thisMonth.plays,
+        visitsThisMonth: thisMonth.visits,
+        scoresSubmittedThisMonth: thisMonth.scoresSubmitted,
       },
     });
   } catch (err) {

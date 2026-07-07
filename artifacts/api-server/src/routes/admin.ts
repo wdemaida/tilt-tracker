@@ -2,10 +2,11 @@ import { Router } from 'express';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { spawn } from 'child_process';
-import { db, users, scores, machines, venues } from '@workspace/db';
-import { desc, count, sql, eq } from 'drizzle-orm';
+import { db, users, scores, machines, venues, stats, statHistory } from '@workspace/db';
+import { desc, asc, count, sql, eq } from 'drizzle-orm';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { getAllMachines } from '../lib/pinballMap.js';
+import { captureStatSnapshot } from '../lib/statSnapshot.js';
 
 const router = Router();
 router.use(requireAppUser, requireAdmin);
@@ -278,6 +279,112 @@ router.post('/drizzle-studio/start', async (_req, res) => {
   child.unref();
 
   res.json({ status: 'starting' });
+});
+
+// GET /api/admin/stats — stat definitions (label/key/description) managed here so the
+// StatHistory snapshot job can reference a stable id instead of a hardcoded name.
+router.get('/stats', async (_req, res) => {
+  try {
+    const rows = await db.select().from(stats).orderBy(asc(stats.id));
+    res.json(rows);
+  } catch (err) {
+    console.error('admin/stats GET error:', err);
+    res.status(500).json({ error: 'Failed to fetch stats' });
+  }
+});
+
+// GET /api/admin/stats/history?days=60 — recent stat_history rows, most recent first
+router.get('/stats/history', async (req, res) => {
+  const days = Math.min(Number(req.query.days) || 60, 365);
+  try {
+    const rows = await db
+      .select({
+        id: statHistory.id,
+        statId: statHistory.statId,
+        key: stats.key,
+        label: stats.label,
+        value: statHistory.value,
+        periodDate: statHistory.periodDate,
+      })
+      .from(statHistory)
+      .innerJoin(stats, eq(statHistory.statId, stats.id))
+      .orderBy(desc(statHistory.periodDate))
+      .limit(days * 10); // generous cap regardless of how many stat definitions exist
+    res.json(rows);
+  } catch (err) {
+    console.error('admin/stats/history GET error:', err);
+    res.status(500).json({ error: 'Failed to fetch stat history' });
+  }
+});
+
+// POST /api/admin/stats/snapshot — manually run today's snapshot (also the way to verify the
+// 1am cron job's logic without waiting for it, or to backfill today's row after adding a stat)
+router.post('/stats/snapshot', async (_req, res) => {
+  try {
+    const result = await captureStatSnapshot();
+    res.json(result);
+  } catch (err) {
+    console.error('admin/stats/snapshot error:', err);
+    res.status(500).json({ error: 'Failed to capture snapshot' });
+  }
+});
+
+// POST /api/admin/stats — define a new stat. Note: creating one here only registers its id/label —
+// the daily snapshot job only knows how to compute values for the keys it's coded to handle
+// ('plays', 'visits', 'scores_submitted'), so a brand-new key needs a matching code change to
+// actually get history written for it.
+router.post('/stats', async (req, res) => {
+  const { key, label, description } = req.body as { key?: string; label?: string; description?: string };
+  if (!key?.trim() || !label?.trim()) return void res.status(400).json({ error: 'key and label are required' });
+  try {
+    const [created] = await db
+      .insert(stats)
+      .values({ key: key.trim(), label: label.trim(), description: description?.trim() || null })
+      .returning();
+    res.status(201).json(created);
+  } catch (err: any) {
+    if (err?.code === '23505') return void res.status(409).json({ error: 'A stat with that key already exists' });
+    console.error('admin/stats POST error:', err);
+    res.status(500).json({ error: 'Failed to create stat' });
+  }
+});
+
+// PATCH /api/admin/stats/:id — rename/redescribe a stat. `key` is intentionally not editable here —
+// it's the stable identifier the snapshot job matches against, so renaming it would silently stop
+// that stat from ever getting new history rows.
+router.patch('/stats/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  const { label, description } = req.body as { label?: string; description?: string };
+
+  const updates: Record<string, any> = {};
+  if (label !== undefined) updates.label = label.trim();
+  if (description !== undefined) updates.description = description.trim() || null;
+  if (Object.keys(updates).length === 0) return void res.status(400).json({ error: 'Nothing to update' });
+
+  try {
+    const [updated] = await db.update(stats).set(updates).where(eq(stats.id, id)).returning();
+    if (!updated) return void res.status(404).json({ error: 'Stat not found' });
+    res.json(updated);
+  } catch (err) {
+    console.error('admin/stats PATCH error:', err);
+    res.status(500).json({ error: 'Failed to update stat' });
+  }
+});
+
+// DELETE /api/admin/stats/:id — blocked if any history rows reference it
+router.delete('/stats/:id', async (req, res) => {
+  const id = Number(req.params.id);
+  try {
+    const [{ total }] = await db.select({ total: count() }).from(statHistory).where(eq(statHistory.statId, id));
+    if (total > 0) {
+      return void res.status(409).json({ error: `Cannot delete — ${total} history row${total === 1 ? '' : 's'} reference this stat` });
+    }
+    await db.delete(stats).where(eq(stats.id, id));
+    res.status(204).send();
+  } catch (err) {
+    console.error('admin/stats DELETE error:', err);
+    res.status(500).json({ error: 'Failed to delete stat' });
+  }
 });
 
 export default router;

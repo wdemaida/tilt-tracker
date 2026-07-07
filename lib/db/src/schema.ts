@@ -1,4 +1,4 @@
-import { pgTable, serial, text, bigint, timestamp, real, integer, pgEnum, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, serial, text, bigint, timestamp, real, integer, pgEnum, uniqueIndex, date } from 'drizzle-orm/pg-core';
 
 export const scoreTypeEnum = pgEnum('score_type', ['casual', 'tournament']);
 export const userRoleEnum = pgEnum('user_role', ['admin', 'user']);
@@ -75,3 +75,30 @@ export type Score = typeof scores.$inferSelect;
 export type NewScore = typeof scores.$inferInsert;
 export type VenueMachineHistory = typeof venueMachineHistory.$inferSelect;
 export type NewVenueMachineHistory = typeof venueMachineHistory.$inferInsert;
+
+// Defines each trackable stat by a stable key — lets StatHistory reference an id instead of a
+// hardcoded name, so a stat can be renamed/described from the admin UI without touching history rows.
+export const stats = pgTable('stats', {
+  id: serial('id').primaryKey(),
+  key: text('key').unique().notNull(),
+  label: text('label').notNull(),
+  description: text('description'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+// One row per stat per calendar day (site-wide, not per-user) — written by the 1am ET daily
+// snapshot job. periodDate is the America/New_York calendar date the value covers.
+export const statHistory = pgTable('stat_history', {
+  id: serial('id').primaryKey(),
+  statId: integer('stat_id').references(() => stats.id).notNull(),
+  value: integer('value').notNull(),
+  periodDate: date('period_date').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  statDateUnique: uniqueIndex('stat_history_stat_id_period_date_idx').on(table.statId, table.periodDate),
+}));
+
+export type Stat = typeof stats.$inferSelect;
+export type NewStat = typeof stats.$inferInsert;
+export type StatHistory = typeof statHistory.$inferSelect;
+export type NewStatHistory = typeof statHistory.$inferInsert;

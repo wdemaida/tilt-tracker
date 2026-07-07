@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import cron from 'node-cron';
 import { clerkMiddleware } from '@clerk/express';
 
 import scoresRouter from './routes/scores.js';
@@ -11,6 +12,7 @@ import statsRouter from './routes/stats.js';
 import venuesRouter from './routes/venues.js';
 import pinballmapRouter from './routes/pinballmap.js';
 import adminRouter from './routes/admin.js';
+import { captureStatSnapshot } from './lib/statSnapshot.js';
 
 const app = express();
 const PORT = process.env.PORT ?? 3000;
@@ -38,5 +40,11 @@ app.use('/api/stats', statsRouter);
 app.use('/api/venues', venuesRouter);
 app.use('/api/pinballmap', pinballmapRouter);
 app.use('/api/admin', adminRouter);
+
+// Daily site-wide StatHistory snapshot — 1am America/New_York (node-cron's timezone option
+// tracks EST/EDT automatically, so this stays "1am local" across the DST switch).
+cron.schedule('0 1 * * *', () => {
+  captureStatSnapshot().catch(err => console.error('Stat snapshot job failed:', err));
+}, { timezone: 'America/New_York' });
 
 app.listen(PORT, () => console.log(`API server → http://localhost:${PORT}`));
