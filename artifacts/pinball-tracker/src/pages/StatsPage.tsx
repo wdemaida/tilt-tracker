@@ -59,7 +59,7 @@ function StatTrendModal({ statKey, label, onClose }: { statKey: string; label: s
                   contentStyle={{ background: '#1a1a2e', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8 }}
                   labelStyle={{ color: 'rgba(255,255,255,0.7)' }}
                   labelFormatter={d => parseDateOnly(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                  formatter={(v: number) => [v.toLocaleString(), label]}
+                  formatter={v => [Number(v ?? 0).toLocaleString(), label]}
                 />
                 <Line type="monotone" dataKey="value" stroke="hsl(var(--primary))" strokeWidth={2} dot={{ r: 3 }} />
               </LineChart>
