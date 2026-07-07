@@ -325,10 +325,7 @@ export default function VenuesPage() {
                             className="flex flex-col gap-2 rounded-lg border border-white/10 bg-background px-4 py-3"
                           >
                             <div className="flex items-start justify-between gap-3">
-                              <div className="flex items-start gap-2 min-w-0">
-                                <PinballIcon className="w-3.5 h-3.5 text-machine flex-shrink-0 mt-0.5" />
-                                <span className="text-sm font-bold text-machine leading-snug">{m.name}</span>
-                              </div>
+                              <span className="text-sm font-bold text-machine leading-snug min-w-0">{m.name}</span>
                               <span className="text-sm font-bold text-primary whitespace-nowrap flex-shrink-0">
                                 {Number(m.bestScore).toLocaleString()}
                               </span>
@@ -365,10 +362,7 @@ export default function VenuesPage() {
                             className="flex flex-col gap-2 rounded-lg border border-machine/20 bg-machine/5 px-4 py-3"
                           >
                             <div className="flex items-start justify-between gap-3">
-                              <div className="flex items-start gap-2 min-w-0">
-                                <PinballIcon className="w-3.5 h-3.5 text-machine flex-shrink-0 mt-0.5" />
-                                <span className="text-sm font-bold text-machine leading-snug">{m.name}</span>
-                              </div>
+                              <span className="text-sm font-bold text-machine leading-snug min-w-0">{m.name}</span>
                               {ttNamesLower.has(m.name.toLowerCase()) && (
                                 <div className="flex items-center gap-1 flex-shrink-0">
                                   <span title="In TiltTrack" className="text-xs px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 font-medium">TT</span>
@@ -396,10 +390,7 @@ export default function VenuesPage() {
                             key={m.id}
                             className="flex items-center justify-between rounded-lg border border-white/10 bg-background/50 px-4 py-3 opacity-70"
                           >
-                            <div className="flex items-center gap-2">
-                              <PinballIcon className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
-                              <span className="text-sm font-bold text-muted-foreground">{m.name}</span>
-                            </div>
+                            <span className="text-sm font-bold text-muted-foreground">{m.name}</span>
                             <span className="text-xs text-muted-foreground whitespace-nowrap">
                               left {format(new Date(m.removedAt), 'MMM yyyy')}
                             </span>
