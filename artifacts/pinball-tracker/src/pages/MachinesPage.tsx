@@ -35,6 +35,7 @@ export default function MachinesPage() {
   const [search, setSearch] = useState('');
   const [manufacturerFilter, setManufacturerFilter] = useState('');
   const [yearFilter, setYearFilter] = useState('');
+  const [showUnplayed, setShowUnplayed] = useState(false);
   const [editMachine, setEditMachine] = useState<EditMachine | null>(null);
   const [deleteMachineId, setDeleteMachineId] = useState<number | null>(null);
   const [, navigate] = useLocation();
@@ -59,16 +60,19 @@ export default function MachinesPage() {
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['machines'] }); setDeleteMachineId(null); },
   });
 
+  const unplayedCount = (machines as Machine[]).filter(m => m.playCount === 0).length;
+  const visibleBase = (machines as Machine[]).filter(m => showUnplayed || m.playCount > 0);
+
   const manufacturers = useMemo(
-    () => Array.from(new Set((machines as Machine[]).map(m => m.manufacturer).filter((v): v is string => !!v))).sort(),
-    [machines]
+    () => Array.from(new Set(visibleBase.map(m => m.manufacturer).filter((v): v is string => !!v))).sort(),
+    [visibleBase]
   );
   const years = useMemo(
-    () => Array.from(new Set((machines as Machine[]).map(m => m.year).filter((v): v is number => v != null))).sort((a, b) => b - a),
-    [machines]
+    () => Array.from(new Set(visibleBase.map(m => m.year).filter((v): v is number => v != null))).sort((a, b) => b - a),
+    [visibleBase]
   );
 
-  const filtered = (machines as Machine[])
+  const filtered = visibleBase
     .filter(m => {
       const q = search.toLowerCase();
       return m.name.toLowerCase().includes(q) || (m.topScorerUsername?.toLowerCase().includes(q) ?? false);
@@ -89,7 +93,21 @@ export default function MachinesPage() {
         <ScopeToggle />
       </div>
       <p className="text-sm text-muted-foreground mb-6">
-        {filtered.length} {filtered.length === 1 ? 'machine' : 'machines'} {mine ? 'you\'ve played' : 'played across site'} · click a row to see full history
+        {filtered.length} {filtered.length === 1 ? 'machine' : 'machines'} {mine ? 'you\'ve played' : showUnplayed ? 'known across site' : 'played across site'}
+        {!mine && unplayedCount > 0 && (
+          <>
+            {' · '}
+            <button
+              onClick={() => setShowUnplayed(v => !v)}
+              className="underline decoration-dotted underline-offset-2 hover:text-white transition-colors"
+            >
+              {showUnplayed
+                ? `hide ${unplayedCount} unplayed`
+                : `+${unplayedCount} more seen at venues, never played`}
+            </button>
+          </>
+        )}
+        {' · '}click a row to see full history
       </p>
 
       <div className="rounded-xl border border-white/10 bg-card p-3 mb-4 flex flex-col sm:flex-row gap-3">
@@ -137,7 +155,7 @@ export default function MachinesPage() {
                 <tr
                   key={m.id}
                   onClick={() => navigate(`/machines/${encodeURIComponent(m.name)}`)}
-                  className="border-b border-white/5 hover:bg-white/5 transition-colors cursor-pointer"
+                  className={`border-b border-white/5 hover:bg-white/5 transition-colors cursor-pointer ${m.playCount === 0 ? 'opacity-60' : ''}`}
                 >
                   {/* Machine name + image + mfr/year */}
                   <td className="px-4 py-3">
@@ -150,7 +168,14 @@ export default function MachinesPage() {
                         </div>
                       )}
                       <div className="min-w-0">
-                        <p className="text-sm font-black uppercase tracking-wider text-machine truncate">{m.name}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-black uppercase tracking-wider text-machine truncate">{m.name}</p>
+                          {m.playCount === 0 && (
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-white/5 text-muted-foreground font-medium flex-shrink-0">
+                              Unplayed
+                            </span>
+                          )}
+                        </div>
                         {(m.manufacturer || m.year) && (
                           <p className="text-xs text-muted-foreground">{[m.manufacturer, m.year].filter(Boolean).join(' · ')}</p>
                         )}
