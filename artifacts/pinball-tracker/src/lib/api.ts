@@ -49,6 +49,10 @@ export function createApi(getToken: () => Promise<string | null>) {
     },
     stats: {
       get: async (mine = true) => request<any>(`/stats?mine=${mine}`, undefined, await tok()),
+      history: async (key: string, days = 90) =>
+        request<{ label: string; description: string | null; points: { periodDate: string; value: number }[] }>(
+          `/stats/history/${key}?days=${days}`, undefined, await tok()
+        ),
     },
     venues: {
       list: async (mine = false) =>
@@ -80,8 +84,6 @@ export function createApi(getToken: () => Promise<string | null>) {
         request<any>(`/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) }, await tok()),
       stats: async () => request<any[]>('/admin/stats', undefined, await tok()),
       statHistory: async (days = 60) => request<any[]>(`/admin/stats/history?days=${days}`, undefined, await tok()),
-      createStat: async (body: { key: string; label: string; description?: string }) =>
-        request<any>('/admin/stats', { method: 'POST', body: JSON.stringify(body) }, await tok()),
       updateStat: async (id: number, body: { label?: string; description?: string }) =>
         request<any>(`/admin/stats/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, await tok()),
       deleteStat: async (id: number) =>

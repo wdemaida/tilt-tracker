@@ -329,26 +329,6 @@ router.post('/stats/snapshot', async (_req, res) => {
   }
 });
 
-// POST /api/admin/stats — define a new stat. Note: creating one here only registers its id/label —
-// the daily snapshot job only knows how to compute values for the keys it's coded to handle
-// ('plays', 'visits', 'scores_submitted'), so a brand-new key needs a matching code change to
-// actually get history written for it.
-router.post('/stats', async (req, res) => {
-  const { key, label, description } = req.body as { key?: string; label?: string; description?: string };
-  if (!key?.trim() || !label?.trim()) return void res.status(400).json({ error: 'key and label are required' });
-  try {
-    const [created] = await db
-      .insert(stats)
-      .values({ key: key.trim(), label: label.trim(), description: description?.trim() || null })
-      .returning();
-    res.status(201).json(created);
-  } catch (err: any) {
-    if (err?.code === '23505') return void res.status(409).json({ error: 'A stat with that key already exists' });
-    console.error('admin/stats POST error:', err);
-    res.status(500).json({ error: 'Failed to create stat' });
-  }
-});
-
 // PATCH /api/admin/stats/:id — rename/redescribe a stat. `key` is intentionally not editable here —
 // it's the stable identifier the snapshot job matches against, so renaming it would silently stop
 // that stat from ever getting new history rows.

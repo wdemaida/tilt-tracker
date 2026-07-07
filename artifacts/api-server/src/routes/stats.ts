@@ -1,8 +1,8 @@
 import { Router } from 'express';
-import { db, scores, machines, users } from '@workspace/db';
-import { eq, desc, max, count, sql } from 'drizzle-orm';
+import { db, scores, machines, venues, users, stats, statHistory } from '@workspace/db';
+import { eq, desc, count } from 'drizzle-orm';
 import { requireAppUser } from '../middleware/requireAuth.js';
-import { countVisits, computeCurrentMonthCounts } from '../lib/statsCalc.js';
+import { computeVisits, computeCurrentMonthCounts } from '../lib/statsCalc.js';
 
 const router = Router();
 
@@ -49,16 +49,7 @@ router.get('/', requireAppUser, async (req, res) => {
       .slice(0, 5)
       .map(([name, plays]) => ({ name, plays }));
 
-    // Visits are clustered per-player (gap > 6h = new visit), then summed —
-    // pooling timestamps across players before clustering would merge unrelated outings.
-    const playedByUser: Record<string, number[]> = {};
-    for (const s of allScores) {
-      (playedByUser[s.userId] ??= []).push(new Date(s.playedAt).getTime());
-    }
-    let totalVisits = 0;
-    for (const ms of Object.values(playedByUser)) {
-      totalVisits += countVisits([...ms].sort((a, b) => a - b));
-    }
+    const totalVisits = computeVisits(allScores);
     const avgPlaysPerVisit = totalVisits ? totalGames / totalVisits : 0;
 
     const createdMs = allScores.map(s => new Date(s.createdAt).getTime());
@@ -68,8 +59,16 @@ router.get('/', requireAppUser, async (req, res) => {
     // these reset at the start of each month rather than averaging over all-time history.
     const thisMonth = computeCurrentMonthCounts(allScores);
 
+    // Site-wide facts, independent of the mine/site-wide toggle — a venue or machine roster
+    // isn't "yours", so these are the same number in both views.
+    const [{ totalVenues }] = await db.select({ totalVenues: count() }).from(venues);
+    const [{ totalMachinesInSystem }] = await db.select({ totalMachinesInSystem: count() }).from(machines);
+
     res.json({
       totalGames,
+      totalVisits,
+      totalVenues,
+      totalMachinesInSystem,
       allTimeHigh: { score: best.score, machineName: best.machineName, venueName: best.venueName },
       mostPlayed,
       uniqueMachines,
@@ -84,6 +83,29 @@ router.get('/', requireAppUser, async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch stats' });
+  }
+});
+
+// GET /api/stats/history/:key?days=90 — site-wide StatHistory time series for one stat, for the
+// trend chart modal. Always site-wide regardless of the mine/site-wide toggle, since StatHistory
+// itself is only ever captured site-wide (see captureStatSnapshot).
+router.get('/history/:key', requireAppUser, async (req, res) => {
+  const days = Math.min(Number(req.query.days) || 90, 365);
+  try {
+    const [stat] = await db.select().from(stats).where(eq(stats.key, req.params.key)).limit(1);
+    if (!stat) return void res.status(404).json({ error: 'Unknown stat key' });
+
+    const rows = await db
+      .select({ periodDate: statHistory.periodDate, value: statHistory.value })
+      .from(statHistory)
+      .where(eq(statHistory.statId, stat.id))
+      .orderBy(desc(statHistory.periodDate))
+      .limit(days);
+
+    res.json({ label: stat.label, description: stat.description, points: rows.reverse() });
+  } catch (err) {
+    console.error('stats/history error:', err);
+    res.status(500).json({ error: 'Failed to fetch stat history' });
   }
 });
 

@@ -27,6 +27,20 @@ interface ScoreLike {
   userId: number;
 }
 
+// Visits are clustered per-player (gap > 6h = new visit), then summed — pooling timestamps
+// across players before clustering would merge unrelated outings.
+export function computeVisits(scoreList: Pick<ScoreLike, 'playedAt' | 'userId'>[]): number {
+  const playedByUser: Record<string, number[]> = {};
+  for (const s of scoreList) {
+    (playedByUser[s.userId] ??= []).push(new Date(s.playedAt).getTime());
+  }
+  let visits = 0;
+  for (const ms of Object.values(playedByUser)) {
+    visits += countVisits([...ms].sort((a, b) => a - b));
+  }
+  return visits;
+}
+
 // Raw counts for the current America/New_York calendar month, from a pre-filtered (mine or
 // site-wide) score set. These are the literal month-to-date totals — not an extrapolated rate —
 // so they reset at the start of each month.
@@ -36,18 +50,9 @@ export function computeCurrentMonthCounts(allScores: ScoreLike[], now: Date = ne
   const playsThisMonth = allScores.filter(s => nyMonthString(new Date(s.playedAt)) === thisMonth);
   const scoresSubmittedThisMonth = allScores.filter(s => nyMonthString(new Date(s.createdAt)) === thisMonth);
 
-  const playedByUser: Record<string, number[]> = {};
-  for (const s of playsThisMonth) {
-    (playedByUser[s.userId] ??= []).push(new Date(s.playedAt).getTime());
-  }
-  let visits = 0;
-  for (const ms of Object.values(playedByUser)) {
-    visits += countVisits([...ms].sort((a, b) => a - b));
-  }
-
   return {
     plays: playsThisMonth.length,
-    visits,
+    visits: computeVisits(playsThisMonth),
     scoresSubmitted: scoresSubmittedThisMonth.length,
   };
 }

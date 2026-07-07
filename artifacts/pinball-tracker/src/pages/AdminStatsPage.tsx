@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useApi } from '../lib/useApi';
-import { ShieldCheck, X, Plus, RefreshCw } from 'lucide-react';
+import { ShieldCheck, X, RefreshCw } from 'lucide-react';
 import AdminNav from '../components/AdminNav';
 
 type StatDef = {
@@ -138,94 +138,10 @@ function EditStatModal({ stat, onClose }: { stat: StatDef; onClose: () => void }
   );
 }
 
-function AddStatModal({ onClose }: { onClose: () => void }) {
-  const api = useApi();
-  const qc = useQueryClient();
-  const [key, setKey] = useState('');
-  const [label, setLabel] = useState('');
-  const [description, setDescription] = useState('');
-  const [error, setError] = useState('');
-
-  const mutation = useMutation({
-    mutationFn: () => api.admin.createStat({ key: key.trim(), label: label.trim(), description: description.trim() || undefined }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['admin-stats'] }); onClose(); },
-    onError: (err: any) => setError(err?.message ?? 'Failed to create stat'),
-  });
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setError('');
-    mutation.mutate();
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/60" />
-      <div
-        className="relative bg-[#1a1a2e] border border-white/10 rounded-2xl shadow-2xl w-full max-w-md p-6 flex flex-col gap-5"
-        onClick={e => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-black uppercase tracking-widest text-white">Add Stat</h2>
-          <button onClick={onClose} className="text-muted-foreground hover:text-white transition-colors">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        <p className="text-xs text-muted-foreground bg-white/5 rounded-lg p-3">
-          This only registers the definition. The daily snapshot job needs a matching code change
-          before it'll actually compute and write history for a brand-new key.
-        </p>
-
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-          <div>
-            <label className={labelClass}>Key</label>
-            <input
-              value={key}
-              onChange={e => setKey(e.target.value)}
-              placeholder="e.g. new_signups"
-              className={inputClass + ' font-mono'}
-              required
-            />
-          </div>
-          <div>
-            <label className={labelClass}>Label</label>
-            <input value={label} onChange={e => setLabel(e.target.value)} placeholder="e.g. New Signups" className={inputClass} required />
-          </div>
-          <div>
-            <label className={labelClass}>Description</label>
-            <textarea value={description} onChange={e => setDescription(e.target.value)} className={inputClass} rows={3} />
-          </div>
-
-          {error && <p className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{error}</p>}
-
-          <div className="flex gap-3 pt-1">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 border border-white/20 text-muted-foreground hover:text-white rounded-lg py-2.5 text-sm font-bold uppercase tracking-wider transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={mutation.isPending}
-              className="flex-1 bg-primary hover:bg-primary/90 text-white rounded-lg py-2.5 text-sm font-bold uppercase tracking-wider transition-colors disabled:opacity-50"
-            >
-              {mutation.isPending ? 'Creating…' : 'Create'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
-
 export default function AdminStatsPage() {
   const api = useApi();
   const qc = useQueryClient();
   const [editingStat, setEditingStat] = useState<StatDef | null>(null);
-  const [adding, setAdding] = useState(false);
   const [snapshotMsg, setSnapshotMsg] = useState('');
 
   const { data: statDefs = [], isLoading } = useQuery({
@@ -261,12 +177,6 @@ export default function AdminStatsPage() {
           <h2 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">
             Stat Definitions <span className="normal-case font-normal text-white/40">— click a row to edit</span>
           </h2>
-          <button
-            onClick={() => setAdding(true)}
-            className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-primary hover:text-primary/80 transition-colors"
-          >
-            <Plus className="w-4 h-4" /> Add Stat
-          </button>
         </div>
         {isLoading ? (
           <p className="text-muted-foreground text-sm">Loading...</p>
@@ -341,7 +251,6 @@ export default function AdminStatsPage() {
       </section>
 
       {editingStat && <EditStatModal stat={editingStat} onClose={() => setEditingStat(null)} />}
-      {adding && <AddStatModal onClose={() => setAdding(false)} />}
     </div>
   );
 }
