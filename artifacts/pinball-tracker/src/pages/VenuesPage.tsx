@@ -71,11 +71,14 @@ export default function VenuesPage() {
     mutationFn: ({ id, body }: { id: number; body: any }) => authApi.venues.patch(id, body),
     onSuccess: () => {
       // A privacy-tier change alters the redacted lat/lng baked into every score at this venue
-      // (see venuePrivacy.ts) — invalidating only ['venues'] left ['scores'] (what MapPage renders
-      // pins from) stale, showing the old coordinates until an unrelated refetch happened to occur.
+      // (see venuePrivacy.ts). ['scores']/['venue-scores'] aren't mounted on this page, so a plain
+      // invalidate only marks them stale — the *next* time Map/VenuePage mounts, react-query renders
+      // the old cached (now-wrong) coordinates instantly before the background refetch resolves,
+      // visibly flashing/lagging the pin. removeQueries evicts the cache entirely so that next mount
+      // has no stale data to render and must wait for a fresh fetch instead.
       queryClient.invalidateQueries({ queryKey: ['venues'] });
-      queryClient.invalidateQueries({ queryKey: ['scores'] });
-      queryClient.invalidateQueries({ queryKey: ['venue-scores'] });
+      queryClient.removeQueries({ queryKey: ['scores'] });
+      queryClient.removeQueries({ queryKey: ['venue-scores'] });
       setEditVenue(null);
     },
   });
