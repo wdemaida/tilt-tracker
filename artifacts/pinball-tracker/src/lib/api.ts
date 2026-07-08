@@ -60,7 +60,9 @@ export function createApi(getToken: () => Promise<string | null>) {
       machines: async (id: number) => request<any>(`/venues/${id}/machines`, undefined, await tok()),
       pmMachines: (pmId: number) => request<any>(`/venues/pm-machines/${pmId}`),
       scores: (id: number) => request<any>(`/venues/${id}/scores`),
-      patch: async (id: number, body: { name?: string; address?: string | null }) =>
+      create: async (body: { name: string; address: string; isResidence?: boolean; privacyTier?: 'full' | 'city_state' | 'hidden' }) =>
+        request<any>('/venues', { method: 'POST', body: JSON.stringify(body) }, await tok()),
+      patch: async (id: number, body: { name?: string; address?: string | null; isResidence?: boolean; privacyTier?: 'full' | 'city_state' | 'hidden' }) =>
         request(`/venues/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, await tok()),
       delete: async (id: number) =>
         request(`/venues/${id}`, { method: 'DELETE' }, await tok()),

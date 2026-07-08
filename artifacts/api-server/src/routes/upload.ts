@@ -1,12 +1,14 @@
 import { Router } from 'express';
 import multer from 'multer';
 import Exifr from 'exifr';
-import { and, between } from 'drizzle-orm';
-import { db, venues } from '@workspace/db';
+import { and, between, eq } from 'drizzle-orm';
+import { db, venues, users } from '@workspace/db';
+import { getAuth } from '@clerk/express';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { extractScoreFromImage } from '../lib/anthropic.js';
 import { getNearbyVenues, type Venue } from '../lib/hereApi.js';
 import { findNearestPmLocations, type PmLocation } from '../lib/pinballmapApi.js';
+import { redactVenue } from '../lib/venuePrivacy.js';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -31,7 +33,7 @@ async function extractExifDatetime(buffer: Buffer): Promise<string | null> {
   }
 }
 
-async function getHistoryVenues(lat: number, lng: number): Promise<Venue[]> {
+async function getHistoryVenues(lat: number, lng: number, requesterUserId: number | undefined, isAdmin: boolean): Promise<Venue[]> {
   // ~150 m bounding box
   const latDelta = 0.00135;
   const lngDelta = 0.00135 / Math.cos((lat * Math.PI) / 180);
@@ -46,14 +48,17 @@ async function getHistoryVenues(lat: number, lng: number): Promise<Venue[]> {
       )
     );
 
-  return rows.map(v => ({
-    venueId: v.id,
-    name: v.name,
-    address: v.address ?? '',
-    distance: Math.round(haversineM(lat, lng, v.latitude!, v.longitude!)),
-    hereId: v.hereId,
-    source: 'history' as const,
-  }));
+  return rows.map(v => {
+    const redacted = redactVenue(v, requesterUserId, isAdmin);
+    return {
+      venueId: v.id,
+      name: v.name,
+      address: redacted.address ?? '',
+      distance: Math.round(haversineM(lat, lng, v.latitude!, v.longitude!)),
+      hereId: v.hereId,
+      source: 'history' as const,
+    };
+  });
 }
 
 function haversineM(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -111,8 +116,17 @@ router.post('/', requireAuth, upload.single('photo'), async (req, res) => {
 
   let venueList: Venue[] = [];
   if (gps) {
+    const { userId: clerkId } = getAuth(req);
+    let requesterUserId: number | undefined;
+    let isAdmin = false;
+    if (clerkId) {
+      const [u] = await db.select({ id: users.id, role: users.role }).from(users).where(eq(users.clerkId, clerkId)).limit(1);
+      requesterUserId = u?.id;
+      isAdmin = u?.role === 'admin';
+    }
+
     const [history, here, pmLocations] = await Promise.all([
-      getHistoryVenues(gps.latitude, gps.longitude),
+      getHistoryVenues(gps.latitude, gps.longitude, requesterUserId, isAdmin),
       getNearbyVenues(gps.latitude, gps.longitude),
       findNearestPmLocations(gps.latitude, gps.longitude),
     ]);

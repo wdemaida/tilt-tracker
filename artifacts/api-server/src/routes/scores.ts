@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { db, scores, users, machines, venues } from '@workspace/db';
 import { eq, desc, sql } from 'drizzle-orm';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
+import { redactScoreLocation } from '../lib/venuePrivacy.js';
 import { getAuth } from '@clerk/express';
 
 async function resolveMinedUserId(req: any): Promise<number | undefined> {
@@ -9,6 +10,14 @@ async function resolveMinedUserId(req: any): Promise<number | undefined> {
   if (!clerkId) return undefined;
   const [user] = await db.select({ id: users.id }).from(users).where(eq(users.clerkId, clerkId)).limit(1);
   return user?.id;
+}
+
+// Optional — resolves the caller's app user + role, without requiring auth.
+async function resolveRequester(req: any): Promise<{ id: number; role: string } | undefined> {
+  const { userId: clerkId } = getAuth(req);
+  if (!clerkId) return undefined;
+  const [user] = await db.select({ id: users.id, role: users.role }).from(users).where(eq(users.clerkId, clerkId)).limit(1);
+  return user;
 }
 
 const router = Router();
@@ -35,13 +44,29 @@ router.get('/', async (req, res) => {
         username: users.username,
         displayName: users.displayName,
         createdAt: scores.createdAt,
+        venueOwnerId: venues.ownerId,
+        venuePrivacyTier: venues.privacyTier,
       })
       .from(scores)
       .innerJoin(machines, eq(scores.machineId, machines.id))
       .innerJoin(users, eq(scores.userId, users.id))
+      .leftJoin(venues, eq(scores.venueId, venues.id))
       .where(userId !== undefined ? eq(scores.userId, userId) : undefined)
       .orderBy(desc(scores.createdAt), desc(scores.playedAt));
-    res.json(rows);
+
+    // A score's own lat/lng comes from the photo's EXIF GPS, independent of the venue record — redact
+    // it the same way the venue's own address/coordinates are redacted, so a residence's exact location
+    // can't leak via the score's coordinates (e.g. on the Map page) even when the venue itself is hidden.
+    const requester = await resolveRequester(req);
+    const isAdmin = requester?.role === 'admin';
+    const redacted = rows.map(({ venueOwnerId, venuePrivacyTier, ...row }) => redactScoreLocation(
+      row,
+      row.venueId != null ? { ownerId: venueOwnerId, privacyTier: venuePrivacyTier ?? 'full', city: null, state: null, cityLat: null, cityLng: null } : undefined,
+      requester?.id,
+      isAdmin,
+    ));
+
+    res.json(redacted);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch scores' });
   }

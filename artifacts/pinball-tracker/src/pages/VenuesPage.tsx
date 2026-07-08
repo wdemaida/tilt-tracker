@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { Link } from 'wouter';
-import { MapPin, Trophy, X, ExternalLink, Pencil, Trash2 } from 'lucide-react';
+import { MapPin, Trophy, X, ExternalLink, Pencil, Trash2, Home } from 'lucide-react';
 import { format } from 'date-fns';
 import { PinballIcon } from '../components/PinballIcon';
 import * as Dialog from '@radix-ui/react-dialog';
@@ -19,6 +19,9 @@ interface Venue {
   longitude: number | null;
   pinballMapId: number | null;
   pmMachineCount: number | null;
+  ownerId: number | null;
+  isResidence: boolean;
+  privacyTier: 'full' | 'city_state' | 'hidden';
   scoreCount: number;
   machineCount: number;
 }
@@ -31,7 +34,13 @@ interface VenueMachinesData {
   ttMachineNames: string[];
 }
 
-interface EditVenue { id: number; name: string; address: string; }
+interface EditVenue {
+  id: number;
+  name: string;
+  address: string;
+  isResidence: boolean;
+  privacyTier: 'full' | 'city_state' | 'hidden';
+}
 
 // Addresses look like "..., City, ST" or "..., City, ST ZIP, United States" — the state
 // abbreviation is whichever comma-separated segment starts with two uppercase letters.
@@ -142,29 +151,46 @@ export default function VenuesPage() {
             >
               <div className="flex items-start gap-3">
                 <div className="flex-1 min-w-0">
-                  <Link href={`/map?venueId=${venue.id}`} className="font-black uppercase tracking-wider text-venue text-sm leading-tight hover:text-venue/80 transition-colors">
-                    {venue.name}
-                  </Link>
-                  {venue.address && (
+                  <div className="flex items-center gap-1.5">
+                    <Link href={`/map?venueId=${venue.id}`} className="font-black uppercase tracking-wider text-venue text-sm leading-tight hover:text-venue/80 transition-colors">
+                      {venue.name}
+                    </Link>
+                    {venue.isResidence && (
+                      <span title="Residence">
+                        <Home className="w-3 h-3 text-venue/70 flex-shrink-0" />
+                      </span>
+                    )}
+                  </div>
+                  {venue.address ? (
                     <p className="text-xs text-muted-foreground mt-0.5 truncate">{venue.address}</p>
-                  )}
+                  ) : venue.isResidence ? (
+                    <p className="text-xs text-muted-foreground/60 italic mt-0.5">Address hidden</p>
+                  ) : null}
                 </div>
-                {isAdmin && (
+                {(isAdmin || venue.ownerId === appUser?.id) && (
                   <div className="flex gap-1 flex-shrink-0">
                     <button
-                      onClick={() => setEditVenue({ id: venue.id, name: venue.name, address: venue.address ?? '' })}
+                      onClick={() => setEditVenue({
+                        id: venue.id,
+                        name: venue.name,
+                        address: venue.address ?? '',
+                        isResidence: venue.isResidence,
+                        privacyTier: venue.privacyTier,
+                      })}
                       className="p-1 rounded text-muted-foreground hover:text-white hover:bg-white/10 transition-colors"
                       aria-label="Edit venue"
                     >
                       <Pencil className="w-3.5 h-3.5" />
                     </button>
-                    <button
-                      onClick={() => setDeleteVenueId(venue.id)}
-                      className="p-1 rounded text-muted-foreground hover:text-red-400 hover:bg-red-400/10 transition-colors"
-                      aria-label="Delete venue"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    {isAdmin && (
+                      <button
+                        onClick={() => setDeleteVenueId(venue.id)}
+                        className="p-1 rounded text-muted-foreground hover:text-red-400 hover:bg-red-400/10 transition-colors"
+                        aria-label="Delete venue"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -238,6 +264,34 @@ export default function VenuesPage() {
                     className="rounded-lg border border-white/10 bg-background px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50"
                   />
                 </label>
+                <label className="flex items-center gap-2 text-sm text-white/80">
+                  <input
+                    type="checkbox"
+                    checked={editVenue.isResidence}
+                    onChange={e => setEditVenue({ ...editVenue, isResidence: e.target.checked, privacyTier: e.target.checked ? editVenue.privacyTier : 'full' })}
+                  />
+                  This is my residence
+                </label>
+                {editVenue.isResidence && (
+                  <div className="flex flex-col gap-1.5 pl-1">
+                    <span className="text-xs text-muted-foreground">Show my address as:</span>
+                    {([
+                      { value: 'full', label: 'Full address' },
+                      { value: 'city_state', label: 'City & state only' },
+                      { value: 'hidden', label: 'Fully hidden' },
+                    ] as const).map(opt => (
+                      <label key={opt.value} className="flex items-center gap-2 text-sm text-white/80">
+                        <input
+                          type="radio"
+                          name="editPrivacyTier"
+                          checked={editVenue.privacyTier === opt.value}
+                          onChange={() => setEditVenue({ ...editVenue, privacyTier: opt.value })}
+                        />
+                        {opt.label}
+                      </label>
+                    ))}
+                  </div>
+                )}
                 {patchMutation.isError && (
                   <p className="text-xs text-red-400">{(patchMutation.error as any)?.message}</p>
                 )}
@@ -246,7 +300,10 @@ export default function VenuesPage() {
                     Cancel
                   </Dialog.Close>
                   <button
-                    onClick={() => patchMutation.mutate({ id: editVenue.id, body: { name: editVenue.name, address: editVenue.address } })}
+                    onClick={() => patchMutation.mutate({
+                      id: editVenue.id,
+                      body: { name: editVenue.name, address: editVenue.address, isResidence: editVenue.isResidence, privacyTier: editVenue.privacyTier },
+                    })}
                     disabled={patchMutation.isPending}
                     className="flex-1 py-2.5 rounded-lg bg-primary text-white font-bold text-sm hover:opacity-90 transition-opacity disabled:opacity-50"
                   >

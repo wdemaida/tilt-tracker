@@ -48,6 +48,11 @@ export default function AddScorePage() {
   const [selectedVenue, setSelectedVenue] = useState<SelectedVenue | null>(null);
   const [gps, setGps] = useState<{ latitude: number; longitude: number } | null>(null);
   const [venueSearch, setVenueSearch] = useState('');
+  const [showAddVenueForm, setShowAddVenueForm] = useState(false);
+  const [newVenueName, setNewVenueName] = useState('');
+  const [newVenueAddress, setNewVenueAddress] = useState('');
+  const [newVenueIsResidence, setNewVenueIsResidence] = useState(false);
+  const [newVenuePrivacyTier, setNewVenuePrivacyTier] = useState<'full' | 'city_state' | 'hidden'>('hidden');
   const [machineSearch, setMachineSearch] = useState('');
   const [selectedMachine, setSelectedMachine] = useState('');
   const [aiDetectedMachine, setAiDetectedMachine] = useState('');
@@ -254,6 +259,23 @@ export default function AddScorePage() {
     },
     onError: (err: any) => {
       console.error('Save score failed:', err);
+    },
+  });
+
+  const createVenueMutation = useMutation({
+    mutationFn: (body: { name: string; address: string; isResidence: boolean; privacyTier: 'full' | 'city_state' | 'hidden' }) =>
+      api.venues.create(body),
+    onSuccess: (venue: any) => {
+      queryClient.invalidateQueries({ queryKey: ['venues'] });
+      setValue('venueName', venue.name);
+      setVenueSearch(venue.name);
+      setSelectedVenue({ venueId: venue.id, address: venue.address ?? undefined, venueLat: venue.latitude ?? undefined, venueLng: venue.longitude ?? undefined });
+      setShowAddVenueForm(false);
+      setNewVenueName('');
+      setNewVenueAddress('');
+      setNewVenueIsResidence(false);
+      setNewVenuePrivacyTier('hidden');
+      setStep(3);
     },
   });
 
@@ -510,13 +532,105 @@ export default function AddScorePage() {
               Continue
             </button>
           </div>
-          <button
-            type="button"
-            onClick={() => { setSelectedVenue(null); setValue('venueName', ''); setVenueSearch(''); setStep(3); }}
-            className="text-xs text-muted-foreground hover:text-white transition-colors text-center"
-          >
-            Skip — no venue
-          </button>
+          {!showAddVenueForm ? (
+            <div className="flex items-center justify-center gap-4">
+              <button
+                type="button"
+                onClick={() => { setSelectedVenue(null); setValue('venueName', ''); setVenueSearch(''); setStep(3); }}
+                className="text-xs text-muted-foreground hover:text-white transition-colors text-center"
+              >
+                Skip — no venue
+              </button>
+              <button
+                type="button"
+                onClick={() => { setNewVenueName(venueSearch); setShowAddVenueForm(true); }}
+                className="text-xs text-venue hover:text-venue/80 transition-colors text-center"
+              >
+                + Add custom venue
+              </button>
+            </div>
+          ) : (
+            <div className="rounded-lg border border-venue/30 bg-venue/5 p-4 flex flex-col gap-3">
+              <p className="text-xs font-bold uppercase tracking-widest text-venue">Add Custom Venue</p>
+              <div>
+                <label className="label">Name</label>
+                <input
+                  value={newVenueName}
+                  onChange={e => setNewVenueName(e.target.value)}
+                  placeholder="e.g. Dave's Basement"
+                  className="input"
+                />
+              </div>
+              <div>
+                <label className="label">Address</label>
+                <input
+                  value={newVenueAddress}
+                  onChange={e => setNewVenueAddress(e.target.value)}
+                  placeholder="Street, City, State"
+                  className="input"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Used to match future visits to this venue — your address privacy is controlled below.
+                </p>
+              </div>
+              <label className="flex items-center gap-2 text-sm text-white/80">
+                <input
+                  type="checkbox"
+                  checked={newVenueIsResidence}
+                  onChange={e => {
+                    setNewVenueIsResidence(e.target.checked);
+                    setNewVenuePrivacyTier(e.target.checked ? 'hidden' : 'full');
+                  }}
+                />
+                This is my residence
+              </label>
+              {newVenueIsResidence && (
+                <div className="flex flex-col gap-1.5 pl-1">
+                  <p className="text-xs text-muted-foreground">Show my address as:</p>
+                  {([
+                    { value: 'full', label: 'Full address' },
+                    { value: 'city_state', label: 'City & state only' },
+                    { value: 'hidden', label: 'Fully hidden' },
+                  ] as const).map(opt => (
+                    <label key={opt.value} className="flex items-center gap-2 text-sm text-white/80">
+                      <input
+                        type="radio"
+                        name="privacyTier"
+                        checked={newVenuePrivacyTier === opt.value}
+                        onChange={() => setNewVenuePrivacyTier(opt.value)}
+                      />
+                      {opt.label}
+                    </label>
+                  ))}
+                </div>
+              )}
+              {createVenueMutation.isError && (
+                <p className="text-xs text-red-400">{(createVenueMutation.error as any)?.message ?? 'Failed to create venue'}</p>
+              )}
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowAddVenueForm(false)}
+                  className="flex-1 py-2 rounded-lg border border-white/10 text-sm text-muted-foreground hover:text-white transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={!newVenueName.trim() || !newVenueAddress.trim() || createVenueMutation.isPending}
+                  onClick={() => createVenueMutation.mutate({
+                    name: newVenueName.trim(),
+                    address: newVenueAddress.trim(),
+                    isResidence: newVenueIsResidence,
+                    privacyTier: newVenuePrivacyTier,
+                  })}
+                  className="flex-1 py-2 rounded-lg bg-venue text-white font-bold text-sm hover:opacity-90 transition-opacity disabled:opacity-50"
+                >
+                  {createVenueMutation.isPending ? 'Saving...' : 'Save Venue'}
+                </button>
+              </div>
+            </div>
+          )}
           {/* Tag legend */}
           <div className="flex items-center justify-center gap-4 text-xs text-muted-foreground pt-1">
             <span className="flex items-center gap-1"><TagTT /> In TiltTrack</span>

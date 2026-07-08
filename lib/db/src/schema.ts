@@ -1,7 +1,8 @@
-import { pgTable, serial, text, bigint, timestamp, real, integer, pgEnum, uniqueIndex, date } from 'drizzle-orm/pg-core';
+import { pgTable, serial, text, bigint, timestamp, real, integer, pgEnum, uniqueIndex, date, boolean } from 'drizzle-orm/pg-core';
 
 export const scoreTypeEnum = pgEnum('score_type', ['casual', 'tournament']);
 export const userRoleEnum = pgEnum('user_role', ['admin', 'user']);
+export const venuePrivacyEnum = pgEnum('venue_privacy', ['full', 'city_state', 'hidden']);
 
 export const users = pgTable('users', {
   id: serial('id').primaryKey(),
@@ -35,6 +36,13 @@ export const venues = pgTable('venues', {
   hereId: text('here_id').unique(),
   pinballMapId: integer('pinball_map_id'),
   pmMachineCount: integer('pm_machine_count'),
+  ownerId: integer('owner_id').references(() => users.id),
+  isResidence: boolean('is_residence').default(false).notNull(),
+  privacyTier: venuePrivacyEnum('privacy_tier').default('full').notNull(),
+  city: text('city'),
+  state: text('state'),
+  cityLat: real('city_lat'),
+  cityLng: real('city_lng'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
