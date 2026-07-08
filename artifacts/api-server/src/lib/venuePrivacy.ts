@@ -39,5 +39,8 @@ export function redactScoreLocation<T extends { latitude: number | null; longitu
   isAdmin: boolean,
 ): T {
   if (!venue || venue.privacyTier === 'full' || canSeeFullVenue(venue, requesterUserId, isAdmin)) return score;
+  if (venue.privacyTier === 'city_state') {
+    return { ...score, latitude: venue.cityLat, longitude: venue.cityLng };
+  }
   return { ...score, latitude: null, longitude: null };
 }

@@ -46,6 +46,10 @@ router.get('/', async (req, res) => {
         createdAt: scores.createdAt,
         venueOwnerId: venues.ownerId,
         venuePrivacyTier: venues.privacyTier,
+        venueCity: venues.city,
+        venueState: venues.state,
+        venueCityLat: venues.cityLat,
+        venueCityLng: venues.cityLng,
       })
       .from(scores)
       .innerJoin(machines, eq(scores.machineId, machines.id))
@@ -59,9 +63,11 @@ router.get('/', async (req, res) => {
     // can't leak via the score's coordinates (e.g. on the Map page) even when the venue itself is hidden.
     const requester = await resolveRequester(req);
     const isAdmin = requester?.role === 'admin';
-    const redacted = rows.map(({ venueOwnerId, venuePrivacyTier, ...row }) => redactScoreLocation(
+    const redacted = rows.map(({ venueOwnerId, venuePrivacyTier, venueCity, venueState, venueCityLat, venueCityLng, ...row }) => redactScoreLocation(
       row,
-      row.venueId != null ? { ownerId: venueOwnerId, privacyTier: venuePrivacyTier ?? 'full', city: null, state: null, cityLat: null, cityLng: null } : undefined,
+      row.venueId != null
+        ? { ownerId: venueOwnerId, privacyTier: venuePrivacyTier ?? 'full', city: venueCity, state: venueState, cityLat: venueCityLat, cityLng: venueCityLng }
+        : undefined,
       requester?.id,
       isAdmin,
     ));

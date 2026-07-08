@@ -60,6 +60,7 @@ export default function VenuesPage() {
   const [modalVenueId, setModalVenueId] = useState<number | null>(null);
   const [editVenue, setEditVenue] = useState<EditVenue | null>(null);
   const [deleteVenueId, setDeleteVenueId] = useState<number | null>(null);
+  const [hiddenWarningVenue, setHiddenWarningVenue] = useState<string | null>(null);
 
   const authApi = useApi();
   const appUser = useAppUser();
@@ -68,7 +69,15 @@ export default function VenuesPage() {
 
   const patchMutation = useMutation({
     mutationFn: ({ id, body }: { id: number; body: any }) => authApi.venues.patch(id, body),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['venues'] }); setEditVenue(null); },
+    onSuccess: () => {
+      // A privacy-tier change alters the redacted lat/lng baked into every score at this venue
+      // (see venuePrivacy.ts) — invalidating only ['venues'] left ['scores'] (what MapPage renders
+      // pins from) stale, showing the old coordinates until an unrelated refetch happened to occur.
+      queryClient.invalidateQueries({ queryKey: ['venues'] });
+      queryClient.invalidateQueries({ queryKey: ['scores'] });
+      queryClient.invalidateQueries({ queryKey: ['venue-scores'] });
+      setEditVenue(null);
+    },
   });
 
   const deleteMutation = useMutation({
@@ -144,7 +153,9 @@ export default function VenuesPage() {
         <p className="text-muted-foreground">No venues found.</p>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredVenues.map(venue => (
+          {filteredVenues.map(venue => {
+            const canSeeFull = isAdmin || venue.ownerId === appUser?.id;
+            return (
             <div
               key={venue.id}
               className="rounded-xl border border-white/10 bg-card p-5 flex flex-col gap-3 hover:border-venue/30 transition-colors"
@@ -152,9 +163,19 @@ export default function VenuesPage() {
               <div className="flex items-start gap-3">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5">
-                    <Link href={`/map?venueId=${venue.id}`} className="font-black uppercase tracking-wider text-venue text-sm leading-tight hover:text-venue/80 transition-colors">
-                      {venue.name}
-                    </Link>
+                    {!canSeeFull && venue.privacyTier === 'hidden' ? (
+                      <button
+                        type="button"
+                        onClick={() => setHiddenWarningVenue(venue.name)}
+                        className="font-black uppercase tracking-wider text-venue text-sm leading-tight hover:text-venue/80 transition-colors text-left"
+                      >
+                        {venue.name}
+                      </button>
+                    ) : (
+                      <Link href={`/map?venueId=${venue.id}`} className="font-black uppercase tracking-wider text-venue text-sm leading-tight hover:text-venue/80 transition-colors">
+                        {venue.name}
+                      </Link>
+                    )}
                     {venue.isResidence && (
                       <span title="Residence">
                         <Home className="w-3 h-3 text-venue/70 flex-shrink-0" />
@@ -231,9 +252,24 @@ export default function VenuesPage() {
                 )}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
+
+      {/* Hidden-venue warning */}
+      <Dialog.Root open={!!hiddenWarningVenue} onOpenChange={open => { if (!open) setHiddenWarningVenue(null); }}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm" />
+          <Dialog.Content className="fixed z-50 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-sm rounded-2xl border border-white/10 bg-card p-6 shadow-2xl">
+            <Dialog.Title className="text-lg font-black uppercase tracking-wider text-white mb-2">Location Hidden</Dialog.Title>
+            <p className="text-sm text-muted-foreground mb-5">Venue address hidden by owner.</p>
+            <Dialog.Close className="w-full py-2.5 rounded-lg bg-primary text-white font-bold text-sm hover:opacity-90 transition-opacity">
+              OK
+            </Dialog.Close>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
 
       {/* Edit venue dialog */}
       <Dialog.Root open={!!editVenue} onOpenChange={open => { if (!open) setEditVenue(null); }}>

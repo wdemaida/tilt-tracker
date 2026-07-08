@@ -94,12 +94,15 @@ export default function MapPage() {
         <h1 className="text-4xl font-black uppercase tracking-widest text-white">Map</h1>
         <ScopeToggle />
       </div>
-      <p className="text-sm text-muted-foreground mb-6">
+      <p className="text-sm text-muted-foreground mb-1">
         {filterVenueId ? (
           <>Showing <span className="text-venue font-bold">{locations[0]?.venueName ?? 'this venue'}</span> only · <Link href="/map" className="text-primary hover:text-primary/80 transition-colors">clear filter</Link></>
         ) : (
           <>{locations.length} {locations.length === 1 ? 'location' : 'locations'} · {withGps.length} {mine ? 'your ' : ''}scores with GPS</>
         )}
+      </p>
+      <p className="text-xs text-muted-foreground/60 mb-6">
+        Some venues (e.g. personal residences) are hidden or shown only by city/state at the owner's choice.
       </p>
 
       <div className="rounded-xl overflow-hidden border border-white/10" style={{ height: 480 }}>
