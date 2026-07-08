@@ -30,9 +30,12 @@ Port 5173 is taken by another process on this machine; `vite.config.ts` hardcode
 ```bash
 npx tsx watch src/index.ts
 ```
-Runs on port 3000. Vite proxies `/api/*` to it automatically.
+Runs on port 3001. Vite proxies `/api/*` to it automatically.
+Port 3000 is intentionally avoided — an unrelated project (`bart-core`, under `_nymbl-work`) frequently occupies it on this machine, so the api-server, `vite.config.ts`'s proxy, and the direct-loopback Drizzle Studio launcher (`src/lib/api.ts`) all standardize on 3001 instead.
 
 Both must be running for the app to work.
+
+**A stray `vite.config.js` will silently override `vite.config.ts`** — Vite prefers `.js` config files, and the two can drift out of sync since only the `.ts` file is meant to be edited. If `/api/*` calls ever fail mysteriously even though the api-server is running, check for `artifacts/pinball-tracker/vite.config.js` and delete it if present.
 
 ---
 

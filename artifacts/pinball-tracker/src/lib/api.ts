@@ -101,9 +101,9 @@ export function createApi(getToken: () => Promise<string | null>) {
         if (token) headers['Authorization'] = `Bearer ${token}`;
         let res: Response;
         try {
-          res = await fetch('http://localhost:3000/api/admin/drizzle-studio/start', { method: 'POST', headers });
+          res = await fetch('http://localhost:3001/api/admin/drizzle-studio/start', { method: 'POST', headers });
         } catch {
-          throw new Error('Could not reach your local API server on port 3000 — start it with "npx tsx watch src/index.ts" from artifacts/api-server first.');
+          throw new Error('Could not reach your local API server on port 3001 — start it with "npx tsx watch src/index.ts" from artifacts/api-server first.');
         }
         if (!res.ok) {
           const err = await res.json().catch(() => ({ error: res.statusText }));

@@ -15,7 +15,7 @@ import adminRouter from './routes/admin.js';
 import { captureStatSnapshot } from './lib/statSnapshot.js';
 
 const app = express();
-const PORT = process.env.PORT ?? 3000;
+const PORT = process.env.PORT ?? 3001;
 
 const allowedOrigins = (process.env.FRONTEND_URL ?? 'http://localhost:5173,http://localhost:5174').split(',');
 // The Drizzle Studio launcher is a loopback-only dev tool (blocked on Render via process.env.RENDER,

@@ -735,8 +735,15 @@ export default function AddScorePage() {
                 )}
               </div>
             ) : (
-              /* Fallback: free-text search when no PM data */
+              /* Fallback: free-text search when no PM data (e.g. custom venue with no Pinball Map link) */
               <div>
+                {aiDetectedMachine && !selectedMachine && (
+                  <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-500/25 bg-amber-500/10 text-sm mb-2">
+                    <span className="text-xs font-bold uppercase tracking-wider text-amber-400 whitespace-nowrap">AI read</span>
+                    <span className="text-white/80 font-medium truncate">"{aiDetectedMachine}"</span>
+                    <span className="text-xs text-muted-foreground ml-auto whitespace-nowrap">prefilled below</span>
+                  </div>
+                )}
                 <input
                   value={machineSearch}
                   onChange={e => { setMachineSearch(e.target.value); setValue('machineName', e.target.value); setSelectedMachine(''); }}
