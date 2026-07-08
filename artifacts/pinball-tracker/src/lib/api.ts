@@ -59,6 +59,10 @@ export function createApi(getToken: () => Promise<string | null>) {
         request<any[]>(mine ? '/venues?mine=true' : '/venues', undefined, mine ? await tok() : undefined),
       machines: async (id: number) => request<any>(`/venues/${id}/machines`, undefined, await tok()),
       pmMachines: (pmId: number) => request<any>(`/venues/pm-machines/${pmId}`),
+      addressAutocomplete: (q: string, at?: { lat: number; lng: number }) =>
+        request<Array<{ id: string; label: string; lat: number | null; lng: number | null }>>(
+          `/venues/address-autocomplete?q=${encodeURIComponent(q)}${at ? `&lat=${at.lat}&lng=${at.lng}` : ''}`
+        ),
       scores: (id: number) => request<any>(`/venues/${id}/scores`),
       create: async (body: { name: string; address: string; isResidence?: boolean; privacyTier?: 'full' | 'city_state' | 'hidden' }) =>
         request<any>('/venues', { method: 'POST', body: JSON.stringify(body) }, await tok()),

@@ -52,6 +52,7 @@ export default function AddScorePage() {
   const [showAddVenueForm, setShowAddVenueForm] = useState(false);
   const [newVenueName, setNewVenueName] = useState('');
   const [newVenueAddress, setNewVenueAddress] = useState('');
+  const [showAddressSuggestions, setShowAddressSuggestions] = useState(false);
   const [newVenueIsResidence, setNewVenueIsResidence] = useState(false);
   const [newVenuePrivacyTier, setNewVenuePrivacyTier] = useState<'full' | 'city_state' | 'hidden'>('hidden');
   const [machineSearch, setMachineSearch] = useState('');
@@ -202,6 +203,13 @@ export default function AddScorePage() {
     queryKey: ['machine-search', machineSearch],
     queryFn: () => api.machines.search(machineSearch),
     enabled: allVenueMachines.length === 0 && !venueDataLoading && !pmOnlyLoading && machineSearch.length > 1,
+  });
+
+  // Address-as-you-type suggestions for the "Add custom venue" form (HERE Autosuggest)
+  const { data: addressSuggestions = [] } = useQuery({
+    queryKey: ['address-autocomplete', newVenueAddress],
+    queryFn: () => api.venues.addressAutocomplete(newVenueAddress, gps ? { lat: gps.latitude, lng: gps.longitude } : undefined),
+    enabled: showAddVenueForm && newVenueAddress.trim().length > 3,
   });
 
   // Filtered venue history for step 2 (user's venues only)
@@ -573,14 +581,31 @@ export default function AddScorePage() {
                   className="input"
                 />
               </div>
-              <div>
+              <div className="relative">
                 <label className="label">Address</label>
                 <input
                   value={newVenueAddress}
-                  onChange={e => setNewVenueAddress(e.target.value)}
+                  onChange={e => { setNewVenueAddress(e.target.value); setShowAddressSuggestions(true); }}
+                  onFocus={() => setShowAddressSuggestions(true)}
+                  onBlur={() => setTimeout(() => setShowAddressSuggestions(false), 150)}
                   placeholder="Street, City, State"
                   className="input"
+                  autoComplete="off"
                 />
+                {showAddressSuggestions && (addressSuggestions as any[]).length > 0 && (
+                  <div className="absolute z-10 mt-1 w-full rounded-lg border border-white/10 bg-background overflow-hidden shadow-lg">
+                    {(addressSuggestions as any[]).map(s => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => { setNewVenueAddress(s.label); setShowAddressSuggestions(false); }}
+                        className="w-full text-left px-4 py-2 text-sm text-white hover:bg-white/10 transition-colors"
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <p className="text-xs text-muted-foreground mt-1">
                   Used to match future visits to this venue — your address privacy is controlled below.
                 </p>

@@ -3,7 +3,7 @@ import { db, scores, venues, machines, users } from '@workspace/db';
 import { eq, desc, count, sql, and } from 'drizzle-orm';
 import { getPmMachinesAtLocation } from '../lib/pinballmapApi.js';
 import { syncVenueMachineHistory, getFormerMachines } from '../lib/venueHistory.js';
-import { geocodeAddress } from '../lib/hereApi.js';
+import { geocodeAddress, autosuggestAddress } from '../lib/hereApi.js';
 import { redactVenue, canSeeFullVenue } from '../lib/venuePrivacy.js';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { getAuth } from '@clerk/express';
@@ -111,6 +111,21 @@ router.post('/', requireAppUser, async (req, res) => {
   } catch (err) {
     console.error('Create venue error:', err);
     res.status(500).json({ error: 'Failed to create venue' });
+  }
+});
+
+// GET /api/venues/address-autocomplete?q=... — address-as-you-type suggestions for the "Add custom
+// venue" form. Optional lat/lng bias the results toward the caller's current location.
+router.get('/address-autocomplete', async (req, res) => {
+  const q = typeof req.query.q === 'string' ? req.query.q : '';
+  const lat = req.query.lat ? Number(req.query.lat) : undefined;
+  const lng = req.query.lng ? Number(req.query.lng) : undefined;
+  try {
+    const suggestions = await autosuggestAddress(q, lat != null && lng != null ? { lat, lng } : undefined);
+    res.json(suggestions);
+  } catch (err) {
+    console.error('Address autocomplete error:', err);
+    res.status(500).json({ error: 'Failed to fetch address suggestions' });
   }
 });
 

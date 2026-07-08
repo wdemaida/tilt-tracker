@@ -54,6 +54,49 @@ export async function geocodeAddress(address: string): Promise<GeocodeResult | n
   }
 }
 
+export interface AddressSuggestion {
+  id: string;
+  label: string;
+  lat: number | null;
+  lng: number | null;
+}
+
+// Address-as-you-type suggestions for manual venue entry (e.g. adding a residence). Distinct from
+// geocodeAddress (resolves one complete address string) and getNearbyVenues (POI search near a
+// point) — this hits HERE's Autosuggest endpoint, built specifically for incremental typeahead.
+export async function autosuggestAddress(query: string, at?: { lat: number; lng: number }): Promise<AddressSuggestion[]> {
+  if (!HERE_API_KEY || query.trim().length < 3) return [];
+
+  const url = new URL('https://autosuggest.search.hereapi.com/v1/autosuggest');
+  url.searchParams.set('q', query);
+  url.searchParams.set('limit', '5');
+  url.searchParams.set('apiKey', HERE_API_KEY);
+  // Autosuggest requires an `at`/`in` location bias (a plain country filter like `in=countryCode:`
+  // isn't accepted here, unlike other HERE endpoints) — use the caller's coordinates when known (more
+  // relevant results), otherwise bias toward the northeast US, this app's primary user base.
+  const bias = at ?? { lat: 42.36, lng: -71.06 }; // Boston, MA
+  url.searchParams.set('at', `${bias.lat},${bias.lng}`);
+
+  try {
+    const res = await fetch(url.toString());
+    if (!res.ok) return [];
+    const data = (await res.json()) as {
+      items: Array<{ id: string; address?: { label: string }; position?: { lat: number; lng: number } }>;
+    };
+    // Some result types (categoryQuery, chainQuery) are query refinements, not addresses — skip them.
+    return data.items
+      .filter((item): item is typeof item & { address: { label: string } } => !!item.address?.label)
+      .map(item => ({
+        id: item.id,
+        label: item.address.label,
+        lat: item.position?.lat ?? null,
+        lng: item.position?.lng ?? null,
+      }));
+  } catch {
+    return [];
+  }
+}
+
 export async function getNearbyVenues(lat: number, lng: number, limit = 8): Promise<Venue[]> {
   if (!HERE_API_KEY) return [];
 
