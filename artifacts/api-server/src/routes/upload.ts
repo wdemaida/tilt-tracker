@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import multer from 'multer';
+import sharp from 'sharp';
 import Exifr from 'exifr';
 import { and, between, eq } from 'drizzle-orm';
 import { db, venues, users } from '@workspace/db';
@@ -92,22 +93,34 @@ router.post('/', requireAuth, upload.single('photo'), async (req, res) => {
     let buffer = originalBuffer;
     let mimeType = req.file.mimetype;
 
-    const [gps, exifDatetime] = await Promise.all([
-      extractGps(originalBuffer),
-      extractExifDatetime(originalBuffer),
+    // The frontend extracts GPS/EXIF from HEIC photos client-side before converting them, since
+    // conversion strips EXIF and doing the conversion client-side avoids the memory-heavy server-side
+    // HEIC decode for the common case (see imageCompress.ts). Falls back to server-side extraction
+    // when absent — non-HEIC uploads, or the client's conversion attempt failed.
+    const clientLat = req.body.latitude != null ? Number(req.body.latitude) : null;
+    const clientLng = req.body.longitude != null ? Number(req.body.longitude) : null;
+    const clientExifDatetime = typeof req.body.exifDatetime === 'string' ? req.body.exifDatetime : null;
+    const hasClientGps = clientLat != null && !Number.isNaN(clientLat) && clientLng != null && !Number.isNaN(clientLng);
+
+    const [serverGps, serverExifDatetime] = await Promise.all([
+      hasClientGps ? Promise.resolve(null) : extractGps(originalBuffer),
+      clientExifDatetime ? Promise.resolve(null) : extractExifDatetime(originalBuffer),
     ]);
+    const gps = hasClientGps ? { latitude: clientLat!, longitude: clientLng! } : serverGps;
+    const exifDatetime = clientExifDatetime ?? serverExifDatetime;
 
     let thumbnailBase64: string | null = null;
     if (mimeType === 'image/heic' || mimeType === 'image/heif' || req.file.originalname.toLowerCase().endsWith('.heic')) {
       try {
         const heicConvert = (await import('heic-convert')).default;
-        const [mainBuf, thumbBuf] = await Promise.all([
-          heicConvert({ buffer, format: 'JPEG', quality: 0.9 }),
-          heicConvert({ buffer, format: 'JPEG', quality: 0.12 }),
-        ]);
+        // heic-convert's WASM decoder is memory-heavy even for an ordinary 12MP photo (measured
+        // ~365MB RSS, ~11s) — decode the HEIC source exactly once and derive the thumbnail from the
+        // resulting JPEG via sharp instead of paying that full decode cost a second time.
+        const mainBuf = await heicConvert({ buffer, format: 'JPEG', quality: 0.9 });
         buffer = Buffer.from(mainBuf);
         mimeType = 'image/jpeg';
-        thumbnailBase64 = `data:image/jpeg;base64,${Buffer.from(thumbBuf).toString('base64')}`;
+        const thumbBuf = await sharp(buffer).resize(160).jpeg({ quality: 65 }).toBuffer();
+        thumbnailBase64 = `data:image/jpeg;base64,${thumbBuf.toString('base64')}`;
       } catch {
         return res.status(422).json({ error: 'Failed to convert HEIC image' });
       }

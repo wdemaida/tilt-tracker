@@ -112,10 +112,20 @@ export function createApi(getToken: () => Promise<string | null>) {
         return res.json() as Promise<{ status: 'starting' | 'already-running' }>;
       },
     },
-    upload: async (file: File) => {
+    // `opts` carries client-extracted GPS/timestamp when the caller already converted a HEIC photo
+    // client-side (see heicClientConvert.ts) — HEIC->JPEG conversion strips EXIF, so that data can't
+    // be recovered server-side once converted. Omitted entirely for non-HEIC uploads, where the
+    // server extracts it from the buffer exactly as before.
+    upload: async (file: File | Blob, opts?: { filename?: string; latitude?: number | null; longitude?: number | null; exifDatetime?: string | null }) => {
       const token = await tok();
       const form = new FormData();
-      form.append('photo', file);
+      form.append('photo', file, opts?.filename);
+      if (opts?.latitude != null && opts?.longitude != null) {
+        form.append('latitude', String(opts.latitude));
+        form.append('longitude', String(opts.longitude));
+      }
+      if (opts?.exifDatetime) form.append('exifDatetime', opts.exifDatetime);
+
       const headers: Record<string, string> = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;
       const res = await fetch(`${BASE}/upload`, { method: 'POST', body: form, headers });

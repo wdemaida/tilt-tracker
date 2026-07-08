@@ -8,6 +8,7 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import { useApi } from '../lib/useApi';
 import { queryClient } from '../lib/queryClient';
 import { PinballIcon } from '../components/PinballIcon';
+import { isHeicFile, convertHeicClientSide } from '../lib/heicClientConvert';
 
 const schema = z.object({
   machineName: z.string().min(1, 'Required'),
@@ -91,7 +92,7 @@ export default function AddScorePage() {
     });
   }
 
-  function generateThumbnail(file: File): Promise<string> {
+  function generateThumbnail(file: File | Blob): Promise<string> {
     return new Promise((resolve, reject) => {
       const url = URL.createObjectURL(file);
       resizeImage(url).then(data => { URL.revokeObjectURL(url); resolve(data); })
@@ -283,9 +284,20 @@ export default function AddScorePage() {
     setAiLoading(true);
     setAiError('');
     thumbnailSucceeded.current = false;
-    generateThumbnail(file).then(t => { setThumbnail(t); thumbnailSucceeded.current = true; }).catch(() => {});
+
+    // Convert HEIC client-side — see heicClientConvert.ts for why (moves the memory-heavy decode
+    // off the server). Falls back to uploading the original file untouched if conversion fails.
+    const converted = isHeicFile(file) ? await convertHeicClientSide(file) : null;
+    const uploadFile: File | Blob = converted?.file ?? file;
+
+    generateThumbnail(uploadFile).then(t => { setThumbnail(t); thumbnailSucceeded.current = true; }).catch(() => {});
     try {
-      const result = await api.upload(file);
+      const result = await api.upload(uploadFile, {
+        filename: converted?.filename,
+        latitude: converted?.latitude,
+        longitude: converted?.longitude,
+        exifDatetime: converted?.exifDatetime,
+      });
       if (result.machineName) {
         setValue('machineName', result.machineName);
         setMachineSearch(result.machineName);
