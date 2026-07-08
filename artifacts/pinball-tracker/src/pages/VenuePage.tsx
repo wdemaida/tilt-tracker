@@ -1,7 +1,7 @@
 ﻿import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'wouter';
-import { ArrowLeft, ChevronUp, ChevronDown } from 'lucide-react';
+import { ArrowLeft, ChevronUp, ChevronDown, Home } from 'lucide-react';
 import { format } from 'date-fns';
 import { api } from '../lib/api';
 
@@ -70,7 +70,10 @@ export default function VenuePage() {
       </Link>
 
       <div className="mb-6">
-        <h1 className="text-3xl font-black uppercase tracking-widest text-venue leading-tight">{venue.name}</h1>
+        <h1 className="text-3xl font-black uppercase tracking-widest text-venue leading-tight flex items-center gap-2">
+          {venue.name}
+          {venue.isResidence && <Home className="w-5 h-5 text-venue/70 flex-shrink-0" />}
+        </h1>
         {venue.address && (
           <p className="text-sm text-muted-foreground mt-1">{venue.address}</p>
         )}

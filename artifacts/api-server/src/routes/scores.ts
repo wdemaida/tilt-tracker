@@ -50,6 +50,7 @@ router.get('/', async (req, res) => {
         venueState: venues.state,
         venueCityLat: venues.cityLat,
         venueCityLng: venues.cityLng,
+        venueIsResidence: venues.isResidence,
       })
       .from(scores)
       .innerJoin(machines, eq(scores.machineId, machines.id))

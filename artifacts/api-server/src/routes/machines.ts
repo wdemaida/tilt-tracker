@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { db, machines, scores, users } from '@workspace/db';
+import { db, machines, scores, users, venues } from '@workspace/db';
 import { eq, desc, max, count, isNotNull } from 'drizzle-orm';
 import { searchMachines } from '../lib/pinballMap.js';
 import { upsertMachineByName } from '../lib/machineUpsert.js';
@@ -84,12 +84,14 @@ router.get('/:name', async (req, res) => {
         type: scores.type,
         venueId: scores.venueId,
         venueName: scores.venueName,
+        venueIsResidence: venues.isResidence,
         photoUrl: scores.photoUrl,
         username: users.username,
         displayName: users.displayName,
       })
       .from(scores)
       .innerJoin(users, eq(scores.userId, users.id))
+      .leftJoin(venues, eq(scores.venueId, venues.id))
       .where(eq(scores.machineId, machine.id))
       .orderBy(desc(scores.score));
 

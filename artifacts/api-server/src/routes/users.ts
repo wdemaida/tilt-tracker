@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { db, users, scores, machines } from '@workspace/db';
+import { db, users, scores, machines, venues } from '@workspace/db';
 import { eq, desc } from 'drizzle-orm';
 import { getAuth } from '@clerk/express';
 import { requireAuth } from '../middleware/requireAuth.js';
@@ -56,12 +56,14 @@ router.get('/:username', async (req, res) => {
         playedAt: scores.playedAt,
         type: scores.type,
         venueName: scores.venueName,
+        venueIsResidence: venues.isResidence,
         photoUrl: scores.photoUrl,
         machineName: machines.name,
         machineImageUrl: machines.imageUrl,
       })
       .from(scores)
       .innerJoin(machines, eq(scores.machineId, machines.id))
+      .leftJoin(venues, eq(scores.venueId, venues.id))
       .where(eq(scores.userId, user.id))
       .orderBy(desc(scores.playedAt));
 

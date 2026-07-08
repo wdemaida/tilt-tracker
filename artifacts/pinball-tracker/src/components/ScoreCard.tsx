@@ -1,5 +1,5 @@
 import { Link } from 'wouter';
-import { MapPin, Clock, Pencil, Trash2, Trophy } from 'lucide-react';
+import { MapPin, Clock, Pencil, Trash2, Trophy, Home } from 'lucide-react';
 import { format } from 'date-fns';
 
 interface ScoreCardProps {
@@ -10,6 +10,7 @@ interface ScoreCardProps {
   createdAt?: string | null;
   type: 'casual' | 'tournament';
   venueName?: string | null;
+  venueIsResidence?: boolean;
   photoUrl?: string | null;
   photoThumbnail?: string | null;
   username: string;
@@ -20,7 +21,7 @@ interface ScoreCardProps {
   onDelete?: () => void;
 }
 
-export default function ScoreCard({ id: _id, machineName, score, playedAt, createdAt, type, venueName, photoThumbnail, username, isHighScore, isCurrentUser, onEdit, onDelete }: ScoreCardProps) {
+export default function ScoreCard({ id: _id, machineName, score, playedAt, createdAt, type, venueName, venueIsResidence, photoThumbnail, username, isHighScore, isCurrentUser, onEdit, onDelete }: ScoreCardProps) {
   return (
     <div className={`rounded-xl border bg-card p-4 flex flex-col gap-3 hover:border-primary/40 transition-colors ${isCurrentUser ? 'border-username/60' : 'border-white/10'}`}>
       <div className="flex items-center justify-between">
@@ -67,6 +68,7 @@ export default function ScoreCard({ id: _id, machineName, score, playedAt, creat
               <div className="flex items-center gap-1 text-venue">
                 <MapPin className="w-3 h-3 flex-shrink-0" />
                 <span className="truncate">{venueName}</span>
+                {venueIsResidence && <Home className="w-3 h-3 flex-shrink-0" />}
               </div>
             )}
           </div>

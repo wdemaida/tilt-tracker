@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'wouter';
 import {
-  Trophy, ArrowLeft, MapPin, PlusCircle,
+  Trophy, ArrowLeft, MapPin, PlusCircle, Home,
   ChevronUp, ChevronDown, TrendingUp, Users, ChevronDown as ChevronDownSmall,
 } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
@@ -785,6 +785,7 @@ export default function MachinePage() {
                     {s.venueName && (
                       <p className="text-xs text-venue flex items-center gap-1 mt-0.5">
                         <MapPin className="w-3 h-3" />{s.venueName}
+                        {s.venueIsResidence && <Home className="w-3 h-3 flex-shrink-0" />}
                       </p>
                     )}
                   </div>

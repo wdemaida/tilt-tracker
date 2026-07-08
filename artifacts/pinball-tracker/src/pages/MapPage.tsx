@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import { Link, useSearch } from 'wouter';
 import { format } from 'date-fns';
-import { Clock, User } from 'lucide-react';
+import { Clock, User, Home } from 'lucide-react';
 import { PinballIcon } from '../components/PinballIcon';
 import { useApi } from '../lib/useApi';
 import { useAppUser } from '../lib/useAppUser';
@@ -68,7 +68,7 @@ export default function MapPage() {
       : list[0];
     const machineCount = new Set(list.map((s: any) => s.machineId)).size;
     const visits = new Set(list.map((s: any) => new Date(s.playedAt).toDateString())).size;
-    return { lat, lng, venueName: list[0].venueName, venueId: list[0].venueId, recent, hasMyScore, machineCount, visits };
+    return { lat, lng, venueName: list[0].venueName, venueId: list[0].venueId, isResidence: !!list[0].venueIsResidence, recent, hasMyScore, machineCount, visits };
   });
 
   const locations = filterVenueId
@@ -116,7 +116,7 @@ export default function MapPage() {
             url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
             attribution='&copy; <a href="https://carto.com/">CARTO</a>'
           />
-          {locations.map(({ lat, lng, venueName, venueId, recent, hasMyScore, machineCount, visits }) => (
+          {locations.map(({ lat, lng, venueName, venueId, isResidence, recent, hasMyScore, machineCount, visits }) => (
             <Marker
               key={`${lat},${lng}`}
               position={[lat, lng]}
@@ -126,7 +126,7 @@ export default function MapPage() {
               <Popup minWidth={220}>
                 {/* Location section */}
                 <div className="px-4 pt-3 pb-3">
-                  <div className="text-center mb-3">
+                  <div className="flex items-center justify-center gap-1.5 mb-3">
                     {venueId ? (
                       <Link href={`/venues/${venueId}`} className="font-black uppercase tracking-wider text-venue text-sm hover:text-venue/80 transition-colors leading-tight">
                         {venueName ?? 'Unknown venue'}
@@ -134,6 +134,7 @@ export default function MapPage() {
                     ) : (
                       <p className="font-black uppercase tracking-wider text-white text-sm leading-tight">{venueName ?? 'Unknown venue'}</p>
                     )}
+                    {isResidence && <Home className="w-3 h-3 text-venue/70 flex-shrink-0" />}
                   </div>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1">
