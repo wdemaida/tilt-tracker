@@ -9,6 +9,7 @@ interface ScoreCardProps {
   playedAt: string;
   createdAt?: string | null;
   type: 'casual' | 'tournament';
+  venueId?: number | null;
   venueName?: string | null;
   venueIsResidence?: boolean;
   photoUrl?: string | null;
@@ -21,7 +22,7 @@ interface ScoreCardProps {
   onDelete?: () => void;
 }
 
-export default function ScoreCard({ id: _id, machineName, score, playedAt, createdAt, type, venueName, venueIsResidence, photoThumbnail, username, isHighScore, isCurrentUser, onEdit, onDelete }: ScoreCardProps) {
+export default function ScoreCard({ id: _id, machineName, score, playedAt, createdAt, type, venueId, venueName, venueIsResidence, photoThumbnail, username, isHighScore, isCurrentUser, onEdit, onDelete }: ScoreCardProps) {
   return (
     <div className={`rounded-xl border bg-card p-4 flex flex-col gap-3 hover:border-primary/40 transition-colors ${isCurrentUser ? 'border-username/60' : 'border-white/10'}`}>
       <div className="flex items-center justify-between">
@@ -67,7 +68,13 @@ export default function ScoreCard({ id: _id, machineName, score, playedAt, creat
             {venueName && (
               <div className="flex items-center gap-1 text-venue">
                 <MapPin className="w-3 h-3 flex-shrink-0" />
-                <span className="truncate">{venueName}</span>
+                {venueId != null ? (
+                  <Link href={`/venues/${venueId}`} className="truncate hover:text-venue/80 transition-colors">
+                    {venueName}
+                  </Link>
+                ) : (
+                  <span className="truncate">{venueName}</span>
+                )}
                 {venueIsResidence && <Home className="w-3 h-3 flex-shrink-0" />}
               </div>
             )}

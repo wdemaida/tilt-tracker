@@ -4,6 +4,8 @@ import { Link, useParams } from 'wouter';
 import { ArrowLeft, ChevronUp, ChevronDown, Home } from 'lucide-react';
 import { format } from 'date-fns';
 import { api } from '../lib/api';
+import VenueMapThumbnail from '../components/VenueMapThumbnail';
+import VenueMachinesModal from '../components/VenueMachinesModal';
 
 type SortKey = 'playedAt' | 'machineName' | 'type' | 'username' | 'score';
 type SortDir = 'asc' | 'desc';
@@ -12,6 +14,7 @@ export default function VenuePage() {
   const { id } = useParams<{ id: string }>();
   const [sortKey, setSortKey] = useState<SortKey>('playedAt');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
+  const [showMachinesModal, setShowMachinesModal] = useState(false);
 
   const { data, isLoading } = useQuery({
     queryKey: ['venue-scores', id],
@@ -69,15 +72,29 @@ export default function VenuePage() {
         <ArrowLeft className="w-4 h-4" /> All Venues
       </Link>
 
-      <div className="mb-6">
-        <h1 className="text-3xl font-black uppercase tracking-widest text-venue leading-tight flex items-center gap-2">
-          {venue.name}
-          {venue.isResidence && <Home className="w-5 h-5 text-venue/70 flex-shrink-0" />}
-        </h1>
-        {venue.address && (
-          <p className="text-sm text-muted-foreground mt-1">{venue.address}</p>
-        )}
-        <p className="text-sm text-muted-foreground mt-1">{scores.length} {scores.length === 1 ? 'score' : 'scores'} recorded</p>
+      <div className="flex items-start justify-between gap-4 mb-6">
+        <div className="min-w-0">
+          <h1 className="text-3xl font-black uppercase tracking-widest text-venue leading-tight flex items-center gap-2">
+            {venue.name}
+            {venue.isResidence && <Home className="w-5 h-5 text-venue/70 flex-shrink-0" />}
+          </h1>
+          {venue.address && (
+            <p className="text-sm text-muted-foreground mt-1">{venue.address}</p>
+          )}
+          <p className="text-sm text-muted-foreground mt-1">
+            {scores.length} {scores.length === 1 ? 'score' : 'scores'} recorded on{' '}
+            <button
+              type="button"
+              onClick={() => setShowMachinesModal(true)}
+              className="text-machine font-bold hover:text-machine/80 transition-colors underline decoration-dotted underline-offset-2"
+            >
+              {venue.pmMachineCount != null
+                ? `${venue.machineCount}/${venue.pmMachineCount} Machines`
+                : `${venue.machineCount} ${venue.machineCount === 1 ? 'Machine' : 'Machines'}`}
+            </button>
+          </p>
+        </div>
+        <VenueMapThumbnail venueId={venue.id} latitude={venue.latitude} longitude={venue.longitude} />
       </div>
 
       {scores.length === 0 ? (
@@ -125,6 +142,8 @@ export default function VenuePage() {
           </table>
         </div>
       )}
+
+      <VenueMachinesModal venueId={showMachinesModal ? venue.id : null} onClose={() => setShowMachinesModal(false)} />
     </div>
   );
 }

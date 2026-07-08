@@ -2,8 +2,8 @@ import { useMemo, useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { Link } from 'wouter';
 import { MapPin, Trophy, X, ExternalLink, Pencil, Trash2, Home } from 'lucide-react';
-import { format } from 'date-fns';
 import { PinballIcon } from '../components/PinballIcon';
+import VenueMachinesModal from '../components/VenueMachinesModal';
 import * as Dialog from '@radix-ui/react-dialog';
 import { useApi } from '../lib/useApi';
 import { useAppUser } from '../lib/useAppUser';
@@ -24,14 +24,6 @@ interface Venue {
   privacyTier: 'full' | 'city_state' | 'hidden';
   scoreCount: number;
   machineCount: number;
-}
-
-interface VenueMachinesData {
-  venue: Venue;
-  ownMachines: Array<{ id: number; name: string; manufacturer?: string; year?: number; bestScore: number; playCount: number }>;
-  pmMachines: Array<{ xrefId: number; id: number; name: string; manufacturer?: string; year?: number }>;
-  formerMachines: Array<{ id: number; name: string; manufacturer?: string; year?: number; firstSeenAt: string; removedAt: string }>;
-  ttMachineNames: string[];
 }
 
 interface EditVenue {
@@ -60,7 +52,6 @@ export default function VenuesPage() {
   const [modalVenueId, setModalVenueId] = useState<number | null>(null);
   const [editVenue, setEditVenue] = useState<EditVenue | null>(null);
   const [deleteVenueId, setDeleteVenueId] = useState<number | null>(null);
-  const [hiddenWarningVenue, setHiddenWarningVenue] = useState<string | null>(null);
 
   const authApi = useApi();
   const appUser = useAppUser();
@@ -92,16 +83,6 @@ export default function VenuesPage() {
     queryKey: ['venues', mine],
     queryFn: () => authApi.venues.list(mine),
   });
-
-  const { data: machinesData, isLoading: machinesLoading } = useQuery<VenueMachinesData>({
-    queryKey: ['venue-machines', modalVenueId],
-    queryFn: () => authApi.venues.machines(modalVenueId!),
-    enabled: modalVenueId != null,
-  });
-
-  const ownNames = new Set((machinesData?.ownMachines ?? []).map(m => m.name.toLowerCase()));
-  const pmMachinesExcludingOwn = (machinesData?.pmMachines ?? []).filter(m => !ownNames.has(m.name.toLowerCase()));
-  const ttNamesLower = new Set((machinesData?.ttMachineNames ?? []).map(n => n.toLowerCase()));
 
   const states = useMemo(
     () => Array.from(new Set((venues as Venue[]).map(v => parseState(v.address)).filter((v): v is string => !!v))).sort(),
@@ -156,9 +137,7 @@ export default function VenuesPage() {
         <p className="text-muted-foreground">No venues found.</p>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredVenues.map(venue => {
-            const canSeeFull = isAdmin || venue.ownerId === appUser?.id;
-            return (
+          {filteredVenues.map(venue => (
             <div
               key={venue.id}
               className="rounded-xl border border-white/10 bg-card p-5 flex flex-col gap-3 hover:border-venue/30 transition-colors"
@@ -166,19 +145,9 @@ export default function VenuesPage() {
               <div className="flex items-start gap-3">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5">
-                    {!canSeeFull && venue.privacyTier === 'hidden' ? (
-                      <button
-                        type="button"
-                        onClick={() => setHiddenWarningVenue(venue.name)}
-                        className="font-black uppercase tracking-wider text-venue text-sm leading-tight hover:text-venue/80 transition-colors text-left"
-                      >
-                        {venue.name}
-                      </button>
-                    ) : (
-                      <Link href={`/map?venueId=${venue.id}`} className="font-black uppercase tracking-wider text-venue text-sm leading-tight hover:text-venue/80 transition-colors">
-                        {venue.name}
-                      </Link>
-                    )}
+                    <Link href={`/venues/${venue.id}`} className="font-black uppercase tracking-wider text-venue text-sm leading-tight hover:text-venue/80 transition-colors">
+                      {venue.name}
+                    </Link>
                     {venue.isResidence && (
                       <span title="Residence">
                         <Home className="w-3 h-3 text-venue/70 flex-shrink-0" />
@@ -255,24 +224,9 @@ export default function VenuesPage() {
                 )}
               </div>
             </div>
-            );
-          })}
+          ))}
         </div>
       )}
-
-      {/* Hidden-venue warning */}
-      <Dialog.Root open={!!hiddenWarningVenue} onOpenChange={open => { if (!open) setHiddenWarningVenue(null); }}>
-        <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm" />
-          <Dialog.Content className="fixed z-50 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-sm rounded-2xl border border-white/10 bg-card p-6 shadow-2xl">
-            <Dialog.Title className="text-lg font-black uppercase tracking-wider text-white mb-2">Location Hidden</Dialog.Title>
-            <p className="text-sm text-muted-foreground mb-5">Venue address hidden by owner.</p>
-            <Dialog.Close className="w-full py-2.5 rounded-lg bg-primary text-white font-bold text-sm hover:opacity-90 transition-opacity">
-              OK
-            </Dialog.Close>
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
 
       {/* Edit venue dialog */}
       <Dialog.Root open={!!editVenue} onOpenChange={open => { if (!open) setEditVenue(null); }}>
@@ -381,130 +335,7 @@ export default function VenuesPage() {
         </Dialog.Portal>
       </Dialog.Root>
 
-      {/* Machines Modal */}
-      {modalVenueId != null && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
-          onClick={e => { if (e.target === e.currentTarget) setModalVenueId(null); }}
-        >
-          <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-card shadow-2xl overflow-hidden">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-white/10">
-              <div>
-                <p className="text-xs text-muted-foreground uppercase tracking-wider font-bold">Machines at</p>
-                <h2 className="text-lg font-black uppercase tracking-wider text-venue leading-tight">
-                  {machinesData?.venue.name ?? '...'}
-                </h2>
-              </div>
-              <button
-                onClick={() => setModalVenueId(null)}
-                className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-white hover:bg-white/10 transition-colors"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="overflow-y-auto max-h-[60vh] p-6 flex flex-col gap-6">
-              {machinesLoading ? (
-                <p className="text-muted-foreground text-sm">Loading...</p>
-              ) : (
-                <>
-                  {/* Your scores */}
-                  {machinesData && machinesData.ownMachines.length > 0 && (
-                    <div>
-                      <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-3">
-                        Your scores here
-                      </p>
-                      <div className="flex flex-col gap-2">
-                        {machinesData.ownMachines.map(m => (
-                          <div
-                            key={m.id}
-                            className="flex flex-col gap-2 rounded-lg border border-white/10 bg-background px-4 py-3"
-                          >
-                            <div className="flex items-start justify-between gap-3">
-                              <span className="text-sm font-bold text-machine leading-snug min-w-0">{m.name}</span>
-                              <span className="text-sm font-bold text-primary whitespace-nowrap flex-shrink-0">
-                                {Number(m.bestScore).toLocaleString()}
-                              </span>
-                            </div>
-                            <div className="flex items-center justify-between gap-3">
-                              <span className="text-xs text-muted-foreground">
-                                {[m.manufacturer, m.year].filter(Boolean).join(' · ') || ' '}
-                              </span>
-                              <span className="text-xs text-muted-foreground whitespace-nowrap flex-shrink-0">
-                                {m.playCount} {m.playCount === 1 ? 'play' : 'plays'}
-                              </span>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Pinball Map machines */}
-                  {pmMachinesExcludingOwn.length > 0 && (
-                    <div>
-                      <div className="flex items-center gap-2 mb-3">
-                        <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
-                          Also on Pinball Map
-                        </p>
-                        <span className="text-xs px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 font-medium">
-                          {pmMachinesExcludingOwn.length} machines
-                        </span>
-                      </div>
-                      <div className="flex flex-col gap-2">
-                        {pmMachinesExcludingOwn.map(m => (
-                          <div
-                            key={m.xrefId}
-                            className="flex flex-col gap-2 rounded-lg border border-machine/20 bg-machine/5 px-4 py-3"
-                          >
-                            <div className="flex items-start justify-between gap-3">
-                              <span className="text-sm font-bold text-machine leading-snug min-w-0">{m.name}</span>
-                              {ttNamesLower.has(m.name.toLowerCase()) && (
-                                <div className="flex items-center gap-1 flex-shrink-0">
-                                  <span title="In TiltTrack" className="text-xs px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 font-medium">TT</span>
-                                </div>
-                              )}
-                            </div>
-                            <span className="text-xs text-muted-foreground">
-                              {[m.manufacturer, m.year].filter(Boolean).join(' · ') || ' '}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Formerly here — inferred from Pinball Map's removal history */}
-                  {machinesData && machinesData.formerMachines.length > 0 && (
-                    <div>
-                      <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-3">
-                        Formerly here
-                      </p>
-                      <div className="flex flex-col gap-2">
-                        {machinesData.formerMachines.map(m => (
-                          <div
-                            key={m.id}
-                            className="flex items-center justify-between rounded-lg border border-white/10 bg-background/50 px-4 py-3 opacity-70"
-                          >
-                            <span className="text-sm font-bold text-muted-foreground">{m.name}</span>
-                            <span className="text-xs text-muted-foreground whitespace-nowrap">
-                              left {format(new Date(m.removedAt), 'MMM yyyy')}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {machinesData && machinesData.ownMachines.length === 0 && pmMachinesExcludingOwn.length === 0 && machinesData.formerMachines.length === 0 && (
-                    <p className="text-sm text-muted-foreground text-center py-4">No machine data available</p>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <VenueMachinesModal venueId={modalVenueId} onClose={() => setModalVenueId(null)} />
     </div>
   );
 }

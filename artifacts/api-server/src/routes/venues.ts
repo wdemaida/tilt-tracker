@@ -237,6 +237,7 @@ router.get('/:id/scores', async (req, res) => {
       state: venues.state,
       cityLat: venues.cityLat,
       cityLng: venues.cityLng,
+      pmMachineCount: venues.pmMachineCount,
     }).from(venues).where(eq(venues.id, id)).limit(1);
     if (!venue) return void res.status(404).json({ error: 'Venue not found' });
 
@@ -246,6 +247,7 @@ router.get('/:id/scores', async (req, res) => {
         score: scores.score,
         playedAt: scores.playedAt,
         type: scores.type,
+        machineId: scores.machineId,
         machineName: machines.name,
         username: users.username,
         displayName: users.displayName,
@@ -258,7 +260,8 @@ router.get('/:id/scores', async (req, res) => {
 
     const requester = await resolveRequester(req);
     const isAdmin = requester?.role === 'admin';
-    res.json({ venue: toPublicVenue(redactVenue(venue, requester?.id, isAdmin)), scores: rows });
+    const machineCount = new Set(rows.map(r => r.machineId)).size;
+    res.json({ venue: { ...toPublicVenue(redactVenue(venue, requester?.id, isAdmin)), machineCount }, scores: rows });
   } catch (err) {
     console.error('Venue scores error:', err);
     res.status(500).json({ error: 'Failed to fetch venue scores' });
