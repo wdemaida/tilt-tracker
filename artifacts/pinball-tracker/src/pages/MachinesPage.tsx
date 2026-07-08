@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { Link, useLocation } from 'wouter';
-import { Pencil, Trash2 } from 'lucide-react';
+import { Pencil, Trash2, ChevronUp, ChevronDown } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { useApi } from '../lib/useApi';
@@ -31,6 +31,9 @@ interface EditMachine {
   year: string;
 }
 
+type SortKey = 'name' | 'plays' | 'lastPlayed' | 'bestScore';
+type SortDir = 'asc' | 'desc';
+
 export default function MachinesPage() {
   const [search, setSearch] = useState('');
   const [manufacturerFilter, setManufacturerFilter] = useState('');
@@ -38,6 +41,8 @@ export default function MachinesPage() {
   const [showUnplayed, setShowUnplayed] = useState(false);
   const [editMachine, setEditMachine] = useState<EditMachine | null>(null);
   const [deleteMachineId, setDeleteMachineId] = useState<number | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey>('name');
+  const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [, navigate] = useLocation();
 
   const authApi = useApi();
@@ -72,6 +77,15 @@ export default function MachinesPage() {
     [visibleBase]
   );
 
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortKey(key);
+      setSortDir(key === 'name' ? 'asc' : 'desc');
+    }
+  }
+
   const filtered = visibleBase
     .filter(m => {
       const q = search.toLowerCase();
@@ -79,7 +93,45 @@ export default function MachinesPage() {
     })
     .filter(m => !manufacturerFilter || m.manufacturer === manufacturerFilter)
     .filter(m => !yearFilter || String(m.year) === yearFilter)
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort((a, b) => {
+      let cmp = 0;
+      if (sortKey === 'name') cmp = a.name.localeCompare(b.name);
+      else if (sortKey === 'plays') cmp = a.playCount - b.playCount;
+      else if (sortKey === 'lastPlayed') {
+        // nulls (never played) always sort last, regardless of direction
+        if (a.lastPlayed == null && b.lastPlayed == null) cmp = 0;
+        else if (a.lastPlayed == null) return 1;
+        else if (b.lastPlayed == null) return -1;
+        else cmp = new Date(a.lastPlayed).getTime() - new Date(b.lastPlayed).getTime();
+      } else if (sortKey === 'bestScore') {
+        if (a.bestScore == null && b.bestScore == null) cmp = 0;
+        else if (a.bestScore == null) return 1;
+        else if (b.bestScore == null) return -1;
+        else cmp = a.bestScore - b.bestScore;
+      }
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+
+  function SortIcon({ col }: { col: SortKey }) {
+    if (sortKey !== col) return <ChevronUp className="w-3 h-3 opacity-20" />;
+    return sortDir === 'asc'
+      ? <ChevronUp className="w-3 h-3 text-primary" />
+      : <ChevronDown className="w-3 h-3 text-primary" />;
+  }
+
+  function SortableHeader({ col, label, align = 'left' }: { col: SortKey; label: string; align?: 'left' | 'right' }) {
+    return (
+      <th className={`py-3 px-4 ${align === 'right' ? 'text-right' : 'text-left'}`}>
+        <button
+          onClick={() => toggleSort(col)}
+          className={`flex items-center gap-1 text-xs font-bold uppercase tracking-wider transition-colors ${sortKey === col ? 'text-primary' : 'text-muted-foreground hover:text-white'} ${align === 'right' ? 'ml-auto' : ''}`}
+        >
+          {label}
+          <SortIcon col={col} />
+        </button>
+      </th>
+    );
+  }
 
   function openEdit(m: Machine, e: React.MouseEvent) {
     e.stopPropagation();
@@ -143,10 +195,10 @@ export default function MachinesPage() {
           <table className="w-full text-sm min-w-[560px]">
             <thead>
               <tr className="border-b border-white/10">
-                <th className="py-3 px-4 text-left text-xs font-bold uppercase tracking-wider text-muted-foreground">Machine</th>
-                <th className="py-3 px-4 text-left text-xs font-bold uppercase tracking-wider text-muted-foreground">Plays</th>
-                <th className="py-3 px-4 text-left text-xs font-bold uppercase tracking-wider text-muted-foreground">Last Played</th>
-                <th className="py-3 px-4 text-right text-xs font-bold uppercase tracking-wider text-muted-foreground">Best Score</th>
+                <SortableHeader col="name" label="Machine" />
+                <SortableHeader col="plays" label="Plays" />
+                <SortableHeader col="lastPlayed" label="Last Played" />
+                <SortableHeader col="bestScore" label="Best Score" align="right" />
                 {isAdmin && <th className="w-16" />}
               </tr>
             </thead>
