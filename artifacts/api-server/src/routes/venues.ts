@@ -220,7 +220,7 @@ router.get('/:id/machines', async (req, res) => {
   }
 });
 
-// GET /api/venues/:id/scores — all individual score entries at a venue
+// GET /api/venues/:id/scores — all individual score entries at a venue; ?mine=true filters to caller
 router.get('/:id/scores', async (req, res) => {
   const id = Number(req.params.id);
   try {
@@ -241,6 +241,7 @@ router.get('/:id/scores', async (req, res) => {
     }).from(venues).where(eq(venues.id, id)).limit(1);
     if (!venue) return void res.status(404).json({ error: 'Venue not found' });
 
+    const mineUserId = req.query.mine === 'true' ? await resolveMinedUserId(req) : undefined;
     const rows = await db
       .select({
         id: scores.id,
@@ -255,7 +256,7 @@ router.get('/:id/scores', async (req, res) => {
       .from(scores)
       .innerJoin(machines, eq(scores.machineId, machines.id))
       .innerJoin(users, eq(scores.userId, users.id))
-      .where(eq(scores.venueId, id))
+      .where(mineUserId !== undefined ? and(eq(scores.venueId, id), eq(scores.userId, mineUserId)) : eq(scores.venueId, id))
       .orderBy(desc(scores.playedAt));
 
     const requester = await resolveRequester(req);

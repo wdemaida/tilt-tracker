@@ -3,7 +3,9 @@ import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'wouter';
 import { ArrowLeft, ChevronUp, ChevronDown, Home } from 'lucide-react';
 import { format } from 'date-fns';
-import { api } from '../lib/api';
+import { useApi } from '../lib/useApi';
+import { useScopeContext } from '../lib/ScopeContext';
+import { ScopeToggle } from '../components/ScopeToggle';
 import VenueMapThumbnail from '../components/VenueMapThumbnail';
 import VenueMachinesModal from '../components/VenueMachinesModal';
 
@@ -12,13 +14,15 @@ type SortDir = 'asc' | 'desc';
 
 export default function VenuePage() {
   const { id } = useParams<{ id: string }>();
+  const api = useApi();
+  const { mine } = useScopeContext();
   const [sortKey, setSortKey] = useState<SortKey>('playedAt');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [showMachinesModal, setShowMachinesModal] = useState(false);
 
   const { data, isLoading } = useQuery({
-    queryKey: ['venue-scores', id],
-    queryFn: () => api.venues.scores(Number(id)),
+    queryKey: ['venue-scores', id, mine],
+    queryFn: () => api.venues.scores(Number(id), mine),
   });
 
   if (isLoading) return <p className="text-muted-foreground">Loading...</p>;
@@ -68,9 +72,12 @@ export default function VenuePage() {
 
   return (
     <div>
-      <Link href="/venues" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-white transition-colors mb-4">
-        <ArrowLeft className="w-4 h-4" /> All Venues
-      </Link>
+      <div className="flex items-center justify-between mb-4">
+        <Link href="/venues" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-white transition-colors">
+          <ArrowLeft className="w-4 h-4" /> All Venues
+        </Link>
+        <ScopeToggle />
+      </div>
 
       <div className="flex items-start justify-between gap-4 mb-6">
         <div className="min-w-0">
