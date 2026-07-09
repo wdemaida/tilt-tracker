@@ -32,6 +32,24 @@ app.use(clerkMiddleware());
 
 app.get('/ping', (_req, res) => res.status(200).send('ok'));
 
+// POST /api/cron/stat-snapshot — external-cron entry point for the daily StatHistory snapshot.
+// Render's free tier spins the process down when idle, so the in-process 1am node-cron job below
+// only fires if something happened to keep the dyno warm through that window — it often doesn't.
+// This route lets a GitHub Actions schedule hit the live URL directly (which also wakes the dyno),
+// so the snapshot no longer depends on the process already being alive at 1am. Guarded by a shared
+// secret instead of Clerk auth since the caller is a cron job, not a logged-in admin.
+app.post('/api/cron/stat-snapshot', async (req, res) => {
+  if (!process.env.CRON_SECRET) return void res.status(500).json({ error: 'CRON_SECRET not configured' });
+  if (req.header('x-cron-secret') !== process.env.CRON_SECRET) return void res.status(401).json({ error: 'Unauthorized' });
+  try {
+    const result = await captureStatSnapshot();
+    res.json(result);
+  } catch (err) {
+    console.error('Cron stat snapshot error:', err);
+    res.status(500).json({ error: 'Failed to capture snapshot' });
+  }
+});
+
 app.use('/api/scores', scoresRouter);
 app.use('/api/machines', machinesRouter);
 app.use('/api/users', usersRouter);
@@ -41,8 +59,9 @@ app.use('/api/venues', venuesRouter);
 app.use('/api/pinballmap', pinballmapRouter);
 app.use('/api/admin', adminRouter);
 
-// Daily site-wide StatHistory snapshot — 1am America/New_York (node-cron's timezone option
-// tracks EST/EDT automatically, so this stays "1am local" across the DST switch).
+// Backup in-process trigger for the same snapshot — fires if the dyno happens to already be warm
+// at 1am America/New_York. The GitHub Actions workflow calling /api/cron/stat-snapshot above is the
+// primary mechanism now; this is harmless to leave running since captureStatSnapshot() upserts.
 cron.schedule('0 1 * * *', () => {
   captureStatSnapshot().catch(err => console.error('Stat snapshot job failed:', err));
 }, { timezone: 'America/New_York' });

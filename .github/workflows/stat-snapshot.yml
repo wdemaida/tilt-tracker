@@ -1,0 +1,20 @@
+name: Daily StatHistory snapshot
+
+# 06:10 UTC lands at 1-2am America/New_York year-round (1:10am EST / 2:10am EDT) — always past
+# midnight in NY regardless of DST, so the snapshot is tagged with the correct calendar day.
+# This request also wakes Render's dyno if it's spun down, unlike the general keepalive ping
+# which GitHub has been observed to delay by hours and can't be relied on for a time-sensitive job.
+on:
+  schedule:
+    - cron: '10 6 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger stat snapshot
+        run: |
+          curl -fsS --max-time 60 -X POST \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
+            https://tilt-tracker.onrender.com/api/cron/stat-snapshot
