@@ -1,8 +1,16 @@
 import { useEffect, useRef } from 'react';
 import { SignUp } from '@clerk/clerk-react';
+import { useLocation } from 'wouter';
+import { enableGuestMode } from '../lib/guestMode';
 
 export default function SignUpPage() {
   const containerRef = useRef<HTMLDivElement>(null);
+  const [, navigate] = useLocation();
+
+  function handleGuest() {
+    enableGuestMode();
+    navigate('/');
+  }
 
   useEffect(() => {
     const vv = window.visualViewport;
@@ -30,6 +38,18 @@ export default function SignUpPage() {
         <p className="text-sm text-muted-foreground mt-1">Start tracking your pinball scores</p>
       </div>
       <SignUp routing="path" path="/sign-up" fallbackRedirectUrl="/setup" signInUrl="/sign-in" />
+      <div className="flex flex-col items-center gap-1.5">
+        <button
+          type="button"
+          onClick={handleGuest}
+          className="text-sm font-semibold text-gray-300 hover:text-white underline underline-offset-2"
+        >
+          Continue as guest
+        </button>
+        <p className="text-xs text-muted-foreground text-center max-w-sm">
+          Guests can browse scores, machines, and venues, but can't submit their own scores.
+        </p>
+      </div>
     </div>
   );
 }

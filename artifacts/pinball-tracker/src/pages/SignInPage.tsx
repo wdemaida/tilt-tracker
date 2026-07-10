@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useSignIn, useAuth } from '@clerk/clerk-react';
 import { Link, useLocation } from 'wouter';
+import { enableGuestMode } from '../lib/guestMode';
 
 type Step = 'credentials' | 'mfa' | 'verify_device';
 
@@ -89,6 +90,11 @@ export default function SignInPage() {
     }
   }
 
+  function handleGuest() {
+    enableGuestMode();
+    navigate('/');
+  }
+
   if (isSignedIn) { navigate('/'); return null; }
 
   const inputClass = 'border border-gray-300 rounded-lg px-3 py-2.5 text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-violet-500 w-full';
@@ -130,6 +136,21 @@ export default function SignInPage() {
             <Link href="/sign-up" className="text-violet-600 font-semibold hover:underline">Sign up</Link>
           </p>
         </form>
+      )}
+
+      {step === 'credentials' && (
+        <div className="flex flex-col items-center gap-1.5">
+          <button
+            type="button"
+            onClick={handleGuest}
+            className="text-sm font-semibold text-gray-300 hover:text-white underline underline-offset-2"
+          >
+            Continue as guest
+          </button>
+          <p className="text-xs text-muted-foreground text-center max-w-sm">
+            Guests can browse scores, machines, and venues, but can't submit their own scores.
+          </p>
+        </div>
       )}
 
       {(step === 'mfa' || step === 'verify_device') && (

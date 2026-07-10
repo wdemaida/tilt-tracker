@@ -4,6 +4,7 @@ import { useAuth } from '@clerk/clerk-react';
 import { useQuery } from '@tanstack/react-query';
 import { useApi } from './lib/useApi';
 import { ScopeProvider } from './lib/ScopeContext';
+import { isGuestMode } from './lib/guestMode';
 import Layout from './components/Layout';
 import HomePage from './pages/HomePage';
 import MachinesPage from './pages/MachinesPage';
@@ -17,6 +18,7 @@ import SetupPage from './pages/SetupPage';
 import UserPage from './pages/UserPage';
 import SignInPage from './pages/SignInPage';
 import SignUpPage from './pages/SignUpPage';
+import WelcomePage from './pages/WelcomePage';
 import NotFoundPage from './pages/NotFoundPage';
 import AdminPage from './pages/AdminPage';
 import AdminHealthPage from './pages/AdminHealthPage';
@@ -42,6 +44,22 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   }, [isLoaded, isSignedIn, appUser, isLoading]);
 
   if (!isLoaded || isLoading) return null;
+  return <>{children}</>;
+}
+
+function AccessGate({ children }: { children: React.ReactNode }) {
+  const { isSignedIn, isLoaded } = useAuth();
+  const [location, navigate] = useLocation();
+  const isPublicAuthRoute = location.startsWith('/sign-in') || location.startsWith('/sign-up') || location === '/welcome';
+  const hasAccess = isSignedIn || isGuestMode();
+
+  useEffect(() => {
+    if (!isLoaded || isPublicAuthRoute || hasAccess) return;
+    navigate('/welcome');
+  }, [isLoaded, isPublicAuthRoute, hasAccess]);
+
+  if (!isLoaded) return null;
+  if (!isPublicAuthRoute && !hasAccess) return null;
   return <>{children}</>;
 }
 
@@ -72,6 +90,7 @@ export default function App() {
   return (
     <ScopeProvider>
     <Layout>
+      <AccessGate>
       <Switch>
         <Route path="/" component={HomePage} />
         <Route path="/machines" component={MachinesPage} />
@@ -87,6 +106,7 @@ export default function App() {
         </Route>
         <Route path="/setup" component={SetupPage} />
         <Route path="/users/:username" component={UserPage} />
+        <Route path="/welcome" component={WelcomePage} />
         <Route path="/sign-in" component={SignInPage} />
         <Route path="/sign-in/*" component={SignInPage} />
         <Route path="/sign-up" component={SignUpPage} />
@@ -105,6 +125,7 @@ export default function App() {
         </Route>
         <Route component={NotFoundPage} />
       </Switch>
+      </AccessGate>
     </Layout>
     </ScopeProvider>
   );
