@@ -51,7 +51,7 @@ export default function WelcomePage() {
               Sign In
             </Link>
             <Link href="/sign-up" className="px-4 py-2.5 rounded-lg bg-primary text-white text-sm font-bold uppercase tracking-wider hover:opacity-90 transition-opacity">
-              Start Tracking Free
+              Start Tracking
             </Link>
           </div>
         </div>
@@ -74,7 +74,7 @@ export default function WelcomePage() {
               <span className="text-glow-primary">left behind.</span>
             </h1>
             <p className="mt-6 text-lg leading-relaxed text-muted-foreground max-w-[46ch]">
-              Half the machines on your route were built before score tracking existed. Snap a photo of the glass —
+              90% of the machines on your route were built before score tracking existed. Snap a photo of the backbox —
               TiltTrack reads the machine, the score, the date, even the venue, and remembers it for good.
             </p>
             <div className="mt-8 flex items-center gap-4 flex-wrap">
@@ -97,7 +97,7 @@ export default function WelcomePage() {
           <div className="flex justify-center">
             <div className="relative w-full max-w-sm rounded-2xl border border-white/10 bg-card p-5 shadow-2xl">
               <span className="absolute -top-3 left-5 text-[0.6rem] font-extrabold uppercase tracking-widest text-background bg-username rounded-full px-2.5 py-1">
-                An actual TiltTrack score
+                A captured TiltTrack score
               </span>
               <div className="flex items-center justify-between">
                 <span className="text-[0.65rem] font-extrabold uppercase tracking-wider text-muted-foreground border border-white/20 rounded-full px-2.5 py-0.5">
@@ -138,7 +138,7 @@ export default function WelcomePage() {
               </div>
               <h3 className="font-bold">Snap it, don't type it</h3>
               <p className="mt-2.5 text-sm leading-relaxed text-muted-foreground">
-                Snap a pic of the machine and TiltTrack's AI reads the machine name, the score, the timestamp, and your GPS location straight off the glass. Prefer to type it yourself? Skip the AI anytime.
+                Snap a pic of the machine and TiltTrack's AI reads the machine name, the score, the timestamp, and your GPS location straight off the backbox. Prefer to type it yourself? Skip the AI anytime.
               </p>
             </div>
             <div className="rounded-2xl border border-white/10 bg-card p-6">
@@ -147,7 +147,7 @@ export default function WelcomePage() {
               </div>
               <h3 className="font-bold">Works on machines of all ages</h3>
               <p className="mt-2.5 text-sm leading-relaxed text-muted-foreground">
-                Cross-referenced against a database of over 2,000 machines, from 1970s electromechanical classics to next month's Stern release — even the old electromechanicals can become competitive.
+                Cross-referenced against a database of over 2,000 machines, from 1970s electromechanical classics to next month's hot Stern release — even the oldest machines can become competitive.
               </p>
             </div>
             <div className="rounded-2xl border border-white/10 bg-card p-6">
@@ -178,7 +178,7 @@ export default function WelcomePage() {
               The leaderboard the machine never had.
             </h2>
             <p className="mt-3.5 text-muted-foreground leading-relaxed">
-              Old machines don't track anything — no leaderboard, no history, nothing past the reset button. TiltTrack does, for every machine you'll ever drop a coin into, no matter how old the glass.
+              Old machines don't track anything — no leaderboard, no history, nothing - TiltTrack does, for every machine you'll ever drop a coin into, no matter how old.
             </p>
           </div>
         </div>
@@ -241,13 +241,13 @@ export default function WelcomePage() {
               </svg>
             </div>
             <p className="mt-3 text-sm text-muted-foreground text-center">
-              Six months on one machine — yours and everyone else's who dropped a coin in.
+              Full score history by machine — yours and everyone else's who dropped a coin in.
             </p>
           </div>
 
           <div className="flex justify-center gap-4 flex-wrap">
             <Link href="/sign-up" className="px-5 py-3 rounded-lg bg-primary text-white text-sm font-bold uppercase tracking-wider hover:opacity-90 transition-opacity">
-              Start Tracking Free
+              Start Tracking
             </Link>
             <Link href="/sign-in" className="px-5 py-2.5 rounded-lg border border-white/15 text-sm font-bold uppercase tracking-wider hover:border-white/40 hover:bg-white/5 transition-colors">
               Sign In
