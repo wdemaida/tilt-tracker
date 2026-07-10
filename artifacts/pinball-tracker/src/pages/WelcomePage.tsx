@@ -79,7 +79,7 @@ export default function WelcomePage() {
             </p>
             <div className="mt-8 flex items-center gap-4 flex-wrap">
               <Link href="/sign-up" className="px-5 py-3 rounded-lg bg-primary text-white text-sm font-bold uppercase tracking-wider hover:opacity-90 transition-opacity">
-                Start Tracking Free
+                Start Tracking
               </Link>
               <Link href="/sign-in" className="px-5 py-2.5 rounded-lg border border-white/15 text-sm font-bold uppercase tracking-wider hover:border-white/40 hover:bg-white/5 transition-colors">
                 Sign In
