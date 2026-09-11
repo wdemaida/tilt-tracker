@@ -10,6 +10,7 @@ import { useScopeContext } from '../lib/ScopeContext';
 import { ScopeToggle } from '../components/ScopeToggle';
 import { queryClient } from '../lib/queryClient';
 import ScoreCard from '../components/ScoreCard';
+import ScoreRepairSection from '../components/ScoreRepairSection';
 
 type Filter = 'all' | 'casual' | 'tournament';
 
@@ -20,6 +21,8 @@ interface EditScore {
   score: number;
   type: 'casual' | 'tournament';
   playedAt: string;
+  venueId: number | null;
+  venueName: string | null;
 }
 
 export default function HomePage() {
@@ -91,7 +94,10 @@ export default function HomePage() {
   const visible = filtered.slice(0, visibleCount);
 
   function openEdit(s: any) {
-    setEditScore({ id: s.id, machineId: s.machineId, machineName: s.machineName, score: s.score, type: s.type, playedAt: s.playedAt });
+    setEditScore({
+      id: s.id, machineId: s.machineId, machineName: s.machineName, score: s.score,
+      type: s.type, playedAt: s.playedAt, venueId: s.venueId ?? null, venueName: s.venueName ?? null,
+    });
     setEditScoreVal(Number(s.score).toLocaleString());
     setEditType(s.type);
     setEditPlayedAt(new Date(s.playedAt).toISOString().slice(0, 16));
@@ -170,8 +176,8 @@ export default function HomePage() {
                 {...s}
                 isHighScore={bestScores.get(s.machineId) === s.score}
                 isCurrentUser={!mine && !!appUser && s.username === appUser.username}
-                onEdit={isAdmin ? () => openEdit(s) : undefined}
-                onDelete={isAdmin ? () => setDeleteScoreId(s.id) : undefined}
+                onEdit={isAdmin || s.username === appUser?.username ? () => openEdit(s) : undefined}
+                onDelete={isAdmin || s.username === appUser?.username ? () => setDeleteScoreId(s.id) : undefined}
               />
             ))}
           </div>
@@ -192,7 +198,7 @@ export default function HomePage() {
       <Dialog.Root open={!!editScore} onOpenChange={open => { if (!open) setEditScore(null); }}>
         <Dialog.Portal>
           <Dialog.Overlay className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm" />
-          <Dialog.Content className="fixed z-50 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-md rounded-2xl border border-white/10 bg-card p-6 shadow-2xl">
+          <Dialog.Content className="fixed z-50 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-md max-h-[90vh] overflow-y-auto rounded-2xl border border-white/10 bg-card p-6 shadow-2xl">
             <div className="flex items-center justify-between mb-5">
               <Dialog.Title className="text-lg font-black uppercase tracking-wider text-white">Edit Score</Dialog.Title>
               <Dialog.Close className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-white hover:bg-white/10 transition-colors">
@@ -265,6 +271,24 @@ export default function HomePage() {
                   className="rounded-lg border border-white/10 bg-background px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50"
                 />
               </label>
+
+              {/* Venue + linkage. The modal used to drop the venue entirely, which made it
+                  impossible to tell why a machine couldn't be verified. */}
+              {editScore && (
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Venue</span>
+                  {editScore.venueId != null ? (
+                    <ScoreRepairSection
+                      scoreId={editScore.id}
+                      onMachineRepaired={name => setEditMachineSearch(name)}
+                    />
+                  ) : (
+                    <p className="text-sm text-muted-foreground rounded-lg border border-white/10 bg-background px-3 py-2">
+                      {editScore.venueName ?? 'No venue recorded'}
+                    </p>
+                  )}
+                </div>
+              )}
 
               {patchMutation.isError && (
                 <p className="text-xs text-red-400">{(patchMutation.error as any)?.message}</p>

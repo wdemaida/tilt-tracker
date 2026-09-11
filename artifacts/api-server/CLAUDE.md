@@ -22,7 +22,26 @@
 - Recovery path for a venue the upload flow never resolved: **1)** re-run HERE off the (possibly after-the-fact) address, **2)** link a Pinball Map location by search or manual id, **3)** re-sync the scores already logged there.
 - Permissions: **admin, the venue's `ownerId`, or its `createdById`** (`canRepairVenue`). `createdById` was added because upload-flow venues have no owner — without it, any user whose venue failed to resolve would need an admin to rescue them. Score re-syncs are scoped: a non-admin only ever previews and moves **their own** scores.
 - `normalizeMachineName()` folds case, punctuation, a leading "The", and edition suffixes (`(Pro)`/`(Premium)`/`(LE)`) — and **folds diacritics via NFD first**, or "Pokémon" becomes `pok mon` and stops matching PM's "Pokemon". It deliberately does *not* strip subtitles; "King Kong" and "King Kong: Myth of Terror Island" are different machines.
+- **Per-score repair** (`/api/scores/:id/repair`, `POST .../repair/machine`) is the same machinery scoped to one score, for the edit-score modal. `rankRosterForName()` returns the venue's whole roster ranked against one machine name so the UI can show a recommendation *and* let the user override it. `retireMachineIfUnused()` is shared with the bulk path so neither strands an orphan machine row.
+- **`PATCH /api/scores/:id` is owner-or-admin**, not admin-only (changed 2026-09-11). It was `requireAdmin`, which meant no ordinary user could correct their own misread machine name — the exact thing the repair flow exists to fix. Mirrors how `DELETE` already worked.
 - Match tiers: `exact` → `normalized` → `fuzzy` (whole-word prefix, and **only when exactly one** candidate matches — ambiguity is not a match) → `unmatched`. Only `normalized` is pre-ticked in the UI; `fuzzy` requires a deliberate click, because a machine row is global and merging it rewrites that machine's identity at every venue.
+
+## HERE vs Pinball Map — what each is load-bearing for
+- **Pinball Map is the functional dependency**: it supplies the machine roster, so machine matching
+  and score re-sync are gated on `pinballMapId`. Missing = the feature genuinely can't work (amber).
+- **HERE is venue identity and de-duplication**, not machines. Its real job is being the
+  `onConflictDoUpdate` target in `scores.ts` that stops a second venue row being created — note
+  Postgres treats `NULL != NULL` in a unique index, so a null `here_id` can never conflict-match.
+  Missing = hygiene, not breakage (rendered as a neutral chip, `tone="info"`).
+- **Don't gate machine features on `hereId`.** 30 venues arrived from the 2026-06-30 seed script with
+  `pinball_map_id` set and `here_id` null; they match machines perfectly well.
+- `backfillHere.ts` (run 2026-09-11, `--apply`) filled 24 of them by name+coords, taking HERE-linked
+  venues from 4 to 28. Re-runnable and dry-run by default. The 8 left are genuinely ambiguous
+  (two Lucky Strikes, a venue since renamed Lucky Strike Fenway) or absent from HERE — repair those
+  by hand from the venue page rather than loosening the match rules.
+- Auto-attach requires name overlap **and** `distance < 500m` absolute, **and** either a lone
+  candidate or `distance < 100m`. The absolute ceiling exists because "only one result" would
+  otherwise attach a match from the next town.
 
 ## Photo / GPS extraction
 - Use **`exifr`** (not `exifreader`) for GPS from iPhone HEIC files: `await Exifr.gps(buffer)`.

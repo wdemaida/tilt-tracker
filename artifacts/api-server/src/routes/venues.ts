@@ -484,7 +484,9 @@ router.post('/:id/repair/here', requireAppUser, async (req, res) => {
       venue.name.toLowerCase().includes(best.name.toLowerCase())
     );
     let attached: typeof best | null = null;
-    if (best && nameMatches && best.hereId && (candidates.length === 1 || best.distance < 100)) {
+    // A lone candidate may sit further out than a contested one (large sites geocode to a centroid),
+    // but never further than 500m — otherwise "only one result" attaches a match from the next town.
+    if (best && nameMatches && best.hereId && best.distance < 500 && (candidates.length === 1 || best.distance < 100)) {
       // hereId is unique across venues — don't steal it from another row.
       const [clash] = await db.select({ id: venues.id }).from(venues).where(eq(venues.hereId, best.hereId)).limit(1);
       if (!clash || clash.id === venue.id) {

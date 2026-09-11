@@ -86,6 +86,52 @@ function matchAgainstPm(
   return { confidence: 'unmatched', pm: null };
 }
 
+export interface RankedRosterEntry {
+  pmName: string;
+  pmManufacturer: string | null;
+  pmYear: number | null;
+  confidence: MatchConfidence;
+}
+
+// Every machine on a venue's Pinball Map roster, ranked by how well it matches one machine name,
+// best first. The venue page's bulk preview only needs the single winner per machine; the edit-score
+// modal needs the whole list so the user can override the recommendation with a different machine.
+export function rankRosterForName(machineName: string, pmXrefs: PmLocationMachineXref[]): RankedRosterEntry[] {
+  const best = matchAgainstPm(machineName, pmXrefs);
+  const rank = (c: MatchConfidence) => (c === 'exact' ? 0 : c === 'normalized' ? 1 : c === 'fuzzy' ? 2 : 3);
+
+  return pmXrefs
+    .map(x => {
+      const isBest = best.pm != null && best.pm.id === x.id && best.pm.machine.name === x.machine.name;
+      return {
+        pmName: x.machine.name,
+        pmManufacturer: x.machine.manufacturer ?? null,
+        pmYear: x.machine.year ?? null,
+        confidence: isBest ? best.confidence : ('unmatched' as MatchConfidence),
+      };
+    })
+    .sort((a, b) => rank(a.confidence) - rank(b.confidence) || a.pmName.localeCompare(b.pmName));
+}
+
+// Deletes a machine row once nothing references it. Shared by the bulk re-sync and the single-score
+// repair so a merge never strands an orphan row, and never deletes one another user still points at.
+export async function retireMachineIfUnused(machineId: number): Promise<boolean> {
+  const [{ remaining }] = await db
+    .select({ remaining: count() })
+    .from(scores)
+    .where(eq(scores.machineId, machineId));
+  const [{ histRefs }] = await db
+    .select({ histRefs: count() })
+    .from(venueMachineHistory)
+    .where(eq(venueMachineHistory.machineId, machineId));
+
+  if (Number(remaining) === 0 && Number(histRefs) === 0) {
+    await db.delete(machines).where(eq(machines.id, machineId));
+    return true;
+  }
+  return false;
+}
+
 // Builds the proposed remapping without writing anything. `scopeUserId` limits both the scores
 // counted and the scores later repointed — a non-admin only ever sees and moves their own.
 export async function buildResyncPreview(
@@ -166,20 +212,7 @@ export async function applyResync(
 
     // Retire the duplicate only once nothing references it anywhere — a partial (single-user) merge
     // deliberately leaves the row in place for the other users still pointing at it.
-    const [{ remaining }] = await db
-      .select({ remaining: count() })
-      .from(scores)
-      .where(eq(scores.machineId, from.id));
-    const [{ histRefs }] = await db
-      .select({ histRefs: count() })
-      .from(venueMachineHistory)
-      .where(eq(venueMachineHistory.machineId, from.id));
-
-    let sourceDeleted = false;
-    if (Number(remaining) === 0 && Number(histRefs) === 0) {
-      await db.delete(machines).where(eq(machines.id, from.id));
-      sourceDeleted = true;
-    }
+    const sourceDeleted = await retireMachineIfUnused(from.id);
 
     applied.push({
       fromMachineId: from.id,

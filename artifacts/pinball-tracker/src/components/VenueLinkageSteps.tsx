@@ -1,0 +1,326 @@
+import { useState } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { MapPin, Link2, Check, AlertTriangle, Minus, ExternalLink, Search } from 'lucide-react';
+import { useApi } from '../lib/useApi';
+
+// The HERE and Pinball Map linking steps, shared by the venue page's repair panel and the
+// edit-score modal. Both surfaces need identical behaviour for steps 1 and 2 and differ only in
+// what step 3 does — bulk re-sync of every score at the venue, versus fixing one score's machine —
+// so step 3 stays with the caller and this owns everything before it.
+
+/** The linkage state both callers can produce, from /venues/:id/repair or /scores/:id/repair. */
+export interface LinkageView {
+  venueId: number;
+  name: string;
+  address: string | null;
+  hereId: string | null;
+  pinballMapId: number | null;
+  pmLocationUrl: string | null;
+  pmConfigured: boolean;
+  /** Whether this user may repair the venue (admin, owner, or the venue's creator). */
+  canRepair: boolean;
+}
+
+interface HereCandidate {
+  name: string;
+  address: string;
+  distance: number;
+  hereId: string | null;
+  latitude: number | null;
+  longitude: number | null;
+}
+
+interface PmCandidate {
+  pinballMapId: number;
+  name: string;
+  address: string;
+  machineCount: number | null;
+  distance: number | null;
+  url: string;
+}
+
+export type Notice = { kind: 'ok' | 'err'; text: string } | null;
+
+/**
+ * Mutations and transient candidate state for the two linking steps. Deliberately does not fetch the
+ * status itself — the venue page and the edit-score modal each already load it as part of a larger
+ * payload, and refetching it here would double the requests on both.
+ */
+export function useVenueLinkageActions(venueId: number | null, onChanged?: () => void) {
+  const api = useApi();
+  const queryClient = useQueryClient();
+  const [notice, setNotice] = useState<Notice>(null);
+  const [hereCandidates, setHereCandidates] = useState<HereCandidate[] | null>(null);
+  const [pmCandidates, setPmCandidates] = useState<PmCandidate[] | null>(null);
+  const [pmQuery, setPmQuery] = useState('');
+  const [manualPmId, setManualPmId] = useState('');
+
+  function invalidate() {
+    queryClient.invalidateQueries({ queryKey: ['venue-repair', venueId] });
+    queryClient.invalidateQueries({ queryKey: ['score-repair'] });
+    queryClient.invalidateQueries({ queryKey: ['venue-scores'] });
+    queryClient.invalidateQueries({ queryKey: ['venue-machines', venueId] });
+    queryClient.invalidateQueries({ queryKey: ['venues'] });
+    queryClient.invalidateQueries({ queryKey: ['scores'] });
+    onChanged?.();
+  }
+
+  const resolveHere = useMutation({
+    mutationFn: () => api.venues.repair.resolveHere(venueId!),
+    onSuccess: (res: any) => {
+      setHereCandidates(res.candidates ?? []);
+      setNotice(res.attached
+        ? { kind: 'ok', text: `Matched "${res.attached.name}" in HERE (${res.attached.distance}m away).` }
+        : { kind: 'err', text: res.candidates?.length ? 'No single confident match — pick one below.' : 'HERE returned nothing near this address.' });
+      invalidate();
+    },
+    onError: (e: any) => setNotice({ kind: 'err', text: e.message ?? 'HERE lookup failed' }),
+  });
+
+  const attachHere = useMutation({
+    mutationFn: (c: HereCandidate) =>
+      api.venues.repair.attachHere(venueId!, { hereId: c.hereId!, latitude: c.latitude, longitude: c.longitude }),
+    onSuccess: () => {
+      setHereCandidates(null);
+      setNotice({ kind: 'ok', text: 'HERE place linked.' });
+      invalidate();
+    },
+    onError: (e: any) => setNotice({ kind: 'err', text: e.message ?? 'Could not link that place' }),
+  });
+
+  const findPm = useMutation({
+    mutationFn: (q: string) => api.venues.repair.pmCandidates(venueId!, q || undefined),
+    onSuccess: (res: any) => {
+      setPmCandidates(res.candidates ?? []);
+      setNotice(res.candidates?.length
+        ? null
+        : { kind: 'err', text: `Pinball Map had no match for "${res.searchedFor}". Try the ID box below.` });
+    },
+    onError: (e: any) => setNotice({ kind: 'err', text: e.message ?? 'Pinball Map search failed' }),
+  });
+
+  const linkPm = useMutation({
+    mutationFn: (pmId: number) => api.venues.repair.pmLink(venueId!, pmId),
+    onSuccess: (res: any) => {
+      setPmCandidates(null);
+      setManualPmId('');
+      setNotice({ kind: 'ok', text: `Linked to "${res.pmLocation.name}" — ${res.machineCount} machines found.` });
+      invalidate();
+    },
+    onError: (e: any) => setNotice({ kind: 'err', text: e.message ?? 'Could not link that location' }),
+  });
+
+  return {
+    notice, setNotice,
+    hereCandidates, pmCandidates,
+    pmQuery, setPmQuery, manualPmId, setManualPmId,
+    resolveHere, attachHere, findPm, linkPm, invalidate,
+  };
+}
+
+export type LinkageActions = ReturnType<typeof useVenueLinkageActions>;
+
+/**
+ * `tone` decides how loud an *unlinked* service looks.
+ *
+ * Pinball Map is `critical` — without it there's no machine roster, so the feature genuinely can't
+ * work. HERE is `info`: it's venue identity and de-duplication, and nothing about machine matching
+ * depends on it. 30 venues came from the seed script with no HERE id and work fine, so painting them
+ * amber would train the eye to ignore the chip by the time it means something.
+ */
+export function StatusChip({ label, done, tone = 'critical' }: { label: string; done: boolean; tone?: 'critical' | 'info' }) {
+  const missingCls = tone === 'critical' ? 'border-amber-500/40 text-amber-400' : 'border-white/20 text-muted-foreground';
+  return (
+    <span
+      className={`inline-flex items-center gap-1 text-[0.65rem] font-bold uppercase tracking-wider rounded px-1.5 py-0.5 border ${
+        done ? 'border-primary/40 text-primary' : missingCls
+      }`}
+    >
+      {done ? <Check className="w-3 h-3" /> : tone === 'critical' ? <AlertTriangle className="w-3 h-3" /> : <Minus className="w-3 h-3" />}
+      {label}
+    </span>
+  );
+}
+
+export function SectionHeading({ icon, title, done, detail }: { icon: React.ReactNode; title: string; done: boolean; detail: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 mb-2">
+      <span className="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-white">
+        {icon}
+        {title}
+      </span>
+      <span className={`text-xs font-bold ${done ? 'text-primary' : 'text-muted-foreground'}`}>{detail}</span>
+    </div>
+  );
+}
+
+export function NoticeBanner({ notice }: { notice: Notice }) {
+  if (!notice) return null;
+  return (
+    <p className={`text-sm rounded-lg px-3 py-2 ${notice.kind === 'ok' ? 'bg-primary/10 text-primary' : 'bg-amber-500/10 text-amber-400'}`}>
+      {notice.text}
+    </p>
+  );
+}
+
+export function PmNotConfiguredWarning() {
+  return (
+    <p className="flex items-start gap-2 text-sm rounded-lg bg-amber-500/10 text-amber-400 px-3 py-2">
+      <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+      <span>
+        Pinball Map is not configured on the server — <code>PINBALL_MAP_API_TOKEN</code> is unset.
+        Request a key at{' '}
+        <a href="https://pinballmap.com/api_token" target="_blank" rel="noreferrer" className="underline">
+          pinballmap.com/api_token
+        </a>.
+      </span>
+    </p>
+  );
+}
+
+export default function VenueLinkageSteps({ status, actions }: { status: LinkageView; actions: LinkageActions }) {
+  const hereDone = !!status.hereId;
+  const pmDone = !!status.pinballMapId;
+
+  return (
+    <>
+      {/* Step 1 — HERE */}
+      <section>
+        <SectionHeading
+          icon={<MapPin className="w-4 h-4" />}
+          title="1 · Resolve in HERE"
+          done={hereDone}
+          detail={hereDone ? 'Linked' : status.address ? 'Optional — not linked' : 'Add an address first'}
+        />
+        <p className="text-xs text-muted-foreground mb-3">
+          {status.address ?? 'This venue has no address yet — edit it and add one, then run this.'}
+          {!hereDone && status.address && (
+            <span className="block mt-1 opacity-80">
+              Identifies the venue and stops duplicates on future uploads. Machine matching doesn’t need it.
+            </span>
+          )}
+        </p>
+        <button
+          onClick={() => actions.resolveHere.mutate()}
+          disabled={!status.address || actions.resolveHere.isPending}
+          className="text-sm font-bold uppercase tracking-wider rounded-lg border border-white/20 px-3 py-2 hover:bg-white/10 disabled:opacity-40 transition-colors"
+        >
+          {actions.resolveHere.isPending ? 'Searching HERE...' : hereDone ? 'Re-run HERE lookup' : 'Find in HERE'}
+        </button>
+
+        {actions.hereCandidates && actions.hereCandidates.length > 0 && (
+          <ul className="mt-3 flex flex-col gap-2">
+            {actions.hereCandidates.map(c => (
+              <li key={c.hereId ?? c.name} className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-background px-3 py-2">
+                <span className="min-w-0">
+                  <span className="block text-sm font-bold text-venue truncate">{c.name}</span>
+                  <span className="block text-xs text-muted-foreground truncate">{c.address} · {c.distance}m</span>
+                </span>
+                <button
+                  onClick={() => actions.attachHere.mutate(c)}
+                  disabled={!c.hereId || actions.attachHere.isPending}
+                  className="text-xs font-bold uppercase tracking-wider rounded border border-white/20 px-2 py-1 hover:bg-white/10 disabled:opacity-40 flex-shrink-0"
+                >
+                  Use
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {/* Step 2 — Pinball Map */}
+      <section>
+        <SectionHeading
+          icon={<Link2 className="w-4 h-4" />}
+          title="2 · Link Pinball Map"
+          done={pmDone}
+          detail={pmDone ? `#${status.pinballMapId}` : 'Not linked'}
+        />
+
+        {pmDone && status.pmLocationUrl && (
+          <a
+            href={status.pmLocationUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 text-xs text-venue hover:underline mb-3"
+          >
+            View on Pinball Map <ExternalLink className="w-3 h-3" />
+          </a>
+        )}
+
+        <div className="flex flex-wrap gap-2 mb-3">
+          <input
+            value={actions.pmQuery}
+            onChange={e => actions.setPmQuery(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') actions.findPm.mutate(actions.pmQuery); }}
+            placeholder={status.name}
+            className="flex-1 min-w-[10rem] text-sm rounded-lg bg-background border border-white/20 px-3 py-2 text-white placeholder:text-muted-foreground"
+          />
+          <button
+            onClick={() => actions.findPm.mutate(actions.pmQuery)}
+            disabled={!status.pmConfigured || actions.findPm.isPending}
+            className="flex items-center gap-1 text-sm font-bold uppercase tracking-wider rounded-lg border border-white/20 px-3 py-2 hover:bg-white/10 disabled:opacity-40 transition-colors"
+          >
+            <Search className="w-3.5 h-3.5" />
+            {actions.findPm.isPending ? 'Searching...' : 'Search'}
+          </button>
+        </div>
+
+        {actions.pmCandidates && actions.pmCandidates.length > 0 && (
+          <ul className="flex flex-col gap-2 mb-3">
+            {actions.pmCandidates.map(c => (
+              <li key={c.pinballMapId} className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-background px-3 py-2">
+                <span className="min-w-0">
+                  <span className="block text-sm font-bold text-venue truncate">{c.name}</span>
+                  <span className="block text-xs text-muted-foreground truncate">
+                    #{c.pinballMapId}
+                    {c.address ? ` · ${c.address}` : ''}
+                    {c.machineCount != null ? ` · ${c.machineCount} machines` : ''}
+                  </span>
+                </span>
+                <button
+                  onClick={() => actions.linkPm.mutate(c.pinballMapId)}
+                  disabled={actions.linkPm.isPending}
+                  className="text-xs font-bold uppercase tracking-wider rounded border border-white/20 px-2 py-1 hover:bg-white/10 disabled:opacity-40 flex-shrink-0"
+                >
+                  Link
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <details className="text-xs text-muted-foreground">
+          <summary className="cursor-pointer hover:text-white transition-colors">
+            Enter a Pinball Map ID manually
+          </summary>
+          <div className="mt-2 flex flex-col gap-2">
+            <p className="leading-relaxed">
+              On <a href="https://pinballmap.com" target="_blank" rel="noreferrer" className="text-venue underline">pinballmap.com</a>,
+              find the venue and click its name in the list. The address bar becomes{' '}
+              <code className="text-white">pinballmap.com/map?by_location_id=<strong>1234</strong></code> — that
+              number is the ID.
+            </p>
+            <div className="flex gap-2">
+              <input
+                value={actions.manualPmId}
+                onChange={e => actions.setManualPmId(e.target.value.replace(/[^0-9]/g, ''))}
+                placeholder="1234"
+                inputMode="numeric"
+                className="w-28 text-sm rounded-lg bg-background border border-white/20 px-3 py-2 text-white placeholder:text-muted-foreground"
+              />
+              <button
+                onClick={() => actions.linkPm.mutate(Number(actions.manualPmId))}
+                disabled={!actions.manualPmId || !status.pmConfigured || actions.linkPm.isPending}
+                className="text-sm font-bold uppercase tracking-wider rounded-lg border border-white/20 px-3 py-2 hover:bg-white/10 disabled:opacity-40 transition-colors"
+              >
+                {actions.linkPm.isPending ? 'Linking...' : 'Link'}
+              </button>
+            </div>
+          </div>
+        </details>
+      </section>
+    </>
+  );
+}

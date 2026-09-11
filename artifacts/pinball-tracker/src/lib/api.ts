@@ -28,6 +28,14 @@ export function createApi(getToken: () => Promise<string | null>) {
         request(`/scores/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, await tok()),
       delete: async (id: number) =>
         request(`/scores/${id}`, { method: 'DELETE' }, await tok()),
+
+      // Per-score repair — venue linkage state plus ranked machine candidates for this one score.
+      repair: {
+        status: async (id: number) =>
+          request<any>(`/scores/${id}/repair`, undefined, await tok()),
+        machine: async (id: number, body: { pmName: string; pmManufacturer?: string | null; pmYear?: number | null }) =>
+          request<any>(`/scores/${id}/repair/machine`, { method: 'POST', body: JSON.stringify(body) }, await tok()),
+      },
     },
     machines: {
       list: async (mine = false) =>
