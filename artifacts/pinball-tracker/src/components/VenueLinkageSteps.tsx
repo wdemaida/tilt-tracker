@@ -128,6 +128,18 @@ export type LinkageActions = ReturnType<typeof useVenueLinkageActions>;
  * depends on it. 30 venues came from the seed script with no HERE id and work fine, so painting them
  * amber would train the eye to ignore the chip by the time it means something.
  */
+const DISABLED_REASON = 'Pinball Map isn’t configured on the server — PINBALL_MAP_API_TOKEN is unset.';
+
+function DisabledReason({ show }: { show: boolean }) {
+  if (!show) return null;
+  return (
+    <p className="text-xs text-amber-400/80 mb-3">
+      Greyed out because Pinball Map isn’t configured on the server yet — nothing to do with this
+      record, and saving won’t change it.
+    </p>
+  );
+}
+
 export function StatusChip({ label, done, tone = 'critical' }: { label: string; done: boolean; tone?: 'critical' | 'info' }) {
   const missingCls = tone === 'critical' ? 'border-amber-500/40 text-amber-400' : 'border-white/20 text-muted-foreground';
   return (
@@ -249,23 +261,30 @@ export default function VenueLinkageSteps({ status, actions }: { status: Linkage
           </a>
         )}
 
-        <div className="flex flex-wrap gap-2 mb-3">
+        <p className="text-xs text-muted-foreground mb-2">
+          Leave blank to search Pinball Map near this venue’s coordinates, or type a name to search
+          theirs directly — useful when their listing is named differently from ours.
+        </p>
+        <div className="flex flex-wrap gap-2 mb-2">
           <input
             value={actions.pmQuery}
             onChange={e => actions.setPmQuery(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') actions.findPm.mutate(actions.pmQuery); }}
-            placeholder={status.name}
-            className="flex-1 min-w-[10rem] text-sm rounded-lg bg-background border border-white/20 px-3 py-2 text-white placeholder:text-muted-foreground"
+            onKeyDown={e => { if (e.key === 'Enter' && status.pmConfigured) actions.findPm.mutate(actions.pmQuery); }}
+            placeholder={`${status.name} (blank = search nearby)`}
+            disabled={!status.pmConfigured}
+            className="flex-1 min-w-[10rem] text-sm rounded-lg bg-background border border-white/20 px-3 py-2 text-white placeholder:text-muted-foreground disabled:opacity-50"
           />
           <button
             onClick={() => actions.findPm.mutate(actions.pmQuery)}
             disabled={!status.pmConfigured || actions.findPm.isPending}
+            title={!status.pmConfigured ? DISABLED_REASON : undefined}
             className="flex items-center gap-1 text-sm font-bold uppercase tracking-wider rounded-lg border border-white/20 px-3 py-2 hover:bg-white/10 disabled:opacity-40 transition-colors"
           >
             <Search className="w-3.5 h-3.5" />
             {actions.findPm.isPending ? 'Searching...' : 'Search'}
           </button>
         </div>
+        <DisabledReason show={!status.pmConfigured} />
 
         {actions.pmCandidates && actions.pmCandidates.length > 0 && (
           <ul className="flex flex-col gap-2 mb-3">
@@ -313,11 +332,13 @@ export default function VenueLinkageSteps({ status, actions }: { status: Linkage
               <button
                 onClick={() => actions.linkPm.mutate(Number(actions.manualPmId))}
                 disabled={!actions.manualPmId || !status.pmConfigured || actions.linkPm.isPending}
+                title={!status.pmConfigured ? DISABLED_REASON : !actions.manualPmId ? 'Enter a Pinball Map location ID first' : undefined}
                 className="text-sm font-bold uppercase tracking-wider rounded-lg border border-white/20 px-3 py-2 hover:bg-white/10 disabled:opacity-40 transition-colors"
               >
                 {actions.linkPm.isPending ? 'Linking...' : 'Link'}
               </button>
             </div>
+            <DisabledReason show={!status.pmConfigured} />
           </div>
         </details>
       </section>

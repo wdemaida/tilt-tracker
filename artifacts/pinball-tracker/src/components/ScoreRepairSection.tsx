@@ -152,6 +152,11 @@ export default function ScoreRepairSection({ scoreId, onMachineRepaired }: Props
 
       {open && (
         <div className="border-t border-white/10 p-3 flex flex-col gap-4">
+          {/* These actions hit their own endpoints and take effect straight away — they are not part
+              of the form's Save. Worth saying, because the obvious assumption is the opposite. */}
+          <p className="text-xs text-muted-foreground">
+            Changes here apply immediately — you don’t need to hit Save.
+          </p>
           <NoticeBanner notice={actions.notice} />
           {!status.pmConfigured && <PmNotConfiguredWarning />}
 
