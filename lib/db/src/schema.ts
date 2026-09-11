@@ -1,4 +1,4 @@
-import { pgTable, serial, text, bigint, timestamp, real, integer, pgEnum, uniqueIndex, date, boolean } from 'drizzle-orm/pg-core';
+import { pgTable, serial, text, bigint, timestamp, real, integer, pgEnum, uniqueIndex, date, boolean, jsonb } from 'drizzle-orm/pg-core';
 
 export const scoreTypeEnum = pgEnum('score_type', ['casual', 'tournament']);
 export const userRoleEnum = pgEnum('user_role', ['admin', 'user']);
@@ -37,6 +37,11 @@ export const venues = pgTable('venues', {
   pinballMapId: integer('pinball_map_id'),
   pmMachineCount: integer('pm_machine_count'),
   ownerId: integer('owner_id').references(() => users.id),
+  // Who first put this venue into TiltTrack, as distinct from ownerId (which means "this is that
+  // user's residence" and drives address privacy). A venue created by the photo-upload flow has no
+  // owner but does have a creator — and the creator is who gets to repair its HERE/Pinball Map
+  // linkage later, so an unresolved venue isn't stuck waiting on an admin.
+  createdById: integer('created_by_id').references(() => users.id),
   isResidence: boolean('is_residence').default(false).notNull(),
   privacyTier: venuePrivacyEnum('privacy_tier').default('full').notNull(),
   city: text('city'),
@@ -81,6 +86,18 @@ export type Venue = typeof venues.$inferSelect;
 export type NewVenue = typeof venues.$inferInsert;
 export type Score = typeof scores.$inferSelect;
 export type NewScore = typeof scores.$inferInsert;
+// Local copy of a Pinball Map location's machine roster, keyed by *their* location id so every
+// call site shares one entry. Pinball Map asks that request volume track how often their data
+// changes rather than how often our pages are viewed — this is what keeps that true: a venue page
+// view reads this row, and only a stale (or forced) read goes out to their API.
+export const pmLocationCache = pgTable('pm_location_cache', {
+  pmLocationId: integer('pm_location_id').primaryKey(),
+  machines: jsonb('machines').notNull(),
+  fetchedAt: timestamp('fetched_at').defaultNow().notNull(),
+});
+
+export type PmLocationCache = typeof pmLocationCache.$inferSelect;
+
 export type VenueMachineHistory = typeof venueMachineHistory.$inferSelect;
 export type NewVenueMachineHistory = typeof venueMachineHistory.$inferInsert;
 

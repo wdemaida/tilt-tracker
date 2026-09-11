@@ -104,6 +104,9 @@ router.post('/', requireAppUser, async (req, res) => {
           address: venueAddress ?? null,
           hereId: venueHereId ?? null,
           pinballMapId: venuePinballMapId ?? null,
+          // Whoever logs the first score at a venue is its creator, and therefore the person allowed
+          // to repair its HERE / Pinball Map linkage later without needing an admin.
+          createdById: appUser.id,
         })
         .onConflictDoUpdate({
           target: venues.hereId,

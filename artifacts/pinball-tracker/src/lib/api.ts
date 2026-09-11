@@ -71,6 +71,26 @@ export function createApi(getToken: () => Promise<string | null>) {
         request(`/venues/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, await tok()),
       delete: async (id: number) =>
         request(`/venues/${id}`, { method: 'DELETE' }, await tok()),
+
+      // Venue repair — for venues that never resolved to a HERE place or a Pinball Map location on
+      // upload. All of these require auth: the backend allows an admin, the venue's owner, or
+      // whoever added the venue.
+      repair: {
+        status: async (id: number) =>
+          request<any>(`/venues/${id}/repair`, undefined, await tok()),
+        resolveHere: async (id: number) =>
+          request<any>(`/venues/${id}/repair/here`, { method: 'POST', body: '{}' }, await tok()),
+        attachHere: async (id: number, body: { hereId: string; latitude?: number | null; longitude?: number | null }) =>
+          request<any>(`/venues/${id}/repair/here/attach`, { method: 'POST', body: JSON.stringify(body) }, await tok()),
+        pmCandidates: async (id: number, q?: string) =>
+          request<any>(`/venues/${id}/repair/pm-candidates${q ? `?q=${encodeURIComponent(q)}` : ''}`, undefined, await tok()),
+        pmLink: async (id: number, pinballMapId: number) =>
+          request<any>(`/venues/${id}/repair/pm-link`, { method: 'POST', body: JSON.stringify({ pinballMapId }) }, await tok()),
+        resyncPreview: async (id: number) =>
+          request<any>(`/venues/${id}/repair/resync-preview`, undefined, await tok()),
+        resyncApply: async (id: number, merges: Array<Record<string, unknown>>) =>
+          request<any>(`/venues/${id}/repair/resync-apply`, { method: 'POST', body: JSON.stringify({ merges }) }, await tok()),
+      },
     },
     pinballmap: {
       getToken: async () =>

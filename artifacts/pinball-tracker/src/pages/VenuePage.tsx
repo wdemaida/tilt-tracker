@@ -8,6 +8,7 @@ import { useScopeContext } from '../lib/ScopeContext';
 import { ScopeToggle } from '../components/ScopeToggle';
 import VenueMapThumbnail from '../components/VenueMapThumbnail';
 import VenueMachinesModal from '../components/VenueMachinesModal';
+import VenueRepairPanel from '../components/VenueRepairPanel';
 
 type SortKey = 'playedAt' | 'machineName' | 'type' | 'username' | 'score';
 type SortDir = 'asc' | 'desc';
@@ -103,6 +104,8 @@ export default function VenuePage() {
         </div>
         <VenueMapThumbnail venueId={venue.id} latitude={venue.latitude} longitude={venue.longitude} />
       </div>
+
+      <VenueRepairPanel venueId={venue.id} />
 
       {scores.length === 0 ? (
         <p className="text-muted-foreground">No scores recorded at this venue yet.</p>

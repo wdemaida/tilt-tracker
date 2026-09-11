@@ -72,6 +72,11 @@ If deploying:
 
 Claude is authorized to commit and push to `main` directly — no need to ask permission each time.
 
+**`PINBALL_MAP_API_TOKEN` must be set on Render**, not just locally — Pinball Map has required an
+`api_token` on every endpoint since 2026-07-30, and without it venue/machine lookups return empty
+rather than erroring. Request one at <https://pinballmap.com/api_token>. Remember that a Render env
+var PUT **replaces all env vars** — send the full set, not just the new key.
+
 **Git identity must be `wdemaida` / `wdemaida@gmail.com`** — the remote is `https://wdemaida@github.com/wdemaida/tilt-tracker.git`. If Vercel deployments start failing with "not a member" errors, check `git config user.name/email` in the repo.
 
 Push uses an isolated `GH_CONFIG_DIR` (not the global `gh` login) — see the **deploy** skill (`.claude/skills/deploy/SKILL.md`) for the credential setup, production URLs/service keys, and Vercel/Render-specific gotchas.
@@ -98,5 +103,9 @@ Feature-specific gotchas live in `artifacts/pinball-tracker/CLAUDE.md` (frontend
 | `artifacts/api-server/src/routes/upload.ts` | Photo upload, AI extraction, GPS, HERE lookup |
 | `artifacts/api-server/src/lib/pinballmapApi.ts` | Pinball Map API helpers |
 | `artifacts/api-server/src/lib/venueHistory.ts` | Diffs live PM machine list vs. last snapshot; records arrivals/departures |
+| `artifacts/api-server/src/lib/venueRepair.ts` | Venue relink + score re-sync: permissions, machine-name matching, merge apply |
+| `artifacts/api-server/src/lib/pmRosterCache.ts` | 6h cache of PM machine rosters — the only sanctioned way to read a roster |
+| `artifacts/pinball-tracker/src/components/VenueRepairPanel.tsx` | 3-step repair UI on the venue page (HERE → Pinball Map → re-sync) |
+| `artifacts/pinball-tracker/src/components/ScoreResyncModal.tsx` | Preview-and-confirm modal for re-syncing a venue's scores |
 | `lib/db/src/schema.ts` | Drizzle schema — source of truth for DB types |
 | `artifacts/api-server/migrate*.ts` | Numbered migration scripts (run once, keep for history) |

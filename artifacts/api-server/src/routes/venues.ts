@@ -1,10 +1,15 @@
 import { Router } from 'express';
 import { db, scores, venues, machines, users } from '@workspace/db';
 import { eq, desc, count, sql, and } from 'drizzle-orm';
-import { getPmMachinesAtLocation } from '../lib/pinballmapApi.js';
+import {
+  findNearestPmLocations, searchPmLocationsByName, getPmLocation,
+  pmLocationUrl, isPmConfigured, PmApiError, type PmLocation,
+} from '../lib/pinballmapApi.js';
 import { syncVenueMachineHistory, getFormerMachines } from '../lib/venueHistory.js';
-import { geocodeAddress, autosuggestAddress } from '../lib/hereApi.js';
+import { geocodeAddress, autosuggestAddress, findVenueByName } from '../lib/hereApi.js';
 import { redactVenue, canSeeFullVenue } from '../lib/venuePrivacy.js';
+import { canRepairVenue, buildResyncPreview, applyResync, reenrichMachines } from '../lib/venueRepair.js';
+import { getVenueRoster } from '../lib/pmRosterCache.js';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { getAuth } from '@clerk/express';
 
@@ -102,6 +107,7 @@ router.post('/', requireAppUser, async (req, res) => {
       cityLat,
       cityLng,
       ownerId: appUser.id,
+      createdById: appUser.id,
       isResidence: !!isResidence,
       privacyTier: tier,
     }).returning();
@@ -134,7 +140,7 @@ router.get('/pm-machines/:pmId', async (req, res) => {
   const pmId = Number(req.params.pmId);
   if (!pmId) return res.status(400).json({ error: 'Invalid pmId' });
   try {
-    const xrefs = await getPmMachinesAtLocation(pmId);
+    const { xrefs } = await getVenueRoster(pmId);
     const pmMachines = xrefs.map(x => ({
       xrefId: x.id,
       id: x.machine.id,
@@ -144,6 +150,10 @@ router.get('/pm-machines/:pmId', async (req, res) => {
     }));
     res.json({ pmMachines });
   } catch (err) {
+    if (err instanceof PmApiError) {
+      console.error('PM machines by pmId error:', err.kind, err.message);
+      return res.status(502).json({ error: err.message, code: `PM_${err.kind.toUpperCase()}` });
+    }
     console.error('PM machines by pmId error:', err);
     res.status(500).json({ error: 'Failed to fetch PM machines' });
   }
@@ -195,25 +205,47 @@ router.get('/:id/machines', async (req, res) => {
 
     let pmMachines: Array<{ xrefId: number; id: number; name: string; manufacturer?: string; year?: number }> = [];
     let formerMachines: Awaited<ReturnType<typeof getFormerMachines>> = [];
+    // Surfaced to the client so the UI can say "Pinball Map is unreachable" rather than implying the
+    // venue has no machines — the silent `return []` this used to rely on is exactly what hid the
+    // API-token cutover for as long as it did.
+    let pmError: string | null = null;
     if (venue.pinballMapId) {
-      const xrefs = await getPmMachinesAtLocation(venue.pinballMapId);
-      pmMachines = xrefs.map(x => ({
-        xrefId: x.id,
-        id: x.machine.id,
-        name: x.machine.name,
-        manufacturer: x.machine.manufacturer,
-        year: x.machine.year,
-      }));
-      if (venue.pmMachineCount !== pmMachines.length) {
-        await db.update(venues).set({ pmMachineCount: pmMachines.length }).where(eq(venues.id, id));
+      try {
+        const roster = await getVenueRoster(venue.pinballMapId);
+        const xrefs = roster.xrefs;
+        pmMachines = xrefs.map(x => ({
+          xrefId: x.id,
+          id: x.machine.id,
+          name: x.machine.name,
+          manufacturer: x.machine.manufacturer,
+          year: x.machine.year,
+        }));
+        if (venue.pmMachineCount !== pmMachines.length) {
+          await db.update(venues).set({ pmMachineCount: pmMachines.length }).where(eq(venues.id, id));
+        }
+        // Only advance machine history when the roster is genuinely new. A cache hit carries no new
+        // information, and re-running the diff on every page view would churn lastSeenAt timestamps
+        // (and re-upsert every machine row) for no gain.
+        if (!roster.fromCache) {
+          // Best-effort — a history sync failure shouldn't break the machine list the page needs
+          await syncVenueMachineHistory(id, xrefs).catch(err => console.error('Venue history sync error:', err));
+        }
+        if (roster.stale) {
+          pmError = 'Pinball Map is unreachable — showing the last roster we saw.';
+        }
+      } catch (err) {
+        if (!(err instanceof PmApiError)) throw err;
+        console.error('PM machine fetch failed:', err.kind, err.message);
+        pmError = err.message;
       }
-      // Best-effort — a history sync failure shouldn't break the machine list the page needs
-      await syncVenueMachineHistory(id, xrefs).catch(err => console.error('Venue history sync error:', err));
       formerMachines = await getFormerMachines(id);
     }
 
     const redactedVenue = toPublicVenue(redactVenue(venue, appUserId, isAdmin));
-    res.json({ venue: redactedVenue, ownMachines, pmMachines, ttMachineNames, formerMachines });
+    res.json({
+      venue: redactedVenue, ownMachines, pmMachines, ttMachineNames, formerMachines, pmError,
+      pmLocationUrl: venue.pinballMapId ? pmLocationUrl(venue.pinballMapId) : null,
+    });
   } catch (err) {
     console.error('Venue machines error:', err);
     res.status(500).json({ error: 'Failed to fetch venue machines' });
@@ -342,6 +374,316 @@ router.delete('/:id', requireAppUser, requireAdmin, async (req, res) => {
 
   await db.delete(venues).where(eq(venues.id, id));
   res.status(204).send();
+});
+
+// ---------------------------------------------------------------------------
+// Venue repair
+//
+// Covers the case where a venue never resolved on upload — no hereId, no Pinball Map link — and the
+// score rows behind it are consequently pointing at unenriched machine names. Each step is manual
+// and idempotent so it can be retried: resolve the address in HERE, link Pinball Map, then re-sync
+// the scores already logged there.
+// ---------------------------------------------------------------------------
+
+// Loads the venue and checks the caller may repair it. Returns null after responding on failure.
+async function loadRepairableVenue(req: any, res: any) {
+  const appUser = req.appUser;
+  const id = Number(req.params.id);
+  if (!id) {
+    res.status(400).json({ error: 'Invalid venue id' });
+    return null;
+  }
+  const [venue] = await db.select().from(venues).where(eq(venues.id, id)).limit(1);
+  if (!venue) {
+    res.status(404).json({ error: 'Venue not found' });
+    return null;
+  }
+  if (!canRepairVenue(venue, appUser)) {
+    res.status(403).json({ error: 'Only an admin, the venue owner, or whoever added this venue can repair it' });
+    return null;
+  }
+  return venue;
+}
+
+function pmFailure(res: any, err: unknown, fallback: string) {
+  if (err instanceof PmApiError) {
+    return res.status(502).json({ error: err.message, code: `PM_${err.kind.toUpperCase()}` });
+  }
+  console.error(fallback, err);
+  return res.status(500).json({ error: fallback });
+}
+
+// GET /api/venues/:id/repair — what the repair panel needs to render: current linkage state, who may
+// act, and whether the Pinball Map integration is even configured on this server.
+router.get('/:id/repair', requireAppUser, async (req, res) => {
+  const venue = await loadRepairableVenue(req, res);
+  if (!venue) return;
+
+  const appUser = (req as any).appUser;
+  const [{ total }] = await db.select({ total: count() }).from(scores).where(eq(scores.venueId, venue.id));
+  const [{ mine }] = await db
+    .select({ mine: count() })
+    .from(scores)
+    .where(and(eq(scores.venueId, venue.id), eq(scores.userId, appUser.id)));
+
+  res.json({
+    venueId: venue.id,
+    name: venue.name,
+    address: venue.address,
+    latitude: venue.latitude,
+    longitude: venue.longitude,
+    hereId: venue.hereId,
+    pinballMapId: venue.pinballMapId,
+    pmMachineCount: venue.pmMachineCount,
+    pmLocationUrl: venue.pinballMapId ? pmLocationUrl(venue.pinballMapId) : null,
+    pmConfigured: isPmConfigured(),
+    isAdmin: appUser.role === 'admin',
+    scoreCount: Number(total),
+    myScoreCount: Number(mine),
+  });
+});
+
+// POST /api/venues/:id/repair/here — re-run the HERE lookup for a venue whose address was filled in
+// after the fact. Geocodes the address for coordinates, then searches HERE by venue name anchored at
+// those coordinates to recover the hereId the upload flow failed to attach.
+router.post('/:id/repair/here', requireAppUser, async (req, res) => {
+  const venue = await loadRepairableVenue(req, res);
+  if (!venue) return;
+
+  if (!venue.address) {
+    return res.status(400).json({ error: 'Add an address to this venue first — HERE needs somewhere to search from' });
+  }
+
+  const appUser = (req as any).appUser;
+
+  try {
+    const geocoded = await geocodeAddress(venue.address);
+    const lat = geocoded?.lat ?? venue.latitude;
+    const lng = geocoded?.lng ?? venue.longitude;
+    if (lat == null || lng == null) {
+      return res.status(422).json({ error: `HERE could not geocode "${venue.address}"` });
+    }
+
+    const candidates = await findVenueByName(venue.name, lat, lng);
+
+    const updates: Record<string, any> = {};
+    if (geocoded) {
+      updates.address = geocoded.label;
+      updates.latitude = geocoded.lat;
+      updates.longitude = geocoded.lng;
+      updates.city = geocoded.city;
+      updates.state = geocoded.state;
+    }
+
+    // Auto-attach only on an unambiguous hit: a single nearby POI, or a clear closest match whose
+    // name lines up. Anything less goes back to the user as a list to pick from, since hereId is a
+    // unique column — attaching the wrong one is annoying to undo.
+    const best = candidates[0];
+    const nameMatches = !!best && (
+      best.name.toLowerCase().includes(venue.name.toLowerCase()) ||
+      venue.name.toLowerCase().includes(best.name.toLowerCase())
+    );
+    let attached: typeof best | null = null;
+    if (best && nameMatches && best.hereId && (candidates.length === 1 || best.distance < 100)) {
+      // hereId is unique across venues — don't steal it from another row.
+      const [clash] = await db.select({ id: venues.id }).from(venues).where(eq(venues.hereId, best.hereId)).limit(1);
+      if (!clash || clash.id === venue.id) {
+        updates.hereId = best.hereId;
+        if (best.venueLat != null) updates.latitude = best.venueLat;
+        if (best.venueLng != null) updates.longitude = best.venueLng;
+        attached = best;
+      }
+    }
+
+    const [updated] = Object.keys(updates).length
+      ? await db.update(venues).set(updates).where(eq(venues.id, venue.id)).returning()
+      : [venue];
+
+    res.json({
+      attached: attached ? { name: attached.name, hereId: attached.hereId, distance: attached.distance } : null,
+      candidates: candidates.map(c => ({ name: c.name, address: c.address, distance: c.distance, hereId: c.hereId, latitude: c.venueLat ?? null, longitude: c.venueLng ?? null })),
+      venue: toPublicVenue(redactVenue(updated, appUser.id, appUser.role === 'admin')),
+    });
+  } catch (err) {
+    console.error('Venue HERE repair error:', err);
+    res.status(500).json({ error: 'Failed to re-resolve this venue in HERE' });
+  }
+});
+
+// POST /api/venues/:id/repair/here/attach — pick one of the candidates above by hand.
+router.post('/:id/repair/here/attach', requireAppUser, async (req, res) => {
+  const venue = await loadRepairableVenue(req, res);
+  if (!venue) return;
+
+  const appUser = (req as any).appUser;
+  const hereId = typeof req.body.hereId === 'string' ? req.body.hereId : null;
+  if (!hereId) return res.status(400).json({ error: 'hereId is required' });
+
+  const [clash] = await db.select({ id: venues.id, name: venues.name }).from(venues).where(eq(venues.hereId, hereId)).limit(1);
+  if (clash && clash.id !== venue.id) {
+    return res.status(409).json({ error: `"${clash.name}" is already linked to that HERE place` });
+  }
+
+  const updates: Record<string, any> = { hereId };
+  if (typeof req.body.latitude === 'number') updates.latitude = req.body.latitude;
+  if (typeof req.body.longitude === 'number') updates.longitude = req.body.longitude;
+
+  const [updated] = await db.update(venues).set(updates).where(eq(venues.id, venue.id)).returning();
+  res.json(toPublicVenue(redactVenue(updated, appUser.id, appUser.role === 'admin')));
+});
+
+// GET /api/venues/:id/repair/pm-candidates?q=... — Pinball Map locations to link this venue to.
+// Searches by name when `q` is given, otherwise by proximity to the venue's coordinates.
+router.get('/:id/repair/pm-candidates', requireAppUser, async (req, res) => {
+  const venue = await loadRepairableVenue(req, res);
+  if (!venue) return;
+
+  const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+
+  try {
+    let nearby: PmLocation[] = [];
+    let named: PmLocation[] = [];
+
+    if (!q && venue.latitude != null && venue.longitude != null) {
+      nearby = await findNearestPmLocations(venue.latitude, venue.longitude, 1);
+    }
+    if (q || nearby.length === 0) {
+      named = await searchPmLocationsByName(q || venue.name);
+    }
+
+    const seen = new Set<number>();
+    const candidates = [...nearby, ...named]
+      .filter(l => !!l.id && !seen.has(l.id) && seen.add(l.id))
+      .map(l => ({
+        pinballMapId: l.id,
+        name: l.name,
+        address: [l.street, l.city, l.state].filter(Boolean).join(', '),
+        machineCount: l.num_machines ?? l.machine_count ?? null,
+        distance: l.distance ?? null,
+        url: pmLocationUrl(l.id),
+      }));
+
+    res.json({ candidates, searchedFor: q || venue.name });
+  } catch (err) {
+    return pmFailure(res, err, 'Failed to search Pinball Map');
+  }
+});
+
+// POST /api/venues/:id/repair/pm-link — attach a Pinball Map location id. Verifies the id resolves
+// before storing it, so a typo fails loudly here instead of quietly producing an empty machine list.
+router.post('/:id/repair/pm-link', requireAppUser, async (req, res) => {
+  const venue = await loadRepairableVenue(req, res);
+  if (!venue) return;
+
+  const appUser = (req as any).appUser;
+  const pinballMapId = Number(req.body.pinballMapId);
+  if (!pinballMapId || Number.isNaN(pinballMapId)) {
+    return res.status(400).json({ error: 'A numeric pinballMapId is required' });
+  }
+
+  try {
+    const pmLocation = await getPmLocation(pinballMapId);
+    if (!pmLocation) {
+      return res.status(404).json({ error: `Pinball Map has no location with id ${pinballMapId}` });
+    }
+
+    const { xrefs } = await getVenueRoster(pinballMapId, { force: true });
+    const [updated] = await db
+      .update(venues)
+      .set({ pinballMapId, pmMachineCount: xrefs.length })
+      .where(eq(venues.id, venue.id))
+      .returning();
+
+    // Seed machine history now that we finally know the roster.
+    await syncVenueMachineHistory(venue.id, xrefs).catch(err => console.error('Venue history sync error:', err));
+
+    res.json({
+      venue: toPublicVenue(redactVenue(updated, appUser.id, appUser.role === 'admin')),
+      pmLocation: { id: pmLocation.id, name: pmLocation.name, url: pmLocationUrl(pmLocation.id) },
+      machineCount: xrefs.length,
+    });
+  } catch (err) {
+    return pmFailure(res, err, 'Failed to link this venue to Pinball Map');
+  }
+});
+
+// GET /api/venues/:id/repair/resync-preview — proposed machine remapping for scores already logged
+// here. Nothing is written. Non-admins see only their own scores.
+router.get('/:id/repair/resync-preview', requireAppUser, async (req, res) => {
+  const venue = await loadRepairableVenue(req, res);
+  if (!venue) return;
+
+  if (!venue.pinballMapId) {
+    return res.status(400).json({ error: 'Link this venue to Pinball Map first' });
+  }
+
+  const appUser = (req as any).appUser;
+  const scopeUserId = appUser.role === 'admin' ? null : appUser.id;
+
+  try {
+    const { xrefs } = await getVenueRoster(venue.pinballMapId, { force: true });
+    const proposals = await buildResyncPreview(venue.id, xrefs, scopeUserId);
+    res.json({
+      proposals,
+      scope: scopeUserId == null ? 'all' : 'mine',
+      pmMachineCount: xrefs.length,
+      pmLocationUrl: pmLocationUrl(venue.pinballMapId),
+    });
+  } catch (err) {
+    return pmFailure(res, err, 'Failed to build the re-sync preview');
+  }
+});
+
+// POST /api/venues/:id/repair/resync-apply — perform the approved merges. Body: { merges: [...] }.
+router.post('/:id/repair/resync-apply', requireAppUser, async (req, res) => {
+  const venue = await loadRepairableVenue(req, res);
+  if (!venue) return;
+
+  if (!venue.pinballMapId) {
+    return res.status(400).json({ error: 'Link this venue to Pinball Map first' });
+  }
+
+  const rawMerges = Array.isArray(req.body.merges) ? req.body.merges : [];
+  const merges = rawMerges
+    .filter((m: any) => Number(m?.fromMachineId) && typeof m?.pmName === 'string' && m.pmName.trim())
+    .map((m: any) => ({
+      fromMachineId: Number(m.fromMachineId),
+      pmName: String(m.pmName).trim(),
+      pmManufacturer: typeof m.pmManufacturer === 'string' ? m.pmManufacturer : undefined,
+      pmYear: Number.isFinite(Number(m.pmYear)) ? Number(m.pmYear) : undefined,
+    }));
+
+  const appUser = (req as any).appUser;
+  const scopeUserId = appUser.role === 'admin' ? null : appUser.id;
+
+  try {
+    const applied = await applyResync(venue.id, merges, scopeUserId);
+
+    // Whether or not anything merged, refresh metadata on the machines still in play here — rows
+    // created while Pinball Map was unreachable went in with null manufacturer/year.
+    // Reuses the roster the preview just cached — the user is applying what they were shown.
+    const { xrefs } = await getVenueRoster(venue.pinballMapId);
+    await syncVenueMachineHistory(venue.id, xrefs).catch(err => console.error('Venue history sync error:', err));
+
+    const remaining = await db
+      .selectDistinct({ machineId: scores.machineId })
+      .from(scores)
+      .where(scopeUserId != null
+        ? and(eq(scores.venueId, venue.id), eq(scores.userId, scopeUserId))
+        : eq(scores.venueId, venue.id));
+    const machinesEnriched = await reenrichMachines(remaining.map(r => r.machineId));
+
+    await db.update(venues).set({ pmMachineCount: xrefs.length }).where(eq(venues.id, venue.id));
+
+    res.json({
+      applied,
+      scoresMoved: applied.reduce((sum, a) => sum + a.scoresMoved, 0),
+      machinesEnriched,
+      scope: scopeUserId == null ? 'all' : 'mine',
+    });
+  } catch (err) {
+    return pmFailure(res, err, 'Failed to apply the re-sync');
+  }
 });
 
 export default router;

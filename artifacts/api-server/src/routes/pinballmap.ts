@@ -2,7 +2,8 @@ import { Router } from 'express';
 import { db, users, venues } from '@workspace/db';
 import { eq } from 'drizzle-orm';
 import { requireAppUser } from '../middleware/requireAuth.js';
-import { getPmUserToken, getPmMachinesAtLocation, submitPmScore } from '../lib/pinballmapApi.js';
+import { getPmUserToken, submitPmScore } from '../lib/pinballmapApi.js';
+import { getVenueRoster } from '../lib/pmRosterCache.js';
 
 const router = Router();
 
@@ -47,7 +48,7 @@ router.post('/submit-score', requireAppUser, async (req, res) => {
       return res.status(422).json({ error: 'This venue is not linked to Pinball Map' });
     }
 
-    const xrefs = await getPmMachinesAtLocation(venue.pinballMapId);
+    const { xrefs } = await getVenueRoster(venue.pinballMapId);
     const needle = machineName.toLowerCase();
     const xref = xrefs.find(x =>
       x.machine.name.toLowerCase().includes(needle) || needle.includes(x.machine.name.toLowerCase())

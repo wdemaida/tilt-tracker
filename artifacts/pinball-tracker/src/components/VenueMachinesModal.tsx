@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { X } from 'lucide-react';
+import { X, AlertTriangle, ExternalLink } from 'lucide-react';
 import { format } from 'date-fns';
 import { useApi } from '../lib/useApi';
 
@@ -9,6 +9,8 @@ interface VenueMachinesData {
   pmMachines: Array<{ xrefId: number; id: number; name: string; manufacturer?: string; year?: number }>;
   formerMachines: Array<{ id: number; name: string; manufacturer?: string; year?: number; firstSeenAt: string; removedAt: string }>;
   ttMachineNames: string[];
+  pmError?: string | null;
+  pmLocationUrl?: string | null;
 }
 
 interface VenueMachinesModalProps {
@@ -59,6 +61,14 @@ export default function VenueMachinesModal({ venueId, onClose }: VenueMachinesMo
             <p className="text-muted-foreground text-sm">Loading...</p>
           ) : (
             <>
+              {/* An unreachable Pinball Map used to look identical to "this venue has no machines" —
+                  say which it is, so a missing roster reads as an outage and not as missing data. */}
+              {machinesData?.pmError && (
+                <p className="flex items-start gap-2 text-xs rounded-lg bg-amber-500/10 text-amber-400 px-3 py-2">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <span>Pinball Map data unavailable — {machinesData.pmError}</span>
+                </p>
+              )}
               {/* Your scores */}
               {machinesData && machinesData.ownMachines.length > 0 && (
                 <div>
@@ -149,6 +159,20 @@ export default function VenueMachinesModal({ venueId, onClose }: VenueMachinesMo
 
               {machinesData && machinesData.ownMachines.length === 0 && pmMachinesExcludingOwn.length === 0 && machinesData.formerMachines.length === 0 && (
                 <p className="text-sm text-muted-foreground text-center py-4">No machine data available</p>
+              )}
+
+              {/* Pinball Map's data is CC BY-SA — attribution for a specific location has to point at
+                  that location's own listing, not just pinballmap.com. */}
+              {machinesData?.pmLocationUrl && (
+                <a
+                  href={machinesData.pmLocationUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-venue transition-colors"
+                >
+                  Machine data from Pinball Map — update this listing
+                  <ExternalLink className="w-3 h-3" />
+                </a>
               )}
             </>
           )}

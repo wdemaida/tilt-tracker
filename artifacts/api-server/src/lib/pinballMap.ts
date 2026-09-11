@@ -1,3 +1,5 @@
+const PM_API_TOKEN = process.env.PINBALL_MAP_API_TOKEN;
+
 export interface PinballMachine {
   id: number;
   name: string;
@@ -17,8 +19,17 @@ const TTL_MS = 1000 * 60 * 60 * 6; // 6 hours
 
 export async function getAllMachines(): Promise<PinballMachine[]> {
   if (cache.length && Date.now() - lastFetched < TTL_MS) return cache;
+  if (!PM_API_TOKEN) {
+    throw new Error('PINBALL_MAP_API_TOKEN is not set — request a key at https://pinballmap.com/api_token');
+  }
 
-  const res = await fetch('https://pinballmap.com/api/v1/machines.json');
+  // no_details drops is_active/created_at/updated_at/ipdb_id/machine_display — none of which this
+  // cache exposes. Pinball Map recommends it explicitly for the app-startup machine list.
+  const url = new URL('https://pinballmap.com/api/v1/machines.json');
+  url.searchParams.set('no_details', '1');
+  url.searchParams.set('api_token', PM_API_TOKEN);
+
+  const res = await fetch(url.toString(), { headers: { Accept: 'application/json' } });
   if (!res.ok) throw new Error(`Pinball Map API error: ${res.status}`);
   const data = (await res.json()) as { machines: PinballMachine[] };
   cache = data.machines;

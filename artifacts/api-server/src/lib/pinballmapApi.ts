@@ -1,5 +1,57 @@
 const PM_BASE = 'https://pinballmap.com/api/v1';
 
+// Pinball Map began requiring an api_token on *every* endpoint — including read-only GETs — on
+// 2026-07-30. It goes on the query string, not in a header (confirmed against pinballmap.com/llms.txt).
+// Request one at https://pinballmap.com/api_token; approval is manual.
+const PM_API_TOKEN = process.env.PINBALL_MAP_API_TOKEN;
+
+export type PmErrorKind = 'no_token' | 'unauthorized' | 'rate_limited' | 'http' | 'network';
+
+export class PmApiError extends Error {
+  constructor(public kind: PmErrorKind, message: string, public status?: number) {
+    super(message);
+    this.name = 'PmApiError';
+  }
+}
+
+export function isPmConfigured(): boolean {
+  return !!PM_API_TOKEN;
+}
+
+// Single choke point for every Pinball Map call so the token, and the distinction between "we are
+// not configured" and "the venue genuinely has no machines", exist in exactly one place. Callers
+// that want the old silent-degradation behaviour wrap this in `.catch(() => fallback)`; the repair
+// endpoints let it throw so the UI can say *why* nothing resolved instead of showing an empty list.
+async function pmFetch<T>(path: string, params: Record<string, string | number | undefined> = {}): Promise<T> {
+  if (!PM_API_TOKEN) {
+    throw new PmApiError('no_token', 'PINBALL_MAP_API_TOKEN is not set — request a key at https://pinballmap.com/api_token');
+  }
+
+  const url = new URL(`${PM_BASE}${path}`);
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined) url.searchParams.set(k, String(v));
+  }
+  url.searchParams.set('api_token', PM_API_TOKEN);
+
+  let res: Response;
+  try {
+    res = await fetch(url.toString(), { headers: { Accept: 'application/json' } });
+  } catch (err) {
+    throw new PmApiError('network', `Could not reach Pinball Map: ${(err as Error).message}`);
+  }
+
+  if (res.status === 401 || res.status === 403) {
+    throw new PmApiError('unauthorized', 'Pinball Map rejected the API token — check PINBALL_MAP_API_TOKEN', res.status);
+  }
+  if (res.status === 429) {
+    throw new PmApiError('rate_limited', 'Pinball Map rate limit hit — try again in a few minutes', 429);
+  }
+  if (!res.ok) {
+    throw new PmApiError('http', `Pinball Map returned ${res.status}`, res.status);
+  }
+  return res.json() as Promise<T>;
+}
+
 export interface PmLocation {
   id: number;
   name: string;
@@ -8,7 +60,10 @@ export interface PmLocation {
   street?: string;
   city?: string;
   state?: string;
-  machine_count: number;
+  zip?: string;
+  machine_count?: number;
+  num_machines?: number;
+  distance?: number;
 }
 
 export interface PmMachine {
@@ -23,53 +78,105 @@ export interface PmLocationMachineXref {
   machine: PmMachine;
 }
 
-// max_distance is in miles and must be an integer — the API truncates decimals to 0
-export async function findNearestPmLocations(lat: number, lon: number, maxDistanceMiles = 1): Promise<PmLocation[]> {
-  try {
-    const url = `${PM_BASE}/locations/closest_by_lat_lon.json?lat=${lat}&lon=${lon}&max_distance=${Math.ceil(maxDistanceMiles)}&send_all_within_distance=true`;
-    const res = await fetch(url, { headers: { Accept: 'application/json' } });
-    if (!res.ok) return [];
-    const data = await res.json();
-    return data.locations ?? [];
-  } catch {
-    return [];
-  }
+// The canonical public listing for a location — Pinball Map's CC BY-SA licence requires that data
+// shown for a specific location link back to that location's own page, not just the homepage. This
+// is also the URL that surfaces a location's numeric id in their UI, which is what makes manual
+// linking possible when the automatic match misses.
+export function pmLocationUrl(pmLocationId: number): string {
+  return `https://pinballmap.com/map?by_location_id=${pmLocationId}`;
 }
 
-// Returns machines for display (name, manufacturer, year). Response: { machines: [...] }
-export async function getPmMachinesAtLocation(pmLocationId: number): Promise<PmLocationMachineXref[]> {
-  try {
-    // Fetch machine names from machine_details
-    const detailsRes = await fetch(`${PM_BASE}/locations/${pmLocationId}/machine_details.json`, { headers: { Accept: 'application/json' } });
-    if (!detailsRes.ok) return [];
-    const details = await detailsRes.json();
-    const machines: PmMachine[] = details.machines ?? [];
+// max_distance is in miles and must be an integer — the API truncates decimals to 0
+export async function findNearestPmLocations(lat: number, lon: number, maxDistanceMiles = 1): Promise<PmLocation[]> {
+  const data = await pmFetch<{ locations?: PmLocation[] }>('/locations/closest_by_lat_lon.json', {
+    lat,
+    lon,
+    max_distance: Math.ceil(maxDistanceMiles),
+    send_all_within_distance: 'true',
+    no_details: 1,
+  });
+  return data.locations ?? [];
+}
 
-    // Fetch xref IDs from location detail (needed for score cross-posting)
-    const locRes = await fetch(`${PM_BASE}/locations/${pmLocationId}.json`, { headers: { Accept: 'application/json' } });
-    const xrefMap = new Map<number, number>(); // machine_id → xref_id
-    if (locRes.ok) {
-      const locData = await locRes.json();
-      for (const x of locData.location_machine_xrefs ?? []) {
-        xrefMap.set(x.machine_id, x.id);
-      }
-    }
+// Name search for the manual repair flow — lets someone type "Headquarters" instead of hunting down
+// a numeric id on pinballmap.com. Falls back to the fuller locations.json search when autocomplete
+// comes back empty, since autocomplete only matches from the start of the name.
+export async function searchPmLocationsByName(name: string): Promise<PmLocation[]> {
+  const q = name.trim();
+  if (q.length < 2) return [];
 
-    return machines.map(m => ({
-      id: xrefMap.get(m.id) ?? 0,
-      machine: m,
-    }));
-  } catch {
-    return [];
+  const auto = await pmFetch<Array<{ label?: string; value?: number; id?: number }> | { locations?: PmLocation[] }>(
+    '/locations/autocomplete.json',
+    { name: q },
+  );
+
+  // autocomplete.json returns a bare array of {label, value}; normalise it into PmLocation shape.
+  if (Array.isArray(auto) && auto.length > 0) {
+    return auto
+      .map(a => ({ id: a.value ?? a.id ?? 0, name: a.label ?? '', lat: 0, lon: 0 }))
+      .filter(l => l.id > 0);
   }
+
+  const data = await pmFetch<{ locations?: PmLocation[] }>('/locations.json', {
+    by_location_name: q,
+    no_details: 1,
+  });
+  return data.locations ?? [];
+}
+
+export async function getPmLocation(pmLocationId: number): Promise<PmLocation | null> {
+  const data = await pmFetch<PmLocation & { errors?: string }>(`/locations/${pmLocationId}.json`, { metadata_only: 1 });
+  if (!data || (data as any).errors || !data.id) return null;
+  return data;
+}
+
+// Reads name/manufacturer/year straight off the location show endpoint's embedded LMX list. Pinball
+// Map's own guidance singles out per-record fan-out as the thing that gets apps blocked, and the
+// show payload already carries everything the old two-call version fetched separately.
+function readXrefs(locData: any): PmLocationMachineXref[] {
+  const xrefs = locData?.location_machine_xrefs ?? [];
+  return xrefs
+    .map((x: any) => {
+      const machine = x.machine ?? {};
+      const name = machine.name ?? x.machine_name ?? x.name;
+      if (!name) return null;
+      return {
+        id: x.id ?? 0,
+        machine: {
+          id: machine.id ?? x.machine_id ?? 0,
+          name,
+          manufacturer: machine.manufacturer ?? x.machine_manufacturer ?? undefined,
+          year: machine.year ?? x.machine_year ?? undefined,
+        },
+      } as PmLocationMachineXref;
+    })
+    .filter(Boolean) as PmLocationMachineXref[];
+}
+
+export async function getPmMachinesAtLocation(pmLocationId: number): Promise<PmLocationMachineXref[]> {
+  const locData = await pmFetch<any>(`/locations/${pmLocationId}.json`);
+  const xrefs = readXrefs(locData);
+  if (xrefs.length > 0) return xrefs;
+
+  // Defensive second pass: if the show endpoint ever stops embedding machine names, fall back to the
+  // dedicated endpoint rather than silently reporting the location as having no machines.
+  const details = await pmFetch<{ machines?: PmMachine[] }>(`/locations/${pmLocationId}/machine_details.json`);
+  const machines = details.machines ?? [];
+  if (machines.length === 0) return [];
+
+  const xrefMap = new Map<number, number>();
+  for (const x of locData?.location_machine_xrefs ?? []) {
+    if (x.machine_id != null) xrefMap.set(x.machine_id, x.id);
+  }
+  return machines.map(m => ({ id: xrefMap.get(m.id) ?? 0, machine: m }));
 }
 
 export async function getPmUserToken(email: string, password: string): Promise<{ token: string; username: string } | null> {
   try {
-    const url = `${PM_BASE}/users/auth_details.json?login=${encodeURIComponent(email)}&password=${encodeURIComponent(password)}`;
-    const res = await fetch(url, { headers: { Accept: 'application/json' } });
-    if (!res.ok) return null;
-    const data = await res.json();
+    const data = await pmFetch<{ authentication_token?: string; username?: string }>('/users/auth_details.json', {
+      login: email,
+      password,
+    });
     if (!data.authentication_token) return null;
     return { token: data.authentication_token, username: data.username ?? '' };
   } catch {
@@ -78,8 +185,11 @@ export async function getPmUserToken(email: string, password: string): Promise<{
 }
 
 export async function submitPmScore(userToken: string, locationMachineXrefId: number, score: number): Promise<boolean> {
+  if (!PM_API_TOKEN) return false;
   try {
-    const res = await fetch(`${PM_BASE}/machine_score_xrefs.json`, {
+    const url = new URL(`${PM_BASE}/machine_score_xrefs.json`);
+    url.searchParams.set('api_token', PM_API_TOKEN);
+    const res = await fetch(url.toString(), {
       method: 'POST',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
       body: JSON.stringify({ user_token: userToken, location_machine_xref_id: locationMachineXrefId, score }),

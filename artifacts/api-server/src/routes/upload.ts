@@ -147,7 +147,12 @@ router.post('/', requireAuth, upload.single('photo'), async (req, res) => {
       const [history, here, pmLocations] = await Promise.all([
         getHistoryVenues(gps.latitude, gps.longitude, requesterUserId, isAdmin),
         getNearbyVenues(gps.latitude, gps.longitude),
-        findNearestPmLocations(gps.latitude, gps.longitude),
+        // Venue suggestions are the point of this call; Pinball Map ids are a bonus on top. If PM is
+        // down or the api_token is missing, the user should still get their venue list.
+        findNearestPmLocations(gps.latitude, gps.longitude).catch(err => {
+          console.error('Pinball Map lookup failed during upload:', err?.message ?? err);
+          return [] as PmLocation[];
+        }),
       ]);
 
       // History venues first; de-duplicate HERE results by hereId and name
