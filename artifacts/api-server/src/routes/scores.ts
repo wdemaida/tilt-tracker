@@ -158,7 +158,7 @@ router.post('/', requireAppUser, async (req, res) => {
 router.patch('/:id', requireAppUser, async (req, res) => {
   const appUser = (req as any).appUser;
   const id = Number(req.params.id);
-  const { score, type, playedAt, machineId } = req.body;
+  const { score, type, playedAt, machineId, venueId } = req.body;
 
   const [existing] = await db.select().from(scores).where(eq(scores.id, id)).limit(1);
   if (!existing) return res.status(404).json({ error: 'Score not found' });
@@ -171,6 +171,22 @@ router.patch('/:id', requireAppUser, async (req, res) => {
   if (type !== undefined) updates.type = type;
   if (playedAt !== undefined) updates.playedAt = new Date(playedAt);
   if (machineId !== undefined) updates.machineId = Number(machineId);
+
+  // Attaching a venue after the fact. The upload flow lets you skip the venue step (and used to be
+  // the only way to set one), which left those scores permanently unlinkable — no venue means no
+  // Pinball Map roster, so the machine can never be verified either.
+  if (venueId !== undefined) {
+    if (venueId === null) {
+      updates.venueId = null;
+      updates.venueName = null;
+    } else {
+      const [venue] = await db.select().from(venues).where(eq(venues.id, Number(venueId))).limit(1);
+      if (!venue) return res.status(400).json({ error: 'Venue not found' });
+      updates.venueId = venue.id;
+      // venueName is a denormalized snapshot the score list renders directly — keep it in step.
+      updates.venueName = venue.name;
+    }
+  }
 
   const [updated] = await db.update(scores).set(updates).where(eq(scores.id, id)).returning();
   res.json(updated);

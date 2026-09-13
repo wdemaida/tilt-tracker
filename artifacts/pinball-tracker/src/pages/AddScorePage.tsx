@@ -8,6 +8,7 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import { useApi } from '../lib/useApi';
 import { queryClient } from '../lib/queryClient';
 import { PinballIcon } from '../components/PinballIcon';
+import { toLocalInput, localInputToIso, naiveToLocalInput } from '../lib/datetime';
 import { isHeicFile, convertHeicClientSide } from '../lib/heicClientConvert';
 
 const schema = z.object({
@@ -231,7 +232,8 @@ export default function AddScorePage() {
 
   const { register, handleSubmit, setValue, watch, formState: { errors, isSubmitting } } = useForm<FormData>({
     resolver: zodResolver(schema),
-    defaultValues: { type: 'casual', playedAt: new Date().toISOString().slice(0, 16) },
+    // Local wall clock, not UTC — see datetime.ts for why toISOString() is wrong here.
+    defaultValues: { type: 'casual', playedAt: toLocalInput(new Date()) },
   });
 
   const venueName = watch('venueName');
@@ -247,6 +249,8 @@ export default function AddScorePage() {
       const machine = await api.machines.upsert({ name: data.machineName, ...selectedMachineExtra });
       return api.scores.create({
         ...data,
+        // The form holds a local wall clock; the API stores instants.
+        playedAt: localInputToIso(data.playedAt),
         machineId: machine.id,
         ...gps,
         venueId: selectedVenue?.venueId,
@@ -316,7 +320,8 @@ export default function AddScorePage() {
         setValue('score', result.score);
         setScoreDisplay(Number(result.score).toLocaleString());
       }
-      if (result.playedAt) setValue('playedAt', new Date(result.playedAt).toISOString().slice(0, 16));
+      // Already a zone-less camera wall clock — the input wants it verbatim, not round-tripped.
+      if (result.playedAt) setValue('playedAt', naiveToLocalInput(result.playedAt));
       if (result.latitude != null && result.longitude != null) {
         setGps({ latitude: result.latitude, longitude: result.longitude });
       }

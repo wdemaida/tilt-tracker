@@ -24,7 +24,8 @@ export function createApi(getToken: () => Promise<string | null>) {
         request<any[]>(mine ? '/scores?mine=true' : '/scores', undefined, mine ? await tok() : undefined),
       create: async (body: Record<string, unknown>) =>
         request<any>('/scores', { method: 'POST', body: JSON.stringify(body) }, await tok()),
-      patch: async (id: number, body: { score?: number; type?: string; playedAt?: string }) =>
+      // `venueId` attaches a venue to a score that was logged without one — see ScoreVenuePicker.
+      patch: async (id: number, body: { score?: number; type?: string; playedAt?: string; machineId?: number; venueId?: number | null }) =>
         request(`/scores/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, await tok()),
       delete: async (id: number) =>
         request(`/scores/${id}`, { method: 'DELETE' }, await tok()),

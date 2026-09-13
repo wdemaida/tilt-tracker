@@ -24,6 +24,13 @@ export interface HeicConvertResult {
   exifDatetime: string | null;
 }
 
+const pad = (n: number) => String(n).padStart(2, '0');
+
+function toNaiveLocal(dt: Date): string {
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}` +
+    `T${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
+}
+
 export function isHeicFile(file: File): boolean {
   return file.type === 'image/heic' || file.type === 'image/heif' || file.name.toLowerCase().endsWith('.heic');
 }
@@ -46,7 +53,11 @@ export async function convertHeicClientSide(file: File): Promise<HeicConvertResu
       filename: file.name.replace(/\.(heic|heif)$/i, '.jpg'),
       latitude: gps?.latitude ?? null,
       longitude: gps?.longitude ?? null,
-      exifDatetime: tags?.DateTimeOriginal instanceof Date ? tags.DateTimeOriginal.toISOString() : null,
+      // Zone-less wall clock, matching what the server's own EXIF path returns. exifr builds this
+      // Date by reading the camera's naive digits in *this* machine's timezone, so the local getters
+      // are the only way back to the digits themselves — `toISOString()` would bake the browser's
+      // offset in and make the two upload paths disagree.
+      exifDatetime: tags?.DateTimeOriginal instanceof Date ? toNaiveLocal(tags.DateTimeOriginal) : null,
     };
   } catch {
     return null;

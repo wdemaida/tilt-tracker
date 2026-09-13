@@ -47,6 +47,18 @@
 - Use **`exifr`** (not `exifreader`) for GPS from iPhone HEIC files: `await Exifr.gps(buffer)`.
 - Extract GPS from the **original buffer before HEIC→JPEG conversion** — conversion strips EXIF.
 - `playedAt` uses `DateTimeOriginal` from EXIF; AI result is fallback only.
+- **EXIF timestamps are naive wall clocks and must stay that way through the response.** exifr builds
+  its `Date` by reading the camera's zone-less digits in the *host's* timezone, so `toISOString()`
+  relabels them with the host's offset — on Render (UTC) a 6:01pm Chicago photo was stored as
+  `18:01Z` and every score card rendered five hours early. `toNaiveLocal()` in `upload.ts` reads the
+  components back out with the local getters, and the route returns `playedAt` as a zone-less
+  `YYYY-MM-DDTHH:mm:ss`. The **browser** turns it into an instant against the viewer's timezone (see
+  `src/lib/datetime.ts` on the frontend) — never call `new Date()` on that value server-side.
+- **`scores.played_at` / `created_at` are `timestamp WITHOUT time zone`.** Prod is only self-consistent
+  because Render runs in UTC; a score written by a locally-run api-server stores an ET wall clock into
+  the same column. Migrating both to `timestamptz` is the real fix, not yet done. When querying them
+  for debugging, select `::text` — postgres.js parses them into a Date in *your* zone, so
+  `new Date(row.created_at).toISOString()` prints times that don't match the column.
 
 ## Venue machine history (`venue_machine_history` table, added 2026-07-01)
 - Tracks which machines have been at a venue over time, since operators rotate inventory and Pinball Map only exposes each location's *current* roster (no history via their public API — confirmed empirically: their `user_submissions.json` activity feed is capped at the most recent ~200 events per region, non-paginated, no location filter, so anything older scrolls off with no way to page back).

@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { MapPin, Link2, Check, AlertTriangle, Minus, ExternalLink, Search } from 'lucide-react';
+import { MapPin, Link2, Check, AlertTriangle, Minus, ExternalLink, Search, ChevronDown } from 'lucide-react';
 import { useApi } from '../lib/useApi';
 
 // The HERE and Pinball Map linking steps, shared by the venue page's repair panel and the
@@ -166,6 +166,56 @@ export function SectionHeading({ icon, title, done, detail }: { icon: React.Reac
   );
 }
 
+/**
+ * A step that folds itself away once it's satisfied. Three stacked steps is a lot of panel for
+ * something that is usually already correct — collapsing the settled ones leaves only the step that
+ * still wants attention open, while the heading keeps showing its status so nothing is hidden.
+ *
+ * `done` drives the state rather than just seeding it: linking Pinball Map should close that step
+ * then and there, and un-linking should bring it back, without the reader hunting for the chevron.
+ */
+export function CollapsibleSection({
+  icon, title, done, detail, children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  done: boolean;
+  detail: string;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(!done);
+  const lastDone = useRef(done);
+  useEffect(() => {
+    if (done !== lastDone.current) {
+      lastDone.current = done;
+      setOpen(!done);
+    }
+  }, [done]);
+
+  return (
+    <section>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        className="w-full flex items-center justify-between gap-3 mb-2 group"
+      >
+        <span className="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-white">
+          {icon}
+          {title}
+        </span>
+        <span className="flex items-center gap-1.5 flex-shrink-0">
+          <span className={`text-xs font-bold ${done ? 'text-primary' : 'text-muted-foreground'}`}>{detail}</span>
+          <ChevronDown
+            className={`w-3.5 h-3.5 text-muted-foreground group-hover:text-white transition-all ${open ? 'rotate-180' : ''}`}
+          />
+        </span>
+      </button>
+      {open && children}
+    </section>
+  );
+}
+
 export function NoticeBanner({ notice }: { notice: Notice }) {
   if (!notice) return null;
   return (
@@ -197,13 +247,12 @@ export default function VenueLinkageSteps({ status, actions }: { status: Linkage
   return (
     <>
       {/* Step 1 — HERE */}
-      <section>
-        <SectionHeading
-          icon={<MapPin className="w-4 h-4" />}
-          title="1 · Resolve in HERE"
-          done={hereDone}
-          detail={hereDone ? 'Linked' : status.address ? 'Optional — not linked' : 'Add an address first'}
-        />
+      <CollapsibleSection
+        icon={<MapPin className="w-4 h-4" />}
+        title="1 · Resolve in HERE"
+        done={hereDone}
+        detail={hereDone ? 'Linked' : status.address ? 'Optional — not linked' : 'Add an address first'}
+      >
         <p className="text-xs text-muted-foreground mb-3">
           {status.address ?? 'This venue has no address yet — edit it and add one, then run this.'}
           {!hereDone && status.address && (
@@ -239,16 +288,15 @@ export default function VenueLinkageSteps({ status, actions }: { status: Linkage
             ))}
           </ul>
         )}
-      </section>
+      </CollapsibleSection>
 
       {/* Step 2 — Pinball Map */}
-      <section>
-        <SectionHeading
-          icon={<Link2 className="w-4 h-4" />}
-          title="2 · Link Pinball Map"
-          done={pmDone}
-          detail={pmDone ? `#${status.pinballMapId}` : 'Not linked'}
-        />
+      <CollapsibleSection
+        icon={<Link2 className="w-4 h-4" />}
+        title="2 · Link Pinball Map"
+        done={pmDone}
+        detail={pmDone ? `#${status.pinballMapId}` : 'Not linked'}
+      >
 
         {pmDone && status.pmLocationUrl && (
           <a
@@ -341,7 +389,7 @@ export default function VenueLinkageSteps({ status, actions }: { status: Linkage
             <DisabledReason show={!status.pmConfigured} />
           </div>
         </details>
-      </section>
+      </CollapsibleSection>
     </>
   );
 }

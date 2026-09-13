@@ -32,3 +32,20 @@
   read-only with a pointer to the venue page, instead of buttons that would 403.
 - The edit modal is `max-h-[90vh] overflow-y-auto` — the repair section can make it taller than a
   phone viewport.
+- Each step is a `CollapsibleSection` whose open state is **driven by** its `done` flag, not merely
+  seeded from it: linking Pinball Map folds that step away immediately, and un-linking reopens it.
+  Three stacked steps is too much panel for a venue that's already correct.
+- Step 3's icon is `PinballIcon`, the same flippers used for machines everywhere else — not a
+  lucide game controller. It's an `<img>` forced white by a CSS filter, so `text-*` classes don't
+  tint it; size it with `w-4 h-4` and let it sit on the white heading text.
+- **A score with no venue renders `ScoreVenuePicker`, not `ScoreRepairSection`.** No venue means no
+  Pinball Map location, so the machine can never be verified — the picker (search existing, or add a
+  new venue inline) is what unblocks the rest. It `PATCH`es `venueId` immediately rather than waiting
+  for the modal's Save, matching how every other control in the repair UI behaves.
+
+## Date & time inputs
+- Always convert through `src/lib/datetime.ts`. `new Date(iso).toISOString().slice(0, 16)` looks
+  right for a `datetime-local` input and is wrong — it writes **UTC** into a field the browser reads
+  as **local**, so the edit modal and the score card disagreed by the viewer's offset and saving
+  wrote that shift back to the database. `toLocalInput` / `localInputToIso` are the round trip;
+  `naiveToLocalInput` is for the zone-less wall clock `/api/upload` returns for EXIF timestamps.

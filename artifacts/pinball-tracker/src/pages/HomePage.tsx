@@ -11,6 +11,8 @@ import { ScopeToggle } from '../components/ScopeToggle';
 import { queryClient } from '../lib/queryClient';
 import ScoreCard from '../components/ScoreCard';
 import ScoreRepairSection from '../components/ScoreRepairSection';
+import ScoreVenuePicker from '../components/ScoreVenuePicker';
+import { toLocalInput, localInputToIso } from '../lib/datetime';
 
 type Filter = 'all' | 'casual' | 'tournament';
 
@@ -100,7 +102,7 @@ export default function HomePage() {
     });
     setEditScoreVal(Number(s.score).toLocaleString());
     setEditType(s.type);
-    setEditPlayedAt(new Date(s.playedAt).toISOString().slice(0, 16));
+    setEditPlayedAt(toLocalInput(s.playedAt));
     setEditMachineSearch(s.machineName);
   }
 
@@ -116,7 +118,7 @@ export default function HomePage() {
       body: {
         score: Number(editScoreVal.replace(/,/g, '')),
         type: editType,
-        playedAt: editPlayedAt,
+        playedAt: localInputToIso(editPlayedAt),
         ...(resolvedMachineId !== editScore.machineId && { machineId: resolvedMachineId }),
       },
     });
@@ -283,9 +285,13 @@ export default function HomePage() {
                       onMachineRepaired={name => setEditMachineSearch(name)}
                     />
                   ) : (
-                    <p className="text-sm text-muted-foreground rounded-lg border border-white/10 bg-background px-3 py-2">
-                      {editScore.venueName ?? 'No venue recorded'}
-                    </p>
+                    <ScoreVenuePicker
+                      scoreId={editScore.id}
+                      venueNameSnapshot={editScore.venueName}
+                      onAttached={venue =>
+                        setEditScore(prev => (prev ? { ...prev, venueId: venue.id, venueName: venue.name } : prev))
+                      }
+                    />
                   )}
                 </div>
               )}

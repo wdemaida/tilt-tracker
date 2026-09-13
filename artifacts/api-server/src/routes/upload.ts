@@ -25,11 +25,40 @@ async function extractGps(buffer: Buffer): Promise<{ latitude: number; longitude
   }
 }
 
+const pad = (n: number) => String(n).padStart(2, '0');
+
+/**
+ * EXIF `DateTimeOriginal` is a *naive* wall clock — "2026:09:10 22:01:00", with no timezone. exifr
+ * turns that into a Date by interpreting those digits in the **host's** timezone, so the instant it
+ * produces is only meaningful if the host happens to share the camera's zone. Render runs in UTC, so
+ * `toISOString()` here used to stamp a Chicago photo taken at 10:01pm as 22:01Z and every score card
+ * rendered it five hours early.
+ *
+ * Reading the components back out through the local getters undoes exifr's assumption exactly,
+ * whatever the host zone is, and hands the browser the wall clock the camera actually recorded. The
+ * browser then interprets it in the *viewer's* zone on submit — see `datetime.ts` on the frontend.
+ * That's an assumption (the uploader is in the photo's timezone), but it's right for anyone logging
+ * a score on the trip they took it, and EXIF gives us nothing better to work from.
+ */
+function toNaiveLocal(dt: Date): string {
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}` +
+    `T${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
+}
+
+/** Coerces whatever the AI read off the score screen into the same zone-less shape. */
+function normalizeNaiveDatetime(value: string | null): string | null {
+  if (!value) return null;
+  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?/);
+  return m ? `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6] ?? '00'}` : null;
+}
+
 async function extractExifDatetime(buffer: Buffer): Promise<string | null> {
   try {
-    const tags = await Exifr.parse(buffer, { DateTimeOriginal: true });
+    // `pick` is exifr's documented tag filter — `{ DateTimeOriginal: true }` happened to work but
+    // isn't in its Options type, and this matches the client-side path in heicClientConvert.ts.
+    const tags = await Exifr.parse(buffer, { pick: ['DateTimeOriginal'] });
     const dt = tags?.DateTimeOriginal;
-    return dt instanceof Date ? dt.toISOString() : null;
+    return dt instanceof Date && !Number.isNaN(dt.getTime()) ? toNaiveLocal(dt) : null;
   } catch {
     return null;
   }
@@ -99,7 +128,11 @@ router.post('/', requireAuth, upload.single('photo'), async (req, res) => {
     // when absent — non-HEIC uploads, or the client's conversion attempt failed.
     const clientLat = req.body.latitude != null ? Number(req.body.latitude) : null;
     const clientLng = req.body.longitude != null ? Number(req.body.longitude) : null;
-    const clientExifDatetime = typeof req.body.exifDatetime === 'string' ? req.body.exifDatetime : null;
+    // The client sends the same zone-less shape `toNaiveLocal` produces (heicClientConvert.ts), but
+    // normalize anyway so a stale client can't reintroduce a `Z` the frontend would misread.
+    const clientExifDatetime = normalizeNaiveDatetime(
+      typeof req.body.exifDatetime === 'string' ? req.body.exifDatetime : null
+    );
     const hasClientGps = clientLat != null && !Number.isNaN(clientLat) && clientLng != null && !Number.isNaN(clientLng);
 
     const [serverGps, serverExifDatetime] = await Promise.all([
@@ -169,7 +202,9 @@ router.post('/', requireAuth, upload.single('photo'), async (req, res) => {
     res.json({
       machineName: extracted.machineName,
       score: extracted.score,
-      playedAt: exifDatetime ?? extracted.playedAt,
+      // Zone-less wall clock ("2026-09-10T22:01:00") — see toNaiveLocal. The browser resolves it
+      // against the viewer's timezone; do not hand this to `new Date()` on the server.
+      playedAt: exifDatetime ?? normalizeNaiveDatetime(extracted.playedAt),
       latitude: gps?.latitude ?? null,
       longitude: gps?.longitude ?? null,
       venues: venueList,

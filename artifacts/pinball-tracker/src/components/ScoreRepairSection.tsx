@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'wouter';
-import { MapPin, ChevronDown, Gamepad2, AlertTriangle, ArrowRight, ExternalLink } from 'lucide-react';
+import { MapPin, ChevronDown, AlertTriangle, ArrowRight, ExternalLink } from 'lucide-react';
 import { useApi } from '../lib/useApi';
 import VenueLinkageSteps, {
-  useVenueLinkageActions, StatusChip, SectionHeading, NoticeBanner, PmNotConfiguredWarning,
+  useVenueLinkageActions, StatusChip, CollapsibleSection, NoticeBanner, PmNotConfiguredWarning,
   type LinkageView,
 } from './VenueLinkageSteps';
+import { PinballIcon } from './PinballIcon';
 
 interface Suggestion {
   pmName: string;
@@ -89,7 +90,8 @@ export default function ScoreRepairSection({ scoreId, onMachineRepaired }: Props
   // Gating this on HERE too would lock the step on the 30 seed-script venues that match fine.
   const canMatchMachine = pmDone;
 
-  // A score with no venue record at all can't be repaired from here — there's nothing to link.
+  // Defensive only: the edit modal renders ScoreVenuePicker instead of this component when the score
+  // has no venue, so this is reached only if the venue vanished between the list load and this fetch.
   if (!status.venue) {
     return (
       <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5">
@@ -98,7 +100,7 @@ export default function ScoreRepairSection({ scoreId, onMachineRepaired }: Props
           <span>
             No venue is attached to this score
             {status.venueNameSnapshot ? ` (it was logged as "${status.venueNameSnapshot}")` : ''}.
-            Re-upload the photo to attach one.
+            Close and reopen this score to attach one.
           </span>
         </p>
       </div>
@@ -176,19 +178,17 @@ export default function ScoreRepairSection({ scoreId, onMachineRepaired }: Props
           )}
 
           {/* Step 3 — fix this one score's machine. Gated on the venue being fully resolved. */}
-          <section>
-            <SectionHeading
-              icon={<Gamepad2 className="w-4 h-4" />}
-              title="3 · Fix this machine"
-              done={machineLooksRight}
-              detail={
-                !canMatchMachine ? 'Locked'
-                  : status.pmError ? 'Pinball Map unreachable'
-                  : machineLooksRight ? 'Matches Pinball Map'
-                  : `${status.rosterCount} machines here`
-              }
-            />
-
+          <CollapsibleSection
+            icon={<PinballIcon className="w-4 h-4" />}
+            title="3 · Fix this machine"
+            done={machineLooksRight}
+            detail={
+              !canMatchMachine ? 'Locked'
+                : status.pmError ? 'Pinball Map unreachable'
+                : machineLooksRight ? 'Matches Pinball Map'
+                : `${status.rosterCount} machines here`
+            }
+          >
             {!canMatchMachine ? (
               <p className="text-xs text-muted-foreground">
                 Link Pinball Map first — the machine can only be checked against a venue Pinball Map
@@ -273,7 +273,7 @@ export default function ScoreRepairSection({ scoreId, onMachineRepaired }: Props
                 )}
               </>
             )}
-          </section>
+          </CollapsibleSection>
         </div>
       )}
     </div>

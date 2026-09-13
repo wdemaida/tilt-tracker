@@ -4,7 +4,7 @@ import { Wrench, RefreshCw, ChevronDown } from 'lucide-react';
 import { useApi } from '../lib/useApi';
 import ScoreResyncModal from './ScoreResyncModal';
 import VenueLinkageSteps, {
-  useVenueLinkageActions, StatusChip, SectionHeading, NoticeBanner, PmNotConfiguredWarning,
+  useVenueLinkageActions, StatusChip, CollapsibleSection, NoticeBanner, PmNotConfiguredWarning,
   type LinkageView,
 } from './VenueLinkageSteps';
 
@@ -83,14 +83,14 @@ export default function VenueRepairPanel({ venueId }: { venueId: number }) {
 
           <VenueLinkageSteps status={linkage} actions={actions} />
 
-          {/* Step 3 — bulk re-sync, the venue-page-specific action */}
-          <section>
-            <SectionHeading
-              icon={<RefreshCw className="w-4 h-4" />}
-              title="3 · Re-sync scores"
-              done={false}
-              detail={`${resyncScope} score${resyncScope === 1 ? '' : 's'} ${status.isAdmin ? 'at this venue' : 'of yours here'}`}
-            />
+          {/* Step 3 — bulk re-sync, the venue-page-specific action. No "done" state to collapse on —
+              a re-sync is always available — but it stays collapsible to match the steps above. */}
+          <CollapsibleSection
+            icon={<RefreshCw className="w-4 h-4" />}
+            title="3 · Re-sync scores"
+            done={false}
+            detail={`${resyncScope} score${resyncScope === 1 ? '' : 's'} ${status.isAdmin ? 'at this venue' : 'of yours here'}`}
+          >
             <p className="text-xs text-muted-foreground mb-3">
               Matches each score's machine against Pinball Map's roster for this location and fills in
               manufacturer and year. You approve every rename before anything changes.
@@ -105,7 +105,7 @@ export default function VenueRepairPanel({ venueId }: { venueId: number }) {
             {!pmDone && (
               <p className="text-xs text-muted-foreground mt-2">Link Pinball Map first.</p>
             )}
-          </section>
+          </CollapsibleSection>
         </div>
       )}
 
