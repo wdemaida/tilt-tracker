@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db, users, scores, machines, venues } from '@workspace/db';
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, sql } from 'drizzle-orm';
 import { getAuth } from '@clerk/express';
 import { requireAuth } from '../middleware/requireAuth.js';
 
@@ -56,6 +56,10 @@ router.get('/:username', async (req, res) => {
         playedAt: scores.playedAt,
         type: scores.type,
         venueName: scores.venueName,
+        // Withheld for hidden-tier venues, matching redactVenue. Done in SQL because this route has
+        // no requester plumbing; the owner therefore falls back to their own clock here, which reads
+        // the same unless they're travelling.
+        venueTimezone: sql<string | null>`CASE WHEN ${venues.privacyTier} = 'hidden' THEN NULL ELSE ${venues.timezone} END`,
         venueIsResidence: venues.isResidence,
         photoUrl: scores.photoUrl,
         machineName: machines.name,

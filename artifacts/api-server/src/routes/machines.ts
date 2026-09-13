@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db, machines, scores, users, venues } from '@workspace/db';
-import { eq, desc, max, count, isNotNull } from 'drizzle-orm';
+import { eq, desc, max, count, isNotNull, sql } from 'drizzle-orm';
 import { searchMachines } from '../lib/pinballMap.js';
 import { upsertMachineByName } from '../lib/machineUpsert.js';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
@@ -84,6 +84,7 @@ router.get('/:name', async (req, res) => {
         type: scores.type,
         venueId: scores.venueId,
         venueName: scores.venueName,
+        venueTimezone: sql<string | null>`CASE WHEN ${venues.privacyTier} = 'hidden' THEN NULL ELSE ${venues.timezone} END`,
         venueIsResidence: venues.isResidence,
         photoUrl: scores.photoUrl,
         username: users.username,

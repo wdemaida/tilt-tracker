@@ -6,6 +6,7 @@ import {
   ChevronUp, ChevronDown, TrendingUp, Users, ChevronDown as ChevronDownSmall,
 } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
+import { formatScoreTime } from '../lib/scoreTime';
 import {
   ComposedChart, LineChart, Line, Scatter, XAxis, YAxis,
   CartesianGrid, Tooltip, ResponsiveContainer,
@@ -269,7 +270,7 @@ function ScatterTooltip({ active, payload }: any) {
   return (
     <div className="rounded-lg border border-white/20 bg-zinc-900/95 p-2.5 text-xs shadow-xl">
       <p className="font-bold text-primary">{Number(d.y).toLocaleString()}</p>
-      {d.playedAt && <p className="text-muted-foreground">{format(new Date(d.playedAt), 'MMM d, yyyy · h:mm a')}</p>}
+      {d.playedAt && <p className="text-muted-foreground">{formatScoreTime(d.playedAt, d.venueTimezone, 'MMM d, yyyy · h:mm a')}</p>}
       {d.venue    && <p className="text-venue">{d.venue}</p>}
       {d.username && <p className="text-username">@{d.username}</p>}
     </div>
@@ -531,7 +532,7 @@ export default function MachinePage() {
             <p className="text-3xl font-black text-primary">{Number(best.score).toLocaleString()}</p>
             <p className="text-xs text-muted-foreground mt-1">
               <Link href={`/users/${best.username}`} className="text-username hover:text-username/80 transition-colors">@{best.username}</Link>
-              {' · '}{format(new Date(best.playedAt), 'MMM d, yyyy')}
+              {' · '}{formatScoreTime(best.playedAt, best.venueTimezone, 'MMM d, yyyy')}
               {best.venueName && <> · <span className="text-venue">{best.venueName}</span></>}
             </p>
           </div>
@@ -778,8 +779,8 @@ export default function MachinePage() {
                 <td className="px-3 py-3">
                   <div>
                     <p className="font-semibold text-white">
-                      {format(new Date(s.playedAt), 'MMM d, yyyy')}
-                      <span className="text-muted-foreground ml-2">{format(new Date(s.playedAt), 'h:mm a')}</span>
+                      {formatScoreTime(s.playedAt, s.venueTimezone, 'MMM d, yyyy')}
+                      <span className="text-muted-foreground ml-2">{formatScoreTime(s.playedAt, s.venueTimezone, 'h:mm a')}</span>
                       {s.id === best?.id && <span className="ml-2 text-xs font-bold bg-primary text-white px-1.5 py-0.5 rounded">BEST</span>}
                     </p>
                     {s.venueName && (

@@ -6,7 +6,7 @@ import {
   pmLocationUrl, isPmConfigured, PmApiError, type PmLocation,
 } from '../lib/pinballmapApi.js';
 import { syncVenueMachineHistory, getFormerMachines } from '../lib/venueHistory.js';
-import { geocodeAddress, autosuggestAddress, findVenueByName } from '../lib/hereApi.js';
+import { geocodeAddress, autosuggestAddress, findVenueByName, resolveTimezone } from '../lib/hereApi.js';
 import { redactVenue, canSeeFullVenue } from '../lib/venuePrivacy.js';
 import { canRepairVenue, buildResyncPreview, applyResync, reenrichMachines } from '../lib/venueRepair.js';
 import { getVenueRoster } from '../lib/pmRosterCache.js';
@@ -58,6 +58,7 @@ router.get('/', async (req, res) => {
         state: venues.state,
         cityLat: venues.cityLat,
         cityLng: venues.cityLng,
+        timezone: venues.timezone,
         scoreCount: count(scores.id),
         machineCount: sql<number>`count(distinct ${scores.machineId})`,
         // When anyone last *played* here, not when the score was uploaded — a batch of old photos
@@ -145,6 +146,8 @@ router.post('/', requireAppUser, async (req, res) => {
       latitude: geocoded?.lat ?? null,
       longitude: geocoded?.lng ?? null,
       hereId,
+      // Scores here render in this zone, and an uploaded photo's zone-less EXIF clock is read in it.
+      timezone: geocoded?.timezone ?? null,
       city: geocoded?.city ?? null,
       state: geocoded?.state ?? null,
       cityLat,
@@ -516,6 +519,7 @@ router.post('/:id/repair/here', requireAppUser, async (req, res) => {
       updates.longitude = geocoded.lng;
       updates.city = geocoded.city;
       updates.state = geocoded.state;
+      if (geocoded.timezone) updates.timezone = geocoded.timezone;
     }
 
     // Auto-attach only on an unambiguous hit: a single nearby POI, or a clear closest match whose
@@ -536,6 +540,7 @@ router.post('/:id/repair/here', requireAppUser, async (req, res) => {
         updates.hereId = best.hereId;
         if (best.venueLat != null) updates.latitude = best.venueLat;
         if (best.venueLng != null) updates.longitude = best.venueLng;
+        if (best.timezone) updates.timezone = best.timezone;
         attached = best;
       }
     }
@@ -572,6 +577,15 @@ router.post('/:id/repair/here/attach', requireAppUser, async (req, res) => {
   const updates: Record<string, any> = { hereId };
   if (typeof req.body.latitude === 'number') updates.latitude = req.body.latitude;
   if (typeof req.body.longitude === 'number') updates.longitude = req.body.longitude;
+
+  // Attaching can move the venue, and it's the one place a venue gets coordinates without a geocode
+  // to carry the zone along. Resolve from the final position rather than trusting the client.
+  const lat = updates.latitude ?? venue.latitude;
+  const lng = updates.longitude ?? venue.longitude;
+  if (lat != null && lng != null) {
+    const tz = await resolveTimezone(lat, lng);
+    if (tz) updates.timezone = tz;
+  }
 
   const [updated] = await db.update(venues).set(updates).where(eq(venues.id, venue.id)).returning();
   res.json(toPublicVenue(redactVenue(updated, appUser.id, appUser.role === 'admin')));

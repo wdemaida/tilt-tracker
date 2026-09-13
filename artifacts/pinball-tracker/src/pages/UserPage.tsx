@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { useParams, Link } from 'wouter';
 import { User, MapPin, Clock, Home } from 'lucide-react';
-import { format } from 'date-fns';
+import { formatScoreTime } from '../lib/scoreTime';
 import { api } from '../lib/api';
 
 export default function UserPage() {
@@ -50,7 +50,7 @@ export default function UserPage() {
                 </Link>
               </div>
               <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{format(new Date(s.playedAt), 'MMM d, yyyy · h:mm a')}</span>
+                <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{formatScoreTime(s.playedAt, s.venueTimezone, 'MMM d, yyyy · h:mm a')}</span>
                 {s.venueName && <span className="flex items-center gap-1"><MapPin className="w-3 h-3" />{s.venueName}{s.venueIsResidence && <Home className="w-3 h-3" />}</span>}
               </div>
             </div>

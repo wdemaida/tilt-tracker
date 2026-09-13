@@ -10,6 +10,8 @@ export interface Venue {
   venueLat?: number;
   venueLng?: number;
   pinballMapId?: number;
+  /** IANA zone name, e.g. "America/Chicago". See SHOW_TZ below. */
+  timezone?: string | null;
 }
 
 export interface GeocodeResult {
@@ -18,7 +20,21 @@ export interface GeocodeResult {
   city: string | null;
   state: string | null;
   label: string;
+  /** IANA zone name, e.g. "America/Chicago". See SHOW_TZ below. */
+  timezone: string | null;
 }
+
+/**
+ * HERE reports a place's timezone on every search endpoint, but only when asked. Verified against
+ * geocode, browse, revgeocode and discover — each answers with
+ * `timeZone: { name: "America/Chicago", utcOffset: "-05:00" }`.
+ *
+ * Always read `.name`, never `.utcOffset`: the offset is a snapshot that's wrong for half the year,
+ * while the zone name carries its own DST rules.
+ */
+const SHOW_TZ = 'tz';
+
+interface HereTimeZone { name?: string; utcOffset?: string }
 
 // Resolves a free-text address (e.g. a manually-entered home address) to coordinates + city/state.
 // Distinct from getNearbyVenues (browse endpoint, searches POIs near a point) — this hits HERE's
@@ -29,6 +45,7 @@ export async function geocodeAddress(address: string): Promise<GeocodeResult | n
   const url = new URL('https://geocode.search.hereapi.com/v1/geocode');
   url.searchParams.set('q', address);
   url.searchParams.set('limit', '1');
+  url.searchParams.set('show', SHOW_TZ);
   url.searchParams.set('apiKey', HERE_API_KEY);
 
   try {
@@ -38,6 +55,7 @@ export async function geocodeAddress(address: string): Promise<GeocodeResult | n
       items: Array<{
         position: { lat: number; lng: number };
         address: { label: string; city?: string; state?: string };
+        timeZone?: HereTimeZone;
       }>;
     };
     const item = data.items?.[0];
@@ -48,6 +66,7 @@ export async function geocodeAddress(address: string): Promise<GeocodeResult | n
       city: item.address?.city ?? null,
       state: item.address?.state ?? null,
       label: item.address?.label ?? address,
+      timezone: item.timeZone?.name ?? null,
     };
   } catch {
     return null;
@@ -133,6 +152,7 @@ interface HereBrowseItem {
   position?: { lat: number; lng: number };
   address?: { label?: string };
   categories?: Array<{ id?: string; name?: string }>;
+  timeZone?: HereTimeZone;
 }
 
 function toVenue(item: HereBrowseItem): Venue {
@@ -144,7 +164,34 @@ function toVenue(item: HereBrowseItem): Venue {
     source: 'here',
     venueLat: item.position?.lat,
     venueLng: item.position?.lng,
+    timezone: item.timeZone?.name ?? null,
   };
+}
+
+/**
+ * The IANA zone for a point, via reverse geocoding.
+ *
+ * Every other HERE call in this file already carries `show=tz`, so this is only for the cases where
+ * all we have is coordinates: backfilling venues that predate the column, and topping up a venue
+ * whose linkage was repaired by hand. One request, no dependency on the venue having an address.
+ */
+export async function resolveTimezone(lat: number, lng: number): Promise<string | null> {
+  if (!HERE_API_KEY) return null;
+
+  const url = new URL('https://revgeocode.search.hereapi.com/v1/revgeocode');
+  url.searchParams.set('at', `${lat},${lng}`);
+  url.searchParams.set('limit', '1');
+  url.searchParams.set('show', SHOW_TZ);
+  url.searchParams.set('apiKey', HERE_API_KEY);
+
+  try {
+    const res = await fetch(url.toString());
+    if (!res.ok) return null;
+    const data = (await res.json()) as { items?: Array<{ timeZone?: HereTimeZone }> };
+    return data.items?.[0]?.timeZone?.name ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export async function getNearbyVenues(lat: number, lng: number, limit = 8): Promise<Venue[]> {
@@ -157,6 +204,7 @@ export async function getNearbyVenues(lat: number, lng: number, limit = 8): Prom
   // Deliberately over-fetch (100 is HERE's per-page maximum) and narrow to `limit` after re-ranking.
   // This is one request either way, so the only cost is response size.
   url.searchParams.set('limit', '100');
+  url.searchParams.set('show', SHOW_TZ);
   url.searchParams.set('apiKey', HERE_API_KEY);
 
   try {
@@ -184,6 +232,7 @@ export async function findVenueByName(name: string, lat: number, lng: number, li
   url.searchParams.set('q', name);
   url.searchParams.set('at', `${lat},${lng}`);
   url.searchParams.set('limit', String(limit));
+  url.searchParams.set('show', SHOW_TZ);
   url.searchParams.set('apiKey', HERE_API_KEY);
 
   try {

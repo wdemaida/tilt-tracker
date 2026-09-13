@@ -25,6 +25,7 @@ interface EditScore {
   playedAt: string;
   venueId: number | null;
   venueName: string | null;
+  venueTimezone: string | null;
 }
 
 export default function HomePage() {
@@ -99,10 +100,11 @@ export default function HomePage() {
     setEditScore({
       id: s.id, machineId: s.machineId, machineName: s.machineName, score: s.score,
       type: s.type, playedAt: s.playedAt, venueId: s.venueId ?? null, venueName: s.venueName ?? null,
+      venueTimezone: s.venueTimezone ?? null,
     });
     setEditScoreVal(Number(s.score).toLocaleString());
     setEditType(s.type);
-    setEditPlayedAt(toLocalInput(s.playedAt));
+    setEditPlayedAt(toLocalInput(s.playedAt, s.venueTimezone));
     setEditMachineSearch(s.machineName);
   }
 
@@ -118,7 +120,7 @@ export default function HomePage() {
       body: {
         score: Number(editScoreVal.replace(/,/g, '')),
         type: editType,
-        playedAt: localInputToIso(editPlayedAt),
+        playedAt: localInputToIso(editPlayedAt, editScore.venueTimezone),
         ...(resolvedMachineId !== editScore.machineId && { machineId: resolvedMachineId }),
       },
     });
@@ -288,9 +290,12 @@ export default function HomePage() {
                     <ScoreVenuePicker
                       scoreId={editScore.id}
                       venueNameSnapshot={editScore.venueName}
-                      onAttached={venue =>
-                        setEditScore(prev => (prev ? { ...prev, venueId: venue.id, venueName: venue.name } : prev))
-                      }
+                      onAttached={venue => {
+                        setEditScore(prev => (prev
+                          ? { ...prev, venueId: venue.id, venueName: venue.name, venueTimezone: venue.timezone ?? null }
+                          : prev));
+                        setEditPlayedAt(toLocalInput(editScore.playedAt, venue.timezone));
+                      }}
                     />
                   )}
                 </div>

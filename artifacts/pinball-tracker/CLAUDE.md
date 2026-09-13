@@ -53,6 +53,24 @@
 - The API client's thrown error carries the whole payload on `.body`, so `e.body.candidates` is how
   the UI reaches them; `.code` and `.status` are unchanged for existing callers.
 
+## Time zones
+- **A score is displayed on its venue's clock, not the reader's.** `formatScoreTime(playedAt,
+  venueTimezone, fmt)` in `src/lib/scoreTime.ts` is the only sanctioned way to render a `playedAt` —
+  don't reach for bare `format(new Date(...))` again. The property it buys: the time shown equals
+  what the camera recorded, for everyone, forever. Viewer-local rendering made a Friday night in
+  Chicago read an hour late from the east coast and could push a late score onto the wrong date.
+- Falls back to the viewer's zone when `venueTimezone` is null — a score with no venue, or a
+  hidden-tier residence whose zone is redacted with its address.
+- `zoneAbbreviation()` returns a short label ("CDT") **only** when the venue's clock differs from the
+  reader's, so the common case stays uncluttered. It compares rendered labels rather than zone ids,
+  because America/New_York and America/Kentucky/Louisville read identically.
+- `createdAt` ("added: …") stays viewer-local on purpose. That's an event in the reader's own life,
+  not something that happened at the venue.
+- **The edit modal's input must use the same zone as the card.** If the card says 6:01 PM Chicago and
+  the input says 7:01 PM Eastern, correcting a score silently shifts it — that's the bug class this
+  whole area exists to prevent. `toLocalInput`/`localInputToIso` both take an optional zone.
+  Attaching a venue mid-edit re-expresses the field, since the score's clock just changed.
+
 ## Date & time inputs
 - Always convert through `src/lib/datetime.ts`. `new Date(iso).toISOString().slice(0, 16)` looks
   right for a `datetime-local` input and is wrong — it writes **UTC** into a field the browser reads

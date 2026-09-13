@@ -48,6 +48,12 @@ export const venues = pgTable('venues', {
   state: text('state'),
   cityLat: real('city_lat'),
   cityLng: real('city_lng'),
+  // IANA zone name for where this venue physically is ("America/Chicago"), from HERE's `show=tz`.
+  // A score is displayed in its venue's zone so the time always reads as the clock on the wall said
+  // — and, more importantly, the venue's zone is what a photo's zone-less EXIF wall clock gets
+  // interpreted in, which is the only way to store the right instant when you upload after
+  // travelling home. Never store a UTC offset here: an offset is wrong for half the year.
+  timezone: text('timezone'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 

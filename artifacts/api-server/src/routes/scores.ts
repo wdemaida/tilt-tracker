@@ -38,6 +38,8 @@ router.get('/', async (req, res) => {
         type: scores.type,
         venueId: scores.venueId,
         venueName: scores.venueName,
+        // A score is displayed on its venue's clock, not the viewer's — see lib/scoreTime.ts.
+        venueTimezone: venues.timezone,
         latitude: scores.latitude,
         longitude: scores.longitude,
         photoUrl: scores.photoUrl,
@@ -86,7 +88,7 @@ router.get('/', async (req, res) => {
 // POST /api/scores — create a score
 router.post('/', requireAppUser, async (req, res) => {
   const appUser = (req as any).appUser;
-  const { machineId, score, playedAt, type, venueName, venueId: rawVenueId, venueHereId, venueAddress, venueLat, venueLng, venuePinballMapId, latitude, longitude, photoUrl, photoThumbnail } = req.body;
+  const { machineId, score, playedAt, type, venueName, venueId: rawVenueId, venueHereId, venueAddress, venueLat, venueLng, venueTimezone, venuePinballMapId, latitude, longitude, photoUrl, photoThumbnail } = req.body;
 
   if (!machineId || !score || !playedAt) {
     return res.status(400).json({ error: 'machineId, score, and playedAt are required' });
@@ -107,6 +109,10 @@ router.post('/', requireAppUser, async (req, res) => {
           longitude: venueLng ?? longitude ?? null,
           address: venueAddress ?? null,
           hereId: venueHereId ?? null,
+          // Comes free with the venue suggestions the upload response already returned, so a venue
+          // born from a photo knows its zone without an extra lookup. Null for a venue the user
+          // typed by hand with no HERE match — backfill-venue-timezones.ts catches those.
+          timezone: venueTimezone ?? null,
           pinballMapId: venuePinballMapId ?? null,
           // Whoever logs the first score at a venue is its creator, and therefore the person allowed
           // to repair its HERE / Pinball Map linkage later without needing an admin.
@@ -117,6 +123,7 @@ router.post('/', requireAppUser, async (req, res) => {
           set: {
             name: sql`excluded.name`,
             pinballMapId: sql`COALESCE(excluded.pinball_map_id, venues.pinball_map_id)`,
+            timezone: sql`COALESCE(venues.timezone, excluded.timezone)`,
           },
         })
         .returning();

@@ -1,6 +1,6 @@
 import { Link } from 'wouter';
 import { MapPin, Clock, Pencil, Trash2, Trophy, Home } from 'lucide-react';
-import { format } from 'date-fns';
+import { formatScoreTime, zoneAbbreviation } from '../lib/scoreTime';
 
 interface ScoreCardProps {
   id: number;
@@ -11,6 +11,8 @@ interface ScoreCardProps {
   type: 'casual' | 'tournament';
   venueId?: number | null;
   venueName?: string | null;
+  /** IANA zone of the venue. Null falls back to the viewer's clock — see lib/scoreTime.ts. */
+  venueTimezone?: string | null;
   venueIsResidence?: boolean;
   photoUrl?: string | null;
   photoThumbnail?: string | null;
@@ -22,7 +24,9 @@ interface ScoreCardProps {
   onDelete?: () => void;
 }
 
-export default function ScoreCard({ id: _id, machineName, score, playedAt, createdAt, type, venueId, venueName, venueIsResidence, photoThumbnail, username, isHighScore, isCurrentUser, onEdit, onDelete }: ScoreCardProps) {
+export default function ScoreCard({ id: _id, machineName, score, playedAt, createdAt, type, venueId, venueName, venueTimezone, venueIsResidence, photoThumbnail, username, isHighScore, isCurrentUser, onEdit, onDelete }: ScoreCardProps) {
+  // Only shown when the venue's clock differs from the reader's, so the usual case stays quiet.
+  const zone = zoneAbbreviation(playedAt, venueTimezone);
   return (
     <div className={`rounded-xl border bg-card p-4 flex flex-col gap-3 hover:border-primary/40 transition-colors ${isCurrentUser ? 'border-username/60' : 'border-white/10'}`}>
       <div className="flex items-center justify-between">
@@ -63,7 +67,8 @@ export default function ScoreCard({ id: _id, machineName, score, playedAt, creat
           <div className="flex flex-col gap-1 text-xs text-muted-foreground mt-2">
             <div className="flex items-center gap-1">
               <Clock className="w-3 h-3 flex-shrink-0" />
-              <span>{format(new Date(playedAt), 'MMM d, yyyy · h:mm a')}</span>
+              <span>{formatScoreTime(playedAt, venueTimezone, 'MMM d, yyyy · h:mm a')}</span>
+              {zone && <span className="text-muted-foreground/60">{zone}</span>}
             </div>
             {venueName && (
               <div className="flex items-center gap-1 text-venue">
@@ -95,7 +100,7 @@ export default function ScoreCard({ id: _id, machineName, score, playedAt, creat
         </Link>
         {createdAt && (
           <span className="text-xs text-muted-foreground/60">
-            added: {format(new Date(createdAt), 'MMM d · h:mm a')}
+            added: {formatScoreTime(createdAt, null, 'MMM d · h:mm a')}
           </span>
         )}
       </div>

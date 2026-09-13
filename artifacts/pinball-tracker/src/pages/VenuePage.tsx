@@ -2,7 +2,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'wouter';
 import { ArrowLeft, ChevronUp, ChevronDown, Home } from 'lucide-react';
-import { format } from 'date-fns';
+import { formatScoreTime } from '../lib/scoreTime';
 import { useApi } from '../lib/useApi';
 import { useScopeContext } from '../lib/ScopeContext';
 import { ScopeToggle } from '../components/ScopeToggle';
@@ -125,8 +125,8 @@ export default function VenuePage() {
               {sorted.map((s: any) => (
                 <tr key={s.id} className="border-b border-white/5 hover:bg-white/5 transition-colors">
                   <td className="px-3 py-3 text-muted-foreground whitespace-nowrap">
-                    {format(new Date(s.playedAt), 'MMM d, yyyy')}
-                    <span className="block text-xs opacity-60">{format(new Date(s.playedAt), 'h:mm a')}</span>
+                    {formatScoreTime(s.playedAt, venue?.timezone, 'MMM d, yyyy')}
+                    <span className="block text-xs opacity-60">{formatScoreTime(s.playedAt, venue?.timezone, 'h:mm a')}</span>
                   </td>
                   <td className="px-3 py-3">
                     <Link href={`/machines/${encodeURIComponent(s.machineName)}`} className="font-semibold text-machine hover:text-machine/80 transition-colors">

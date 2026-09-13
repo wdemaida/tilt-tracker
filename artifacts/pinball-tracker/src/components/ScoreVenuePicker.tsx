@@ -16,7 +16,7 @@ interface Props {
   /** The name the score was logged under, if any — worth showing as a hint for what to search. */
   venueNameSnapshot: string | null;
   /** Fired once the score has a venue, so the caller can swap in the linkage/repair UI. */
-  onAttached: (venue: { id: number; name: string }) => void;
+  onAttached: (venue: { id: number; name: string; timezone?: string | null }) => void;
 }
 
 // Attaches a venue to a score that never got one — either because the upload flow's "Skip — no
@@ -56,7 +56,7 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
   });
 
   const attach = useMutation({
-    mutationFn: (venue: { id: number; name: string }) =>
+    mutationFn: (venue: { id: number; name: string; timezone?: string | null }) =>
       api.scores.patch(scoreId, { venueId: venue.id }).then(() => venue),
     onSuccess: venue => {
       queryClient.invalidateQueries({ queryKey: ['scores'] });
@@ -78,7 +78,7 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
       }),
     // Creating and attaching are two requests; only the second one decides whether the score is
     // fixed, so chain rather than reporting success off the create.
-    onSuccess: (venue: any) => { setDuplicates(null); attach.mutate({ id: venue.id, name: venue.name }); },
+    onSuccess: (venue: any) => { setDuplicates(null); attach.mutate({ id: venue.id, name: venue.name, timezone: venue.timezone }); },
     onError: (e: any) => {
       if (e.code === 'duplicate_venue' && e.body?.candidates?.length) {
         // Not an error the user should have to re-read as prose — show the matches and let them pick.
@@ -144,7 +144,7 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
                   <button
                     type="button"
                     disabled={busy}
-                    onClick={() => { setError(null); attach.mutate({ id: v.id, name: v.name }); }}
+                    onClick={() => { setError(null); attach.mutate({ id: v.id, name: v.name, timezone: v.timezone }); }}
                     className="w-full flex items-center gap-2 text-left rounded border border-white/10 bg-card px-2.5 py-1.5 hover:bg-white/10 disabled:opacity-40 transition-colors"
                   >
                     <MapPin className="w-3.5 h-3.5 text-venue flex-shrink-0" />

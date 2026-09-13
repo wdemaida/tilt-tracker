@@ -29,6 +29,8 @@ interface SelectedVenue {
   venueLat?: number;
   venueLng?: number;
   pinballMapId?: number;
+  /** IANA zone. The photo's EXIF wall clock is read in *this*, not the browser's — see below. */
+  timezone?: string | null;
 }
 
 interface SavedScore {
@@ -46,6 +48,7 @@ export default function AddScorePage() {
     name: string; address: string; distance: number;
     hereId: string | null; source: 'history' | 'here';
     venueId?: number; venueLat?: number; venueLng?: number; pinballMapId?: number;
+    timezone?: string | null;
   }>>([]);
   const [selectedVenue, setSelectedVenue] = useState<SelectedVenue | null>(null);
   const [gps, setGps] = useState<{ latitude: number; longitude: number } | null>(null);
@@ -253,8 +256,10 @@ export default function AddScorePage() {
       const machine = await api.machines.upsert({ name: data.machineName, ...selectedMachineExtra });
       return api.scores.create({
         ...data,
-        // The form holds a local wall clock; the API stores instants.
-        playedAt: localInputToIso(data.playedAt),
+        // The form holds a *wall clock*. Which zone it belongs to is the venue's, not the
+        // browser's — that's what makes uploading a Chicago photo after you've flown home store the
+        // right instant instead of one shifted by the difference between the two zones.
+        playedAt: localInputToIso(data.playedAt, selectedVenue?.timezone),
         machineId: machine.id,
         ...gps,
         venueId: selectedVenue?.venueId,
@@ -262,6 +267,7 @@ export default function AddScorePage() {
         venueAddress: selectedVenue?.address,
         venueLat: selectedVenue?.venueLat,
         venueLng: selectedVenue?.venueLng,
+        venueTimezone: selectedVenue?.timezone,
         venuePinballMapId: selectedVenue?.pinballMapId,
         photoThumbnail: thumbnail ?? undefined,
       });
@@ -287,7 +293,7 @@ export default function AddScorePage() {
       queryClient.invalidateQueries({ queryKey: ['venues'] });
       setValue('venueName', venue.name);
       setVenueSearch(venue.name);
-      setSelectedVenue({ venueId: venue.id, address: venue.address ?? undefined, venueLat: venue.latitude ?? undefined, venueLng: venue.longitude ?? undefined });
+      setSelectedVenue({ venueId: venue.id, address: venue.address ?? undefined, venueLat: venue.latitude ?? undefined, venueLng: venue.longitude ?? undefined, timezone: venue.timezone });
       setShowAddVenueForm(false);
       setNewVenueName('');
       setNewVenueAddress('');
@@ -348,6 +354,7 @@ export default function AddScorePage() {
           venueLat: first.venueLat,
           venueLng: first.venueLng,
           pinballMapId: first.pinballMapId,
+          timezone: first.timezone,
         });
         setNearbyVenues(result.venues);
       }
@@ -360,7 +367,7 @@ export default function AddScorePage() {
     }
   };
 
-  function selectVenueCard(v: { id?: number; name: string; address?: string | null; hereId?: string | null; venueLat?: number; venueLng?: number; pinballMapId?: number | null }) {
+  function selectVenueCard(v: { id?: number; name: string; address?: string | null; hereId?: string | null; venueLat?: number; venueLng?: number; pinballMapId?: number | null; timezone?: string | null }) {
     setValue('venueName', v.name);
     setVenueSearch(v.name);
     setSelectedVenue({
@@ -370,6 +377,7 @@ export default function AddScorePage() {
       venueLat: v.venueLat,
       venueLng: v.venueLng,
       pinballMapId: v.pinballMapId ?? undefined,
+      timezone: v.timezone,
     });
   }
 
@@ -499,7 +507,7 @@ export default function AddScorePage() {
                       <button
                         key={v.venueId ?? v.hereId ?? v.name}
                         type="button"
-                        onClick={() => selectVenueCard({ id: v.venueId, name: v.name, address: v.address, hereId: v.hereId, venueLat: v.venueLat, venueLng: v.venueLng, pinballMapId: v.pinballMapId })}
+                        onClick={() => selectVenueCard({ id: v.venueId, name: v.name, address: v.address, hereId: v.hereId, venueLat: v.venueLat, venueLng: v.venueLng, pinballMapId: v.pinballMapId, timezone: v.timezone })}
                         className={`text-left px-3 py-2.5 rounded-lg border transition-colors ${isSelected ? 'border-venue/60 bg-venue/10' : 'border-white/10 hover:border-venue/40 hover:bg-white/5'}`}
                       >
                         <div className="flex items-center gap-2">

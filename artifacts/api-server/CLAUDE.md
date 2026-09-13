@@ -26,6 +26,24 @@
 - **`PATCH /api/scores/:id` is owner-or-admin**, not admin-only (changed 2026-09-11). It was `requireAdmin`, which meant no ordinary user could correct their own misread machine name — the exact thing the repair flow exists to fix. Mirrors how `DELETE` already worked.
 - Match tiers: `exact` → `normalized` → `fuzzy` (whole-word prefix, and **only when exactly one** candidate matches — ambiguity is not a match) → `unmatched`. Only `normalized` is pre-ticked in the UI; `fuzzy` requires a deliberate click, because a machine row is global and merging it rewrites that machine's identity at every venue.
 
+## Venue time zones (`venues.timezone`, added 2026-09-13)
+- Holds an **IANA zone name** ("America/Chicago"), never a UTC offset — an offset is wrong for half
+  the year. One venue resolved to `America/Kentucky/Louisville`, which is Eastern but carries its own
+  DST history; that's exactly the case a stored offset would get wrong.
+- HERE returns it on every search endpoint when you pass **`show=tz`** (`SHOW_TZ` in `hereApi.ts`) —
+  verified on geocode, browse, discover and revgeocode. No lookup dependency was needed. Every
+  venue-creation path captures it for free from a call it was already making; `resolveTimezone()`
+  reverse-geocodes from coordinates alone, for backfill and for repairs that move a venue.
+- **It's not only a display concern.** A photo's EXIF wall clock is zone-less, and the frontend used
+  to resolve it against the *browser's* zone — correct only if you upload before travelling home.
+  It's now resolved against the venue's zone, which removes that assumption. See
+  `AddScorePage`'s `localInputToIso(data.playedAt, selectedVenue?.timezone)`.
+- `redactVenue` nulls it for `hidden`-tier venues: a timezone is far coarser than an address but
+  still narrows where someone lives, and that tier promises nothing locational goes out. Routes
+  without requester plumbing (`users.ts`, `machines.ts`) do the same in SQL with a CASE.
+- `backfill-venue-timezones.ts` filled all 36 pre-existing venues from coordinates (not city/state —
+  34 of them have neither). Dry-run by default, re-runnable, `--force` to refresh existing values.
+
 ## Duplicate venues (`src/lib/venueDedup.ts`, added 2026-09-13)
 - The unique index on `venues.here_id` only ever protected the **upload** flow. `POST /api/venues`
   never set a `here_id`, and Postgres treats `NULL != NULL`, so null-`here_id` rows could never

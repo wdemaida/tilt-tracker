@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import { Link, useSearch } from 'wouter';
-import { format } from 'date-fns';
+import { formatScoreTime } from '../lib/scoreTime';
 import { Clock, User, Home } from 'lucide-react';
 import { PinballIcon } from '../components/PinballIcon';
 import { useApi } from '../lib/useApi';
@@ -167,7 +167,7 @@ export default function MapPage() {
                       </Link>
                       <div className="flex items-center gap-1 text-xs text-muted-foreground">
                         <Clock className="w-3 h-3 flex-shrink-0" />
-                        <span>{format(new Date(recent.playedAt), 'M/d/yy · h:mm a')}</span>
+                        <span>{formatScoreTime(recent.playedAt, recent.venueTimezone, 'M/d/yy · h:mm a')}</span>
                       </div>
                     </div>
                   </div>

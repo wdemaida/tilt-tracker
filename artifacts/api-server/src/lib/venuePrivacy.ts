@@ -14,7 +14,7 @@ export function canSeeFullVenue(venue: VenuePrivacyFields, requesterUserId: numb
 // Redacts a venue's address/coordinates per its privacy tier, unless the requester is the owner or an admin.
 // city_state swaps in a pre-resolved city/state centroid (never a truncated version of the precise coordinate);
 // hidden strips address and coordinates entirely.
-export function redactVenue<T extends VenuePrivacyFields & { address: string | null; latitude: number | null; longitude: number | null }>(
+export function redactVenue<T extends VenuePrivacyFields & { address: string | null; latitude: number | null; longitude: number | null; timezone?: string | null }>(
   venue: T,
   requesterUserId: number | undefined,
   isAdmin: boolean,
@@ -26,13 +26,17 @@ export function redactVenue<T extends VenuePrivacyFields & { address: string | n
     return { ...venue, address: label, latitude: venue.cityLat, longitude: venue.cityLng };
   }
 
-  return { ...venue, address: null, latitude: null, longitude: null };
+  // `hidden` also drops the timezone. It's far coarser than an address, but it still narrows where
+  // someone lives, and this tier's promise is that nothing locational goes out. Scores at a venue
+  // with no visible zone fall back to the viewer's clock, which reads identically to anyone in the
+  // same zone — i.e. to almost everyone who would notice.
+  return { ...venue, address: null, latitude: null, longitude: null, timezone: null };
 }
 
 // A score's own latitude/longitude comes from the photo's EXIF GPS, independent of the venue record —
 // redact it the same way whenever its venue restricts visibility, so the exact location can't leak via
 // the score's coordinates even after the venue's own address/coordinates are redacted.
-export function redactScoreLocation<T extends { latitude: number | null; longitude: number | null }>(
+export function redactScoreLocation<T extends { latitude: number | null; longitude: number | null; venueTimezone?: string | null }>(
   score: T,
   venue: VenuePrivacyFields | undefined,
   requesterUserId: number | undefined,
@@ -42,5 +46,5 @@ export function redactScoreLocation<T extends { latitude: number | null; longitu
   if (venue.privacyTier === 'city_state') {
     return { ...score, latitude: venue.cityLat, longitude: venue.cityLng };
   }
-  return { ...score, latitude: null, longitude: null };
+  return { ...score, latitude: null, longitude: null, venueTimezone: null };
 }
