@@ -9,7 +9,9 @@ async function request<T>(path: string, init?: RequestInit, token?: string | nul
   const res = await fetch(`${BASE}${path}`, { ...init, headers });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw Object.assign(new Error(err.error ?? 'Request failed'), { status: res.status, code: err.code });
+    // `body` carries the whole error payload — some responses attach structured detail the caller
+    // needs, e.g. the duplicate-venue 409's `candidates`. `code`/`status` stay for existing callers.
+    throw Object.assign(new Error(err.error ?? 'Request failed'), { status: res.status, code: err.code, body: err });
   }
   if (res.status === 204) return undefined as T;
   return res.json();
@@ -74,7 +76,10 @@ export function createApi(getToken: () => Promise<string | null>) {
         ),
       scores: async (id: number, mine = false) =>
         request<any>(mine ? `/venues/${id}/scores?mine=true` : `/venues/${id}/scores`, undefined, mine ? await tok() : undefined),
-      create: async (body: { name: string; address: string; isResidence?: boolean; privacyTier?: 'full' | 'city_state' | 'hidden' }) =>
+      // Rejects with a 409 (`code: 'duplicate_venue'`, plus `candidates`) when a venue of the same
+      // name already exists within 250m. Re-send with `allowDuplicate: true` once the user confirms
+      // it really is a different place.
+      create: async (body: { name: string; address: string; isResidence?: boolean; privacyTier?: 'full' | 'city_state' | 'hidden'; allowDuplicate?: boolean }) =>
         request<any>('/venues', { method: 'POST', body: JSON.stringify(body) }, await tok()),
       patch: async (id: number, body: { name?: string; address?: string | null; isResidence?: boolean; privacyTier?: 'full' | 'city_state' | 'hidden' }) =>
         request(`/venues/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, await tok()),

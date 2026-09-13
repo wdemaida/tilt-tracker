@@ -56,6 +56,10 @@ export default function AddScorePage() {
   const [showAddressSuggestions, setShowAddressSuggestions] = useState(false);
   const [newVenueIsResidence, setNewVenueIsResidence] = useState(false);
   const [newVenuePrivacyTier, setNewVenuePrivacyTier] = useState<'full' | 'city_state' | 'hidden'>('hidden');
+  // Existing venues the server matched when it rejected a create as a likely duplicate.
+  const [venueDuplicates, setVenueDuplicates] = useState<
+    Array<{ id: number; name: string; address: string | null; distance: number | null }> | null
+  >(null);
   const [machineSearch, setMachineSearch] = useState('');
   const [selectedMachine, setSelectedMachine] = useState('');
   const [aiDetectedMachine, setAiDetectedMachine] = useState('');
@@ -276,9 +280,10 @@ export default function AddScorePage() {
   });
 
   const createVenueMutation = useMutation({
-    mutationFn: (body: { name: string; address: string; isResidence: boolean; privacyTier: 'full' | 'city_state' | 'hidden' }) =>
+    mutationFn: (body: { name: string; address: string; isResidence: boolean; privacyTier: 'full' | 'city_state' | 'hidden'; allowDuplicate?: boolean }) =>
       api.venues.create(body),
     onSuccess: (venue: any) => {
+      setVenueDuplicates(null);
       queryClient.invalidateQueries({ queryKey: ['venues'] });
       setValue('venueName', venue.name);
       setVenueSearch(venue.name);
@@ -289,6 +294,11 @@ export default function AddScorePage() {
       setNewVenueIsResidence(false);
       setNewVenuePrivacyTier('hidden');
       setStep(3);
+    },
+    // A 409 here isn't a failure to explain in red text — it's the server saying "you already have
+    // this one". Show the matches so the obvious action (pick the existing venue) is one click.
+    onError: (e: any) => {
+      setVenueDuplicates(e.code === 'duplicate_venue' ? (e.body?.candidates ?? null) : null);
     },
   });
 
@@ -646,7 +656,52 @@ export default function AddScorePage() {
                   ))}
                 </div>
               )}
-              {createVenueMutation.isError && (
+              {venueDuplicates && venueDuplicates.length > 0 && (
+                <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 flex flex-col gap-2">
+                  <p className="text-xs text-amber-400">
+                    {venueDuplicates.length === 1 ? 'You already have this venue' : 'You already have venues with this name nearby'}.
+                    Use the existing one, unless this really is a different place.
+                  </p>
+                  <ul className="flex flex-col gap-1.5">
+                    {venueDuplicates.map(d => (
+                      <li key={d.id}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setValue('venueName', d.name);
+                            setVenueSearch(d.name);
+                            setSelectedVenue({ venueId: d.id, address: d.address ?? undefined });
+                            setVenueDuplicates(null);
+                            setShowAddVenueForm(false);
+                            setStep(3);
+                          }}
+                          className="w-full text-left rounded border border-white/10 bg-card px-2.5 py-1.5 hover:bg-white/10 transition-colors"
+                        >
+                          <span className="block text-sm font-bold text-venue truncate">{d.name}</span>
+                          <span className="block text-[0.65rem] text-muted-foreground truncate">
+                            {d.distance != null ? `${d.distance}m away` : 'same name'}
+                            {d.address ? ` · ${d.address}` : ''}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                  <button
+                    type="button"
+                    onClick={() => createVenueMutation.mutate({
+                      name: newVenueName.trim(),
+                      address: newVenueAddress.trim(),
+                      isResidence: newVenueIsResidence,
+                      privacyTier: newVenuePrivacyTier,
+                      allowDuplicate: true,
+                    })}
+                    className="self-start text-xs text-muted-foreground hover:text-white underline transition-colors"
+                  >
+                    No, this is a different venue — create it anyway
+                  </button>
+                </div>
+              )}
+              {createVenueMutation.isError && !venueDuplicates && (
                 <p className="text-xs text-red-400">{(createVenueMutation.error as any)?.message ?? 'Failed to create venue'}</p>
               )}
               <div className="flex gap-2 pt-1">
@@ -660,12 +715,12 @@ export default function AddScorePage() {
                 <button
                   type="button"
                   disabled={!newVenueName.trim() || !newVenueAddress.trim() || createVenueMutation.isPending}
-                  onClick={() => createVenueMutation.mutate({
+                  onClick={() => { setVenueDuplicates(null); createVenueMutation.mutate({
                     name: newVenueName.trim(),
                     address: newVenueAddress.trim(),
                     isResidence: newVenueIsResidence,
                     privacyTier: newVenuePrivacyTier,
-                  })}
+                  }); }}
                   className="flex-1 py-2 rounded-lg bg-venue text-white font-bold text-sm hover:opacity-90 transition-opacity disabled:opacity-50"
                 >
                   {createVenueMutation.isPending ? 'Saving...' : 'Save Venue'}

@@ -1,7 +1,15 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { MapPin, Plus, AlertTriangle } from 'lucide-react';
 import { useApi } from '../lib/useApi';
+
+interface DuplicateCandidate {
+  id: number;
+  name: string;
+  address: string | null;
+  /** Null when the new venue couldn't be geocoded — matched on name alone. */
+  distance: number | null;
+}
 
 interface Props {
   scoreId: number;
@@ -32,6 +40,9 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
   const [showAddressSuggestions, setShowAddressSuggestions] = useState(false);
   const [isResidence, setIsResidence] = useState(false);
   const [privacyTier, setPrivacyTier] = useState<'full' | 'city_state' | 'hidden'>('full');
+  // Set when the server rejects the create as a likely duplicate. Holds the existing venues it
+  // matched, so the user can attach one instead of making a second copy.
+  const [duplicates, setDuplicates] = useState<DuplicateCandidate[] | null>(null);
 
   const { data: venues = [], isLoading } = useQuery<any[]>({
     queryKey: ['venues'],
@@ -56,24 +67,46 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
     onError: (e: any) => setError(e.message ?? 'Could not attach that venue'),
   });
 
-  const createVenue = useMutation({
-    mutationFn: () =>
+  const createVenue = useMutation<any, any, boolean>({
+    mutationFn: (allowDuplicate: boolean) =>
       api.venues.create({
         name: newName.trim(),
         address: newAddress.trim(),
         isResidence,
         privacyTier,
+        allowDuplicate,
       }),
     // Creating and attaching are two requests; only the second one decides whether the score is
     // fixed, so chain rather than reporting success off the create.
-    onSuccess: (venue: any) => attach.mutate({ id: venue.id, name: venue.name }),
-    onError: (e: any) => setError(e.message ?? 'Could not create that venue'),
+    onSuccess: (venue: any) => { setDuplicates(null); attach.mutate({ id: venue.id, name: venue.name }); },
+    onError: (e: any) => {
+      if (e.code === 'duplicate_venue' && e.body?.candidates?.length) {
+        // Not an error the user should have to re-read as prose — show the matches and let them pick.
+        setDuplicates(e.body.candidates);
+        setError(null);
+      } else {
+        setError(e.message ?? 'Could not create that venue');
+      }
+    },
   });
+
+  // `/api/venues` comes back ordered by play count, which is the Venues page's question ("where do I
+  // play most?"). Attaching a venue to a score asks a different one — "where was I?" — and the answer
+  // is almost always somewhere recent. Sorting here rather than changing the endpoint keeps the
+  // Venues page's ordering intact. Venues with no scores yet sort last, alphabetically.
+  const byRecency = useMemo(() => [...venues].sort((a, b) => {
+    const at = a.lastPlayedAt ? new Date(a.lastPlayedAt).getTime() : null;
+    const bt = b.lastPlayedAt ? new Date(b.lastPlayedAt).getTime() : null;
+    if (at === null && bt === null) return a.name.localeCompare(b.name);
+    if (at === null) return 1;
+    if (bt === null) return -1;
+    return bt - at;
+  }), [venues]);
 
   const q = search.trim().toLowerCase();
   const matches = q
-    ? venues.filter(v => v.name.toLowerCase().includes(q) || (v.address ?? '').toLowerCase().includes(q))
-    : venues;
+    ? byRecency.filter(v => v.name.toLowerCase().includes(q) || (v.address ?? '').toLowerCase().includes(q))
+    : byRecency;
   const busy = attach.isPending || createVenue.isPending;
 
   return (
@@ -207,10 +240,51 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
             </div>
           )}
 
+          {duplicates && (
+            <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 flex flex-col gap-2">
+              <p className="flex items-start gap-2 text-xs text-amber-400">
+                <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                <span>
+                  {duplicates.length === 1 ? 'This venue looks like one you already have' : 'These venues look like the one you’re adding'}.
+                  Use the existing one, unless this really is a different place.
+                </span>
+              </p>
+              <ul className="flex flex-col gap-1.5">
+                {duplicates.map(d => (
+                  <li key={d.id}>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => { setError(null); attach.mutate({ id: d.id, name: d.name }); }}
+                      className="w-full flex items-center gap-2 text-left rounded border border-white/10 bg-card px-2.5 py-1.5 hover:bg-white/10 disabled:opacity-40 transition-colors"
+                    >
+                      <MapPin className="w-3.5 h-3.5 text-venue flex-shrink-0" />
+                      <span className="min-w-0">
+                        <span className="block text-sm font-bold text-venue truncate">{d.name}</span>
+                        <span className="block text-[0.65rem] text-muted-foreground truncate">
+                          {d.distance != null ? `${d.distance}m away` : 'same name'}
+                          {d.address ? ` · ${d.address}` : ''}
+                        </span>
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => { setError(null); createVenue.mutate(true); }}
+                className="self-start text-xs text-muted-foreground hover:text-white underline disabled:opacity-40 transition-colors"
+              >
+                No, this is a different venue — create it anyway
+              </button>
+            </div>
+          )}
+
           <div className="flex gap-2">
             <button
               type="button"
-              onClick={() => { setAdding(false); setError(null); }}
+              onClick={() => { setAdding(false); setError(null); setDuplicates(null); }}
               className="flex-1 py-2 rounded-lg border border-white/10 text-sm text-muted-foreground hover:text-white transition-colors"
             >
               Cancel
@@ -218,7 +292,7 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
             <button
               type="button"
               disabled={!newName.trim() || !newAddress.trim() || busy}
-              onClick={() => { setError(null); createVenue.mutate(); }}
+              onClick={() => { setError(null); setDuplicates(null); createVenue.mutate(false); }}
               className="flex-1 py-2 rounded-lg bg-venue text-white font-bold text-sm hover:opacity-90 transition-opacity disabled:opacity-50"
             >
               {busy ? 'Saving...' : 'Add & attach'}

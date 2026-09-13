@@ -26,6 +26,24 @@
 - **`PATCH /api/scores/:id` is owner-or-admin**, not admin-only (changed 2026-09-11). It was `requireAdmin`, which meant no ordinary user could correct their own misread machine name — the exact thing the repair flow exists to fix. Mirrors how `DELETE` already worked.
 - Match tiers: `exact` → `normalized` → `fuzzy` (whole-word prefix, and **only when exactly one** candidate matches — ambiguity is not a match) → `unmatched`. Only `normalized` is pre-ticked in the UI; `fuzzy` requires a deliberate click, because a machine row is global and merging it rewrites that machine's identity at every venue.
 
+## Duplicate venues (`src/lib/venueDedup.ts`, added 2026-09-13)
+- The unique index on `venues.here_id` only ever protected the **upload** flow. `POST /api/venues`
+  never set a `here_id`, and Postgres treats `NULL != NULL`, so null-`here_id` rows could never
+  conflict-match each other — a second "headquarters" was created 92m from the real one.
+- **Matching on the address string would not have caught it.** The typed address geocoded to a street
+  centroid (`W Institute Pl, Chicago, IL 60610`) while the original holds a building address
+  (`213 W Institute Pl, ... 60610-0704`). Same place, different strings. Don't reach for
+  `UNIQUE(name, address)`.
+- The guard is **normalized name AND within 250m**, and both halves are load-bearing: name alone
+  would block a chain's branch in another city; proximity alone would block genuine neighbours
+  ("The Alley Bar" and "Versus" are 156m apart and unrelated). Returns 409 with candidates rather
+  than refusing — the client re-sends with `allowDuplicate: true` after the user confirms.
+- `normalizeVenueName()` folds case, diacritics, punctuation and a leading "the" only. It must NOT
+  strip anything meaningful — "Pinball Palace" and "Pinball Palace North" are different venues.
+- `POST /api/venues` also resolves a real HERE place via `findVenueByName()` (accepted only under
+  250m, and only if no venue already holds that `here_id`) so new venues carry a `here_id` from
+  birth and the unique index finally applies to them too.
+
 ## HERE vs Pinball Map — what each is load-bearing for
 - **Pinball Map is the functional dependency**: it supplies the machine roster, so machine matching
   and score re-sync are gated on `pinballMapId`. Missing = the feature genuinely can't work (amber).

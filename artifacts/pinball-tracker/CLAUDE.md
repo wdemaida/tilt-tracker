@@ -43,6 +43,16 @@
   new venue inline) is what unblocks the rest. It `PATCH`es `venueId` immediately rather than waiting
   for the modal's Save, matching how every other control in the repair UI behaves.
 
+## Duplicate venues
+- `POST /api/venues` answers **409 `duplicate_venue`** with `candidates` when a venue of the same
+  normalized name already exists within 250m (`src/lib/venueDedup.ts` on the api-server). Both
+  create-a-venue surfaces — `ScoreVenuePicker` and AddScorePage's "Add custom venue" form — must
+  render those candidates as "use this one instead" buttons plus a **Create it anyway** escape that
+  re-sends with `allowDuplicate: true`. It is never a hard block: a chain's other branch is a real
+  venue, not a duplicate.
+- The API client's thrown error carries the whole payload on `.body`, so `e.body.candidates` is how
+  the UI reaches them; `.code` and `.status` are unchanged for existing callers.
+
 ## Date & time inputs
 - Always convert through `src/lib/datetime.ts`. `new Date(iso).toISOString().slice(0, 16)` looks
   right for a `datetime-local` input and is wrong — it writes **UTC** into a field the browser reads

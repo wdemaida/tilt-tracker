@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db, scores, venues, machines, users } from '@workspace/db';
-import { eq, desc, count, sql, and } from 'drizzle-orm';
+import { eq, desc, count, sql, and, max } from 'drizzle-orm';
 import {
   findNearestPmLocations, searchPmLocationsByName, getPmLocation,
   pmLocationUrl, isPmConfigured, PmApiError, type PmLocation,
@@ -10,6 +10,7 @@ import { geocodeAddress, autosuggestAddress, findVenueByName } from '../lib/here
 import { redactVenue, canSeeFullVenue } from '../lib/venuePrivacy.js';
 import { canRepairVenue, buildResyncPreview, applyResync, reenrichMachines } from '../lib/venueRepair.js';
 import { getVenueRoster } from '../lib/pmRosterCache.js';
+import { findDuplicateVenues } from '../lib/venueDedup.js';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { getAuth } from '@clerk/express';
 
@@ -59,6 +60,10 @@ router.get('/', async (req, res) => {
         cityLng: venues.cityLng,
         scoreCount: count(scores.id),
         machineCount: sql<number>`count(distinct ${scores.machineId})`,
+        // When anyone last *played* here, not when the score was uploaded — a batch of old photos
+        // shouldn't make a venue look recently visited. ScoreVenuePicker sorts on this; the list
+        // itself stays ordered by play count, which is what the Venues page wants.
+        lastPlayedAt: max(scores.playedAt),
       })
       .from(venues)
       .leftJoin(scores, eq(scores.venueId, venues.id))
@@ -80,7 +85,7 @@ router.get('/', async (req, res) => {
 // POST /api/venues — create a venue upfront (used by the "Add custom venue" flow, e.g. a residence)
 router.post('/', requireAppUser, async (req, res) => {
   const appUser = (req as any).appUser;
-  const { name, address, isResidence, privacyTier } = req.body;
+  const { name, address, isResidence, privacyTier, allowDuplicate } = req.body;
 
   if (!name || !address) {
     return res.status(400).json({ error: 'name and address are required' });
@@ -89,6 +94,28 @@ router.post('/', requireAppUser, async (req, res) => {
 
   try {
     const geocoded = await geocodeAddress(address);
+
+    // Nothing stopped a second "headquarters" being created 92m from the real one: the unique index
+    // on here_id only covers upload-flow venues, and this route never set one. Answering with the
+    // candidates rather than refusing keeps genuine same-name venues (a chain's other branch) creatable —
+    // the client re-submits with allowDuplicate once the user confirms. See venueDedup.ts.
+    if (!allowDuplicate) {
+      const duplicates = await findDuplicateVenues({
+        name,
+        latitude: geocoded?.lat ?? null,
+        longitude: geocoded?.lng ?? null,
+      });
+      if (duplicates.length > 0) {
+        return res.status(409).json({
+          error: duplicates.length === 1
+            ? `"${duplicates[0].name}" already exists${duplicates[0].distance != null ? ` ${duplicates[0].distance}m away` : ''}.`
+            : `${duplicates.length} venues with this name already exist nearby.`,
+          code: 'duplicate_venue',
+          candidates: duplicates,
+        });
+      }
+    }
+
     let cityLat: number | null = null;
     let cityLng: number | null = null;
     if (tier === 'city_state' && geocoded?.city && geocoded?.state) {
@@ -97,11 +124,27 @@ router.post('/', requireAppUser, async (req, res) => {
       cityLng = cityGeocode?.lng ?? null;
     }
 
+    // Resolve a real HERE place so the venue carries a here_id from birth. Without one the unique
+    // index can never fire for it (Postgres treats NULL != NULL), which is half of why duplicates
+    // were possible at all. Best-effort: a venue with no HERE match is still worth creating, and the
+    // name+proximity check above remains the guard that actually holds.
+    let hereId: string | null = null;
+    if (geocoded) {
+      const [match] = await findVenueByName(name, geocoded.lat, geocoded.lng, 5);
+      // Only adopt a close, confidently-matched place — a 1.5km "nearby" hit is a different venue.
+      if (match?.hereId && match.distance < 250) {
+        const existing = await db.select({ id: venues.id }).from(venues)
+          .where(eq(venues.hereId, match.hereId)).limit(1);
+        if (existing.length === 0) hereId = match.hereId;
+      }
+    }
+
     const [venue] = await db.insert(venues).values({
       name,
       address: geocoded?.label ?? address,
       latitude: geocoded?.lat ?? null,
       longitude: geocoded?.lng ?? null,
+      hereId,
       city: geocoded?.city ?? null,
       state: geocoded?.state ?? null,
       cityLat,
