@@ -9,6 +9,7 @@ import { useApi } from '../lib/useApi';
 import { useAppUser } from '../lib/useAppUser';
 import { useScopeContext } from '../lib/ScopeContext';
 import { ScopeToggle } from '../components/ScopeToggle';
+import { TILE_BASE_URL, TILE_LABELS_URL, TILE_ATTRIBUTION } from '../lib/mapTiles';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 
@@ -35,7 +36,13 @@ const PIN_OTHERS = makePinIcon('#d946ef');
 function MapViewSync({ center, zoom }: { center: [number, number]; zoom: number }) {
   const map = useMap();
   useEffect(() => {
-    map.setView(center, zoom);
+    // animate:false matters. The first render has no scores yet, so the map mounts at zoom 4 and
+    // this effect then jumps it to 8 once the query resolves. Leaflet's *animated* zoom keeps the
+    // old zoom-4 tiles around and scales them up, and on a jump that large they never get pruned —
+    // leaving a full-viewport blurry ghost of the previous zoom sitting over the real tiles. It was
+    // always there, just easy to miss when the basemap was near-black and unlabelled; a label layer
+    // turns it into a giant smeared city name. A non-animated setView hard-resets the tile grid.
+    map.setView(center, zoom, { animate: false });
   }, [center[0], center[1], zoom]);
   return null;
 }
@@ -52,23 +59,30 @@ export default function MapPage() {
   });
 
   const withGps = scores.filter((s: any) => s.latitude && s.longitude);
+  // Group by venue, NOT by raw coordinates. Every score carries the GPS off its own photo, so two
+  // plays on the same machine sit a few metres apart and used to become two separate pins — one
+  // venue with 25 scores rendered as 23 stacked markers, and the "N locations" count counted each
+  // one. Only a venue-less score has nothing to group on and still falls back to its coordinate.
   const venueGroups = withGps.reduce((acc: Record<string, any[]>, s: any) => {
-    const key = `${s.latitude},${s.longitude}`;
+    const key = s.venueId != null ? `v${s.venueId}` : `c${s.latitude},${s.longitude}`;
     if (!acc[key]) acc[key] = [];
     acc[key].push(s);
     return acc;
   }, {});
 
   const allLocations = Object.entries(venueGroups).map(([key, items]) => {
-    const [lat, lng] = key.split(',').map(Number);
     const list = items as any[];
+    // Sit the pin at the centroid of the group's photo fixes rather than on whichever score
+    // happened to be first, so it lands on the building instead of at one corner of it.
+    const lat = list.reduce((sum, s: any) => sum + Number(s.latitude), 0) / list.length;
+    const lng = list.reduce((sum, s: any) => sum + Number(s.longitude), 0) / list.length;
     const hasMyScore = !!appUser && list.some((s: any) => s.username === appUser.username);
     const recent = mine && appUser
       ? list.find((s: any) => s.username === appUser.username) ?? list[0]
       : list[0];
     const machineCount = new Set(list.map((s: any) => s.machineId)).size;
     const visits = new Set(list.map((s: any) => new Date(s.playedAt).toDateString())).size;
-    return { lat, lng, venueName: list[0].venueName, venueId: list[0].venueId, isResidence: !!list[0].venueIsResidence, recent, hasMyScore, machineCount, visits };
+    return { key, lat, lng, venueName: list[0].venueName, venueId: list[0].venueId, isResidence: !!list[0].venueIsResidence, recent, hasMyScore, machineCount, visits };
   });
 
   const locations = filterVenueId
@@ -112,13 +126,11 @@ export default function MapPage() {
           style={{ height: '100%', width: '100%' }}
         >
           <MapViewSync center={mapCenter} zoom={mapZoom} />
-          <TileLayer
-            url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-            attribution='&copy; <a href="https://carto.com/">CARTO</a>'
-          />
-          {locations.map(({ lat, lng, venueName, venueId, isResidence, recent, hasMyScore, machineCount, visits }) => (
+          <TileLayer url={TILE_BASE_URL} attribution={TILE_ATTRIBUTION} />
+          <TileLayer url={TILE_LABELS_URL} />
+          {locations.map(({ key, lat, lng, venueName, venueId, isResidence, recent, hasMyScore, machineCount, visits }) => (
             <Marker
-              key={`${lat},${lng}`}
+              key={key}
               position={[lat, lng]}
               icon={hasMyScore ? PIN_MINE : PIN_OTHERS}
               ref={filterVenueId ? setAutoPopupMarker : undefined}

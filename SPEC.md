@@ -103,7 +103,7 @@ A pinball high score tracker called **TILTTRACK**. Users photograph their pinbal
 - "+ ADD SCORE" button shortcut (top right)
 
 ### Map (`/map`)
-- Leaflet.js map, CARTO dark tile layer
+- Leaflet.js map, Esri Dark Gray Canvas tile layer
 - Subtitle: "N locations · N scores with GPS"
 - Pink circular pins for each venue cluster
 - Zoom +/- controls
@@ -234,7 +234,7 @@ A pinball high score tracker called **TILTTRACK**. Users photograph their pinbal
 - **Radix UI** — accessible headless components (dialogs, dropdowns, etc.)
 - **Lucide React** — icons
 - **Clerk** — auth (Google OAuth + email/password), UserButton component
-- **Leaflet.js** — interactive map (CARTO dark tiles)
+- **Leaflet.js** — interactive map (Esri Dark Gray Canvas tiles, no API key)
 - **date-fns** — date formatting
 
 ### Backend (`artifacts/api-server`)

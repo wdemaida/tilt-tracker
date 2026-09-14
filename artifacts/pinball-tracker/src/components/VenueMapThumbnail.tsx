@@ -1,6 +1,7 @@
 import { MapContainer, TileLayer, Marker } from 'react-leaflet';
 import { Link } from 'wouter';
 import { Home } from 'lucide-react';
+import { TILE_BASE_URL } from '../lib/mapTiles';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 
@@ -52,7 +53,8 @@ export default function VenueMapThumbnail({ venueId, latitude, longitude }: Venu
         touchZoom={false}
         attributionControl={false}
       >
-        <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" />
+        {/* Base layer only — the label overlay is illegible at 128x80 and just adds noise. */}
+        <TileLayer url={TILE_BASE_URL} />
         <Marker position={[latitude, longitude]} icon={PIN_ICON} />
       </MapContainer>
       {/* Leaflet's own CSS marks markers/panes pointer-events:auto internally, so disabling
