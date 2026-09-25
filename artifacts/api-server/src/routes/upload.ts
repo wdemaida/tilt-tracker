@@ -7,7 +7,7 @@ import { db, venues, users } from '@workspace/db';
 import { getAuth } from '@clerk/express';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { extractScoreReads } from '../lib/anthropic.js';
-import { mergeReads, templateToScore, checkPlausibility } from '../lib/scoreRead.js';
+import { mergeReads, mergePlayerReads, defaultPlayerIndex, templateToScore, checkPlausibility } from '../lib/scoreRead.js';
 import { getMachineScoreStats } from '../lib/machineScoreStats.js';
 import { fitUnderAnthropicLimit, TARGET_RAW_BYTES } from '../lib/imageCompress.js';
 import { getNearbyVenues, type Venue } from '../lib/hereApi.js';
@@ -318,7 +318,10 @@ router.post('/', requireAuth, receivePhotos, async (req, res) => {
     // One model call sees every photo; the per-image reads are merged in code (scoreRead.ts), so a
     // digit dark in one shot can be read from another and disagreements surface as conflicts.
     const extracted = await extractScoreReads(images);
-    const merged = mergeReads(extracted.reads);
+    // Merged per player: a 4-player backglass is four scores, and only the user knows which was
+    // theirs (the wizard asks). Images with no readable display leave an empty list.
+    const players = mergePlayerReads(extracted.reads);
+    const selected = players.length ? defaultPlayerIndex(players) : 0;
 
     // Deterministic "may be missing digits" check against what's already recorded on this machine.
     // The machine here is only the AI's reading of the name; the wizard re-runs the same check via
@@ -329,7 +332,19 @@ router.post('/', requireAuth, receivePhotos, async (req, res) => {
           return null;
         })
       : null;
-    const plausibility = stats ? checkPlausibility(merged.template, stats.median, stats.count) : null;
+    const playerReads = players.map(p => ({
+      ...p,
+      bestImageIndex: extracted.bestImageIndex,
+      plausibility: stats ? checkPlausibility(p.template, stats.median, stats.count) : null,
+    }));
+    // What a client that can't ask "which player were you?" gets: the only display, or the highest.
+    const scoreRead = playerReads[selected] ?? {
+      ...mergeReads([]),
+      player: null,
+      perImage: images.map(() => ''),
+      bestImageIndex: extracted.bestImageIndex,
+      plausibility: null,
+    };
 
     // GPS from the first photo that has any; playedAt from the earliest camera timestamp (zone-less
     // strings of one fixed shape, so they sort lexically).
@@ -373,13 +388,11 @@ router.post('/', requireAuth, receivePhotos, async (req, res) => {
     res.json({
       machineName: extracted.machineName,
       // Only set when every digit was read — kept for older clients. `scoreRead` carries the rest.
-      score: templateToScore(merged.template),
-      scoreRead: {
-        ...merged,
-        bestImageIndex: extracted.bestImageIndex,
-        perImage: extracted.reads.map(r => r.template),
-        plausibility,
-      },
+      // Both describe the default player (`selectedPlayerIndex`); `playerReads` has every player.
+      score: templateToScore(scoreRead.template),
+      scoreRead,
+      playerReads,
+      selectedPlayerIndex: playerReads.length ? selected : null,
       photoCount: files.length,
       differentGamesWarning: multi ? differentGamesWarning(meta) : null,
       // Zone-less wall clock ("2026-09-10T22:01:00") — see toNaiveLocal. The browser resolves it

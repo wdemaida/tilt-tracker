@@ -10,14 +10,30 @@
 
 export type ReadStatus = 'complete' | 'partial' | 'unreadable';
 
-/** One image's read, as the model reported it (after sanitizing). */
-export interface ImageRead {
+/** Highest player number a display can be labelled with ("1UP".."4UP", "PLAYER 1".."PLAYER 4"). */
+export const MAX_PLAYER = 4;
+
+/** One player display in one image, as the model reported it (after sanitizing). */
+export interface DisplayRead {
+  /** 1–4 from a "1UP"/"PLAYER 1" label or the machine's layout; null when it can't be told. */
+  player: number | null;
   template: string;
-  /** Indexes into `template` of digits the model read but isn't sure of (e.g. half-lit). */
+  /** Indexes into `template` of digits the model read but isn't sure of (e.g. glare). */
   lowConfidence: number[];
   status: ReadStatus;
   possiblyTruncated: boolean;
   truncationReason: string | null;
+  /**
+   * The leftmost digit window was dark on a strobing segment display: it may be a blank (the score
+   * has fewer digits) or a digit the shutter caught unlit. The template treats it as blank — the
+   * comma rule can only pin down the *trailing* count — so the UI asks the user to check.
+   */
+  leadingPositionAmbiguous: boolean;
+}
+
+/** Every player display the model found in one image, in player order (unnumbered ones last). */
+export interface ImageRead {
+  displays: DisplayRead[];
 }
 
 export interface ScoreConflict {
@@ -27,14 +43,22 @@ export interface ScoreConflict {
   candidates: string[];
 }
 
-/** The merged read across every uploaded photo — this is what goes to the client as `scoreRead`. */
+/** One display merged across every uploaded photo. */
 export interface MergedRead {
   template: string;
   lowConfidence: number[];
   status: ReadStatus;
   possiblyTruncated: boolean;
   truncationReason: string | null;
+  leadingPositionAmbiguous: boolean;
   conflicts: ScoreConflict[];
+}
+
+/** One player's display merged across every photo — the client gets one of these per player. */
+export interface MergedPlayerRead extends MergedRead {
+  player: number | null;
+  /** That player's template in each image, in image order ('' where the image didn't show it). */
+  perImage: string[];
 }
 
 /**
@@ -82,14 +106,54 @@ export function sanitizeWithIndexMap(raw: unknown): { template: string; indexMap
  * Returns '' when no score-like token has a digit.
  */
 export function templateFromDisplayText(raw: unknown): string {
+  const best = scoreRunFromDisplayText(raw);
+  // Leading dark windows ("_") are blank positions left of a right-aligned score, not part of it. A
+  // leading "?" is different: a partly lit digit, i.e. a real position. (Whether that blank might
+  // really be a strobed-off digit is `displayLeadsWithDark`'s question, not this one's.)
+  let body = best.replace(/^[_,]+/, '').replace(/_/g, '?');
+  if (!/[0-9]/.test(body)) return '';
+  const lastComma = body.lastIndexOf(',');
+  if (lastComma >= 0) {
+    const tail = body.length - lastComma - 1;
+    if (tail < 3) body += '?'.repeat(3 - tail);
+  }
+  return sanitizeTemplate(body.replace(/,/g, ''));
+}
+
+/**
+ * The score's run of characters from a display transcription (see templateFromDisplayText), with
+ * "." separators normalized to ",". A dark window written as its own token next to the score
+ * ("_ 8076 _") is joined onto it first, so it still counts as a position of that display.
+ */
+function scoreRunFromDisplayText(raw: unknown): string {
   if (typeof raw !== 'string') return '';
   const isScoreToken = (t: string) => /^[0-9?_,.]+$/.test(t) && /[0-9?]/.test(t);
   const positions = (t: string) => t.replace(/[,.]/g, '').length;
+  // Glue all-dark tokens onto the score token they sit next to (never onto other text like "P1").
+  // A dark group of exactly three after a score is left alone: the run logic below joins it as a
+  // comma group, like any other three-position token.
+  const tokens: string[] = [];
+  const raws = raw.trim().split(/\s+/);
+  for (let i = 0; i < raws.length; i++) {
+    const t = raws[i];
+    if (/^_+$/.test(t)) {
+      const prev = tokens[tokens.length - 1];
+      if (prev != null && isScoreToken(prev)) {
+        if (t.length !== 3) tokens[tokens.length - 1] = prev + t;
+        else tokens.push(t);
+        continue;
+      }
+      const next = raws[i + 1];
+      if (next != null && isScoreToken(next)) { raws[i + 1] = t + next; continue; }
+    }
+    tokens.push(t);
+  }
 
   // Runs of score-like tokens; a token of exactly three positions continues the previous run.
   const runs: string[] = [];
   let current: string | null = null;
-  for (const token of raw.trim().split(/\s+/)) {
+  for (const token of tokens) {
+    if (current != null && /^_{3}$/.test(token)) { current += `,${token}`; continue; }
     if (!isScoreToken(token)) { if (current != null) runs.push(current); current = null; continue; }
     if (current != null && positions(token) === 3) current += `,${token}`;
     else { if (current != null) runs.push(current); current = token; }
@@ -98,16 +162,16 @@ export function templateFromDisplayText(raw: unknown): string {
 
   let best = '';
   for (const r of runs) if (positions(r) > positions(best)) best = r;
-  // Leading dark windows ("_") are blank positions left of a right-aligned score, not part of it. A
-  // leading "?" is different: a partly lit digit, i.e. a real position.
-  let body = best.replace(/\./g, ',').replace(/^[_,]+/, '').replace(/_/g, '?');
-  if (!/[0-9]/.test(body)) return '';
-  const lastComma = body.lastIndexOf(',');
-  if (lastComma >= 0) {
-    const tail = body.length - lastComma - 1;
-    if (tail < 3) body += '?'.repeat(3 - tail);
-  }
-  return sanitizeTemplate(body.replace(/,/g, ''));
+  return best.replace(/\./g, ',');
+}
+
+/**
+ * Whether the transcription shows a dark window to the left of the score's first lit (or partly
+ * lit) digit — i.e. the leftmost lit digit isn't in the display's first window.
+ */
+export function displayLeadsWithDark(raw: unknown): boolean {
+  const run = scoreRunFromDisplayText(raw);
+  return /^[,]*_/.test(run) && /[0-9]/.test(run);
 }
 
 /**
@@ -129,10 +193,14 @@ export function displayRefinesModel(fromDisplay: string, fromModel: string): boo
   return true;
 }
 
-/** Sanitizes one raw per-image read from the model. */
-export function sanitizeImageRead(raw: {
-  template?: unknown; displayText?: unknown; lowConfidence?: unknown; possiblyTruncated?: unknown; truncationReason?: unknown;
-}): ImageRead {
+/** A raw player display from the model's tool call. */
+export interface RawDisplay {
+  player?: unknown; displayKind?: unknown; template?: unknown; displayText?: unknown; lowConfidence?: unknown;
+  possiblyTruncated?: unknown; truncationReason?: unknown; leadingPositionAmbiguous?: unknown;
+}
+
+/** Sanitizes one raw player display from the model. */
+export function sanitizeDisplayRead(raw: RawDisplay): DisplayRead {
   const fromModel = sanitizeWithIndexMap(raw.template);
   const fromDisplay = templateFromDisplayText(raw.displayText);
   // The literal transcription wins only when it refines the template (see displayRefinesModel): it's
@@ -148,14 +216,55 @@ export function sanitizeImageRead(raw: {
     ? raw.lowConfidence.map(v => (Number.isInteger(Number(v)) ? indexMap[Number(v)] ?? -1 : -1))
     : [];
   const reason = typeof raw.truncationReason === 'string' && raw.truncationReason.trim() ? raw.truncationReason.trim() : null;
+  const player = Number(raw.player);
   return {
+    player: raw.player != null && Number.isInteger(player) && player >= 1 && player <= MAX_PLAYER ? player : null,
     template,
     lowConfidence: sanitizeLowConfidence(template, mappedLow),
     // Derived from the template rather than trusted from the model, so the two can never disagree.
     status: templateStatus(template),
     possiblyTruncated: raw.possiblyTruncated === true,
     truncationReason: raw.possiblyTruncated === true ? reason : null,
+    leadingPositionAmbiguous: leadingAmbiguity(raw, template),
   };
+}
+
+/**
+ * Whether the leftmost dark window might be a strobed-off digit rather than a blank. Only on a
+ * segment/plasma display (DMD and LCD screens don't strobe digit by digit), only when the
+ * transcription actually shows a dark window left of the first lit digit, and only when there's
+ * evidence the shutter caught the display mid-refresh — an unread position in the read — or the
+ * model itself judged the leading position doubtful. A fully lit short score on a wide display is
+ * just a short score; flagging every one of those would make the warning noise.
+ */
+function leadingAmbiguity(raw: RawDisplay, template: string): boolean {
+  if (raw.displayKind !== 'segment') return false;
+  if (!displayLeadsWithDark(raw.displayText)) return false;
+  return raw.leadingPositionAmbiguous === true || template.includes('?');
+}
+
+/**
+ * Sanitizes one image's list of player displays: drops displays that show no score (blank, or only
+ * zeros — a "00" is a ball-in-play or unused player, and a zero score can't be saved anyway), drops
+ * all-unread displays when the image has a readable one, de-duplicates player numbers (a second
+ * display claiming the same number loses it), and sorts numbered displays first, in player order.
+ */
+export function sanitizeImageDisplays(raw: unknown): ImageRead {
+  const list = Array.isArray(raw) ? raw : [];
+  let displays = list
+    .filter((d): d is RawDisplay => !!d && typeof d === 'object')
+    .map(sanitizeDisplayRead)
+    .filter(d => /[1-9?]/.test(d.template));
+  if (displays.some(d => /[0-9]/.test(d.template))) displays = displays.filter(d => /[0-9]/.test(d.template));
+  const seen = new Set<number>();
+  displays = displays.map(d => {
+    if (d.player == null) return d;
+    if (seen.has(d.player)) return { ...d, player: null };
+    seen.add(d.player);
+    return d;
+  });
+  const numbered = displays.filter(d => d.player != null).sort((a, b) => a.player! - b.player!);
+  return { displays: [...numbered, ...displays.filter(d => d.player == null)] };
 }
 
 export function templateStatus(template: string): ReadStatus {
@@ -196,10 +305,16 @@ export function sanitizeLowConfidence(template: string, raw: unknown): number[] 
  * A merged digit is low-confidence only when every image that contributed it marked it so — a second,
  * confident read of the same digit is exactly what a second photo is for.
  */
-export function mergeReads(reads: ImageRead[]): MergedRead {
+export function mergeReads(reads: DisplayRead[]): MergedRead {
   const usable = reads.filter(r => r.template.length > 0);
   if (usable.length === 0) {
-    return { template: '', lowConfidence: [], status: 'unreadable', possiblyTruncated: reads.some(r => r.possiblyTruncated), truncationReason: reads.find(r => r.truncationReason)?.truncationReason ?? null, conflicts: [] };
+    return {
+      template: '', lowConfidence: [], status: 'unreadable',
+      possiblyTruncated: reads.some(r => r.possiblyTruncated),
+      truncationReason: reads.find(r => r.truncationReason)?.truncationReason ?? null,
+      leadingPositionAmbiguous: false,
+      conflicts: [],
+    };
   }
 
   const length = Math.max(...usable.map(r => r.template.length));
@@ -230,8 +345,8 @@ export function mergeReads(reads: ImageRead[]): MergedRead {
   }
 
   const template = chars.join('');
-  // Truncation is judged on the longest read(s): a short photo saying "may be missing digits" is
-  // answered by another photo that shows them.
+  // Truncation and leading ambiguity are judged on the longest read(s): a short photo saying "may be
+  // missing digits" — at either end — is answered by another photo that shows them.
   const longest = usable.filter(r => r.template.length === length);
   const truncating = longest.find(r => r.possiblyTruncated);
 
@@ -241,15 +356,123 @@ export function mergeReads(reads: ImageRead[]): MergedRead {
     status: templateStatus(template),
     possiblyTruncated: !!truncating,
     truncationReason: truncating?.truncationReason ?? null,
+    leadingPositionAmbiguous: longest.some(r => r.leadingPositionAmbiguous),
     conflicts,
   };
 }
 
-/** Default best image: the one with the most known digits (ties → earliest). */
+/**
+ * Right-aligned agreement between two templates: how many positions both read as the same digit, and
+ * how many they read as different digits.
+ */
+function templateAgreement(a: string, b: string): { agree: number; disagree: number } {
+  let agree = 0, disagree = 0;
+  for (let k = 1; k <= Math.min(a.length, b.length); k++) {
+    const x = a[a.length - k], y = b[b.length - k];
+    if (x === '?' || y === '?') continue;
+    if (x === y) agree++; else disagree++;
+  }
+  return { agree, disagree };
+}
+
+/** A display may join a player's group unless both carry player numbers and they differ. */
+const playersCompatible = (a: number | null, b: number | null) => a == null || b == null || a === b;
+
+/**
+ * Merges every photo's player displays per player, so a 4-player backglass photographed three times
+ * yields four merged reads, not one read mashed together from four different scores.
+ *
+ * Displays are matched across images by, in order:
+ *  1. player number (from a "1UP"/"PLAYER 1" label or the layout);
+ *  2. position, when an image shows the same number of displays as the reference image (the one with
+ *     the most) — the model lists them in player order, or reading order when unnumbered;
+ *  3. the template itself, for a lone unnumbered display (a close-up of one player's display): it
+ *     joins the one group it agrees with on at least two digits without contradicting any. Two
+ *     equally good groups (identical scores) is ambiguity, not a match.
+ * Anything left over becomes its own group. Two different player numbers never merge — on a
+ * single-display machine showing "PLAYER 2" in one photo and "PLAYER 3" in another, those are two
+ * different scores, and the user is asked which one was theirs.
+ *
+ * Output is numbered players ascending, then unnumbered groups in the reference image's order.
+ */
+export function mergePlayerReads(images: ImageRead[]): MergedPlayerRead[] {
+  interface Group { player: number | null; members: Array<{ image: number; read: DisplayRead }> }
+  if (images.every(im => im.displays.length === 0)) return [];
+
+  let ref = 0;
+  images.forEach((im, i) => { if (im.displays.length > images[ref].displays.length) ref = i; });
+  const groups: Group[] = images[ref].displays.map(d => ({ player: d.player, members: [{ image: ref, read: d }] }));
+  const refCount = groups.length;
+
+  images.forEach((im, i) => {
+    if (i === ref) return;
+    const ds = im.displays;
+    const assigned: Array<Group | undefined> = new Array(ds.length);
+    const used = new Set<Group>();
+    const take = (j: number, g: Group) => { assigned[j] = g; used.add(g); };
+
+    // 1. Player number.
+    ds.forEach((d, j) => {
+      if (d.player == null) return;
+      const g = groups.find(g => g.player === d.player && !used.has(g));
+      if (g) take(j, g);
+    });
+    // 2. Position, when the display counts line up with the reference image.
+    if (ds.length === refCount) {
+      ds.forEach((d, j) => {
+        if (assigned[j]) return;
+        const g = groups[j];
+        if (!used.has(g) && playersCompatible(g.player, d.player)) take(j, g);
+      });
+    }
+    // 3. Template agreement.
+    ds.forEach((d, j) => {
+      if (assigned[j]) return;
+      const scored = groups
+        .filter(g => !used.has(g) && playersCompatible(g.player, d.player))
+        .map(g => ({ g, ...templateAgreement(mergeReads(g.members.map(m => m.read)).template, d.template) }))
+        .filter(s => s.disagree === 0 && s.agree >= 2)
+        .sort((a, b) => b.agree - a.agree);
+      if (scored.length > 0 && (scored.length === 1 || scored[0].agree > scored[1].agree)) take(j, scored[0].g);
+    });
+
+    ds.forEach((d, j) => {
+      let g = assigned[j];
+      if (!g) { g = { player: d.player, members: [] }; groups.push(g); }
+      g.members.push({ image: i, read: d });
+      if (g.player == null && d.player != null && !groups.some(o => o.player === d.player)) g.player = d.player;
+    });
+  });
+
+  const numbered = groups.filter(g => g.player != null).sort((a, b) => a.player! - b.player!);
+  return [...numbered, ...groups.filter(g => g.player == null)].map(g => ({
+    player: g.player,
+    ...mergeReads(g.members.map(m => m.read)),
+    perImage: images.map((_, i) => g.members.find(m => m.image === i)?.read.template ?? ''),
+  }));
+}
+
+/**
+ * Which player's read a client that can't ask ("Which player were you?") should get — the top-level
+ * `score`/`scoreRead` older clients read. The highest score, reading unread positions as 0s; a longer
+ * template wins outright, since it's at least a digit more.
+ */
+export function defaultPlayerIndex(players: MergedRead[]): number {
+  let best = 0;
+  const value = (t: string) => Number(t.replace(/\?/g, '0')) || 0;
+  players.forEach((p, i) => {
+    const b = players[best].template;
+    if (p.template.length > b.length || (p.template.length === b.length && value(p.template) > value(b))) best = i;
+  });
+  return best;
+}
+
+/** Default best image: the one with the most known digits across its displays (ties → earliest). */
 export function defaultBestImageIndex(reads: ImageRead[]): number {
+  const known = (r: ImageRead) => r.displays.reduce((n, d) => n + knownDigitCount(d.template), 0);
   let best = 0;
   reads.forEach((r, i) => {
-    if (knownDigitCount(r.template) > knownDigitCount(reads[best].template)) best = i;
+    if (known(r) > known(reads[best])) best = i;
   });
   return best;
 }

@@ -142,3 +142,28 @@
   it, disagreement becomes `?` plus a `conflicts` entry, and the longest template sets the length.
   GPS = first photo with GPS; playedAt = earliest EXIF time; `differentGamesWarning` when photos are
   >10 min or >200m apart. Photos aren't stored — no schema change; the thumbnail stays single.
+- **Every player display is read** (added 2026-09-24). The tool returns, per image, a list of
+  `displays` — `{ player, displayKind, digitWindows, displayText, template, lowConfidence,
+  possiblyTruncated, truncationReason, leadingPositionAmbiguous }`. The old "read the current or
+  highest player" rule was a guess at Game Over (the Stars test photo returned 4UP in one run and 1UP
+  in another). The prompt skips ball-in-play/credit/match panels and **mirror-image reflections** in
+  the playfield glass; `sanitizeImageDisplays()` also drops blank and all-zero displays ("00"),
+  de-duplicates player numbers and sorts numbered players first. Player numbers outside 1–4 → null.
+- `mergePlayerReads()` merges **per player**, then `mergeReads()` per group as before. Matching, in
+  order: player number → position (only when an image has as many displays as the reference image)
+  → template agreement for a lone unnumbered close-up (≥2 agreeing digits, no contradiction, unique
+  best — two identical players is ambiguity, not a match). Two different player numbers never merge.
+  `/api/upload` returns `playerReads` (one `scoreRead`-shaped entry per player, plus `player` and
+  `leadingPositionAmbiguous`) and `selectedPlayerIndex`; top-level `score`/`scoreRead` are the
+  `defaultPlayerIndex()` entry (highest, x's as 0s) so older clients keep working.
+- **Leading dark window** (`leadingPositionAmbiguous`): the comma rule pins down the *trailing*
+  count only. A dark leftmost window on a strobing display is a blank or an unlit digit — the
+  template treats it as blank and the flag makes the UI say so. Set in code, not trusted from the
+  model: `displayKind === 'segment'` **and** the transcription shows `_` before the first lit digit
+  (`displayLeadsWithDark`) **and** (the read has a `?` — evidence of mid-refresh — or the model
+  flagged it). Without the evidence clause every short score on a wide display would warn.
+- `digitWindows` exists to make the model count physical windows before transcribing; code doesn't
+  use it — the count isn't stable (Black Knight 2000's 16-character alphanumeric display came back
+  as 7 and 6 on consecutive runs), so it can't place a missing window. Known limit: the model localizes *where* a dark window sits only roughly at
+  full-photo resolution — on the Stars photo 3UP "8807__" consistently reads as "_8807_" and 4UP
+  "8807_0" as "88070_". Cropping each display for a second pass would be the fix; not built.
