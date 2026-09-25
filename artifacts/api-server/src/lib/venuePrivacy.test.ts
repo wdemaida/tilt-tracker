@@ -142,3 +142,22 @@ test('partitionDuplicates: restricted tier without the residence flag, and full-
 test('partitionDuplicates: no matches', () => {
   assert.deepEqual(partitionDuplicates([], STRANGER, false), { candidates: [], privateNearby: false });
 });
+
+// --- Exact-name discovery (owner decision 2026-09-25) --------------------------------------------
+
+const { exactVenueNameKey, isPrivateTier } = await import('./venuePrivacy.js');
+
+test('exactVenueNameKey: trimmed and case-insensitive, nothing fuzzier', () => {
+  assert.equal(exactVenueNameKey("  Will's Basement "), "will's basement");
+  assert.equal(exactVenueNameKey("WILL'S BASEMENT"), exactVenueNameKey("will's basement"));
+  // Punctuation, articles and inner spacing are NOT folded — that would make it a fuzzy search.
+  assert.notEqual(exactVenueNameKey('Wills Basement'), exactVenueNameKey("Will's Basement"));
+  assert.notEqual(exactVenueNameKey('The Basement'), exactVenueNameKey('Basement'));
+  assert.notEqual(exactVenueNameKey("Will's  Basement"), exactVenueNameKey("Will's Basement"));
+});
+
+test('isPrivateTier', () => {
+  assert.equal(isPrivateTier({ isResidence: true, privacyTier: 'full' }), true);
+  assert.equal(isPrivateTier({ isResidence: false, privacyTier: 'hidden' }), true);
+  assert.equal(isPrivateTier({ isResidence: false, privacyTier: 'full' }), false);
+});

@@ -93,6 +93,12 @@
   - `POST /api/scores` with a `venueHereId` held by someone else's private venue does **not**
     conflict-match onto it (that would rename their home and reveal it); the score gets a new venue
     without the HERE id instead. `venuePinballMapId` backfill never lands on a private venue.
+  - **Friends find a private venue by its exact name**: `GET /api/venues/exact?name=` (signed in,
+    30/min per user via `createRateLimiter()` in `rateLimit.ts` — in-memory, single instance only)
+    returns `[{id, name, isPrivate: true}]` for private venues whose name matches trimmed and
+    case-insensitive (`exactVenueNameKey()` — deliberately *not* `normalizeVenueName`, which would
+    turn it into a fuzzy search). Nothing locational, no linkage; public venues are left out because
+    callers already have them.
 - `backfill-venue-timezones.ts` filled all 36 pre-existing venues from coordinates (not city/state —
   34 of them have neither). Dry-run by default, re-runnable, `--force` to refresh existing values.
 

@@ -9,7 +9,8 @@ import { syncVenueMachineHistory, getFormerMachines } from '../lib/venueHistory.
 import {
   geocodeAddress, autosuggestAddress, findVenueByName, resolveTimezone, lookupHerePlace, type Venue as HereVenue,
 } from '../lib/hereApi.js';
-import { redactVenue, canSeeFullVenue, canSeeVenueLinkage } from '../lib/venuePrivacy.js';
+import { redactVenue, canSeeFullVenue, canSeeVenueLinkage, exactVenueNameKey, isPrivateTier } from '../lib/venuePrivacy.js';
+import { createRateLimiter } from '../lib/rateLimit.js';
 import { canRepairVenue, buildResyncPreview, applyResync, reenrichMachines } from '../lib/venueRepair.js';
 import {
   addressResolutionBlocker, pmLocationToPlace, formatPmAddress, buildManualAddressQuery,
@@ -200,6 +201,39 @@ router.get('/address-autocomplete', async (req, res) => {
   } catch (err) {
     console.error('Address autocomplete error:', err);
     res.status(500).json({ error: 'Failed to fetch address suggestions' });
+  }
+});
+
+// GET /api/venues/exact?name=... — private venues whose name matches *exactly* (trimmed,
+// case-insensitive). This is how a friend finds someone's home venue to log a score there: by
+// knowing its name. The answer is name-only — no address, city/state, coordinates, distance or
+// linkage — so all it reveals is that a venue by that name exists, never where. Public venues are
+// left out: callers already have them from the venues list. Rate-limited per user so it can't be
+// used to brute-force names.
+const exactLookupLimiter = createRateLimiter({ limit: 30, windowMs: 60_000 });
+
+router.get('/exact', requireAppUser, async (req, res) => {
+  const appUser = (req as any).appUser;
+  const name = typeof req.query.name === 'string' ? req.query.name : '';
+  const key = exactVenueNameKey(name);
+  if (key.length < 2 || key.length > 200) return res.json([]);
+
+  const { allowed, retryAfterMs } = exactLookupLimiter.hit(appUser.id);
+  if (!allowed) {
+    res.setHeader('Retry-After', String(Math.ceil(retryAfterMs / 1000)));
+    return res.status(429).json({ error: 'Too many venue lookups — try again in a minute', code: 'rate_limited' });
+  }
+
+  try {
+    const rows = await db
+      .select({ id: venues.id, name: venues.name, isResidence: venues.isResidence, privacyTier: venues.privacyTier })
+      .from(venues)
+      .where(sql`lower(btrim(${venues.name})) = ${key}`)
+      .limit(10);
+    res.json(rows.filter(isPrivateTier).map(r => ({ id: r.id, name: r.name, isPrivate: true as const })));
+  } catch (err) {
+    console.error('Exact venue lookup error:', err);
+    res.status(500).json({ error: 'Failed to look up that venue' });
   }
 });
 

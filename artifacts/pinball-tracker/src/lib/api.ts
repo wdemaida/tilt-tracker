@@ -74,6 +74,12 @@ export function createApi(getToken: () => Promise<string | null>) {
         request<any[]>(mine ? '/venues?mine=true' : '/venues', undefined, mine ? await tok() : undefined),
       machines: async (id: number) => request<any>(`/venues/${id}/machines`, undefined, await tok()),
       pmMachines: (pmId: number) => request<any>(`/venues/pm-machines/${pmId}`),
+      // Private venues (homes) whose name matches exactly — name only, never a location. How a
+      // friend finds someone's home venue to log a score there.
+      exact: async (name: string) =>
+        request<Array<{ id: number; name: string; isPrivate: true }>>(
+          `/venues/exact?name=${encodeURIComponent(name)}`, undefined, await tok(),
+        ),
       addressAutocomplete: (q: string, at?: { lat: number; lng: number }) =>
         request<Array<{ id: string; label: string; lat: number | null; lng: number | null }>>(
           `/venues/address-autocomplete?q=${encodeURIComponent(q)}${at ? `&lat=${at.lat}&lng=${at.lng}` : ''}`

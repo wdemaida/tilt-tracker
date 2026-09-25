@@ -2,10 +2,11 @@ import { useState, useRef, useMemo, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Camera, Loader2, CheckCircle2, ExternalLink, MapPin, Search, X, ChevronDown, AlertTriangle } from 'lucide-react';
+import { Camera, Loader2, CheckCircle2, ExternalLink, MapPin, Search, X, ChevronDown, AlertTriangle, Home } from 'lucide-react';
 import { useLocation } from 'wouter';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useApi } from '../lib/useApi';
+import { useExactPrivateVenues } from '../lib/useExactPrivateVenues';
 import { queryClient } from '../lib/queryClient';
 import { PinballIcon } from '../components/PinballIcon';
 import { toLocalInput, localInputToIso, naiveToLocalInput } from '../lib/datetime';
@@ -285,6 +286,9 @@ export default function AddScorePage() {
     queryFn: () => api.venues.addressAutocomplete(newVenueAddress, gps ? { lat: gps.latitude, lng: gps.longitude } : undefined),
     enabled: showAddVenueForm && newVenueAddress.trim().length > 3,
   });
+
+  // A friend's home venue: never suggested by location, found only by typing its exact name.
+  const exactPrivateVenues = useExactPrivateVenues(venueSearch);
 
   // Filtered venue history for step 2 (user's venues only)
   const filteredVenueHistory = useMemo(() => {
@@ -885,6 +889,40 @@ export default function AddScorePage() {
               </div>
             </div>
           )}
+
+          {/* Exact-name match on someone's private (home) venue — name only, no location */}
+          {(() => {
+            const shownIds = new Set([
+              ...nearbyVenues.map(v => v.venueId).filter(Boolean),
+              ...(venueHistory as any[]).map((v: any) => v.id),
+            ]);
+            const privateMatches = exactPrivateVenues.filter(p => !shownIds.has(p.id));
+            if (privateMatches.length === 0) return null;
+            return (
+              <div>
+                <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">Private venue</p>
+                <div className="flex flex-col gap-1.5">
+                  {privateMatches.map(p => {
+                    const isSelected = selectedVenue?.venueId === p.id;
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => selectVenueCard({ id: p.id, name: p.name })}
+                        className={`text-left px-3 py-2.5 rounded-lg border transition-colors ${isSelected ? 'border-venue/60 bg-venue/10' : 'border-white/10 hover:border-venue/40 hover:bg-white/5'}`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <Home className={`w-3.5 h-3.5 flex-shrink-0 ${isSelected ? 'text-venue' : 'text-muted-foreground'}`} />
+                          <span className={`text-sm font-bold ${isSelected ? 'text-white' : 'text-white/80'}`}>{p.name}</span>
+                          <span className="text-xs text-muted-foreground ml-auto">Private</span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Venue history (user's visited venues only) */}
           {(() => {

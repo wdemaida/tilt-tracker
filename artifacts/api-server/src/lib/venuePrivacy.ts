@@ -74,6 +74,20 @@ export function mayRevealByLocation(
   return !isPrivate || (!!user && canSeeFullVenue(venue, user.id, user.role === 'admin'));
 }
 
+/**
+ * The one comparison exact-name discovery uses: trimmed, case-insensitive, nothing else. Not
+ * normalizeVenueName — folding punctuation and "the" would make it a fuzzy search, and a fuzzy
+ * search over private venues is a way to enumerate them.
+ */
+export function exactVenueNameKey(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+/** Private in the sense the location rules care about: a residence, or any restricted tier. */
+export function isPrivateTier(venue: { isResidence: boolean; privacyTier: 'full' | 'city_state' | 'hidden' }): boolean {
+  return venue.isResidence || venue.privacyTier !== 'full';
+}
+
 // A score's own latitude/longitude comes from the photo's EXIF GPS, independent of the venue record —
 // redact it the same way whenever its venue restricts visibility, so the exact location can't leak via
 // the score's coordinates even after the venue's own address/coordinates are redacted.

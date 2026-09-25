@@ -56,6 +56,14 @@
 - `LinkageView.linkageBlocked` (restricted-tier venue): steps 1–2 render an explanation instead of
   buttons — the server refuses HERE / Pinball Map linkage for private venues.
 
+## Private (home) venues in venue search
+- Anyone may log a score at someone's home venue, but it's never suggested by location. The two
+  venue searches (AddScorePage step 2, `ScoreVenuePicker`) find another user's private venue only
+  through `useExactPrivateVenues()` — an exact, debounced (400ms) name lookup that returns names
+  only — shown as "Private venue". `ScoreVenuePicker` also keeps others' private venues out of its
+  browse/substring list (`isOthersPrivateVenue`), since the venues list itself still carries every
+  venue by name.
+
 ## Duplicate venues
 - `POST /api/venues` answers **409 `duplicate_venue`** with `candidates` when a venue of the same
   normalized name already exists within 250m (`src/lib/venueDedup.ts` on the api-server). Both

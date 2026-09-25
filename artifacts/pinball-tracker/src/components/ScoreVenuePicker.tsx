@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { MapPin, Plus, AlertTriangle } from 'lucide-react';
 import { useApi } from '../lib/useApi';
+import { useAppUser } from '../lib/useAppUser';
+import { useExactPrivateVenues, isOthersPrivateVenue } from '../lib/useExactPrivateVenues';
 
 interface DuplicateCandidate {
   id: number;
@@ -107,10 +109,18 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
     return bt - at;
   }), [venues]);
 
+  const me = useAppUser();
   const q = search.trim().toLowerCase();
-  const matches = q
-    ? byRecency.filter(v => v.name.toLowerCase().includes(q) || (v.address ?? '').toLowerCase().includes(q))
-    : byRecency;
+  // Someone else's home venue isn't browsable or substring-searchable here — it's found only by
+  // typing its exact name (below), which reveals that the name exists and nothing about where.
+  const browsable = byRecency.filter(v => !isOthersPrivateVenue(v, me));
+  const exactPrivate = useExactPrivateVenues(search)
+    .filter(p => !browsable.some(v => v.id === p.id))
+    .map(p => ({ id: p.id, name: p.name, address: null, timezone: null, isPrivateMatch: true }));
+  const matches = [
+    ...exactPrivate,
+    ...(q ? browsable.filter(v => v.name.toLowerCase().includes(q) || (v.address ?? '').toLowerCase().includes(q)) : browsable),
+  ];
   const busy = attach.isPending || createVenue.isPending;
 
   return (
@@ -154,7 +164,9 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
                     <MapPin className="w-3.5 h-3.5 text-venue flex-shrink-0" />
                     <span className="min-w-0">
                       <span className="block text-sm font-bold text-venue truncate">{v.name}</span>
-                      {v.address && (
+                      {v.isPrivateMatch ? (
+                        <span className="block text-[0.65rem] text-muted-foreground truncate">Private venue</span>
+                      ) : v.address && (
                         <span className="block text-[0.65rem] text-muted-foreground truncate">{v.address}</span>
                       )}
                     </span>
