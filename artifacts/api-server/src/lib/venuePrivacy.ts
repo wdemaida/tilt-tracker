@@ -21,6 +21,13 @@ export function redactVenue<T extends VenuePrivacyFields & { address: string | n
 ): T {
   if (venue.privacyTier === 'full' || canSeeFullVenue(venue, requesterUserId, isAdmin)) return venue;
 
+  // Both restricted tiers drop their HERE / Pinball Map linkage. A HERE place id resolves to an exact
+  // position through HERE's Lookup endpoint, and a Pinball Map id resolves to a public listing with a
+  // street address — either would undo the redaction below. Linking is refused for these tiers
+  // (linkageBlockedByPrivacy), but a venue can be linked first and made private afterwards, so this
+  // is the backstop. Only keys the row already carries are touched, so no caller's shape changes.
+  venue = stripLinkage(venue);
+
   if (venue.privacyTier === 'city_state') {
     const label = [venue.city, venue.state].filter(Boolean).join(', ') || null;
     return { ...venue, address: label, latitude: venue.cityLat, longitude: venue.cityLng };
@@ -31,6 +38,35 @@ export function redactVenue<T extends VenuePrivacyFields & { address: string | n
   // with no visible zone fall back to the viewer's clock, which reads identically to anyone in the
   // same zone — i.e. to almost everyone who would notice.
   return { ...venue, address: null, latitude: null, longitude: null, timezone: null };
+}
+
+const LINKAGE_KEYS = ['hereId', 'pinballMapId', 'pmMachineCount', 'pmLocationUrl'] as const;
+
+function stripLinkage<T extends object>(venue: T): T {
+  const out = { ...venue } as Record<string, unknown>;
+  for (const k of LINKAGE_KEYS) if (k in out) out[k] = null;
+  return out as T;
+}
+
+/**
+ * Whether this requester may see a venue's HERE / Pinball Map linkage (and the roster behind it).
+ * Mirrors redactVenue: public venues always, restricted ones only for their owner or an admin.
+ */
+export function canSeeVenueLinkage(venue: VenuePrivacyFields, requesterUserId: number | undefined, isAdmin: boolean): boolean {
+  return venue.privacyTier === 'full' || canSeeFullVenue(venue, requesterUserId, isAdmin);
+}
+
+/**
+ * Whether this user may file a score under this venue. Any public venue, yes; a residence or
+ * restricted-tier venue only for its owner or an admin — otherwise anyone who learned a home's venue
+ * id could attach scores to it.
+ */
+export function mayAttachScoreTo(
+  venue: VenuePrivacyFields & { isResidence: boolean },
+  user: { id: number; role: string },
+): boolean {
+  const isPrivate = venue.isResidence || venue.privacyTier !== 'full';
+  return !isPrivate || canSeeFullVenue(venue, user.id, user.role === 'admin');
 }
 
 // A score's own latitude/longitude comes from the photo's EXIF GPS, independent of the venue record —

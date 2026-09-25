@@ -9,7 +9,7 @@ import { syncVenueMachineHistory, getFormerMachines } from '../lib/venueHistory.
 import {
   geocodeAddress, autosuggestAddress, findVenueByName, resolveTimezone, lookupHerePlace, type Venue as HereVenue,
 } from '../lib/hereApi.js';
-import { redactVenue, canSeeFullVenue } from '../lib/venuePrivacy.js';
+import { redactVenue, canSeeFullVenue, canSeeVenueLinkage, mayAttachScoreTo } from '../lib/venuePrivacy.js';
 import { canRepairVenue, buildResyncPreview, applyResync, reenrichMachines } from '../lib/venueRepair.js';
 import {
   addressResolutionBlocker, pmLocationToPlace, formatPmAddress, buildManualAddressQuery,
@@ -17,7 +17,7 @@ import {
   linkageBlockedByPrivacy, isUniqueViolation, type AddressBlocker, type HolderView, type PrivacyFlags,
 } from '../lib/venueAddress.js';
 import { getVenueRoster } from '../lib/pmRosterCache.js';
-import { findDuplicateVenues } from '../lib/venueDedup.js';
+import { findDuplicateVenues, partitionDuplicates } from '../lib/venueDedup.js';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { getAuth } from '@clerk/express';
 
@@ -89,7 +89,13 @@ router.get('/', async (req, res) => {
     // venue is nobody else's business, and the client only ever needed the yes/no.
     const redacted = rows.map(r => {
       const { createdById: _createdById, ...pub } = toPublicVenue(redactVenue(r, requester?.id, isAdmin));
-      return { ...pub, ...venueListFlags(r, requester) };
+      return {
+        ...pub,
+        ...venueListFlags(r, requester),
+        // Whether this viewer may file a score here — false for someone else's residence. The
+        // score venue picker hides those rather than offering a choice the server would refuse.
+        canAttachScore: requester ? mayAttachScoreTo(r, requester) : false,
+      };
     });
 
     res.json(redacted);
@@ -117,18 +123,24 @@ router.post('/', requireAppUser, async (req, res) => {
     // candidates rather than refusing keeps genuine same-name venues (a chain's other branch) creatable —
     // the client re-submits with allowDuplicate once the user confirms. See venueDedup.ts.
     if (!allowDuplicate) {
-      const duplicates = await findDuplicateVenues({
+      const matches = await findDuplicateVenues({
         name,
         latitude: geocoded?.lat ?? null,
         longitude: geocoded?.lng ?? null,
       });
-      if (duplicates.length > 0) {
+      // Private matches (someone else's residence) are reported only as a flag — no id, name,
+      // address or distance, and nothing the client could attach a score to. See partitionDuplicates.
+      const { candidates: duplicates, privateNearby } = partitionDuplicates(matches, appUser.id, appUser.role === 'admin');
+      if (duplicates.length > 0 || privateNearby) {
         return res.status(409).json({
-          error: duplicates.length === 1
-            ? `"${duplicates[0].name}" already exists${duplicates[0].distance != null ? ` ${duplicates[0].distance}m away` : ''}.`
-            : `${duplicates.length} venues with this name already exist nearby.`,
+          error: duplicates.length === 0
+            ? 'A private venue with this name already exists nearby. You can still add yours.'
+            : duplicates.length === 1
+              ? `"${duplicates[0].name}" already exists${duplicates[0].distance != null ? ` ${duplicates[0].distance}m away` : ''}.`
+              : `${duplicates.length} venues with this name already exist nearby.`,
           code: 'duplicate_venue',
           candidates: duplicates,
+          privateNearby,
         });
       }
     }
@@ -271,7 +283,10 @@ router.get('/:id/machines', async (req, res) => {
     // venue has no machines — the silent `return []` this used to rely on is exactly what hid the
     // API-token cutover for as long as it did.
     let pmError: string | null = null;
-    if (venue.pinballMapId) {
+    // A restricted-tier venue's roster (and its former machines) identifies the Pinball Map listing,
+    // i.e. where it is — only its owner and admins get it, matching redactVenue's linkage stripping.
+    const linkageVisible = canSeeVenueLinkage(venue, appUserId, isAdmin);
+    if (venue.pinballMapId && linkageVisible) {
       try {
         const roster = await getVenueRoster(venue.pinballMapId);
         const xrefs = roster.xrefs;
@@ -306,7 +321,7 @@ router.get('/:id/machines', async (req, res) => {
     const redactedVenue = toPublicVenue(redactVenue(venue, appUserId, isAdmin));
     res.json({
       venue: redactedVenue, ownMachines, pmMachines, ttMachineNames, formerMachines, pmError,
-      pmLocationUrl: venue.pinballMapId ? pmLocationUrl(venue.pinballMapId) : null,
+      pmLocationUrl: venue.pinballMapId && linkageVisible ? pmLocationUrl(venue.pinballMapId) : null,
     });
   } catch (err) {
     console.error('Venue machines error:', err);
@@ -533,16 +548,20 @@ router.get('/:id/repair', requireAppUser, async (req, res) => {
     .from(scores)
     .where(and(eq(scores.venueId, venue.id), eq(scores.userId, appUser.id)));
 
+  // Repairers are admins, owners and creators; a creator who isn't the owner of a private venue
+  // gets the same redacted view as anyone else. A no-op for everyone else.
+  const shown = redactVenue(venue, appUser.id, appUser.role === 'admin');
+
   res.json({
     venueId: venue.id,
     name: venue.name,
-    address: venue.address,
-    latitude: venue.latitude,
-    longitude: venue.longitude,
-    hereId: venue.hereId,
-    pinballMapId: venue.pinballMapId,
-    pmMachineCount: venue.pmMachineCount,
-    pmLocationUrl: venue.pinballMapId ? pmLocationUrl(venue.pinballMapId) : null,
+    address: shown.address,
+    latitude: shown.latitude,
+    longitude: shown.longitude,
+    hereId: shown.hereId,
+    pinballMapId: shown.pinballMapId,
+    pmMachineCount: shown.pmMachineCount,
+    pmLocationUrl: shown.pinballMapId ? pmLocationUrl(shown.pinballMapId) : null,
     pmConfigured: isPmConfigured(),
     isAdmin: appUser.role === 'admin',
     scoreCount: Number(total),
@@ -931,6 +950,8 @@ router.post('/:id/repair/place', requireAppUser, async (req, res) => {
     // links Pinball Map and starts re-syncing scores onto what might be a duplicate row.
     const nearbySameName = (await findDuplicateVenues({ name: venue.name, latitude: updated.latitude, longitude: updated.longitude }))
       .filter(d => d.id !== venue.id && d.distance != null);
+    // Not partitionDuplicates(): this sits next to exact coordinates, so even an admin gets the
+    // describeHolder treatment (a residence is never named here), matching the candidate lists.
     const { byPm } = await venuesHolding(venue.id, [], pmPreselect ? [pmPreselect.pinballMapId] : []);
     // Same rule as the candidates: a private venue counts, but is never named next to this position.
     const nearbyViews = nearbySameName.length

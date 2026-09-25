@@ -85,6 +85,9 @@ export default function AddScorePage() {
   const [venueDuplicates, setVenueDuplicates] = useState<
     Array<{ id: number; name: string; address: string | null; distance: number | null }> | null
   >(null);
+  // The same 409 can also say a *private* venue (someone's residence) matches. That arrives with no
+  // details and nothing to pick — only a note, and the user goes on to create their own venue.
+  const [privateVenueNearby, setPrivateVenueNearby] = useState(false);
   const [machineSearch, setMachineSearch] = useState('');
   const [selectedMachine, setSelectedMachine] = useState('');
   const [aiDetectedMachine, setAiDetectedMachine] = useState('');
@@ -504,7 +507,9 @@ export default function AddScorePage() {
     // A 409 here isn't a failure to explain in red text — it's the server saying "you already have
     // this one". Show the matches so the obvious action (pick the existing venue) is one click.
     onError: (e: any) => {
-      setVenueDuplicates(e.code === 'duplicate_venue' ? (e.body?.candidates ?? null) : null);
+      const isDup = e.code === 'duplicate_venue';
+      setVenueDuplicates(isDup ? (e.body?.candidates ?? []) : null);
+      setPrivateVenueNearby(isDup && !!e.body?.privateNearby);
     },
   });
 
@@ -1020,11 +1025,18 @@ export default function AddScorePage() {
                   ))}
                 </div>
               )}
-              {venueDuplicates && venueDuplicates.length > 0 && (
+              {venueDuplicates && (venueDuplicates.length > 0 || privateVenueNearby) && (
                 <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 flex flex-col gap-2">
                   <p className="text-xs text-amber-400">
-                    {venueDuplicates.length === 1 ? 'You already have this venue' : 'You already have venues with this name nearby'}.
-                    Use the existing one, unless this really is a different place.
+                    {venueDuplicates.length > 0 ? (
+                      <>
+                        {venueDuplicates.length === 1 ? 'You already have this venue' : 'You already have venues with this name nearby'}.
+                        Use the existing one, unless this really is a different place.
+                        {privateVenueNearby && ' A private venue with this name is also nearby.'}
+                      </>
+                    ) : (
+                      'A private venue with this name already exists nearby. You can still add yours.'
+                    )}
                   </p>
                   <ul className="flex flex-col gap-1.5">
                     {venueDuplicates.map(d => (
@@ -1061,7 +1073,7 @@ export default function AddScorePage() {
                     })}
                     className="self-start text-xs text-muted-foreground hover:text-white underline transition-colors"
                   >
-                    No, this is a different venue — create it anyway
+                    {venueDuplicates.length > 0 ? 'No, this is a different venue — create it anyway' : 'Create my venue'}
                   </button>
                 </div>
               )}

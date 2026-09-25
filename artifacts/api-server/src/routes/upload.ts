@@ -13,7 +13,7 @@ import { getMachineScoreStats } from '../lib/machineScoreStats.js';
 import { fitUnderAnthropicLimit, TARGET_RAW_BYTES } from '../lib/imageCompress.js';
 import { getNearbyVenues, type Venue } from '../lib/hereApi.js';
 import { findNearestPmLocations, type PmLocation } from '../lib/pinballmapApi.js';
-import { redactVenue } from '../lib/venuePrivacy.js';
+import { redactVenue, canSeeFullVenue } from '../lib/venuePrivacy.js';
 
 const router = Router();
 
@@ -81,17 +81,24 @@ async function getHistoryVenues(lat: number, lng: number, requesterUserId: numbe
       )
     );
 
-  return rows.map(v => {
-    const redacted = redactVenue(v, requesterUserId, isAdmin);
-    return {
-      venueId: v.id,
-      name: v.name,
-      address: redacted.address ?? '',
-      distance: Math.round(haversineM(lat, lng, v.latitude!, v.longitude!)),
-      hereId: v.hereId,
-      source: 'history' as const,
-    };
-  });
+  // The box is drawn around the *raw* coordinates, so returning a residence here — even with its
+  // address redacted — tells anyone whose photo was taken within ~150m that a named private venue
+  // sits right there, and how many metres away. Someone else's residence is left out entirely; its
+  // owner (and admins) still get it suggested. Nothing else can use it anyway: scores can't be filed
+  // under another user's private venue (see mayAttachScoreTo in scores.ts).
+  return rows
+    .filter(v => !(v.isResidence || v.privacyTier !== 'full') || canSeeFullVenue(v, requesterUserId, isAdmin))
+    .map(v => {
+      const redacted = redactVenue(v, requesterUserId, isAdmin);
+      return {
+        venueId: v.id,
+        name: v.name,
+        address: redacted.address ?? '',
+        distance: Math.round(haversineM(lat, lng, v.latitude!, v.longitude!)),
+        hereId: redacted.hereId,
+        source: 'history' as const,
+      };
+    });
 }
 
 function haversineM(lat1: number, lng1: number, lat2: number, lng2: number): number {

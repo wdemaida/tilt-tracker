@@ -77,6 +77,17 @@
 - `redactVenue` nulls it for `hidden`-tier venues: a timezone is far coarser than an address but
   still narrows where someone lives, and that tier promises nothing locational goes out. Routes
   without requester plumbing (`users.ts`, `machines.ts`) do the same in SQL with a CASE.
+- `redactVenue` also nulls **`hereId`, `pinballMapId`, `pmMachineCount`, `pmLocationUrl`** (only
+  keys the row already has) for both restricted tiers: a HERE place id or PM listing resolves to an
+  exact address. `canSeeVenueLinkage()` gates the roster too — `/venues/:id/machines` and
+  `/scores/:id/repair` skip the Pinball Map roster (and former machines) for viewers who couldn't see
+  the venue in full, since a roster identifies the listing.
+- **Scores can't be filed under someone else's private venue** (`mayAttachScoreTo()`, 403
+  `venue_private`): `POST /api/scores` with a `venueId`, or a `venueHereId` whose holder is private,
+  and `PATCH` changing `venueId`. The venues list carries `canAttachScore` so `ScoreVenuePicker`
+  hides those. Upload-flow "history" suggestions (`getHistoryVenues` in `upload.ts`) leave out other
+  users' residences entirely — the 150m box is drawn on raw coordinates, so even a redacted entry
+  told a neighbour a named private venue was there, and how far.
 - `backfill-venue-timezones.ts` filled all 36 pre-existing venues from coordinates (not city/state —
   34 of them have neither). Dry-run by default, re-runnable, `--force` to refresh existing values.
 
@@ -92,6 +103,12 @@
   would block a chain's branch in another city; proximity alone would block genuine neighbours
   ("The Alley Bar" and "Versus" are 156m apart and unrelated). Returns 409 with candidates rather
   than refusing — the client re-sends with `allowDuplicate: true` after the user confirms.
+- **Private matches are never described.** `findDuplicateVenues()` returns raw matches with privacy
+  fields; every caller runs them through `partitionDuplicates()` first. Someone else's residence (or
+  any restricted tier) becomes `privateNearby: true` on the 409 — no id, name, address or distance
+  (a distance from a point the requester chose *is* a location). Its owner and admins still see it
+  as a normal candidate. The 409 is sent for a private-only match too, so the UI can say "a private
+  venue exists nearby" and offer **Create my venue** (re-sends `allowDuplicate`).
 - `normalizeVenueName()` folds case, diacritics, punctuation and a leading "the" only. It must NOT
   strip anything meaningful — "Pinball Palace" and "Pinball Palace North" are different venues.
 - `POST /api/venues` also resolves a real HERE place via `findVenueByName()` (accepted only under

@@ -47,6 +47,41 @@ export interface DuplicateCandidate {
   distance: number | null;
 }
 
+/** A raw match, still carrying the fields that decide whether it may be shown to the requester. */
+export interface DuplicateMatch extends DuplicateCandidate {
+  ownerId: number | null;
+  isResidence: boolean;
+  privacyTier: 'full' | 'city_state' | 'hidden';
+}
+
+/**
+ * Splits raw matches into what the requester may see and an anonymous "a private one exists" flag.
+ *
+ * A residence (or any restricted tier) is never returned to someone who couldn't already see it:
+ * its name, address and — via `distance` from a point the requester chose — its position are exactly
+ * what the tier withholds, and "use this one instead" would let a stranger attach their score to
+ * someone's home. Its owner and admins see it like any other match, so an owner re-adding their own
+ * home is still caught.
+ */
+export function partitionDuplicates(
+  matches: DuplicateMatch[],
+  requesterUserId: number | undefined,
+  isAdmin: boolean,
+): { candidates: DuplicateCandidate[]; privateNearby: boolean } {
+  const candidates: DuplicateCandidate[] = [];
+  let privateNearby = false;
+  for (const m of matches) {
+    const isPrivate = m.isResidence || m.privacyTier !== 'full';
+    const canSee = isAdmin || (requesterUserId != null && m.ownerId === requesterUserId);
+    if (isPrivate && !canSee) {
+      privateNearby = true;
+      continue;
+    }
+    candidates.push({ id: m.id, name: m.name, address: m.address, distance: m.distance });
+  }
+  return { candidates, privateNearby };
+}
+
 /**
  * Venues that look like the one about to be created.
  *
@@ -64,7 +99,7 @@ export interface DuplicateCandidate {
  */
 export async function findDuplicateVenues(
   candidate: { name: string; latitude: number | null; longitude: number | null },
-): Promise<DuplicateCandidate[]> {
+): Promise<DuplicateMatch[]> {
   const target = normalizeVenueName(candidate.name);
   if (!target) return [];
 
@@ -75,10 +110,14 @@ export async function findDuplicateVenues(
       address: venues.address,
       latitude: venues.latitude,
       longitude: venues.longitude,
+      ownerId: venues.ownerId,
+      isResidence: venues.isResidence,
+      privacyTier: venues.privacyTier,
     })
     .from(venues);
 
-  const matches: DuplicateCandidate[] = [];
+  // Raw matches — callers must pass them through partitionDuplicates() before they go out.
+  const matches: DuplicateMatch[] = [];
   for (const v of all) {
     if (normalizeVenueName(v.name) !== target) continue;
 
@@ -87,15 +126,19 @@ export async function findDuplicateVenues(
       v.latitude != null && v.longitude != null;
 
     if (!bothPlaced) {
-      matches.push({ id: v.id, name: v.name, address: v.address, distance: null });
+      matches.push({ ...pick(v), distance: null });
       continue;
     }
 
     const d = distanceM(candidate.latitude!, candidate.longitude!, v.latitude!, v.longitude!);
     if (d <= DUPLICATE_RADIUS_M) {
-      matches.push({ id: v.id, name: v.name, address: v.address, distance: d });
+      matches.push({ ...pick(v), distance: d });
     }
   }
 
   return matches.sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity));
+}
+
+function pick(v: { id: number; name: string; address: string | null; ownerId: number | null; isResidence: boolean; privacyTier: 'full' | 'city_state' | 'hidden' }) {
+  return { id: v.id, name: v.name, address: v.address, ownerId: v.ownerId, isResidence: v.isResidence, privacyTier: v.privacyTier };
 }

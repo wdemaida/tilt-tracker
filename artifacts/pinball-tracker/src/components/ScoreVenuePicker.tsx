@@ -43,6 +43,7 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
   // Set when the server rejects the create as a likely duplicate. Holds the existing venues it
   // matched, so the user can attach one instead of making a second copy.
   const [duplicates, setDuplicates] = useState<DuplicateCandidate[] | null>(null);
+  const [privateNearby, setPrivateNearby] = useState(false);
 
   const { data: venues = [], isLoading } = useQuery<any[]>({
     queryKey: ['venues'],
@@ -80,9 +81,12 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
     // fixed, so chain rather than reporting success off the create.
     onSuccess: (venue: any) => { setDuplicates(null); attach.mutate({ id: venue.id, name: venue.name, timezone: venue.timezone }); },
     onError: (e: any) => {
-      if (e.code === 'duplicate_venue' && e.body?.candidates?.length) {
+      if (e.code === 'duplicate_venue' && (e.body?.candidates?.length || e.body?.privateNearby)) {
         // Not an error the user should have to re-read as prose — show the matches and let them pick.
-        setDuplicates(e.body.candidates);
+        // A private match (someone's residence) arrives only as `privateNearby`, with no details and
+        // nothing to attach to; the user can still create their own venue.
+        setDuplicates(e.body.candidates ?? []);
+        setPrivateNearby(!!e.body.privateNearby);
         setError(null);
       } else {
         setError(e.message ?? 'Could not create that venue');
@@ -94,7 +98,8 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
   // play most?"). Attaching a venue to a score asks a different one — "where was I?" — and the answer
   // is almost always somewhere recent. Sorting here rather than changing the endpoint keeps the
   // Venues page's ordering intact. Venues with no scores yet sort last, alphabetically.
-  const byRecency = useMemo(() => [...venues].sort((a, b) => {
+  // Someone else's residence can't hold your score (the server refuses it), so it isn't offered.
+  const byRecency = useMemo(() => venues.filter(v => v.canAttachScore !== false).sort((a, b) => {
     const at = a.lastPlayedAt ? new Date(a.lastPlayedAt).getTime() : null;
     const bt = b.lastPlayedAt ? new Date(b.lastPlayedAt).getTime() : null;
     if (at === null && bt === null) return a.name.localeCompare(b.name);
@@ -244,10 +249,15 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
             <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 flex flex-col gap-2">
               <p className="flex items-start gap-2 text-xs text-amber-400">
                 <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                <span>
-                  {duplicates.length === 1 ? 'This venue looks like one you already have' : 'These venues look like the one you’re adding'}.
-                  Use the existing one, unless this really is a different place.
-                </span>
+                {duplicates.length > 0 ? (
+                  <span>
+                    {duplicates.length === 1 ? 'This venue looks like one you already have' : 'These venues look like the one you’re adding'}.
+                    Use the existing one, unless this really is a different place.
+                    {privateNearby && ' A private venue with this name is also nearby.'}
+                  </span>
+                ) : (
+                  <span>A private venue with this name already exists nearby. You can still add yours.</span>
+                )}
               </p>
               <ul className="flex flex-col gap-1.5">
                 {duplicates.map(d => (
@@ -276,7 +286,7 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
                 onClick={() => { setError(null); createVenue.mutate(true); }}
                 className="self-start text-xs text-muted-foreground hover:text-white underline disabled:opacity-40 transition-colors"
               >
-                No, this is a different venue — create it anyway
+                {duplicates.length > 0 ? 'No, this is a different venue — create it anyway' : 'Create my venue'}
               </button>
             </div>
           )}
@@ -284,7 +294,7 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
           <div className="flex gap-2">
             <button
               type="button"
-              onClick={() => { setAdding(false); setError(null); setDuplicates(null); }}
+              onClick={() => { setAdding(false); setError(null); setDuplicates(null); setPrivateNearby(false); }}
               className="flex-1 py-2 rounded-lg border border-white/10 text-sm text-muted-foreground hover:text-white transition-colors"
             >
               Cancel
@@ -292,7 +302,7 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
             <button
               type="button"
               disabled={!newName.trim() || !newAddress.trim() || busy}
-              onClick={() => { setError(null); setDuplicates(null); createVenue.mutate(false); }}
+              onClick={() => { setError(null); setDuplicates(null); setPrivateNearby(false); createVenue.mutate(false); }}
               className="flex-1 py-2 rounded-lg bg-venue text-white font-bold text-sm hover:opacity-90 transition-opacity disabled:opacity-50"
             >
               {busy ? 'Saving...' : 'Add & attach'}

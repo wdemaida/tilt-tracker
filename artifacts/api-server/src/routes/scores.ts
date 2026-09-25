@@ -7,7 +7,7 @@ import { addressResolutionBlocker, linkageBlockedByPrivacy } from '../lib/venueA
 import { upsertMachineByName } from '../lib/machineUpsert.js';
 import { getVenueRoster } from '../lib/pmRosterCache.js';
 import { pmLocationUrl, isPmConfigured, PmApiError } from '../lib/pinballmapApi.js';
-import { redactScoreLocation } from '../lib/venuePrivacy.js';
+import { redactScoreLocation, redactVenue, canSeeVenueLinkage, mayAttachScoreTo } from '../lib/venuePrivacy.js';
 import { getAuth } from '@clerk/express';
 import { parseScore } from '../lib/scoreRead.js';
 
@@ -27,6 +27,11 @@ async function resolveRequester(req: any): Promise<{ id: number; role: string } 
 }
 
 const router = Router();
+
+// Scores can't be filed under someone else's private venue — see mayAttachScoreTo (venuePrivacy.ts).
+function refusePrivateVenue(res: any) {
+  return res.status(403).json({ error: 'That venue is private — only its owner can log scores there', code: 'venue_private' });
+}
 
 // GET /api/scores — all scores, newest first; ?mine=true filters to caller
 router.get('/', async (req, res) => {
@@ -108,6 +113,13 @@ router.post('/', requireAppUser, async (req, res) => {
 
     // If a venue name was provided but no existing venueId, upsert a venue record
     if (venueName && !resolvedVenueId) {
+      // The upsert below conflict-matches on here_id and would file this score under whatever venue
+      // holds it (renaming it on the way). A private venue can't normally hold one — linking is
+      // refused for restricted tiers — but one linked first and made private later still could.
+      if (venueHereId) {
+        const [holder] = await db.select().from(venues).where(eq(venues.hereId, venueHereId)).limit(1);
+        if (holder && !mayAttachScoreTo(holder, appUser)) return refusePrivateVenue(res);
+      }
       const [venue] = await db
         .insert(venues)
         .values({
@@ -137,6 +149,8 @@ router.post('/', requireAppUser, async (req, res) => {
         .returning();
       resolvedVenueId = venue?.id;
     } else if (resolvedVenueId) {
+      const [target] = await db.select().from(venues).where(eq(venues.id, resolvedVenueId)).limit(1);
+      if (target && !mayAttachScoreTo(target, appUser)) return refusePrivateVenue(res);
       // Backfill pinballMapId if we now know it and the venue didn't have it
       if (venuePinballMapId) {
         await db.update(venues)
@@ -203,6 +217,9 @@ router.patch('/:id', requireAppUser, async (req, res) => {
     } else {
       const [venue] = await db.select().from(venues).where(eq(venues.id, Number(venueId))).limit(1);
       if (!venue) return res.status(400).json({ error: 'Venue not found' });
+      // Checked against the *caller*, not the score's author: an admin editing someone's score may
+      // attach it anywhere, but no user can file a score under someone else's private residence.
+      if (venue.id !== existing.venueId && !mayAttachScoreTo(venue, appUser)) return refusePrivateVenue(res);
       updates.venueId = venue.id;
       // venueName is a denormalized snapshot the score list renders directly — keep it in step.
       updates.venueName = venue.name;
@@ -299,7 +316,12 @@ router.get('/:id/repair', requireAppUser, async (req, res) => {
   let rosterCount = 0;
   let pmError: string | null = null;
 
-  if (venue.pinballMapId) {
+  const isAdminCaller = appUser.role === 'admin';
+  // The roster identifies the Pinball Map listing, so a private venue's stays with its owner/admins.
+  const linkageVisible = canSeeVenueLinkage(venue, appUser.id, isAdminCaller);
+  const shown = redactVenue(venue, appUser.id, isAdminCaller);
+
+  if (venue.pinballMapId && linkageVisible) {
     try {
       const { xrefs } = await getVenueRoster(venue.pinballMapId);
       rosterCount = xrefs.length;
@@ -315,10 +337,10 @@ router.get('/:id/repair', requireAppUser, async (req, res) => {
     venue: {
       id: venue.id,
       name: venue.name,
-      address: venue.address,
-      hereId: venue.hereId,
-      pinballMapId: venue.pinballMapId,
-      pmLocationUrl: venue.pinballMapId ? pmLocationUrl(venue.pinballMapId) : null,
+      address: shown.address,
+      hereId: shown.hereId,
+      pinballMapId: shown.pinballMapId,
+      pmLocationUrl: shown.pinballMapId ? pmLocationUrl(shown.pinballMapId) : null,
       // Same rule as GET /api/venues/:id/repair — step 1 becomes a place search when true.
       needsAddress: addressResolutionBlocker(venue, appUser) === null,
       linkageBlocked: linkageBlockedByPrivacy(venue),
