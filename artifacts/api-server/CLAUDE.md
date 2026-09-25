@@ -111,6 +111,14 @@
   segment displays get caught mid-refresh by a phone shutter; the prompt tells the model to never
   guess a digit. `upload.ts` returns `score` only when the template has no `?` (older clients) and
   the full read as `scoreRead`. The template's `status` is derived in code, not trusted from the model.
+- **A partly lit segment digit is `?`, never a low-confidence guess** — half a 2 reads as a 7, half an 8
+  as 0/6/9 (the Black Knight test photo read "72057??" for 7,205,2?? until this rule). `lowConfidence`
+  is only for fully lit digits obscured by glare/blur/angle.
+- The model also returns a literal `displayText` ("7205,?"), and `templateFromDisplayText()` applies
+  the comma rule in code: the group after the last comma always has three positions. The model
+  reliably transcribes the comma but then undercounts in its own template ("7205?"); the transcription
+  wins whenever it's at least as long. `temperature: 0` — without it the same photo came back as
+  7205?, 7205?? and 7205??? across runs.
 - **Every route that accepts a score goes through `parseScore()`** (scores POST/PATCH, Pinball Map
   submit): safe positive integers only, as a number or a `^\d+$` string, else 400 `invalid_score`.
 - "May be missing digits" plausibility: `checkPlausibility()` flags a read whose *upper bound*

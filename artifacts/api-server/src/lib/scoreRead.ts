@@ -68,11 +68,41 @@ export function sanitizeWithIndexMap(raw: unknown): { template: string; indexMap
   };
 }
 
+/**
+ * Derives a template from the model's literal transcription of the display ("7,205,?__"), applying
+ * the one counting rule models get wrong most: commas sit every three digits from the right, so the
+ * group after the last comma always has exactly three positions. A partly lit digit followed by
+ * darkness after "7,205," is therefore "7205???", however many dark windows the model thought it saw.
+ * Returns '' when the transcription has no digits.
+ */
+export function templateFromDisplayText(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  // Leading dark windows ("_") are blank positions left of a right-aligned score, not part of it. A
+  // leading "?" is different: a partly lit digit, i.e. a real position.
+  const cleaned = raw.replace(/[\s.'’]/g, '').replace(/^[_,]+/, '')
+    .replace(/[xX_*\-]/g, '?').replace(/[^0-9?,]/g, '');
+  if (!/[0-9]/.test(cleaned)) return '';
+  let body = cleaned;
+  const lastComma = body.lastIndexOf(',');
+  if (lastComma >= 0) {
+    const tail = body.length - lastComma - 1;
+    if (tail < 3) body += '?'.repeat(3 - tail);
+  }
+  return sanitizeTemplate(body.replace(/,/g, ''));
+}
+
 /** Sanitizes one raw per-image read from the model. */
 export function sanitizeImageRead(raw: {
-  template?: unknown; lowConfidence?: unknown; possiblyTruncated?: unknown; truncationReason?: unknown;
+  template?: unknown; displayText?: unknown; lowConfidence?: unknown; possiblyTruncated?: unknown; truncationReason?: unknown;
 }): ImageRead {
-  const { template, indexMap } = sanitizeWithIndexMap(raw.template);
+  const fromModel = sanitizeWithIndexMap(raw.template);
+  const fromDisplay = templateFromDisplayText(raw.displayText);
+  // Prefer the literal transcription whenever it's at least as long: it's the model's direct reading
+  // (so a partly lit digit it wrote as "?" there isn't "improved" into a guess in the template), and
+  // the comma rule above fixes its position count. Both start at the most-significant digit, so the
+  // template's lowConfidence indexes still line up.
+  const template = fromDisplay && fromDisplay.length >= fromModel.template.length ? fromDisplay : fromModel.template;
+  const indexMap = fromModel.indexMap;
   const mappedLow = Array.isArray(raw.lowConfidence)
     ? raw.lowConfidence.map(v => (Number.isInteger(Number(v)) ? indexMap[Number(v)] ?? -1 : -1))
     : [];

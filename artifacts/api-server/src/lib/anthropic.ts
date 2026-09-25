@@ -49,9 +49,13 @@ const scoreReadTool: Anthropic.Tool & { strict?: boolean } = {
         items: {
           type: 'object',
           additionalProperties: false,
-          required: ['imageIndex', 'template', 'lowConfidence', 'status', 'possiblyTruncated', 'truncationReason'],
+          required: ['imageIndex', 'displayText', 'template', 'lowConfidence', 'status', 'possiblyTruncated', 'truncationReason'],
           properties: {
             imageIndex: { type: 'integer' },
+            displayText: {
+              type: 'string',
+              description: 'Transcribe the score display left to right BEFORE writing template: fully lit digits as digits, commas exactly where they appear, "?" for a partly lit digit, "_" for each dark digit window or position. Example: "4,8?_,___".',
+            },
             template: {
               type: 'string',
               description: 'Score, most-significant digit first, digits 0-9 plus "?" for each position that exists but is dark/unreadable. No commas or spaces. Example: "72052??". Empty string if no score display is visible.',
@@ -59,7 +63,7 @@ const scoreReadTool: Anthropic.Tool & { strict?: boolean } = {
             lowConfidence: {
               type: 'array',
               items: { type: 'integer' },
-              description: '0-based indexes into template of digits you read but are unsure of (e.g. half-lit, partially obscured).',
+              description: '0-based indexes into template of FULLY-LIT digits that are hard to see for another reason (glare, blur, viewing angle). Never a partially lit segment digit — that is "?".',
             },
             status: { type: 'string', enum: ['complete', 'partial', 'unreadable'] },
             possiblyTruncated: {
@@ -80,13 +84,16 @@ const scoreReadTool: Anthropic.Tool & { strict?: boolean } = {
 const PROMPT = `These are photos of a pinball machine's score display, all of the same game. Read the score.
 
 How old displays fail in photos:
-- Machines from the 1970s to early 1990s use multiplexed 7-segment LED or gas-plasma (Panaglas) displays. They light one digit (or one bank of digits) at a time, many times a second. A phone's fast shutter often catches the display mid-refresh, so some digit positions are completely dark, and a digit may be half-lit (dimmer, or with some segments missing).
+- Machines from the 1970s to early 1990s use multiplexed 7-segment LED or gas-plasma (Panaglas) displays. They light one digit (or one bank of digits) at a time, many times a second. A phone's fast shutter often catches the display mid-refresh, so some digit positions are completely dark, and a digit may be caught partially lit (some of its segments dark or dim).
 - Scores are right-aligned: the ones digit is always the rightmost position. Leading positions to the left of the score are blank because the score is shorter, not because they are unread.
 - A dark position to the RIGHT of any lit digit is an unread digit. It exists — record it as "?". Example: a display showing "35,1" lit followed by two dark digit positions is the 5-digit score "351??".
-- Count positions using the physical digit windows, visible unlit segment outlines, and the comma separators (which sit every three digits from the right). A comma right after the last lit digit means at least three more digits follow it.
+- Count positions using the physical digit windows, visible unlit segment outlines, and the comma separators. Commas sit every three digits counting from the right, so every group AFTER a comma has exactly three positions, and the score always ends with a complete group. If the last visible comma is followed by fewer than three fully lit digits, the rest of that group still exists: e.g. lit "48," then one partly lit digit then darkness is "48???" — the partly lit digit and two dark positions make up the final group of three. A comma right after the last lit digit means three more positions follow it.
+- A partly lit digit is still one position — write "?" for it, don't drop it.
 
 Rules:
-- NEVER guess a digit. If you cannot see it, use "?". If it is mostly legible but you are not sure (half-lit, glare, motion blur), write your best reading and put its index in lowConfidence.
+- A partially lit segment digit is ambiguous, not "mostly legible": half of a 2 looks like a 7, a partial 8 looks like 0, 6 or 9, a partial 9 looks like a 4 or 7. So on segment/plasma displays, any digit whose segments are not ALL clearly and fully lit (same brightness as the fully lit digits beside it) is "?" — never your best reading of it.
+- NEVER guess a digit. If you cannot see it, or it is only partly lit, use "?".
+- lowConfidence is only for a digit that IS fully lit but hard to see for another reason — glare, blur, a steep viewing angle, something partly in front of it. Write your reading and put its index in lowConfidence.
 - template contains only digits and "?", most-significant first, no commas or spaces.
 - status: "complete" if every position is read, "partial" if any "?" remains, "unreadable" if you cannot read any digit of the score.
 - possiblyTruncated: true if the score may have MORE positions than your template — e.g. a separator after the last lit digit you didn't account for, unlit digit windows to the right whose count you couldn't pin down, or an old segment display where the rightmost digits could be dark without a visible outline. Explain briefly in truncationReason.
@@ -96,7 +103,8 @@ Rules:
 
 Call ${TOOL_NAME} with one read per image.`;
 
-export async function extractScoreReads(images: ExtractionImage[]): Promise<ExtractedScoreReads> {
+/** `onRawInput` is a debugging hook (used by local test scripts) that sees the unsanitized tool input. */
+export async function extractScoreReads(images: ExtractionImage[], onRawInput?: (raw: unknown) => void): Promise<ExtractedScoreReads> {
   const content: Anthropic.ContentBlockParam[] = [];
   images.forEach((img, i) => {
     if (images.length > 1) content.push({ type: 'text', text: `Image ${i}:` });
@@ -110,12 +118,15 @@ export async function extractScoreReads(images: ExtractionImage[]): Promise<Extr
   const message = await client.messages.create({
     model: MODEL,
     max_tokens: 2048,
+    // A transcription task — the same photo should read the same way every time.
+    temperature: 0,
     tools: [scoreReadTool],
     tool_choice: { type: 'tool', name: TOOL_NAME },
     messages: [{ role: 'user', content }],
   });
 
   const toolUse = message.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === TOOL_NAME);
+  onRawInput?.(toolUse?.input);
   const input = (toolUse?.input ?? {}) as {
     machineName?: unknown; playedAt?: unknown; bestImageIndex?: unknown; reads?: unknown;
   };
