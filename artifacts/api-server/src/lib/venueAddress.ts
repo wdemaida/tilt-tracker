@@ -201,12 +201,44 @@ export interface HereCandidateLike {
 export function pickConfidentHereMatch<T extends HereCandidateLike>(venueName: string, candidates: T[]): T | null {
   const best = candidates[0];
   if (!best || !best.hereId) return null;
-  const a = best.name.toLowerCase();
-  const b = venueName.toLowerCase();
-  const nameMatches = a.includes(b) || b.includes(a);
-  if (!nameMatches) return null;
+  if (!hereNamesOverlap(venueName, best.name)) return null;
   if (best.distance >= 500) return null;
   if (candidates.length !== 1 && best.distance >= 100) return null;
+  return best;
+}
+
+/** One name contains the other, case-insensitively — the overlap rule every HERE auto-attach uses. */
+export function hereNamesOverlap(venueName: string, placeName: string): boolean {
+  const a = placeName.trim().toLowerCase();
+  const b = venueName.trim().toLowerCase();
+  if (!a || !b) return false;
+  return a.includes(b) || b.includes(a);
+}
+
+/** Metres. A HERE place further than this from the typed address is a different venue. */
+const ADOPT_HERE_RADIUS_M = 250;
+
+/**
+ * The HERE place a venue created through `POST /api/venues` may adopt at birth, or null.
+ *
+ * **Never for a private venue** (a residence, or any restricted tier): a HERE place id is a location,
+ * and private venues carry no linkage. Adopting one used to hand a new residence the id of whatever
+ * shop sat within 250m, which also leaked a bit to others — a public venue created near that shop
+ * would come back without its HERE id, and a score's new venue there would visibly lack one.
+ *
+ * For a public venue, the closest result must be under 250m **and** its name must overlap the
+ * venue's (same rule as pickConfidentHereMatch) — distance alone attached the nearest POI whatever
+ * it was. Whether another venue already holds the id is the caller's check (it needs the database).
+ */
+export function adoptableHereMatch<T extends HereCandidateLike>(
+  venue: { name: string; isResidence: boolean; privacyTier: 'full' | 'city_state' | 'hidden' },
+  candidates: T[],
+): T | null {
+  if (venue.isResidence || venue.privacyTier !== 'full') return null;
+  const best = candidates[0];
+  if (!best?.hereId) return null;
+  if (!(best.distance < ADOPT_HERE_RADIUS_M)) return null;
+  if (!hereNamesOverlap(venue.name, best.name)) return null;
   return best;
 }
 

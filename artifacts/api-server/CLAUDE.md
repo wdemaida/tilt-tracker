@@ -128,9 +128,12 @@
   admins keep the full candidates for their own private venues. Public venues unchanged.
 - `normalizeVenueName()` folds case, diacritics, punctuation and a leading "the" only. It must NOT
   strip anything meaningful — "Pinball Palace" and "Pinball Palace North" are different venues.
-- `POST /api/venues` also resolves a real HERE place via `findVenueByName()` (accepted only under
-  250m, and only if no venue already holds that `here_id`) so new venues carry a `here_id` from
-  birth and the unique index finally applies to them too.
+- `POST /api/venues` also resolves a real HERE place via `findVenueByName()` so new venues carry a
+  `here_id` from birth and the unique index finally applies to them too. `adoptableHereMatch()`
+  decides: **never for a private venue** (residence or restricted tier — it used to adopt the
+  nearest shop's id, breaking "private venues carry no linkage" and leaking a bit to anyone creating
+  a venue near that shop); for public ones the closest result must be under 250m **and** its name
+  must overlap (`hereNamesOverlap`, the pickConfidentHereMatch rule), and no venue may already hold it.
 
 ## HERE vs Pinball Map — what each is load-bearing for
 - **Pinball Map is the functional dependency**: it supplies the machine roster, so machine matching

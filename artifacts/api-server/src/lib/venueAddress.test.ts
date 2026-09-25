@@ -221,3 +221,42 @@ test('isUniqueViolation recognises 23505 directly or nested as a cause', () => {
   assert.equal(isUniqueViolation(new Error('boom')), false);
   assert.equal(isUniqueViolation(null), false);
 });
+
+// --- HERE-id adoption on POST /api/venues (review follow-up, 2026-09-25) --------------------------
+
+const { adoptableHereMatch, hereNamesOverlap } = await import('./venueAddress.js');
+
+const shop = (name: string, distance: number, hereId: string | null = 'here:pds:place:shop') => ({ name, distance, hereId });
+const pub = (name: string) => ({ name, isResidence: false, privacyTier: 'full' as const });
+
+test('adoptableHereMatch: a private venue never adopts a HERE id, even an exact-name one next door', () => {
+  const candidates = [shop("Will's Basement", 5)];
+  assert.equal(adoptableHereMatch({ name: "Will's Basement", isResidence: true, privacyTier: 'hidden' }, candidates), null);
+  assert.equal(adoptableHereMatch({ name: "Will's Basement", isResidence: true, privacyTier: 'full' }, candidates), null);
+  assert.equal(adoptableHereMatch({ name: "Will's Basement", isResidence: false, privacyTier: 'city_state' }, candidates), null);
+  // The review's case: a new residence 40m from an unrelated shop.
+  assert.equal(adoptableHereMatch({ name: 'Home', isResidence: true, privacyTier: 'hidden' }, [shop('Corner Pharmacy', 40)]), null);
+});
+
+test('adoptableHereMatch: a public venue needs the name to overlap, not just proximity', () => {
+  assert.equal(adoptableHereMatch(pub('Logan Arcade'), [shop('Corner Pharmacy', 20)]), null);
+  assert.deepEqual(adoptableHereMatch(pub('Logan Arcade'), [shop('Logan Arcade', 20)]), shop('Logan Arcade', 20));
+  assert.ok(adoptableHereMatch(pub('special when lit'), [shop('Special When Lit Pinball', 46)]));
+});
+
+test('adoptableHereMatch: public venue still limited to under 250m and a real HERE id', () => {
+  assert.equal(adoptableHereMatch(pub('Logan Arcade'), [shop('Logan Arcade', 250)]), null);
+  assert.ok(adoptableHereMatch(pub('Logan Arcade'), [shop('Logan Arcade', 249)]));
+  assert.equal(adoptableHereMatch(pub('Logan Arcade'), [shop('Logan Arcade', 10, null)]), null);
+  assert.equal(adoptableHereMatch(pub('Logan Arcade'), []), null);
+  // Only the closest result is considered — a matching name further down the list isn't adopted.
+  assert.equal(adoptableHereMatch(pub('Logan Arcade'), [shop('Corner Pharmacy', 10), shop('Logan Arcade', 30)]), null);
+});
+
+test('hereNamesOverlap', () => {
+  assert.equal(hereNamesOverlap('Versus', 'VERSUS Arcade Bar'), true);
+  assert.equal(hereNamesOverlap('Headquarters Beercade', 'Headquarters'), true);
+  assert.equal(hereNamesOverlap('Versus', 'The Alley Bar'), false);
+  assert.equal(hereNamesOverlap('', 'Anything'), false);
+  assert.equal(hereNamesOverlap('Versus', '  '), false);
+});

@@ -16,7 +16,7 @@ import { createRateLimiter } from '../lib/rateLimit.js';
 import { canRepairVenue, buildResyncPreview, applyResync, reenrichMachines } from '../lib/venueRepair.js';
 import {
   addressResolutionBlocker, pmLocationToPlace, formatPmAddress, buildManualAddressQuery,
-  isPreciseGeocode, pickConfidentHereMatch, stripPlaceNamePrefix, venueListFlags, describeHolder,
+  isPreciseGeocode, pickConfidentHereMatch, adoptableHereMatch, stripPlaceNamePrefix, venueListFlags, describeHolder,
   linkageBlockedByPrivacy, isUniqueViolation, type AddressBlocker, type HolderView, type PrivacyFlags,
 } from '../lib/venueAddress.js';
 import { getVenueRoster } from '../lib/pmRosterCache.js';
@@ -153,11 +153,16 @@ router.post('/', requireAppUser, async (req, res) => {
     // index can never fire for it (Postgres treats NULL != NULL), which is half of why duplicates
     // were possible at all. Best-effort: a venue with no HERE match is still worth creating, and the
     // name+proximity check above remains the guard that actually holds.
+    // Private venues never adopt one (no HERE lookup at all); public ones need a close result whose
+    // name overlaps — see adoptableHereMatch.
     let hereId: string | null = null;
-    if (geocoded) {
-      const [match] = await findVenueByName(name, geocoded.lat, geocoded.lng, 5);
-      // Only adopt a close, confidently-matched place — a 1.5km "nearby" hit is a different venue.
-      if (match?.hereId && match.distance < 250) {
+    const isPrivateNew = !!isResidence || tier !== 'full';
+    if (geocoded && !isPrivateNew) {
+      const match = adoptableHereMatch(
+        { name, isResidence: !!isResidence, privacyTier: tier },
+        await findVenueByName(name, geocoded.lat, geocoded.lng, 5),
+      );
+      if (match?.hereId) {
         const existing = await db.select({ id: venues.id }).from(venues)
           .where(eq(venues.hereId, match.hereId)).limit(1);
         if (existing.length === 0) hereId = match.hereId;
