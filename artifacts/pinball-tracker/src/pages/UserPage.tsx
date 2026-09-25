@@ -3,6 +3,8 @@ import { useParams, Link } from 'wouter';
 import { User, MapPin, Clock, Home } from 'lucide-react';
 import { formatScoreTime } from '../lib/scoreTime';
 import { useApi } from '../lib/useApi';
+import { usePodMembership } from '../lib/myPods';
+import PodMemberIcons from '../components/PodMemberIcons';
 
 export default function UserPage() {
   const { username } = useParams<{ username: string }>();
@@ -13,6 +15,9 @@ export default function UserPage() {
     queryKey: ['user', username],
     queryFn: () => api.users.get(username),
   });
+  // Only the viewer's own pods; empty for signed-out viewers and on your own profile. Every score on
+  // this page is the profile user's, so the header is the only place the icons go.
+  const podMembership = usePodMembership();
 
   if (isLoading) return <p className="text-muted-foreground">Loading...</p>;
   if (!data) return <p className="text-muted-foreground">User not found.</p>;
@@ -27,7 +32,11 @@ export default function UserPage() {
         </div>
         <div>
           <h1 className="text-3xl font-black uppercase tracking-widest text-white">{user.displayName}</h1>
-          <p className="text-sm text-muted-foreground">@{user.username} · {scores.length} scores</p>
+          <p className="text-sm text-muted-foreground flex items-center gap-1.5 flex-wrap">
+            <span>@{user.username}</span>
+            <PodMemberIcons pods={podMembership.get(user.username)} />
+            <span>· {scores.length} scores</span>
+          </p>
         </div>
       </div>
 

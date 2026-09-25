@@ -1,6 +1,8 @@
 import { Link } from 'wouter';
 import { MapPin, Clock, Pencil, Trash2, Trophy, Home } from 'lucide-react';
 import { formatScoreTime, zoneAbbreviation } from '../lib/scoreTime';
+import PodMemberIcons from './PodMemberIcons';
+import type { PodRef } from '../lib/myPods';
 
 interface ScoreCardProps {
   id: number;
@@ -20,11 +22,14 @@ interface ScoreCardProps {
   displayName: string;
   isHighScore?: boolean;
   isCurrentUser?: boolean;
+  /** The viewer's pods this player is in — `usePodMembership().get(username)` from the page, so the
+   *  map is built once per list rather than per tile. Omit to show no icons. */
+  pods?: PodRef[];
   onEdit?: () => void;
   onDelete?: () => void;
 }
 
-export default function ScoreCard({ id: _id, machineName, score, playedAt, createdAt, type, venueId, venueName, venueTimezone, venueIsResidence, photoThumbnail, username, isHighScore, isCurrentUser, onEdit, onDelete }: ScoreCardProps) {
+export default function ScoreCard({ id: _id, machineName, score, playedAt, createdAt, type, venueId, venueName, venueTimezone, venueIsResidence, photoThumbnail, username, isHighScore, isCurrentUser, pods, onEdit, onDelete }: ScoreCardProps) {
   // Only shown when the venue's clock differs from the reader's, so the usual case stays quiet.
   const zone = zoneAbbreviation(playedAt, venueTimezone);
   return (
@@ -94,12 +99,15 @@ export default function ScoreCard({ id: _id, machineName, score, playedAt, creat
         )}
       </div>
 
-      <div className="pt-1 border-t border-white/10 flex items-center justify-between">
-        <Link href={`/users/${username}`} className="text-xs text-username hover:text-username/80 transition-colors">
-          @{username}
-        </Link>
+      <div className="pt-1 border-t border-white/10 flex items-center justify-between gap-2">
+        <span className="inline-flex items-center gap-1.5 min-w-0">
+          <Link href={`/users/${username}`} title={`@${username}`} className="text-xs text-username hover:text-username/80 transition-colors truncate">
+            @{username}
+          </Link>
+          <PodMemberIcons pods={pods} />
+        </span>
         {createdAt && (
-          <span className="text-xs text-muted-foreground/60">
+          <span className="text-xs text-muted-foreground/60 flex-shrink-0 whitespace-nowrap">
             added: {formatScoreTime(createdAt, null, 'MMM d · h:mm a')}
           </span>
         )}
