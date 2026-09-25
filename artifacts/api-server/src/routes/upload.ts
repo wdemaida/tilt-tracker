@@ -14,6 +14,9 @@ import { fitUnderAnthropicLimit, TARGET_RAW_BYTES } from '../lib/imageCompress.j
 import { getNearbyVenues, type Venue } from '../lib/hereApi.js';
 import { findNearestPmLocations, type PmLocation } from '../lib/pinballmapApi.js';
 import { redactVenue } from '../lib/venuePrivacy.js';
+import {
+  SlidingRateLimiter, TtlCache, cachedByCell, rateLimitMessage, NEARBY_RATE_WINDOWS, NEARBY_CACHE_TTL_MS,
+} from '../lib/nearbyLookup.js';
 
 const router = Router();
 
@@ -116,13 +119,60 @@ function attachPinballMapIds(venueList: Venue[], pmLocations: PmLocation[]): Ven
   });
 }
 
+interface ExternalVenues {
+  here: Venue[];
+  pmLocations: PmLocation[];
+  /** False when the Pinball Map call failed — a result that must not be cached. */
+  pmOk: boolean;
+}
+type ExternalLookup = (lat: number, lng: number) => Promise<ExternalVenues>;
+
+async function fetchExternalVenues(lat: number, lng: number): Promise<ExternalVenues> {
+  let pmOk = true;
+  const [here, pmLocations] = await Promise.all([
+    getNearbyVenues(lat, lng),
+    // Venue suggestions are the point of this call; Pinball Map ids are a bonus on top. If PM is
+    // down or the api_token is missing, the user should still get their venue list.
+    findNearestPmLocations(lat, lng).catch(err => {
+      pmOk = false;
+      console.error('Pinball Map lookup failed during venue suggestion:', err?.message ?? err);
+      return [] as PmLocation[];
+    }),
+  ]);
+  return { here, pmLocations, pmOk };
+}
+
+// "Use my current location" guards — see nearbyLookup.ts. One lookup per ~110m cell per 10 minutes
+// (in flight or done), so repeat taps don't re-hit HERE or Pinball Map.
+const nearbyLimiter = new SlidingRateLimiter(NEARBY_RATE_WINDOWS);
+const nearbyCache = new TtlCache<Promise<ExternalVenues>>(NEARBY_CACHE_TTL_MS);
+setInterval(() => { nearbyLimiter.sweep(); nearbyCache.sweep(); }, 10 * 60_000).unref();
+
+// Don't keep a PM failure, or an empty HERE answer (which is how HERE failures surface), for 10 min.
+const externalVenuesByCell = cachedByCell(fetchExternalVenues, nearbyCache, r => r.pmOk && r.here.length > 0);
+
+const cachedExternalVenues: ExternalLookup = async (lat, lng) => {
+  const result = await externalVenuesByCell(lat, lng);
+  // HERE's distances were measured from whoever filled the cell; re-measure from this point.
+  return {
+    ...result,
+    here: result.here.map(v => (v.venueLat != null && v.venueLng != null
+      ? { ...v, distance: Math.round(haversineM(lat, lng, v.venueLat, v.venueLng)) }
+      : v)),
+  };
+};
+
 /**
  * Venue suggestions around a point: the requester's-eyes view of venues already in TiltTrack
  * (redacted per privacy tier), then HERE places not already listed, with Pinball Map ids attached.
  * Shared by the photo-GPS path (`POST /`) and the "Use my current location" fallback
- * (`GET /nearby-venues`), so both produce exactly the same list for the same point.
+ * (`POST /nearby-venues`), so both produce exactly the same list for the same point.
+ * `external` swaps in how the HERE / Pinball Map half is fetched — the nearby route passes its
+ * cached version; history venues are always read fresh, since they're redacted per requester.
  */
-async function suggestVenuesNear(req: Request, lat: number, lng: number): Promise<Venue[]> {
+async function suggestVenuesNear(
+  req: Request, lat: number, lng: number, external: ExternalLookup = fetchExternalVenues,
+): Promise<Venue[]> {
   const { userId: clerkId } = getAuth(req);
   let requesterUserId: number | undefined;
   let isAdmin = false;
@@ -132,15 +182,9 @@ async function suggestVenuesNear(req: Request, lat: number, lng: number): Promis
     isAdmin = u?.role === 'admin';
   }
 
-  const [history, here, pmLocations] = await Promise.all([
+  const [history, { here, pmLocations }] = await Promise.all([
     getHistoryVenues(lat, lng, requesterUserId, isAdmin),
-    getNearbyVenues(lat, lng),
-    // Venue suggestions are the point of this call; Pinball Map ids are a bonus on top. If PM is
-    // down or the api_token is missing, the user should still get their venue list.
-    findNearestPmLocations(lat, lng).catch(err => {
-      console.error('Pinball Map lookup failed during venue suggestion:', err?.message ?? err);
-      return [] as PmLocation[];
-    }),
+    external(lat, lng),
   ]);
 
   // History venues first; de-duplicate HERE results by hereId and name
@@ -284,17 +328,28 @@ function differentGamesWarning(meta: PhotoMeta[]): string | null {
 /**
  * Venue suggestions for the device's current position — the wizard's fallback when none of the
  * photos carried GPS ("Use my current location"). Read-only: the coordinates are used for this
- * lookup and nothing else. They are never stored, never logged, and never become the score's
- * location — the client keeps them out of the score it saves, too.
+ * lookup and nothing else — not stored, and never the score's location (the client keeps them out
+ * of the score it saves, too).
+ *
+ * POST with a JSON body, not a query string, so the point stays out of URL/access logs; the client
+ * also rounds it to 4 decimals (~11m) first. It does leave this server as the `at` parameter of the
+ * HERE and Pinball Map requests — that's the lookup — and this route writes it to no log of its own.
+ * Rate-limited per user and cached per ~110m cell — see nearbyLookup.ts.
  */
-router.get('/nearby-venues', requireAuth, async (req, res) => {
-  const lat = toFiniteOrNull(req.query.lat);
-  const lng = toFiniteOrNull(req.query.lng);
+router.post('/nearby-venues', requireAuth, async (req, res) => {
+  const lat = toFiniteOrNull(req.body?.lat);
+  const lng = toFiniteOrNull(req.body?.lng);
   if (lat == null || lng == null || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
     return res.status(400).json({ error: 'lat and lng are required', code: 'invalid_coordinates' });
   }
+  const { userId: clerkId } = getAuth(req);
+  const decision = nearbyLimiter.take(clerkId ?? req.ip ?? 'anonymous');
+  if (!decision.ok) {
+    res.set('Retry-After', String(Math.ceil(decision.retryAfterMs / 1000)));
+    return res.status(429).json({ error: rateLimitMessage(decision.retryAfterMs), code: 'rate_limited' });
+  }
   try {
-    res.json({ venues: await suggestVenuesNear(req, lat, lng) });
+    res.json({ venues: await suggestVenuesNear(req, lat, lng, cachedExternalVenues) });
   } catch (err: any) {
     console.error('Nearby venue lookup failed:', err?.message ?? err);
     res.status(502).json({ error: "Couldn't look up venues near you — pick one below instead" });

@@ -94,9 +94,16 @@
 - "Use my current location" is offered only when the photo looks recent (capture time within 2h)
   or has no time and came from the camera input (`canOfferCurrentLocation`). Old photos get "Photo
   taken earlier? Pick the venue below." It fires `getCurrentPosition` **only on tap** and calls
-  `GET /api/upload/nearby-venues`, which shares `suggestVenuesNear()` with the photo path.
-- **The device position is never the score's location.** It lives in `deviceCoords` (lookup and
-  address-autocomplete bias only) — never in `gps`, which is spread into `POST /api/scores`.
+  `POST /api/upload/nearby-venues` (JSON body, coords rounded to 4 decimals client-side), which
+  shares `suggestVenuesNear()` with the photo path. It's rate-limited per user (10/min, 100/day →
+  429, whose message the notice shows) and cached per ~110m cell for 10 minutes.
+- **The device position is never the score's location.** It lives in `deviceCoords` (venue lookup
+  and address-autocomplete bias only) — never in `gps`, which is spread into `POST /api/scores`.
+  Cleared on a replace upload.
+- Both lookups land after an await, so they read venue state from `latestVenueRef`, never the
+  closure: a venue the user picked or typed meanwhile (search text set) is never overwritten. A GPS
+  photo added after a current-location lookup replaces the "Near You" list; the device lookup's own
+  auto-pick (`deviceAutoPickRef`) may be replaced, a user's pick may not.
 - On iPhone, photos from the `capture` input usually arrive without GPS, so the camera path is where
   the fallback matters most. Step 1 says "Location is off for this site…" only when the Permissions
   API reports `denied`; unknown/unsupported shows nothing.

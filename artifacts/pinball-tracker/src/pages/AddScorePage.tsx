@@ -85,11 +85,17 @@ export default function AddScorePage() {
   const [gps, setGps] = useState<{ latitude: number; longitude: number } | null>(null);
   // No-GPS fallback: whether the picked photos had location, and the "Use my current location" flow.
   // `deviceCoords` biases venue lookups only; it is never saved on the score. See photoLocation.ts.
-  const [photoLocation, setPhotoLocation] = useState<PhotoLocationInfo | null>(null);
+  const [photoLocation, setPhotoLocation] = useState<(PhotoLocationInfo & { count: number }) | null>(null);
   const [currentLocation, setCurrentLocation] = useState<CurrentLocationState>({ status: 'idle' });
   const [deviceCoords, setDeviceCoords] = useState<{ latitude: number; longitude: number } | null>(null);
   const [nearbySource, setNearbySource] = useState<'photo' | 'device'>('photo');
   const [geoPermission, setGeoPermission] = useState<GeoPermission>('unknown');
+  // Venue state as of the latest render — both lookups land after an await (see latestScoreRef).
+  const latestVenueRef = useRef<{
+    selected: SelectedVenue | null; search: string; nearby: unknown[]; source: 'photo' | 'device';
+  }>({ selected: null, search: '', nearby: [], source: 'photo' });
+  // The venue "Use my current location" pre-selected by itself — not a choice the user made.
+  const deviceAutoPickRef = useRef<SelectedVenue | null>(null);
   const platform = useMemo(() => detectPlatform(), []);
   const [venueSearch, setVenueSearch] = useState('');
   const [showAddVenueForm, setShowAddVenueForm] = useState(false);
@@ -328,6 +334,7 @@ export default function AddScorePage() {
 
   const venueName = watch('venueName');
   latestScoreRef.current = { read: scoreRead, template: scoreTemplate, display: scoreDisplay, players: playerReads, selected: selectedPlayer };
+  latestVenueRef.current = { selected: selectedVenue, search: venueSearch, nearby: nearbyVenues, source: nearbySource };
 
   function replacePhotoPreviews(urls: string[]) {
     photoPreviewsRef.current.forEach(u => URL.revokeObjectURL(u));
@@ -586,9 +593,20 @@ export default function AddScorePage() {
     const items = [...existing, ...fresh];
     const images = items.flatMap(i => i.images);
 
-    // Known before the upload finishes (and even if it fails): did any of these carry GPS?
-    setPhotoLocation(describePhotoLocation(images, items.every(i => i.source === 'camera')));
-    if (mode === 'replace') setCurrentLocation({ status: 'idle' });
+    // Did any of these carry GPS? A fresh set is described up front, so the notice still shows if the
+    // read fails. An added set only once it's adopted — a failed add leaves the set (and this) as it was.
+    const setLocation = { ...describePhotoLocation(images, items.every(i => i.source === 'camera')), count: items.length };
+    if (mode === 'replace') {
+      setPhotoLocation(setLocation);
+      // A new set may be somewhere else entirely: drop the previous set's current-location lookup.
+      setCurrentLocation({ status: 'idle' });
+      setDeviceCoords(null);
+      deviceAutoPickRef.current = null;
+      if (latestVenueRef.current.source === 'device') {
+        setNearbyVenues([]);
+        setNearbySource('photo');
+      }
+    }
 
     // A single HEIC the browser couldn't convert can still use the server's own decode; the
     // multi-image path refuses that (memory), so say so here rather than after the upload.
@@ -610,6 +628,7 @@ export default function AddScorePage() {
       // Only a set that was actually read becomes the set: a failed add mustn't count toward the cap
       // or be re-sent with the next add.
       setUploadItems(items);
+      setPhotoLocation(setLocation);
       replacePhotoPreviews(images.map(i => URL.createObjectURL(i.file)));
       applyUploadResult(result, images, mode);
     } catch (err: any) {
@@ -708,20 +727,33 @@ export default function AddScorePage() {
       resizeImage(result.thumbnailBase64).then(setThumbnail).catch(() => setThumbnail(result.thumbnailBase64));
     }
 
-    if (result.venues?.length && !(adding && (selectedVenue || nearbyVenues.length))) {
-      const first = result.venues[0];
-      setValue('venueName', first.name);
-      setSelectedVenue({
-        venueId: first.venueId,
-        hereId: first.hereId ?? undefined,
-        address: first.address,
-        venueLat: first.venueLat,
-        venueLng: first.venueLng,
-        pinballMapId: first.pinballMapId,
-        timezone: first.timezone,
-      });
-      setNearbyVenues(result.venues);
-      setNearbySource('photo');
+    // Read venue state from the ref: this runs after an await, and the user may have picked one meanwhile.
+    // Picking or typing a venue always sets the search text; the device lookup's own auto-pick doesn't
+    // count as the user's choice, so a photo's better-founded suggestion may replace it.
+    const venueNow = latestVenueRef.current;
+    const userHasVenue = !!venueNow.search
+      || (!!venueNow.selected && venueNow.selected !== deviceAutoPickRef.current);
+    if (result.venues?.length) {
+      // A photo's own GPS outranks a "Use my current location" list, so an added photo replaces
+      // that — but an added photo never replaces photo-based suggestions or a venue already chosen.
+      const replaceList = !adding || venueNow.source === 'device' || venueNow.nearby.length === 0;
+      if (replaceList) {
+        setNearbyVenues(result.venues);
+        setNearbySource('photo');
+      }
+      if (!adding || (replaceList && !userHasVenue)) {
+        const first = result.venues[0];
+        setValue('venueName', first.name);
+        setSelectedVenue({
+          venueId: first.venueId,
+          hereId: first.hereId ?? undefined,
+          address: first.address,
+          venueLat: first.venueLat,
+          venueLng: first.venueLng,
+          pinballMapId: first.pinballMapId,
+          timezone: first.timezone,
+        });
+      }
     }
     if (!adding) setStep(2);
   }
@@ -736,22 +768,30 @@ export default function AddScorePage() {
     try {
       const pos = await getCurrentPosition();
       const { venues } = await api.venues.nearby(pos.latitude, pos.longitude);
+      // Everything below reads the ref, not this closure: the lookup takes seconds, and the user may
+      // have picked or typed a venue — or added a GPS photo — in the meantime.
+      const now = latestVenueRef.current;
       setDeviceCoords({ latitude: pos.latitude, longitude: pos.longitude });
-      setNearbyVenues(venues ?? []);
-      setNearbySource('device');
-      // Same as the photo path: pre-select the top suggestion — unless the user already chose or typed one.
-      const first = venues?.[0];
-      if (first && !selectedVenue && !venueSearch) {
-        setValue('venueName', first.name);
-        setSelectedVenue({
-          venueId: first.venueId,
-          hereId: first.hereId ?? undefined,
-          address: first.address,
-          venueLat: first.venueLat,
-          venueLng: first.venueLng,
-          pinballMapId: first.pinballMapId,
-          timezone: first.timezone,
-        });
+      // A photo's own GPS suggestions (from a photo added meanwhile) outrank the device's.
+      if (!(now.source === 'photo' && now.nearby.length > 0)) {
+        setNearbyVenues(venues ?? []);
+        setNearbySource('device');
+        // Same as the photo path: pre-select the top suggestion — unless the user already chose or typed one.
+        const first = venues?.[0];
+        if (first && !now.selected && !now.search) {
+          const pick: SelectedVenue = {
+            venueId: first.venueId,
+            hereId: first.hereId ?? undefined,
+            address: first.address,
+            venueLat: first.venueLat,
+            venueLng: first.venueLng,
+            pinballMapId: first.pinballMapId,
+            timezone: first.timezone,
+          };
+          deviceAutoPickRef.current = pick;
+          setValue('venueName', first.name);
+          setSelectedVenue(pick);
+        }
       }
       setCurrentLocation({ status: 'done', count: venues?.length ?? 0, accuracy: pos.accuracy });
     } catch (err: any) {
@@ -905,7 +945,7 @@ export default function AddScorePage() {
           {photoLocation && !photoLocation.hasGps && (
             <MissingLocationNotice
               info={photoLocation}
-              photoCount={uploadItems.length || 1}
+              photoCount={photoLocation.count}
               platform={platform}
               state={currentLocation}
               onUseCurrentLocation={useCurrentLocation}

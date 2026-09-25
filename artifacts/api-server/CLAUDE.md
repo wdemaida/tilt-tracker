@@ -101,6 +101,17 @@
   candidate or `distance < 100m`. The absolute ceiling exists because "only one result" would
   otherwise attach a match from the next town.
 
+## "Use my current location" (`POST /api/upload/nearby-venues`, `src/lib/nearbyLookup.ts`, added 2026-09-25)
+- Venue suggestions for the device's position when no photo had GPS; same `suggestVenuesNear()` as
+  the photo path. POST with a JSON body so the point stays out of URL/access logs; the client rounds
+  to 4 decimals. The route stores and logs nothing of it (it does go to HERE / Pinball Map as `at`).
+- **The app has no general rate limiter** — this route has its own: per Clerk user, 10/min and
+  100/day (`SlidingRateLimiter`), 429 `rate_limited` + `Retry-After`. HERE + PM results are cached
+  per 3-decimal cell for 10 min (`cachedByCell`, in-flight promises shared), so repeat taps don't
+  re-hit Pinball Map; a PM failure or empty HERE answer isn't cached. History venues are always read
+  fresh (they're redacted per requester). In-memory, per process — a restart forgets both.
+- Tests: `npx tsx --test src/lib/nearbyLookup.test.ts`.
+
 ## Photo / GPS extraction
 - Use **`exifr`** (not `exifreader`) for GPS from iPhone HEIC files: `await Exifr.gps(buffer)`.
 - Extract GPS from the **original buffer before HEIC→JPEG conversion** — conversion strips EXIF.

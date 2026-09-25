@@ -82,7 +82,7 @@ export function MissingLocationNotice({ info, photoCount, platform, state, onUse
           )}
           {state.status === 'idle' && (
             <p className="text-xs text-muted-foreground -mt-1">
-              Still at the venue? We’ll use where you are now to suggest it — only for this lookup, never saved.
+              Still at the venue? Where you are now is used only to find nearby venues — it’s never saved with your score.
             </p>
           )}
           {state.status === 'done' && (
