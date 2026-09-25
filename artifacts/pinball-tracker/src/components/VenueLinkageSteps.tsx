@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { MapPin, Link2, Check, AlertTriangle, Minus, ExternalLink, Search, ChevronDown } from 'lucide-react';
+import { Link } from 'wouter';
+import { MapPin, Link2, Check, AlertTriangle, Minus, ExternalLink, Search, ChevronDown, Merge } from 'lucide-react';
 import { useApi } from '../lib/useApi';
 import VenueAddressFinder from './VenueAddressFinder';
 
@@ -77,7 +78,7 @@ export type PlaceChoice =
   | { source: 'here'; hereId: string }
   | ({ source: 'manual'; confirm: true; acceptImprecise?: boolean } & ManualAddress);
 
-interface HereCandidate {
+interface HereCandidate extends Partial<HolderInfo> {
   name: string;
   address: string;
   distance: number;
@@ -110,6 +111,12 @@ export function useVenueLinkageActions(venueId: number | null, onChanged?: () =>
   const [pmCandidates, setPmCandidates] = useState<PmCandidate[] | null>(null);
   const [pmQuery, setPmQuery] = useState('');
   const [manualPmId, setManualPmId] = useState('');
+  /**
+   * Public TiltTrack venues that turned out to be this same place — from a HERE attach refused
+   * because the place is taken, or the duplicate warning after setting an address. The venue page
+   * offers "Merge into …" for each.
+   */
+  const [duplicateOffers, setDuplicateOffers] = useState<LinkedVenueRef[]>([]);
 
   function invalidate() {
     queryClient.invalidateQueries({ queryKey: ['venue-repair', venueId] });
@@ -141,7 +148,11 @@ export function useVenueLinkageActions(venueId: number | null, onChanged?: () =>
       setNotice({ kind: 'ok', text: 'HERE place linked.' });
       invalidate();
     },
-    onError: (e: any) => setNotice({ kind: 'err', text: e.message ?? 'Could not link that place' }),
+    onError: (e: any) => {
+      setNotice({ kind: 'err', text: e.message ?? 'Could not link that place' });
+      const holder: LinkedVenueRef | null = e?.body?.code === 'here_id_taken' ? e.body.linkedVenue ?? null : null;
+      if (holder) setDuplicateOffers([holder]);
+    },
   });
 
   const findPm = useMutation({
@@ -209,6 +220,7 @@ export function useVenueLinkageActions(venueId: number | null, onChanged?: () =>
       } else if (res.privateDuplicate) {
         parts.push('Heads up: another TiltTrack venue already matches this place — this may be a duplicate.');
       }
+      setDuplicateOffers(dupes);
       const warn = dupes.length > 0 || !!res.privateDuplicate;
       setNotice({ kind: warn ? 'err' : 'ok', text: parts.join(' ') });
       invalidate();
@@ -217,7 +229,7 @@ export function useVenueLinkageActions(venueId: number | null, onChanged?: () =>
   });
 
   return {
-    notice, setNotice,
+    notice, setNotice, duplicateOffers,
     hereCandidates, pmCandidates,
     pmQuery, setPmQuery, manualPmId, setManualPmId,
     resolveHere, attachHere, findPm, linkPm, invalidate,
@@ -333,6 +345,36 @@ export function NoticeBanner({ notice }: { notice: Notice }) {
   );
 }
 
+/** "Already used by TiltTrack venue X — this may be a duplicate", linking to X when it's public. */
+export function HolderNote({ linkedVenue, linkedElsewhere, note }: HolderInfo & { note: string }) {
+  if (linkedVenue) {
+    return (
+      <Link href={`/venues/${linkedVenue.id}`} className="block text-xs text-amber-400 hover:underline">
+        {note} TiltTrack venue “{linkedVenue.name}” — this may be a duplicate
+      </Link>
+    );
+  }
+  if (linkedElsewhere) {
+    return <span className="block text-xs text-amber-400">{note} another TiltTrack venue — this may be a duplicate</span>;
+  }
+  return null;
+}
+
+/** Opens the merge preview for folding this venue into `venue`. */
+export function MergeIntoButton({ venue, onClick, disabled }: { venue: LinkedVenueRef; onClick: () => void; disabled?: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={`Merge this venue into “${venue.name}”`}
+      className="flex items-center gap-1 text-xs font-bold uppercase tracking-wider rounded border border-primary/50 text-primary px-2 py-1 hover:bg-primary/10 disabled:opacity-40 flex-shrink-0"
+    >
+      <Merge className="w-3.5 h-3.5" />
+      Merge
+    </button>
+  );
+}
+
 export function PmNotConfiguredWarning() {
   return (
     <p className="flex items-start gap-2 text-sm rounded-lg bg-amber-500/10 text-amber-400 px-3 py-2">
@@ -348,7 +390,18 @@ export function PmNotConfiguredWarning() {
   );
 }
 
-export default function VenueLinkageSteps({ status, actions }: { status: LinkageView; actions: LinkageActions }) {
+export default function VenueLinkageSteps({
+  status, actions, onMergeInto,
+}: {
+  status: LinkageView;
+  actions: LinkageActions;
+  /**
+   * Offered where a HERE / Pinball Map result already belongs to another (public) TiltTrack venue:
+   * "Merge into …" instead of a Use button the server would refuse. Only the venue page passes it —
+   * the edit-score modal leaves duplicates to the venue page.
+   */
+  onMergeInto?: (venue: LinkedVenueRef) => void;
+}) {
   const hereDone = !!status.hereId;
   const pmDone = !!status.pinballMapId;
 
@@ -374,7 +427,7 @@ export default function VenueLinkageSteps({ status, actions }: { status: Linkage
         detail={hereDone ? 'Linked' : status.address ? 'Optional — not linked' : status.needsAddress ? 'Needs address' : 'Add an address first'}
       >
         {status.needsAddress ? (
-          <VenueAddressFinder status={status} actions={actions} />
+          <VenueAddressFinder status={status} actions={actions} onMergeInto={onMergeInto} />
         ) : (
         <>
         <p className="text-xs text-muted-foreground mb-3">
@@ -400,14 +453,20 @@ export default function VenueLinkageSteps({ status, actions }: { status: Linkage
                 <span className="min-w-0">
                   <span className="block text-sm font-bold text-venue truncate">{c.name}</span>
                   <span className="block text-xs text-muted-foreground truncate">{c.address} · {c.distance}m</span>
+                  <HolderNote linkedVenue={c.linkedVenue ?? null} linkedElsewhere={!!c.linkedElsewhere} note="already used by" />
                 </span>
-                <button
-                  onClick={() => actions.attachHere.mutate(c)}
-                  disabled={!c.hereId || actions.attachHere.isPending}
-                  className="text-xs font-bold uppercase tracking-wider rounded border border-white/20 px-2 py-1 hover:bg-white/10 disabled:opacity-40 flex-shrink-0"
-                >
-                  Use
-                </button>
+                {c.linkedVenue && onMergeInto ? (
+                  <MergeIntoButton venue={c.linkedVenue} onClick={() => onMergeInto(c.linkedVenue!)} />
+                ) : (
+                  <button
+                    onClick={() => actions.attachHere.mutate(c)}
+                    // hereId is unique across venues — the server would refuse a taken one with a 409.
+                    disabled={!c.hereId || !!c.linkedElsewhere || actions.attachHere.isPending}
+                    className="text-xs font-bold uppercase tracking-wider rounded border border-white/20 px-2 py-1 hover:bg-white/10 disabled:opacity-40 flex-shrink-0"
+                  >
+                    Use
+                  </button>
+                )}
               </li>
             ))}
           </ul>

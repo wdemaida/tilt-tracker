@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { Link } from 'wouter';
 import { Search, ExternalLink, AlertTriangle } from 'lucide-react';
+import { HolderNote, MergeIntoButton } from './VenueLinkageSteps';
 import type { LinkageView, LinkageActions, ManualAddress, PlaceChoice, LinkedVenueRef } from './VenueLinkageSteps';
 
 // Step 1 for a venue with no address at all — typically typed in by name during upload with location
@@ -21,7 +21,14 @@ const smallBtn =
 
 interface Pending { label: string; address: string; choice: PlaceChoice }
 
-export default function VenueAddressFinder({ status, actions }: { status: LinkageView; actions: LinkageActions }) {
+export default function VenueAddressFinder({
+  status, actions, onMergeInto,
+}: {
+  status: LinkageView;
+  actions: LinkageActions;
+  /** When given, a candidate another public TiltTrack venue holds offers "Merge into …". */
+  onMergeInto?: (venue: LinkedVenueRef) => void;
+}) {
   const [q, setQ] = useState(status.name);
   const [near, setNear] = useState('');
   const [manual, setManual] = useState<ManualAddress>(EMPTY_MANUAL);
@@ -93,6 +100,8 @@ export default function VenueAddressFinder({ status, actions }: { status: Linkag
                 linkedElsewhere={c.linkedElsewhere}
                 linkedNote="already linked to"
                 disabled={busy}
+                // Pinball Map ids aren't unique, so Use stays available alongside Merge.
+                onMerge={onMergeInto && c.linkedVenue ? () => onMergeInto(c.linkedVenue!) : undefined}
                 onUse={() => setPending({ label: `${c.name} (Pinball Map #${c.pinballMapId})`, address: c.address, choice: { source: 'pm', pinballMapId: c.pinballMapId } })}
               />
             ))}
@@ -109,8 +118,11 @@ export default function VenueAddressFinder({ status, actions }: { status: Linkag
                 linkedVenue={c.linkedVenue}
                 linkedElsewhere={c.linkedElsewhere}
                 linkedNote="already used by"
-                // hereId is unique across venues — the server would refuse this one with a 409.
+                // hereId is unique across venues — the server would refuse this one with a 409, so a
+                // taken place offers Merge (when its holder can be named) instead of Use.
                 disabled={busy || c.linkedElsewhere}
+                hideUseWhenMergeable
+                onMerge={onMergeInto && c.linkedVenue ? () => onMergeInto(c.linkedVenue!) : undefined}
                 onUse={() => setPending({ label: `${c.name} (HERE)`, address: c.address, choice: { source: 'here', hereId: c.hereId } })}
               />
             ))}
@@ -192,7 +204,7 @@ function CandidateGroup({ title, note, children }: { title: string; note: string
 }
 
 function CandidateRow({
-  name, address, extra, href, linkedVenue, linkedElsewhere, linkedNote, disabled, onUse,
+  name, address, extra, href, linkedVenue, linkedElsewhere, linkedNote, disabled, onUse, onMerge, hideUseWhenMergeable,
 }: {
   name: string;
   address: string;
@@ -204,6 +216,10 @@ function CandidateRow({
   linkedNote: string;
   disabled: boolean;
   onUse: () => void;
+  /** Merge this venue into the candidate's holder (`linkedVenue`). */
+  onMerge?: () => void;
+  /** Show only Merge, not a disabled Use, when a merge is on offer. */
+  hideUseWhenMergeable?: boolean;
 }) {
   return (
     <li className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-background px-3 py-2">
@@ -219,15 +235,14 @@ function CandidateRow({
             View on Pinball Map <ExternalLink className="w-3 h-3" />
           </a>
         )}
-        {linkedVenue ? (
-          <Link href={`/venues/${linkedVenue.id}`} className="block text-xs text-amber-400 hover:underline">
-            {linkedNote} TiltTrack venue “{linkedVenue.name}” — this may be a duplicate
-          </Link>
-        ) : linkedElsewhere ? (
-          <span className="block text-xs text-amber-400">{linkedNote} another TiltTrack venue — this may be a duplicate</span>
-        ) : null}
+        <HolderNote linkedVenue={linkedVenue} linkedElsewhere={linkedElsewhere} note={linkedNote} />
       </span>
-      <button onClick={onUse} disabled={disabled} className={smallBtn}>Use</button>
+      <span className="flex flex-col sm:flex-row gap-1.5 flex-shrink-0">
+        {onMerge && linkedVenue && <MergeIntoButton venue={linkedVenue} onClick={onMerge} />}
+        {!(onMerge && hideUseWhenMergeable) && (
+          <button onClick={onUse} disabled={disabled} className={smallBtn}>Use</button>
+        )}
+      </span>
     </li>
   );
 }

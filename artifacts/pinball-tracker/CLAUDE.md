@@ -56,6 +56,15 @@
 - `LinkageView.linkageBlocked` (restricted-tier venue): steps 1–2 render an explanation instead of
   buttons — the server refuses HERE / Pinball Map linkage for private venues.
 
+- **Merging a duplicate venue** (`VenueMergeModal.tsx`, added 2026-09-25): a HERE / Pinball Map
+  candidate that another *public* TiltTrack venue holds (`linkedVenue`) shows **Merge** — in place
+  of the dead Use button for HERE (unique id), alongside Use for Pinball Map (ids aren't unique).
+  Also offered under the notice after a `here_id_taken` 409 or a `possibleDuplicates` warning
+  (`actions.duplicateOffers`). Only the venue page passes `onMergeInto`; the edit-score modal
+  doesn't merge. The modal previews, confirms with the previewed `expectedScoreCount`, **removes**
+  the deleted source's `[key, id]` queries instead of invalidating them (they'd refetch into 404s),
+  then navigates to the target. `VenueRepairPanel` is keyed on the venue id so it resets there.
+
 ## Private (home) venues in venue search
 - Anyone may log a score at someone's home venue, but it's never suggested by location. The two
   venue searches (AddScorePage step 2, `ScoreVenuePicker`) find another user's private venue only

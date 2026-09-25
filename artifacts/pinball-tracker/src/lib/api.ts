@@ -44,6 +44,39 @@ export interface Pod {
   members: Array<PodUser & { addedAt: string }>;
 }
 
+/** GET /venues/:id/repair/merge-preview — what merging this venue into another would move. */
+export interface VenueMergePreview {
+  source: { id: number; name: string };
+  target: { id: number; name: string; address: string | null };
+  scoreCount: number;
+  myScoreCount: number;
+  /** Who has scores at the source — admins only; null for everyone else. */
+  players: Array<{ username: string; scoreCount: number }> | null;
+  otherPlayerCount: number;
+  otherScoreCount: number;
+  historyRows: number;
+  historyOverlap: number;
+  inventoryRows: number;
+  inventoryOverlap: number;
+  /** What the target will take from the source because it had none ("HERE link", "address", …). */
+  adopts: string[];
+  canMerge: boolean;
+  blocker: string | null;
+  blockerMessage: string | null;
+}
+
+export interface VenueMergeResult {
+  sourceId: number;
+  targetId: number;
+  targetName: string;
+  scoresMoved: number;
+  historyMoved: number;
+  historyMerged: number;
+  inventoryMoved: number;
+  inventoryMerged: number;
+  adopted: string[];
+}
+
 export function createApi(getToken: () => Promise<string | null>) {
   const tok = () => getToken();
 
@@ -194,6 +227,14 @@ export function createApi(getToken: () => Promise<string | null>) {
           request<any>(`/venues/${id}/repair/resync-preview`, undefined, await tok()),
         resyncApply: async (id: number, merges: Array<Record<string, unknown>>) =>
           request<any>(`/venues/${id}/repair/resync-apply`, { method: 'POST', body: JSON.stringify({ merges }) }, await tok()),
+        // Fold this (duplicate) venue into another one: preview what moves, then confirm. The
+        // confirm echoes the previewed score count so a stale preview is refused (409 merge_stale).
+        mergePreview: async (id: number, intoVenueId: number) =>
+          request<VenueMergePreview>(`/venues/${id}/repair/merge-preview?into=${intoVenueId}`, undefined, await tok()),
+        merge: async (id: number, intoVenueId: number, expectedScoreCount: number) =>
+          request<VenueMergeResult>(`/venues/${id}/repair/merge`, {
+            method: 'POST', body: JSON.stringify({ intoVenueId, expectedScoreCount }),
+          }, await tok()),
       },
     },
     pinballmap: {
