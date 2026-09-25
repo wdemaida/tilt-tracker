@@ -515,15 +515,15 @@ export function mergePlayerReads(images: ImageRead[]): MergedPlayerRead[] {
 
 /**
  * Which player's read a client that can't ask ("Which player were you?") should get — the top-level
- * `score`/`scoreRead` older clients read. The highest score, reading unread positions as 0s; a longer
- * template wins outright, since it's at least a digit more.
+ * `score`/`scoreRead` older clients read. The highest by what was actually read: trailing unread
+ * positions are dropped rather than counted as place value (so "8076??" doesn't outrank "88070"
+ * just for having two x's), and interior ones count as 0.
  */
 export function defaultPlayerIndex(players: MergedRead[]): number {
   let best = 0;
-  const value = (t: string) => Number(t.replace(/\?/g, '0')) || 0;
+  const value = (t: string) => Number(t.replace(/\?+$/, '').replace(/\?/g, '0')) || 0;
   players.forEach((p, i) => {
-    const b = players[best].template;
-    if (p.template.length > b.length || (p.template.length === b.length && value(p.template) > value(b))) best = i;
+    if (value(p.template) > value(players[best].template)) best = i;
   });
   return best;
 }
@@ -546,15 +546,20 @@ export function defaultBestImageIndex(reads: ImageRead[]): number {
 export const MAX_DISPLAY_WINDOWS = 10;
 
 /**
- * Whether an image's reads are worth a crop pass: more than one score display (players' digits are
- * small and easy to misplace), or a segment/plasma display with unread or leading-dark positions.
- * A lone complete DMD/LCD read — the common case — skips it.
+ * Whether an image's reads are worth a crop pass. Only segment/plasma displays count — they're the
+ * ones that strobe, so the ones whose dark windows get misplaced: more than one of them (players'
+ * digits are small), or one with unread or leading-dark positions. DMD/LCD screens never trigger it,
+ * multi-player or not; a lone complete DMD/LCD read — the common case — costs nothing extra.
  */
 export function needsCropPass(image: ImageRead): boolean {
-  const withBox = image.displays.filter(d => d.bbox);
-  if (withBox.length === 0) return false;
-  if (image.displays.length > 1) return true;
-  return withBox.some(d => d.displayKind === 'segment' && (d.template.includes('?') || d.leadingPositionAmbiguous));
+  const segments = image.displays.filter(d => d.bbox && d.displayKind === 'segment');
+  if (segments.length > 1) return true;
+  return segments.some(d => d.template.includes('?') || d.leadingPositionAmbiguous);
+}
+
+/** Displays a crop pass re-reads: segment displays, and any display with unread positions. */
+export function isCropCandidate(d: DisplayRead): boolean {
+  return !!d.bbox && (d.displayKind === 'segment' || d.template.includes('?'));
 }
 
 /** One display's window-by-window transcription from the crop pass. */

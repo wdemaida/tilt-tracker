@@ -16,7 +16,7 @@
 
 import sharp from 'sharp';
 import { readDisplayWindows, type CropImage, type ExtractionImage, type TokenUsage } from './anthropic.js';
-import { needsCropPass, reconcileWindowRead, type BBox, type ImageRead } from './scoreRead.js';
+import { isCropCandidate, needsCropPass, reconcileWindowRead, type BBox, type ImageRead } from './scoreRead.js';
 
 /** Most crops sent per upload, across all photos (in photo order, then display order). */
 export const MAX_CROPS = 8;
@@ -137,7 +137,7 @@ export async function refineWithCrops(
     if (!read || !needsCropPass(read)) continue;
     const candidates = read.displays
       .map((d, k) => ({ d, k }))
-      .filter(({ d }) => d.bbox)
+      .filter(({ d }) => isCropCandidate(d))
       .slice(0, budget);
     if (candidates.length === 0) continue;
     let buffers: Array<Buffer | null>;
