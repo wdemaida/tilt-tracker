@@ -8,9 +8,15 @@ const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = 'claude-sonnet-4-6';
 
 // Per-request limits. The SDK default is a 10-minute timeout with 2 retries — far longer than a user
-// will wait on the upload spinner. The crop pass is an optional refinement: short, no retry, and a
-// failure just keeps the whole-photo read.
-const READ_REQUEST = { timeout: 60_000, maxRetries: 1 };
+// will wait on the upload spinner. The whole-photo read scales with the photos sent: nine 4-player
+// photos are ~4.7k output tokens, over a minute at ~70 tokens/s. One retry only for small sets, so
+// the worst case stays near two and a half minutes (3 images: 66s × 2; 9 images: 138s × 1), well
+// inside Node's 300s default requestTimeout on the api-server. The crop pass is an optional
+// refinement: short, no retry, and a failure just keeps the whole-photo read.
+export function readRequestOptions(imageCount: number): { timeout: number; maxRetries: number } {
+  const n = Math.max(1, imageCount);
+  return { timeout: Math.min(150_000, 30_000 + 12_000 * n), maxRetries: n <= 3 ? 1 : 0 };
+}
 const CROP_REQUEST = { timeout: 20_000, maxRetries: 0 };
 const TOOL_NAME = 'record_score_read';
 
@@ -199,7 +205,7 @@ export async function extractScoreReads(images: ExtractionImage[], onRawInput?: 
     tools: [scoreReadTool],
     tool_choice: { type: 'tool', name: TOOL_NAME },
     messages: [{ role: 'user', content }],
-  }, READ_REQUEST);
+  }, readRequestOptions(images.length));
 
   if (message.stop_reason === 'max_tokens') {
     // A truncated read would silently drop displays (or whole images) off the end — fail instead.
