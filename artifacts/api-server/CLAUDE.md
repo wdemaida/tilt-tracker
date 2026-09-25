@@ -118,7 +118,8 @@
   `machineScoreStats.ts` (id → case-insensitive name → unique `normalizeMachineName` match), served
   read-only at `GET /api/machines/score-stats`. The frontend mirrors the check in
   `src/lib/scoreTemplate.ts` — keep the two in step.
-- **Multi-photo uploads** (`photos`, up to 3; the legacy single `photo` field still works). Per-photo
+- **Multi-photo uploads** (`photos`, up to 9 images — 3 wizard items, a video counting as its best
+  3 frames; the legacy single `photo` field still works). Videos are never uploaded. Per-photo
   GPS/EXIF comes as a JSON `meta` array. Photos are processed **sequentially** and the multi path
   **refuses server-side HEIC decode** with 400 `heic_multi_unsupported` — one ~380MB decode is
   survivable, three in one request is the OOM this route already had once. One model call sees all

@@ -10,6 +10,7 @@ import { queryClient } from '../lib/queryClient';
 import { PinballIcon } from '../components/PinballIcon';
 import { toLocalInput, localInputToIso, naiveToLocalInput } from '../lib/datetime';
 import { prepareUploadImage, type PreparedImage } from '../lib/prepareUploadImage';
+import { extractVideoFrames, isVideoFile, VideoFrameError, VIDEO_UNSUPPORTED_MESSAGE } from '../lib/videoFrames';
 import { ScoreDigitInput } from '../components/ScoreDigitInput';
 import {
   type ScoreRead, checkPlausibility, formatTemplate, hasUnknown, templateToScore, unknownCount,
@@ -30,8 +31,14 @@ const schema = z.object({
 
 type FormData = z.infer<typeof schema>;
 
-/** Photos per upload — each is a separate look at the same display, merged server-side. */
-const MAX_PHOTOS = 3;
+/** Photos or videos per upload — each is a separate look at the same display, merged server-side. */
+const MAX_ITEMS = 3;
+
+/** One thing the user picked: a photo (one image) or a video (its best few frames). */
+interface UploadItem {
+  kind: 'photo' | 'video';
+  images: PreparedImage[];
+}
 type Step = 1 | 2 | 3 | 4;
 
 interface SelectedVenue {
@@ -87,8 +94,9 @@ export default function AddScorePage() {
   // Object URLs for the larger photo preview shown while filling in x's. Revoked on replace/unmount.
   const [photoPreviews, setPhotoPreviews] = useState<string[]>([]);
   const photoPreviewsRef = useRef<string[]>([]);
-  // Every photo read so far (already prepared), so "Add another photo" can re-read the whole set.
-  const [preparedImages, setPreparedImages] = useState<PreparedImage[]>([]);
+  // Every photo/video read so far (already prepared), so "Add another" can re-read the whole set.
+  const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
+  const [videoProgress, setVideoProgress] = useState<string | null>(null);
   const [photoNotice, setPhotoNotice] = useState('');
   const [differentGamesWarning, setDifferentGamesWarning] = useState<string | null>(null);
   const addPhotoRef = useRef<HTMLInputElement>(null);
@@ -385,17 +393,20 @@ export default function AddScorePage() {
   });
 
   /**
-   * Handles a pick from the file input. `add` appends to the photos already read (from step 3's "Add
-   * another photo") and re-reads them all together; otherwise it starts over. Either way the whole
-   * set goes up in one request — the server merges the per-photo reads (see api-server scoreRead.ts).
+   * Handles a pick from the file input. `add` appends to the items already read (from step 3's "Add
+   * another photo or video") and re-reads them all together; otherwise it starts over. Either way the
+   * whole set goes up in one request — the server merges the per-image reads (see api-server
+   * scoreRead.ts). A video is one item; its best few frames are sent as images and it is never
+   * uploaded itself (see videoFrames.ts).
    */
   const handleFiles = async (picked: File[], mode: 'replace' | 'add') => {
-    const existing = mode === 'add' ? preparedImages : [];
-    const room = MAX_PHOTOS - existing.length;
+    const existing = mode === 'add' ? uploadItems : [];
+    const room = MAX_ITEMS - existing.length;
     if (room <= 0 || picked.length === 0) return;
-    setPhotoNotice(picked.length > room
-      ? `Only ${MAX_PHOTOS} photos can be used at once — kept the first ${room === 1 ? 'one' : room}.`
-      : '');
+    const notices: string[] = [];
+    if (picked.length > room) {
+      notices.push(`Only ${MAX_ITEMS} photos or videos can be used at once — kept the first ${room === 1 ? 'one' : room}.`);
+    }
     const chosen = picked.slice(0, room);
 
     setAiLoading(true);
@@ -403,13 +414,37 @@ export default function AddScorePage() {
 
     // EXIF, HEIC conversion and a ~2000px downscale all happen client-side — see
     // prepareUploadImage.ts for why (keeps the memory-heavy decode off the server). One at a time:
-    // HEIC decoding is heavy on a phone too.
-    const fresh: PreparedImage[] = [];
-    for (const f of chosen) fresh.push(await prepareUploadImage(f));
-    const images = [...existing, ...fresh];
+    // HEIC decoding and video seeking are heavy on a phone too.
+    const fresh: UploadItem[] = [];
+    for (const f of chosen) {
+      if (isVideoFile(f)) {
+        setVideoProgress('Reading video…');
+        try {
+          const frames = await extractVideoFrames(f, p => setVideoProgress(`Picking the sharpest frames… ${Math.round((p.done / p.total) * 100)}%`));
+          fresh.push({ kind: 'video', images: frames });
+        } catch (err) {
+          notices.push(err instanceof VideoFrameError ? err.message : VIDEO_UNSUPPORTED_MESSAGE);
+        } finally {
+          setVideoProgress(null);
+        }
+      } else {
+        fresh.push({ kind: 'photo', images: [await prepareUploadImage(f)] });
+      }
+    }
+    setPhotoNotice(notices.join(' '));
+
+    // Nothing usable (e.g. the only pick was a video this browser can't decode): stay put rather
+    // than advancing the wizard with nothing read.
+    if (fresh.length === 0) {
+      setAiLoading(false);
+      return;
+    }
+
+    const items = [...existing, ...fresh];
+    const images = items.flatMap(i => i.images);
 
     // A single HEIC the browser couldn't convert can still use the server's own decode; the
-    // multi-photo path refuses that (memory), so say so here rather than after the upload.
+    // multi-image path refuses that (memory), so say so here rather than after the upload.
     if (images.length > 1 && images.some(i => i.heicFailed)) {
       setAiLoading(false);
       setAiError("One of these photos is HEIC and couldn't be converted on this device — upload it on its own, or use a JPEG.");
@@ -417,7 +452,7 @@ export default function AddScorePage() {
       return;
     }
 
-    setPreparedImages(images);
+    setUploadItems(items);
     replacePhotoPreviews(images.map(i => URL.createObjectURL(i.file)));
     thumbnailSucceeded.current = false;
     generateThumbnail(images[0].file).then(t => { setThumbnail(t); thumbnailSucceeded.current = true; }).catch(() => {});
@@ -559,7 +594,7 @@ export default function AddScorePage() {
         <div className="rounded-xl border border-white/10 bg-card p-8 flex flex-col items-center gap-6">
           <h2 className="text-2xl font-black uppercase tracking-widest text-white">Upload Evidence</h2>
           <p className="text-sm text-muted-foreground text-center">
-            Snap a pic of the DMD or score screen. Our AI will extract the machine name, score, time, and location.
+            Snap a pic or a short video of the DMD or score screen. Our AI will extract the machine name, score, time, and location.
           </p>
           <button
             onClick={() => fileRef.current?.click()}
@@ -568,21 +603,24 @@ export default function AddScorePage() {
           >
             {aiLoading ? <Loader2 className="w-12 h-12 text-primary animate-spin" /> : <Camera className="w-12 h-12 text-primary" />}
             <span className="font-black uppercase tracking-wider text-white">
-              {aiLoading ? 'Analyzing...' : 'Tap to Take Photo'}
+              {aiLoading ? (videoProgress ? 'Reading video...' : 'Analyzing...') : 'Tap to Take Photo'}
             </span>
-            {!aiLoading && <span className="text-xs text-muted-foreground">or choose from camera roll</span>}
+            {aiLoading && videoProgress && <span className="text-xs text-muted-foreground">{videoProgress}</span>}
+            {!aiLoading && <span className="text-xs text-muted-foreground">or choose photos or a video from your camera roll</span>}
           </button>
           <input
             ref={fileRef}
             type="file"
-            accept="image/*"
+            accept="image/*,video/*"
             multiple
             className="hidden"
             onChange={e => { const files = Array.from(e.target.files ?? []); e.target.value = ''; if (files.length) handleFiles(files, 'replace'); }}
           />
-          <p className="text-xs text-muted-foreground text-center -mt-3">
-            Up to {MAX_PHOTOS} photos of the same score — extra shots help read flickering digits.
-          </p>
+          <div className="flex flex-col gap-1 text-xs text-muted-foreground text-center -mt-3">
+            <p>Up to {MAX_ITEMS} photos or videos of the same score.</p>
+            <p>Old machine with flickering digits? Take a 2-second video or a few photos.</p>
+            <p>Have a Live Photo? Tap ••• → Save as Video, then upload the video.</p>
+          </div>
           {photoNotice && <p className="text-xs text-amber-400 text-center -mt-3">{photoNotice}</p>}
           <button onClick={() => setStep(2)} className="text-sm text-muted-foreground hover:text-white transition-colors uppercase tracking-wider">
             Skip AI & Enter Manually ›
@@ -1081,7 +1119,7 @@ export default function AddScorePage() {
           </div>
 
           {/* More photos of the same display — re-reads the whole set and merges the digits */}
-          {(differentGamesWarning || (preparedImages.length > 0 && preparedImages.length < MAX_PHOTOS) || (aiError && preparedImages.length > 0)) && (
+          {(differentGamesWarning || (uploadItems.length > 0 && uploadItems.length < MAX_ITEMS) || (aiError && uploadItems.length > 0)) && (
             <div className="flex flex-col gap-2 -mt-1">
               {differentGamesWarning && (
                 <p className="flex items-start gap-2 text-xs rounded-lg bg-amber-500/10 text-amber-400 px-3 py-2">
@@ -1089,9 +1127,9 @@ export default function AddScorePage() {
                   {differentGamesWarning}
                 </p>
               )}
-              {aiError && preparedImages.length > 0 && <p className="text-xs text-yellow-400">{aiError}</p>}
+              {aiError && uploadItems.length > 0 && <p className="text-xs text-yellow-400">{aiError}</p>}
               {photoNotice && <p className="text-xs text-amber-400">{photoNotice}</p>}
-              {preparedImages.length > 0 && preparedImages.length < MAX_PHOTOS && (
+              {uploadItems.length > 0 && uploadItems.length < MAX_ITEMS && (
                 <>
                   <button
                     type="button"
@@ -1100,12 +1138,12 @@ export default function AddScorePage() {
                     className="flex items-center justify-center gap-2 py-2 rounded-lg border border-dashed border-primary/40 text-xs font-bold uppercase tracking-wider text-primary hover:border-primary transition-colors disabled:opacity-50"
                   >
                     {aiLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Camera className="w-3.5 h-3.5" />}
-                    {aiLoading ? 'Re-reading...' : `Add another photo (${preparedImages.length}/${MAX_PHOTOS})`}
+                    {aiLoading ? (videoProgress ?? 'Re-reading...') : `Add another photo or video (${uploadItems.length}/${MAX_ITEMS})`}
                   </button>
                   <input
                     ref={addPhotoRef}
                     type="file"
-                    accept="image/*"
+                    accept="image/*,video/*"
                     multiple
                     className="hidden"
                     onChange={e => { const files = Array.from(e.target.files ?? []); e.target.value = ''; if (files.length) handleFiles(files, 'add'); }}

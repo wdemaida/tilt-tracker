@@ -116,14 +116,16 @@ function attachPinballMapIds(venueList: Venue[], pmLocations: PmLocation[]): Ven
   });
 }
 
-const MAX_PHOTOS = 3;
+// The wizard allows 3 items, and a video item contributes its best 3 frames (extracted in the
+// browser — the video itself never comes here), so up to 9 images can arrive in one request.
+const MAX_IMAGES = 9;
 // Photos further apart than this probably aren't the same game — surfaced as a non-blocking warning.
 const SAME_GAME_MAX_MINUTES = 10;
 const SAME_GAME_MAX_METERS = 200;
 
-// `photos` (1–3, the current client) or the legacy single `photo`. multer's own errors (too many
+// `photos` (1–9, the current client) or the legacy single `photo`. multer's own errors (too many
 // files, one over 20MB) would otherwise fall through to Express's default HTML 500.
-const acceptPhotos = upload.fields([{ name: 'photos', maxCount: MAX_PHOTOS }, { name: 'photo', maxCount: 1 }]);
+const acceptPhotos = upload.fields([{ name: 'photos', maxCount: MAX_IMAGES }, { name: 'photo', maxCount: 1 }]);
 function receivePhotos(req: Request, res: Response, next: NextFunction) {
   acceptPhotos(req, res, err => {
     if (!err) return next();
@@ -131,7 +133,7 @@ function receivePhotos(req: Request, res: Response, next: NextFunction) {
       const message = err.code === 'LIMIT_FILE_SIZE'
         ? 'Each photo must be under 20MB'
         : err.code === 'LIMIT_UNEXPECTED_FILE' || err.code === 'LIMIT_FILE_COUNT'
-          ? `Up to ${MAX_PHOTOS} photos at a time`
+          ? `Up to ${MAX_IMAGES} images at a time`
           : 'Upload rejected';
       return res.status(400).json({ error: message, code: 'upload_rejected' });
     }

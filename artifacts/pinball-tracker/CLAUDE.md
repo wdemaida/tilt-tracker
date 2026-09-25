@@ -92,3 +92,13 @@
   downscale) — it replaced `heicClientConvert.ts`. The file input takes up to 3 photos, and step 3's
   "Add another photo" re-uploads the **whole set** so the server can merge the reads; it deliberately
   doesn't overwrite a machine or venue the user already picked.
+- **Video input** (`src/lib/videoFrames.ts`): a video counts as one of the 3 items and is never
+  uploaded. ~15 frames are sampled (seek + `seeked`, plus `requestVideoFrameCallback` where it
+  exists), scored by Laplacian variance on a small grayscale copy, and the sharpest frame from each
+  third of the clip is sent (spread matters — different refresh phases light different digits).
+  Limits are `MAX_VIDEO_SECONDS` / `MAX_VIDEO_BYTES`. GPS/time come from a byte scan of the QuickTime
+  `moov` box (Apple ISO 6709 location + `creationdate`, `©xyz`, then `mvhd`), falling back to
+  `file.lastModified` and no GPS. A browser that can't decode the codec (HEVC .mov in Chrome on
+  Windows) gets a friendly "try a photo" message, and the wizard stays on step 1.
+- iOS web file pickers hand over only the still of a Live Photo, which is why step 1 tells users to
+  "Save as Video" first.
