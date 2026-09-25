@@ -162,10 +162,12 @@ export function createApi(getToken: () => Promise<string | null>) {
         request<PodUser[]>(`/pods/user-search?q=${encodeURIComponent(q)}`, undefined, await tok()),
     },
     stats: {
-      get: async (mine = true) => request<any>(`/stats?mine=${mine}`, undefined, await tok()),
-      history: async (key: string, days = 90) =>
-        request<{ label: string; description: string | null; points: { periodDate: string; value: number }[] }>(
-          `/stats/history/${key}?days=${days}`, undefined, await tok()
+      // `scope` is scopeQuery(scope) from lib/comparisonScope ('' = everyone).
+      get: async (scope = '') => request<any>(`/stats${scope}`, undefined, await tok()),
+      // Snapshots ('snapshot') for All and the site-wide keys; rebuilt from the scope's scores ('live') otherwise.
+      history: async (key: string, days = 90, scope = '') =>
+        request<{ label: string; description: string | null; source: 'snapshot' | 'live'; points: { periodDate: string; value: number }[] }>(
+          `/stats/history/${key}?days=${days}${scope.replace('?', '&')}`, undefined, await tok()
         ),
     },
     venues: {
