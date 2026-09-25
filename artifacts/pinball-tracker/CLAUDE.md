@@ -131,5 +131,6 @@
   (`LEADING_AMBIGUOUS_REASON`), non-blocking, dropped once the typed number is longer than the read.
   There are deliberately no +/- digit controls.
 - `alignmentWarning` (the server's close-up re-read disagreed with the whole-photo read) shows a
-  separate non-blocking note, "Digits were hard to line up — check each one against the machine";
-  the contested digits arrive in `lowConfidence`, so they're already amber.
+  separate non-blocking note, "Digits were hard to line up — check each one against the machine".
+  A flagged read **always opens in digit-cell mode, even when complete** — never prefilled into the
+  plain number field — so its amber `lowConfidence` digits and its `conflicts` picker are visible.

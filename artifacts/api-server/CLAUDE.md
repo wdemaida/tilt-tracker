@@ -153,9 +153,13 @@
   order: player number → position (only when an image has as many displays as the reference image)
   → template agreement for a lone unnumbered close-up (≥2 agreeing digits, no contradiction, unique
   best — two identical players is ambiguity, not a match). Two different player numbers never merge.
+  Position means each display's `position` — its place in the model's own list, kept from *before*
+  the player-number sort. Matching on the sorted order broke with partial numbering (photo A labelled
+  1–4, photo B with only 3UP legible put B's 1UP into Player 2's group).
   `/api/upload` returns `playerReads` (one `scoreRead`-shaped entry per player, plus `player` and
   `leadingPositionAmbiguous`) and `selectedPlayerIndex`; top-level `score`/`scoreRead` are the
-  `defaultPlayerIndex()` entry (highest, x's as 0s) so older clients keep working.
+  `defaultPlayerIndex()` entry so older clients keep working: highest by what was read — trailing
+  x's add no place value ("8076??" doesn't outrank "88070"), interior x's count as 0.
 - **Leading dark window** (`leadingPositionAmbiguous`): the comma rule pins down the *trailing*
   count only. A dark leftmost window on a strobing display is a blank or an unlit digit — the
   template treats it as blank and the flag makes the UI say so. Set in code, not trusted from the
@@ -173,22 +177,36 @@
   alone, and `sanitizeBBox` normalizes with it. Fractions came back as round guesses that missed
   displays entirely. Don't re-encode the photo to that size or state the size in the prompt: both
   measurably changed how pass 1 transcribed the displays (Stars 1UP went from "_8076_" to "80760").
-  - Runs only when `needsCropPass()`: >1 score display, or a segment display with `?` or a leading
-    dark flag. A lone complete DMD/LCD read skips it (verified on four modern-LCD photos).
+  - Runs only when `needsCropPass()`, which counts **segment/plasma displays only**: more than one,
+    or one with `?` or a leading-dark flag. DMD/LCD screens never trigger it, multi-player or not
+    (verified skipped on four modern-LCD photos). Photos with an EXIF orientation other than 1 get
+    no crops — the boxes may refer to the rotated or unrotated image.
   - Each photo is decoded **once** to a raw bitmap and every crop is extracted from that (no
-    decode-in-a-loop), photos one at a time, at most `MAX_CROPS` (8) per upload. Crops are padded
+    decode-in-a-loop), photos one at a time, at most `MAX_CROPS` (8) per upload. The decode is
+    bounded: `limitInputPixels` 40MP (refused before reading pixels) and resized to 3000px long edge,
+    ~27MB raw at most — measured on a 6000x6000 JPEG, peak RSS +90MB vs +133MB for the old full
+    decode. Boxes are fractions, so they apply to the smaller bitmap unchanged. Crops are padded
     generously — a third of the box width sideways, a full box height vertically, because boxes are
     routinely that far off — and scaled to 1000px wide. One call per photo, photos in parallel.
   - The crop prompt asks for one entry per **physical** window (`digit`/`dark`/`partly_lit`/`,`).
     `reconcileWindowRead()` distrusts it — keeping pass 1 — when it counts >10 windows, differs from
     pass 1's `digitWindows` by >1, disagrees with its own `windowCount`, has no digit, or knows 2+
-    fewer digits than pass 1 (the crop missed). Otherwise the crop's positions win (comma rule and
-    leading-dark logic as in pass 1). Pass 1 and the crop *agree* when no right-aligned position has
-    different digits, or their known digits are the same sequence (the crop only moved a dark
-    window); otherwise the crop is still used but `alignmentWarning` is set and the contested digits
-    go into `lowConfidence` — the UI shows "Digits were hard to line up".
-  - Any failure (bad box, sharp error, API error) keeps pass 1 for that photo; it never fails the
-    upload. Cost on the test photos: ~2s / ~1.7k input tokens for one display, ~3.5s / ~3.8k input
+    fewer digits than pass 1 (the crop missed). It never touches a complete non-segment read.
+    Otherwise it compares the two reads' known digits as sequences:
+    same sequence → the crop only moved a dark window, its positions win, no warning; one digit
+    added or dropped, rest in order → crop positions, `alignmentWarning`, an added digit marked
+    `lowConfidence`; anything else → if most shared (right-aligned) positions disagree it's a
+    different display or a hallucination and **pass 1 stands** ("8807?" vs a crop's "880700",
+    "123450" vs a neighbour's "987600"); else each contested position becomes `?` with a
+    `conflicts` entry offering both digits (mergeReads carries these into the existing picker).
+    **A crop never silently replaces a digit pass 1 read.** The wizard opens any flagged read in
+    digit-cell mode, even when complete, and shows "Digits were hard to line up".
+  - Any failure (bad box, sharp error, API error, timeout) keeps pass 1 for that photo; it never
+    fails the upload. Request limits: pass 1 60s with 1 retry, the crop pass 20s with none (both
+    were on the SDK default of 10 minutes × 2 retries). Pass 1's `max_tokens` is
+    `readMaxTokens(images)` = min(16000, 1024 + 800/image) — a 4-player photo is 510–614 output
+    tokens — and a `stop_reason` of `max_tokens` throws `ScoreReadTruncatedError` rather than
+    parsing a cut-off tool call. Cost on the test photos: ~2s / ~1.7k input tokens for one display, ~3.5s / ~3.8k input
     tokens for four (Sonnet 4.6: about $0.006 and $0.014).
   - Known limit: a display whose window dividers aren't visible (unlit windows are just dark glass)
     gets counted by its lit digits — Stars 1UP "8076" as 4 windows — and is rejected by the ±1
