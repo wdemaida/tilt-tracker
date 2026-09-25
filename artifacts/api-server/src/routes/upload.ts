@@ -6,7 +6,7 @@ import { and, between, eq } from 'drizzle-orm';
 import { db, venues, users } from '@workspace/db';
 import { getAuth } from '@clerk/express';
 import { requireAuth } from '../middleware/requireAuth.js';
-import { extractScoreReads } from '../lib/anthropic.js';
+import { extractScoreReads, ScoreReadTruncatedError, type ExtractedScoreReads } from '../lib/anthropic.js';
 import { refineWithCrops, modelViewSize } from '../lib/displayCrops.js';
 import { mergeReads, mergePlayerReads, defaultPlayerIndex, templateToScore, checkPlausibility } from '../lib/scoreRead.js';
 import { getMachineScoreStats } from '../lib/machineScoreStats.js';
@@ -323,7 +323,17 @@ router.post('/', requireAuth, receivePhotos, async (req, res) => {
     // goes without one (its boxes are then read as fractions).
     const sized: typeof images = [];
     for (const img of images) sized.push(await modelViewSize(img).catch(() => img));
-    const extracted = await extractScoreReads(sized);
+    // A read cut off by max_tokens is incomplete and unusable — but the photos' GPS, time and venue
+    // suggestions are still good, so answer normally with no score and say why (`readNotice`).
+    let readNotice: string | null = null;
+    const extracted: ExtractedScoreReads = await extractScoreReads(sized).catch(err => {
+      if (!(err instanceof ScoreReadTruncatedError)) throw err;
+      readNotice = "Couldn't read the score from this many photos at once — enter it below, or try fewer photos.";
+      return {
+        usage: { inputTokens: 0, outputTokens: 0, ms: 0 }, machineName: null, playedAt: null,
+        reads: images.map(() => ({ displays: [] })), bestImageIndex: 0,
+      };
+    });
     // Second pass: re-read each score display from a close crop, window by window, when the photo has
     // several displays or a strobed segment read (see displayCrops.ts). Skipped for a lone complete
     // DMD/LCD read. Any failure keeps the whole-photo read — this can never fail the upload.
@@ -412,6 +422,7 @@ router.post('/', requireAuth, receivePhotos, async (req, res) => {
       selectedPlayerIndex: playerReads.length ? selected : null,
       photoCount: files.length,
       differentGamesWarning: multi ? differentGamesWarning(meta) : null,
+      readNotice,
       // Zone-less wall clock ("2026-09-10T22:01:00") — see toNaiveLocal. The browser resolves it
       // against the viewer's timezone; do not hand this to `new Date()` on the server.
       playedAt: exifDatetime ?? normalizeNaiveDatetime(extracted.playedAt),

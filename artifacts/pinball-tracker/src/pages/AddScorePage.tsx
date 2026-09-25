@@ -645,6 +645,9 @@ export default function AddScorePage() {
       }
     }
     setDifferentGamesWarning(result.differentGamesWarning ?? null);
+    // The server couldn't finish reading the score (too much to read in one go); everything else in
+    // the result is still good. Shown on the venue and score steps like any read failure.
+    if (result.readNotice) setAiError(result.readNotice);
     // Already a zone-less camera wall clock (the earliest photo's) — the input wants it verbatim.
     const instants = images.map(i => i.capturedAt).filter((t): t is string => !!t).sort();
     if (images.some(i => i.exifDatetime) && result.playedAt) {

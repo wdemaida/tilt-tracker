@@ -10,8 +10,10 @@ const MODEL = 'claude-sonnet-4-6';
 // Per-request limits. The SDK default is a 10-minute timeout with 2 retries — far longer than a user
 // will wait on the upload spinner. The whole-photo read scales with the photos sent: nine 4-player
 // photos are ~4.7k output tokens, over a minute at ~70 tokens/s. One retry only for small sets, so
-// the worst case stays near two and a half minutes (3 images: 66s × 2; 9 images: 138s × 1), well
-// inside Node's 300s default requestTimeout on the api-server. The crop pass is an optional
+// the worst case stays near two and a half minutes (3 images: 66s × 2; 9 images: 138s × 1). Nothing
+// upstream cuts a slow response shorter: the browser calls Render directly (VITE_API_URL, no Vercel
+// proxy), and Node's own limits (requestTimeout 300s, headersTimeout 60s) bound only *receiving*
+// the request; the response side (server.timeout) is 0, unlimited. The crop pass is an optional
 // refinement: short, no retry, and a failure just keeps the whole-photo read.
 export function readRequestOptions(imageCount: number): { timeout: number; maxRetries: number } {
   const n = Math.max(1, imageCount);
