@@ -35,13 +35,14 @@ export function useExactPrivateVenues(query: string): ExactPrivateVenue[] {
   return debounced.toLowerCase() === query.trim().toLowerCase() ? data : [];
 }
 
-/** Whether a venues-list row is someone else's private venue — kept out of substring search. */
+/**
+ * Whether a venues-list row is someone else's private venue — kept out of substring search. The
+ * list no longer carries `ownerId`; each row says `isPrivate` and whether this viewer `canEdit` it
+ * (owner or admin), both decided server-side for the signed-in requester.
+ */
 export function isOthersPrivateVenue(
-  v: { ownerId?: number | null; isResidence?: boolean; privacyTier?: string },
-  me: { id: number; role: string } | null,
+  v: { isPrivate?: boolean; canEdit?: boolean; isResidence?: boolean; privacyTier?: string },
 ): boolean {
-  const isPrivate = !!v.isResidence || (v.privacyTier != null && v.privacyTier !== 'full');
-  if (!isPrivate) return false;
-  if (!me) return true;
-  return me.role !== 'admin' && v.ownerId !== me.id;
+  const isPrivate = v.isPrivate ?? (!!v.isResidence || (v.privacyTier != null && v.privacyTier !== 'full'));
+  return isPrivate && !v.canEdit;
 }

@@ -12,7 +12,6 @@ import {
   CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
-import { api } from '../lib/api';
 import { useApi } from '../lib/useApi';
 
 // ─── constants ────────────────────────────────────────────────────────────────
@@ -364,7 +363,9 @@ export default function MachinePage() {
 
   const { data, isLoading } = useQuery({
     queryKey: ['machine', decodedName],
-    queryFn: () => api.machines.get(decodedName),
+    // authApi, not the static client: scores at a private venue whose owner hides them are only
+    // returned to the owner, admins and their authors, which the server can't tell without a token.
+    queryFn: () => authApi.machines.get(decodedName),
   });
 
   // ── derived ─────────────────────────────────────────────────────────────────

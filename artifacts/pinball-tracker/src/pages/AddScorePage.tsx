@@ -209,12 +209,18 @@ export default function AddScorePage() {
     [venueHistory]
   );
 
-  // PM machines at selected venue (starts fetching as soon as venue is selected)
-  const { data: venueData, isLoading: venueDataLoading } = useQuery({
+  // Machines at the selected venue (starts fetching as soon as a venue is selected): its Pinball Map
+  // roster, or — for a home venue — the owner-managed inventory. Fetched for any existing venue,
+  // since the picker doesn't know which a venue has (a friend's home venue arrives name-only), but
+  // only *used* when there's a roster or inventory to show; otherwise the catalog search stays.
+  const { data: venueMachinesData, isLoading: venueMachinesLoading } = useQuery({
     queryKey: ['venue-machines', selectedVenue?.venueId],
     queryFn: () => api.venues.machines(selectedVenue!.venueId!),
-    enabled: selectedVenue?.venueId != null && selectedVenue?.pinballMapId != null,
+    enabled: selectedVenue?.venueId != null,
   });
+  const hasVenueRoster = selectedVenue?.pinballMapId != null || (venueMachinesData?.inventory?.machines?.length ?? 0) > 0;
+  const venueData = hasVenueRoster ? venueMachinesData : undefined;
+  const venueDataLoading = venueMachinesLoading && selectedVenue?.pinballMapId != null;
 
   // Fallback: load PM machines by pinballMapId when the venue isn't in our DB yet
   const { data: pmOnlyData, isLoading: pmOnlyLoading } = useQuery({
@@ -233,6 +239,8 @@ export default function AddScorePage() {
     if (venueData) {
       const ownNames = new Set((venueData.ownMachines as any[]).map((m: any) => m.name.toLowerCase()));
       const ttNames = new Set(((venueData.ttMachineNames as string[]) ?? []).map((n: string) => n.toLowerCase()));
+      const inventory = ((venueData.inventory?.machines as any[]) ?? []);
+      const inventoryNames = new Set(inventory.map((m: any) => m.name.toLowerCase()));
       const pmNames = new Set((venueData.pmMachines as any[]).map((m: any) => m.name.toLowerCase()));
       const cutoff = Date.now() - RECENTLY_LEFT_DAYS * 24 * 60 * 60 * 1000;
       return [
@@ -240,15 +248,23 @@ export default function AddScorePage() {
           name: m.name as string, played: true, playCount: m.playCount as number, inTiltTrack: true, recentlyLeft: false,
           manufacturer: undefined as string | undefined, year: undefined as number | undefined,
         })),
-        ...(venueData.pmMachines as any[])
+        // A home venue's owner-managed machines — its roster, since it has no Pinball Map listing.
+        ...inventory
           .filter((m: any) => !ownNames.has(m.name.toLowerCase()))
+          .map((m: any) => ({
+            name: m.name as string, played: false, playCount: 0,
+            inTiltTrack: ttNames.has(m.name.toLowerCase()), recentlyLeft: false,
+            manufacturer: (m.manufacturer ?? undefined) as string | undefined, year: (m.year ?? undefined) as number | undefined,
+          })),
+        ...(venueData.pmMachines as any[])
+          .filter((m: any) => !ownNames.has(m.name.toLowerCase()) && !inventoryNames.has(m.name.toLowerCase()))
           .map((m: any) => ({
             name: m.name as string, played: false, playCount: 0,
             inTiltTrack: ttNames.has(m.name.toLowerCase()), recentlyLeft: false,
             manufacturer: m.manufacturer as string | undefined, year: m.year as number | undefined,
           })),
-        ...((venueData.formerMachines as any[]) ?? [])
-          .filter((m: any) => !ownNames.has(m.name.toLowerCase()) && !pmNames.has(m.name.toLowerCase()))
+        ...[...((venueData.formerMachines as any[]) ?? []), ...((venueData.inventory?.former as any[]) ?? [])]
+          .filter((m: any) => !ownNames.has(m.name.toLowerCase()) && !pmNames.has(m.name.toLowerCase()) && !inventoryNames.has(m.name.toLowerCase()))
           .filter((m: any) => new Date(m.removedAt).getTime() >= cutoff)
           .map((m: any) => ({
             name: m.name as string, played: false, playCount: 0,

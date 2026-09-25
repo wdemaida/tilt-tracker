@@ -2,10 +2,13 @@ import { useQuery } from '@tanstack/react-query';
 import { useParams, Link } from 'wouter';
 import { User, MapPin, Clock, Home } from 'lucide-react';
 import { formatScoreTime } from '../lib/scoreTime';
-import { api } from '../lib/api';
+import { useApi } from '../lib/useApi';
 
 export default function UserPage() {
   const { username } = useParams<{ username: string }>();
+  // Authenticated when signed in: your own profile includes scores at home venues whose owner
+  // keeps them private; other people's doesn't.
+  const api = useApi();
   const { data, isLoading } = useQuery({
     queryKey: ['user', username],
     queryFn: () => api.users.get(username),

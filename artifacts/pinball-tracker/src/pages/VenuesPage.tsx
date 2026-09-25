@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { Link } from 'wouter';
-import { MapPin, Trophy, X, ExternalLink, Pencil, Trash2, Home, AlertTriangle } from 'lucide-react';
+import { MapPin, Trophy, ExternalLink, Pencil, Trash2, Home, AlertTriangle } from 'lucide-react';
 import { PinballIcon } from '../components/PinballIcon';
 import VenueMachinesModal from '../components/VenueMachinesModal';
+import EditVenueDialog, { editTargetFromVenue, type EditVenueTarget } from '../components/EditVenueDialog';
 import * as Dialog from '@radix-ui/react-dialog';
 import { useApi } from '../lib/useApi';
 import { useAppUser } from '../lib/useAppUser';
@@ -11,37 +12,33 @@ import { useScopeContext } from '../lib/ScopeContext';
 import { ScopeToggle } from '../components/ScopeToggle';
 import { queryClient } from '../lib/queryClient';
 
+// Someone else's home venue arrives trimmed to what its card needs (name, the address its privacy
+// tier allows, counts) — no ownerId, tier, coordinates or timezone. Hence the optional fields.
 interface Venue {
   id: number;
   name: string;
   address: string | null;
-  latitude: number | null;
-  longitude: number | null;
   pinballMapId: number | null;
   pmMachineCount: number | null;
-  ownerId: number | null;
   isResidence: boolean;
-  privacyTier: 'full' | 'city_state' | 'hidden';
+  /** Only on rows this viewer can edit (seeds the Edit Venue dialog). */
+  privacyTier?: 'full' | 'city_state' | 'hidden';
+  showMachinesAndScores?: boolean;
+  /** Scores this viewer can see here. */
   scoreCount: number;
-  machineCount: number;
+  /** Null when the owner keeps this venue's machines private from this viewer. */
+  machineCount: number | null;
+  /** Residence or restricted tier. */
+  isPrivate: boolean;
+  /** Owner or admin — decided server-side; shows the edit pencil. */
+  canEdit: boolean;
+  /** The owner turned "Show my machines/scores publicly" off, and this viewer isn't exempt. */
+  activityHidden: boolean;
   /** No address and not a residence — fixable from the venue page's repair panel. */
   needsAddress?: boolean;
   /** Whether *this* viewer may repair the venue (admin / owner / creator) — decided server-side. */
   canRepair?: boolean;
 }
-
-interface EditVenue {
-  id: number;
-  name: string;
-  address: string;
-  isResidence: boolean;
-  privacyTier: 'full' | 'city_state' | 'hidden';
-  /** Whether the venue was public when the dialog opened — to warn before it loses its links. */
-  wasPublic: boolean;
-  hadPinballMap: boolean;
-}
-
-const isPrivateEdit = (v: { isResidence: boolean; privacyTier: string }) => v.isResidence || v.privacyTier !== 'full';
 
 // Addresses look like "..., City, ST" or "..., City, ST ZIP, United States" — the state
 // abbreviation is whichever comma-separated segment starts with two uppercase letters.
@@ -59,7 +56,7 @@ export default function VenuesPage() {
   const [search, setSearch] = useState('');
   const [stateFilter, setStateFilter] = useState('');
   const [modalVenueId, setModalVenueId] = useState<number | null>(null);
-  const [editVenue, setEditVenue] = useState<EditVenue | null>(null);
+  const [editVenue, setEditVenue] = useState<EditVenueTarget | null>(null);
   const [deleteVenueId, setDeleteVenueId] = useState<number | null>(null);
   const [onlyNeedsAddress, setOnlyNeedsAddress] = useState(false);
 
@@ -67,22 +64,6 @@ export default function VenuesPage() {
   const appUser = useAppUser();
   const isAdmin = appUser?.role === 'admin';
   const { mine } = useScopeContext();
-
-  const patchMutation = useMutation({
-    mutationFn: ({ id, body }: { id: number; body: any }) => authApi.venues.patch(id, body),
-    onSuccess: () => {
-      // A privacy-tier change alters the redacted lat/lng baked into every score at this venue
-      // (see venuePrivacy.ts). ['scores']/['venue-scores'] aren't mounted on this page, so a plain
-      // invalidate only marks them stale — the *next* time Map/VenuePage mounts, react-query renders
-      // the old cached (now-wrong) coordinates instantly before the background refetch resolves,
-      // visibly flashing/lagging the pin. removeQueries evicts the cache entirely so that next mount
-      // has no stale data to render and must wait for a fresh fetch instead.
-      queryClient.invalidateQueries({ queryKey: ['venues'] });
-      queryClient.removeQueries({ queryKey: ['scores'] });
-      queryClient.removeQueries({ queryKey: ['venue-scores'] });
-      setEditVenue(null);
-    },
-  });
 
   const deleteMutation = useMutation({
     mutationFn: (id: number) => authApi.venues.delete(id),
@@ -184,7 +165,7 @@ export default function VenuesPage() {
                   </div>
                   {venue.address ? (
                     <p className="text-xs text-muted-foreground mt-0.5 truncate">{venue.address}</p>
-                  ) : venue.isResidence ? (
+                  ) : venue.isResidence || venue.isPrivate ? (
                     <p className="text-xs text-muted-foreground/60 italic mt-0.5">Address hidden</p>
                   ) : showNeedsAddress(venue) ? (
                     <Link
@@ -197,18 +178,10 @@ export default function VenuesPage() {
                     </Link>
                   ) : null}
                 </div>
-                {(isAdmin || venue.ownerId === appUser?.id) && (
+                {venue.canEdit && (
                   <div className="flex gap-1 flex-shrink-0">
                     <button
-                      onClick={() => setEditVenue({
-                        id: venue.id,
-                        name: venue.name,
-                        address: venue.address ?? '',
-                        isResidence: venue.isResidence,
-                        privacyTier: venue.privacyTier,
-                        wasPublic: !isPrivateEdit(venue),
-                        hadPinballMap: venue.pinballMapId != null,
-                      })}
+                      onClick={() => setEditVenue(editTargetFromVenue(venue))}
                       className="p-1 rounded text-muted-foreground hover:text-white hover:bg-white/10 transition-colors"
                       aria-label="Edit venue"
                     >
@@ -228,27 +201,33 @@ export default function VenuesPage() {
               </div>
 
               <div className="flex items-center gap-2 flex-wrap">
-                <Link
-                  href={`/venues/${venue.id}`}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary/10 border border-primary/30 hover:bg-primary/20 hover:border-primary/60 transition-colors"
-                >
-                  <Trophy className="w-3 h-3 text-primary" />
-                  <span className="text-xs text-primary font-bold">
-                    {venue.scoreCount} {venue.scoreCount === 1 ? 'score' : 'scores'}
-                  </span>
-                </Link>
+                {/* A home venue whose owner keeps its machines and scores private shows only its
+                    name — plus your own scores there, if you have any. */}
+                {(!venue.activityHidden || venue.scoreCount > 0) && (
+                  <Link
+                    href={`/venues/${venue.id}`}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-primary/10 border border-primary/30 hover:bg-primary/20 hover:border-primary/60 transition-colors"
+                  >
+                    <Trophy className="w-3 h-3 text-primary" />
+                    <span className="text-xs text-primary font-bold">
+                      {venue.scoreCount} {venue.scoreCount === 1 ? 'score' : 'scores'}
+                    </span>
+                  </Link>
+                )}
 
-                <button
-                  onClick={() => setModalVenueId(venue.id)}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-machine/10 border border-machine/30 hover:bg-machine/20 hover:border-machine/60 transition-colors"
-                >
-                  <PinballIcon className="w-3 h-3 text-machine" />
-                  <span className="text-xs text-machine font-bold">
-                    {venue.pmMachineCount != null
-                      ? `${venue.machineCount}/${venue.pmMachineCount} machines`
-                      : `${venue.machineCount} ${venue.machineCount === 1 ? 'machine' : 'machines'}`}
-                  </span>
-                </button>
+                {venue.machineCount != null && (
+                  <button
+                    onClick={() => setModalVenueId(venue.id)}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-machine/10 border border-machine/30 hover:bg-machine/20 hover:border-machine/60 transition-colors"
+                  >
+                    <PinballIcon className="w-3 h-3 text-machine" />
+                    <span className="text-xs text-machine font-bold">
+                      {venue.pmMachineCount != null
+                        ? `${venue.machineCount}/${venue.pmMachineCount} machines`
+                        : `${venue.machineCount} ${venue.machineCount === 1 ? 'machine' : 'machines'}`}
+                    </span>
+                  </button>
+                )}
 
                 {venue.pinballMapId && (
                   <a
@@ -267,94 +246,7 @@ export default function VenuesPage() {
         </div>
       )}
 
-      {/* Edit venue dialog */}
-      <Dialog.Root open={!!editVenue} onOpenChange={open => { if (!open) setEditVenue(null); }}>
-        <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm" />
-          <Dialog.Content className="fixed z-50 top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-md rounded-2xl border border-white/10 bg-card p-6 shadow-2xl">
-            <div className="flex items-center justify-between mb-5">
-              <Dialog.Title className="text-lg font-black uppercase tracking-wider text-white">Edit Venue</Dialog.Title>
-              <Dialog.Close className="w-8 h-8 rounded-lg flex items-center justify-center text-muted-foreground hover:text-white hover:bg-white/10 transition-colors">
-                <X className="w-4 h-4" />
-              </Dialog.Close>
-            </div>
-            {editVenue && (
-              <div className="flex flex-col gap-4">
-                <label className="flex flex-col gap-1.5">
-                  <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Name</span>
-                  <input
-                    value={editVenue.name}
-                    onChange={e => setEditVenue({ ...editVenue, name: e.target.value })}
-                    className="rounded-lg border border-white/10 bg-background px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50"
-                  />
-                </label>
-                <label className="flex flex-col gap-1.5">
-                  <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Address</span>
-                  <input
-                    value={editVenue.address}
-                    onChange={e => setEditVenue({ ...editVenue, address: e.target.value })}
-                    className="rounded-lg border border-white/10 bg-background px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50"
-                  />
-                </label>
-                <label className="flex items-center gap-2 text-sm text-white/80">
-                  <input
-                    type="checkbox"
-                    checked={editVenue.isResidence}
-                    onChange={e => setEditVenue({ ...editVenue, isResidence: e.target.checked, privacyTier: e.target.checked ? editVenue.privacyTier : 'full' })}
-                  />
-                  This is my residence
-                </label>
-                {editVenue.isResidence && (
-                  <div className="flex flex-col gap-1.5 pl-1">
-                    <span className="text-xs text-muted-foreground">Show my address as:</span>
-                    {([
-                      { value: 'full', label: 'Full address' },
-                      { value: 'city_state', label: 'City & state only' },
-                      { value: 'hidden', label: 'Fully hidden' },
-                    ] as const).map(opt => (
-                      <label key={opt.value} className="flex items-center gap-2 text-sm text-white/80">
-                        <input
-                          type="radio"
-                          name="editPrivacyTier"
-                          checked={editVenue.privacyTier === opt.value}
-                          onChange={() => setEditVenue({ ...editVenue, privacyTier: opt.value })}
-                        />
-                        {opt.label}
-                      </label>
-                    ))}
-                  </div>
-                )}
-                {editVenue.wasPublic && isPrivateEdit(editVenue) && (
-                  // The server clears hereId / pinballMapId in the same save; they don't come back.
-                  <p className="text-xs rounded-lg bg-amber-500/10 text-amber-400 px-3 py-2">
-                    Switching to private removes this venue’s Pinball Map and HERE links
-                    {editVenue.hadPinballMap ? ' — its machine list will no longer come from Pinball Map' : ''}.
-                    Switching back later won’t restore them.
-                  </p>
-                )}
-                {patchMutation.isError && (
-                  <p className="text-xs text-red-400">{(patchMutation.error as any)?.message}</p>
-                )}
-                <div className="flex gap-3 pt-1">
-                  <Dialog.Close className="flex-1 py-2.5 rounded-lg border border-white/10 text-sm text-muted-foreground hover:text-white transition-colors">
-                    Cancel
-                  </Dialog.Close>
-                  <button
-                    onClick={() => patchMutation.mutate({
-                      id: editVenue.id,
-                      body: { name: editVenue.name, address: editVenue.address, isResidence: editVenue.isResidence, privacyTier: editVenue.privacyTier },
-                    })}
-                    disabled={patchMutation.isPending}
-                    className="flex-1 py-2.5 rounded-lg bg-primary text-white font-bold text-sm hover:opacity-90 transition-opacity disabled:opacity-50"
-                  >
-                    {patchMutation.isPending ? 'Saving...' : 'Save'}
-                  </button>
-                </div>
-              </div>
-            )}
-          </Dialog.Content>
-        </Dialog.Portal>
-      </Dialog.Root>
+      <EditVenueDialog venue={editVenue} onClose={() => setEditVenue(null)} />
 
       {/* Delete venue confirm dialog */}
       <Dialog.Root open={deleteVenueId !== null} onOpenChange={open => { if (!open) setDeleteVenueId(null); }}>

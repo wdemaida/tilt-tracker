@@ -17,13 +17,24 @@ async function request<T>(path: string, init?: RequestInit, token?: string | nul
   return res.json();
 }
 
+/** A private venue's owner-managed machine list, as the server returns it. */
+export interface VenueInventory {
+  /** True once the owner has ever added a machine — from then on the list *is* the machine count. */
+  managed: boolean;
+  machines: Array<{ id: number; name: string; manufacturer: string | null; year: number | null; addedAt: string }>;
+  former: Array<{ id: number; name: string; manufacturer: string | null; year: number | null; addedAt: string; removedAt: string }>;
+}
+
 export function createApi(getToken: () => Promise<string | null>) {
   const tok = () => getToken();
 
   return {
+    // Every read sends the viewer's token when there is one (null when signed out), not only the
+    // `mine` variants: what a listing contains depends on who's asking — a home venue's owner (and
+    // each score's author) sees scores there that others don't. See venueActivity.ts on the server.
     scores: {
       list: async (mine = false) =>
-        request<any[]>(mine ? '/scores?mine=true' : '/scores', undefined, mine ? await tok() : undefined),
+        request<any[]>(mine ? '/scores?mine=true' : '/scores', undefined, await tok()),
       create: async (body: Record<string, unknown>) =>
         request<any>('/scores', { method: 'POST', body: JSON.stringify(body) }, await tok()),
       // `venueId` attaches a venue to a score that was logged without one — see ScoreVenuePicker.
@@ -42,8 +53,8 @@ export function createApi(getToken: () => Promise<string | null>) {
     },
     machines: {
       list: async (mine = false) =>
-        request<any[]>(mine ? '/machines?mine=true' : '/machines', undefined, mine ? await tok() : undefined),
-      get: (name: string) => request<any>(`/machines/${encodeURIComponent(name)}`),
+        request<any[]>(mine ? '/machines?mine=true' : '/machines', undefined, await tok()),
+      get: async (name: string) => request<any>(`/machines/${encodeURIComponent(name)}`, undefined, await tok()),
       search: (q: string) => request<any[]>(`/machines/search?q=${encodeURIComponent(q)}`),
       // Count + median of recorded scores — drives the "may be missing digits" check on AddScorePage.
       scoreStats: (name: string) =>
@@ -60,7 +71,7 @@ export function createApi(getToken: () => Promise<string | null>) {
       me: async () => request<any | null>('/users/me', undefined, await tok()),
       setup: async (body: { username: string; displayName: string }) =>
         request('/users/setup', { method: 'POST', body: JSON.stringify(body) }, await tok()),
-      get: (username: string) => request<any>(`/users/${username}`),
+      get: async (username: string) => request<any>(`/users/${username}`, undefined, await tok()),
     },
     stats: {
       get: async (mine = true) => request<any>(`/stats?mine=${mine}`, undefined, await tok()),
@@ -71,7 +82,7 @@ export function createApi(getToken: () => Promise<string | null>) {
     },
     venues: {
       list: async (mine = false) =>
-        request<any[]>(mine ? '/venues?mine=true' : '/venues', undefined, mine ? await tok() : undefined),
+        request<any[]>(mine ? '/venues?mine=true' : '/venues', undefined, await tok()),
       machines: async (id: number) => request<any>(`/venues/${id}/machines`, undefined, await tok()),
       pmMachines: (pmId: number) => request<any>(`/venues/pm-machines/${pmId}`),
       // Private venues (homes) whose name matches exactly — name only, never a location. How a
@@ -94,14 +105,22 @@ export function createApi(getToken: () => Promise<string | null>) {
           `/venues/address-autocomplete?q=${encodeURIComponent(q)}${at ? `&lat=${at.lat}&lng=${at.lng}` : ''}`
         ),
       scores: async (id: number, mine = false) =>
-        request<any>(mine ? `/venues/${id}/scores?mine=true` : `/venues/${id}/scores`, undefined, mine ? await tok() : undefined),
+        request<any>(mine ? `/venues/${id}/scores?mine=true` : `/venues/${id}/scores`, undefined, await tok()),
       // Rejects with a 409 (`code: 'duplicate_venue'`, plus `candidates`) when a venue of the same
       // name already exists within 250m. Re-send with `allowDuplicate: true` once the user confirms
       // it really is a different place.
       create: async (body: { name: string; address: string; isResidence?: boolean; privacyTier?: 'full' | 'city_state' | 'hidden'; allowDuplicate?: boolean }) =>
         request<any>('/venues', { method: 'POST', body: JSON.stringify(body) }, await tok()),
-      patch: async (id: number, body: { name?: string; address?: string | null; isResidence?: boolean; privacyTier?: 'full' | 'city_state' | 'hidden' }) =>
+      patch: async (id: number, body: { name?: string; address?: string | null; isResidence?: boolean; privacyTier?: 'full' | 'city_state' | 'hidden'; showMachinesAndScores?: boolean }) =>
         request(`/venues/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, await tok()),
+      // Owner-managed machines at a private (home) venue — owner or admin only. `name` is a machine
+      // from the catalog search (`machines.search`); anything not in the catalog is refused.
+      inventory: {
+        add: async (id: number, body: { name: string } | { machineId: number }) =>
+          request<{ added: boolean; inventory: VenueInventory }>(`/venues/${id}/inventory`, { method: 'POST', body: JSON.stringify(body) }, await tok()),
+        remove: async (id: number, machineId: number) =>
+          request<{ removed: boolean; inventory: VenueInventory }>(`/venues/${id}/inventory/${machineId}`, { method: 'DELETE' }, await tok()),
+      },
       delete: async (id: number) =>
         request(`/venues/${id}`, { method: 'DELETE' }, await tok()),
 

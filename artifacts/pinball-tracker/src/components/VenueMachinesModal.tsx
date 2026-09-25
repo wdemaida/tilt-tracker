@@ -1,7 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
-import { X, AlertTriangle, ExternalLink } from 'lucide-react';
+import { X, AlertTriangle, ExternalLink, EyeOff } from 'lucide-react';
 import { format } from 'date-fns';
 import { useApi } from '../lib/useApi';
+import type { VenueInventory } from '../lib/api';
 
 interface VenueMachinesData {
   venue: { id: number; name: string };
@@ -11,6 +12,10 @@ interface VenueMachinesData {
   ttMachineNames: string[];
   pmError?: string | null;
   pmLocationUrl?: string | null;
+  /** A home venue's owner-managed machines; null for public venues, or when hidden from this viewer. */
+  inventory?: VenueInventory | null;
+  /** The owner keeps this venue's machines and scores private, and this viewer isn't exempt. */
+  activityHidden?: boolean;
 }
 
 interface VenueMachinesModalProps {
@@ -34,6 +39,13 @@ export default function VenueMachinesModal({ venueId, onClose }: VenueMachinesMo
   const ownNames = new Set((machinesData?.ownMachines ?? []).map(m => m.name.toLowerCase()));
   const pmMachinesExcludingOwn = (machinesData?.pmMachines ?? []).filter(m => !ownNames.has(m.name.toLowerCase()));
   const ttNamesLower = new Set((machinesData?.ttMachineNames ?? []).map(n => n.toLowerCase()));
+  const inventoryExcludingOwn = (machinesData?.inventory?.machines ?? []).filter(m => !ownNames.has(m.name.toLowerCase()));
+  const inventoryNames = new Set((machinesData?.inventory?.machines ?? []).map(m => m.name.toLowerCase()));
+  // Machines that left: Pinball Map's removal history for public venues, the owner's for home ones.
+  const formerMachines = [
+    ...(machinesData?.formerMachines ?? []),
+    ...(machinesData?.inventory?.former ?? []).filter(m => !inventoryNames.has(m.name.toLowerCase())),
+  ];
 
   return (
     <div
@@ -69,6 +81,12 @@ export default function VenueMachinesModal({ venueId, onClose }: VenueMachinesMo
                   <span>Pinball Map data unavailable — {machinesData.pmError}</span>
                 </p>
               )}
+              {machinesData?.activityHidden && (
+                <p className="flex items-start gap-2 text-xs rounded-lg bg-white/5 text-muted-foreground px-3 py-2">
+                  <EyeOff className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <span>The owner keeps this venue’s machines and scores private.</span>
+                </p>
+              )}
               {/* Your scores */}
               {machinesData && machinesData.ownMachines.length > 0 && (
                 <div>
@@ -95,6 +113,33 @@ export default function VenueMachinesModal({ venueId, onClose }: VenueMachinesMo
                             {m.playCount} {m.playCount === 1 ? 'play' : 'plays'}
                           </span>
                         </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* A home venue's own list (owner-managed — private venues have no Pinball Map roster) */}
+              {inventoryExcludingOwn.length > 0 && (
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-3">
+                    {machinesData && machinesData.ownMachines.length > 0 ? 'Also here' : 'Machines here'}
+                  </p>
+                  <div className="flex flex-col gap-2">
+                    {inventoryExcludingOwn.map(m => (
+                      <div
+                        key={m.id}
+                        className="flex flex-col gap-2 rounded-lg border border-machine/20 bg-machine/5 px-4 py-3"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <span className="text-sm font-bold text-machine leading-snug min-w-0">{m.name}</span>
+                          {ttNamesLower.has(m.name.toLowerCase()) && (
+                            <span title="In TiltTrack" className="text-xs px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-300 font-medium flex-shrink-0">TT</span>
+                          )}
+                        </div>
+                        <span className="text-xs text-muted-foreground">
+                          {[m.manufacturer, m.year].filter(Boolean).join(' · ') || ' '}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -135,16 +180,16 @@ export default function VenueMachinesModal({ venueId, onClose }: VenueMachinesMo
                 </div>
               )}
 
-              {/* Formerly here — inferred from Pinball Map's removal history */}
-              {machinesData && machinesData.formerMachines.length > 0 && (
+              {/* Formerly here — Pinball Map's removal history, or the owner's for a home venue */}
+              {formerMachines.length > 0 && (
                 <div>
                   <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-3">
                     Formerly here
                   </p>
                   <div className="flex flex-col gap-2">
-                    {machinesData.formerMachines.map(m => (
+                    {formerMachines.map(m => (
                       <div
-                        key={m.id}
+                        key={`${m.id}-${m.removedAt}`}
                         className="flex items-center justify-between rounded-lg border border-white/10 bg-background/50 px-4 py-3 opacity-70"
                       >
                         <span className="text-sm font-bold text-muted-foreground">{m.name}</span>
@@ -157,7 +202,7 @@ export default function VenueMachinesModal({ venueId, onClose }: VenueMachinesMo
                 </div>
               )}
 
-              {machinesData && machinesData.ownMachines.length === 0 && pmMachinesExcludingOwn.length === 0 && machinesData.formerMachines.length === 0 && (
+              {machinesData && !machinesData.activityHidden && machinesData.ownMachines.length === 0 && pmMachinesExcludingOwn.length === 0 && inventoryExcludingOwn.length === 0 && formerMachines.length === 0 && (
                 <p className="text-sm text-muted-foreground text-center py-4">No machine data available</p>
               )}
 

@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { MapPin, Plus, AlertTriangle } from 'lucide-react';
 import { useApi } from '../lib/useApi';
-import { useAppUser } from '../lib/useAppUser';
 import { useExactPrivateVenues, isOthersPrivateVenue } from '../lib/useExactPrivateVenues';
 
 interface DuplicateCandidate {
@@ -109,11 +108,11 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
     return bt - at;
   }), [venues]);
 
-  const me = useAppUser();
   const q = search.trim().toLowerCase();
   // Someone else's home venue isn't browsable or substring-searchable here — it's found only by
   // typing its exact name (below), which reveals that the name exists and nothing about where.
-  const browsable = byRecency.filter(v => !isOthersPrivateVenue(v, me));
+  // `canEdit` on each row is computed for the signed-in requester (useApi sends the token).
+  const browsable = byRecency.filter(v => !isOthersPrivateVenue(v));
   const exactPrivate = useExactPrivateVenues(search)
     .filter(p => !browsable.some(v => v.id === p.id))
     .map(p => ({ id: p.id, name: p.name, address: null, timezone: null, isPrivateMatch: true }));

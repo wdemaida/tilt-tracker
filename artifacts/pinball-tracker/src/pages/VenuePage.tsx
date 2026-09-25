@@ -1,7 +1,7 @@
 ﻿import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'wouter';
-import { ArrowLeft, ChevronUp, ChevronDown, Home } from 'lucide-react';
+import { ArrowLeft, ChevronUp, ChevronDown, Home, Pencil, EyeOff } from 'lucide-react';
 import { formatScoreTime } from '../lib/scoreTime';
 import { useApi } from '../lib/useApi';
 import { useScopeContext } from '../lib/ScopeContext';
@@ -9,6 +9,8 @@ import { ScopeToggle } from '../components/ScopeToggle';
 import VenueMapThumbnail from '../components/VenueMapThumbnail';
 import VenueMachinesModal from '../components/VenueMachinesModal';
 import VenueRepairPanel from '../components/VenueRepairPanel';
+import VenueInventoryPanel from '../components/VenueInventoryPanel';
+import EditVenueDialog, { editTargetFromVenue, type EditVenueTarget } from '../components/EditVenueDialog';
 
 type SortKey = 'playedAt' | 'machineName' | 'type' | 'username' | 'score';
 type SortDir = 'asc' | 'desc';
@@ -20,10 +22,20 @@ export default function VenuePage() {
   const [sortKey, setSortKey] = useState<SortKey>('playedAt');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [showMachinesModal, setShowMachinesModal] = useState(false);
+  const [editVenue, setEditVenue] = useState<EditVenueTarget | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ['venue-scores', id, mine],
     queryFn: () => api.venues.scores(Number(id), mine),
+  });
+
+  // A home venue's machine list is its owner-managed inventory, which comes with the machines
+  // payload (shared with VenueMachinesModal's cache entry). Not fetched when the owner hides it.
+  const venueInfo = data?.venue;
+  const { data: machinesData } = useQuery({
+    queryKey: ['venue-machines', Number(id)],
+    queryFn: () => api.venues.machines(Number(id)),
+    enabled: !!venueInfo?.ownerInventory && !venueInfo?.activityHidden,
   });
 
   if (isLoading) return <p className="text-muted-foreground">Loading...</p>;
@@ -85,27 +97,61 @@ export default function VenuePage() {
           <h1 className="text-3xl font-black uppercase tracking-widest text-venue leading-tight flex items-center gap-2">
             {venue.name}
             {venue.isResidence && <Home className="w-5 h-5 text-venue/70 flex-shrink-0" />}
+            {/* Same pencil, dialog and permission as the Venues page card (server's canEdit). */}
+            {venue.canEdit && (
+              <button
+                type="button"
+                onClick={() => setEditVenue(editTargetFromVenue(venue))}
+                className="p-1 rounded text-muted-foreground hover:text-white hover:bg-white/10 transition-colors"
+                aria-label="Edit venue"
+              >
+                <Pencil className="w-4 h-4" />
+              </button>
+            )}
           </h1>
-          {venue.address && (
+          {venue.address ? (
             <p className="text-sm text-muted-foreground mt-1">{venue.address}</p>
+          ) : venue.isResidence || venue.isPrivate ? (
+            <p className="text-sm text-muted-foreground/60 italic mt-1">Address hidden</p>
+          ) : null}
+          {venue.activityHidden ? (
+            <p className="text-sm text-muted-foreground mt-1">
+              {scores.length === 1 ? 'Your score here is shown below. ' : scores.length > 1 ? `Your ${scores.length} scores here are shown below. ` : ''}
+              The owner keeps this venue’s machines and scores private.
+            </p>
+          ) : (
+            <p className="text-sm text-muted-foreground mt-1">
+              {scores.length} {scores.length === 1 ? 'score' : 'scores'} recorded on{' '}
+              <button
+                type="button"
+                onClick={() => setShowMachinesModal(true)}
+                className="text-machine font-bold hover:text-machine/80 transition-colors underline decoration-dotted underline-offset-2"
+              >
+                {venue.pmMachineCount != null
+                  ? `${venue.machineCount}/${venue.pmMachineCount} Machines`
+                  : `${venue.machineCount} ${venue.machineCount === 1 ? 'Machine' : 'Machines'}`}
+              </button>
+            </p>
           )}
-          <p className="text-sm text-muted-foreground mt-1">
-            {scores.length} {scores.length === 1 ? 'score' : 'scores'} recorded on{' '}
-            <button
-              type="button"
-              onClick={() => setShowMachinesModal(true)}
-              className="text-machine font-bold hover:text-machine/80 transition-colors underline decoration-dotted underline-offset-2"
-            >
-              {venue.pmMachineCount != null
-                ? `${venue.machineCount}/${venue.pmMachineCount} Machines`
-                : `${venue.machineCount} ${venue.machineCount === 1 ? 'Machine' : 'Machines'}`}
-            </button>
-          </p>
+          {venue.canEdit && venue.isPrivate && venue.showMachinesAndScores === false && (
+            <p className="flex items-center gap-1.5 text-xs text-muted-foreground mt-1">
+              <EyeOff className="w-3.5 h-3.5" />
+              Only you and admins see the machines and scores here — players still see their own.
+            </p>
+          )}
         </div>
         <VenueMapThumbnail venueId={venue.id} latitude={venue.latitude} longitude={venue.longitude} />
       </div>
 
       <VenueRepairPanel venueId={venue.id} />
+
+      {venue.ownerInventory && !venue.activityHidden && machinesData && (
+        <VenueInventoryPanel
+          venueId={venue.id}
+          inventory={machinesData.inventory ?? null}
+          canManage={!!machinesData.canManageInventory}
+        />
+      )}
 
       {scores.length === 0 ? (
         <p className="text-muted-foreground">No scores recorded at this venue yet.</p>
@@ -154,6 +200,7 @@ export default function VenuePage() {
       )}
 
       <VenueMachinesModal venueId={showMachinesModal ? venue.id : null} onClose={() => setShowMachinesModal(false)} />
+      <EditVenueDialog venue={editVenue} onClose={() => setEditVenue(null)} />
     </div>
   );
 }

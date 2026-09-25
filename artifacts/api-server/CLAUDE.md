@@ -107,6 +107,46 @@
 - `backfill-venue-timezones.ts` filled all 36 pre-existing venues from coordinates (not city/state —
   34 of them have neither). Dry-run by default, re-runnable, `--force` to refresh existing values.
 
+## Home-venue inventory + "Show my machines/scores publicly" (`venueActivity.ts`, `venueInventory.ts`, `venueView.ts`, migrate12, added 2026-09-25)
+- **Two separate axes.** Location (address/coords/tz/linkage) is still the privacy tier's job
+  (`venuePrivacy.ts`). "Activity" — a venue's machine inventory and the scores logged there — is
+  `venues.show_machines_and_scores` (default true). The switch only takes effect on a **private**
+  venue (`isPrivateTier`): a public venue's `ownerId` is often just whoever typed it in, and must not
+  be able to hide everyone's scores at a bar. The stored value is ignored on public venues.
+- Switch off → only the owner and admins see the inventory and the scores there; **each score's
+  author always sees their own** (with venue name) in their feed, profile, stats and on the venue
+  page. Everyone else doesn't get those scores *at all* — not venue-anonymised, since "a score at a
+  private venue" on a machine page would still say what the owner has at home.
+- **`visibleScoreSql(viewer)` is the SQL twin of `canSeeScore`** and must be on every query that
+  lists scores to someone: `/api/scores`, `/api/venues` (in the scores JOIN, so counts are per
+  viewer), `/api/venues/:id/scores` + `/machines`, `/api/machines` (JOIN + top scorers),
+  `/api/machines/:name`, `/api/users/:username`, `/api/stats?mine=false`. Keep the two in step —
+  `venueActivity.test.ts` pins the JS rule and checks each SQL branch renders. Left alone on purpose:
+  `machineScoreStats` (a count + median for the "missing digits" check — no venue or player in it)
+  and the daily `captureStatSnapshot` counts.
+- **Inventory** (`venue_inventory`, one row per venue+machine, `removed_at` null = there now) is the
+  roster for private venues, which can't use Pinball Map. Owner or admin only
+  (`canManageInventory`), via `POST /api/venues/:id/inventory {name | machineId}` and `DELETE
+  .../inventory/:machineId`; 409 `venue_public` on a public venue. `resolveCatalogMachine()` only
+  accepts an existing `machines` row or a Pinball Map catalog name, so it can't mint junk machines.
+  Deliberately **not** `venue_machine_history`: that table is PM-derived, re-diffed against the PM
+  roster (which would mark owner-added machines removed), and served only past
+  `canSeeVenueLinkage` — a venue that went private would otherwise publish its old PM roster.
+  Machine deletes / `retireMachineIfUnused` and venue deletes account for inventory rows.
+- **Machine count** (`displayedMachineCount`): public venues = distinct machines scored there (the
+  X of X/Y). A private venue whose owner has ever used the inventory = current inventory size, and
+  `pmMachineCount` is sent as null so the UI shows "N Machines", not X/Y. Scored-but-unlisted
+  machines don't count (like a machine gone from PM's roster); a home venue never inventoried keeps
+  the played count rather than suddenly reading 0.
+- **Wire shapes** (`venueView.ts`): `GET /api/venues` rows no longer carry `ownerId`/`createdById`;
+  every row has server-computed `canEdit`, `isPrivate`, `activityHidden`, `ownerInventory`,
+  `machineCount` (null when hidden). Someone else's private venue is trimmed to
+  `{id, name, address (tier-redacted), isResidence, scoreCount, machineCount, flags}` — no tier,
+  coordinates, timezone, lastPlayedAt or linkage. `/api/venues/:id/scores`'s venue gets the same
+  treatment (plus tier-redacted lat/lng/timezone for the map thumbnail) and now includes `timezone`,
+  which the venue page was already reading.
+- Tests: `npx tsx --test src/lib/venueActivity.test.ts`.
+
 ## Duplicate venues (`src/lib/venueDedup.ts`, added 2026-09-13)
 - The unique index on `venues.here_id` only ever protected the **upload** flow. `POST /api/venues`
   never set a `here_id`, and Postgres treats `NULL != NULL`, so null-`here_id` rows could never

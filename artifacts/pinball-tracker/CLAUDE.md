@@ -64,6 +64,22 @@
   browse/substring list (`isOthersPrivateVenue`), since the venues list itself still carries every
   venue by name.
 
+## Home-venue inventory and the show-publicly switch (added 2026-09-25)
+- The Edit Venue dialog is one component, `EditVenueDialog.tsx`, used by the Venues page card and
+  the venue detail page header — same pencil, same permission (the row's server-computed
+  `canEdit`; the list no longer sends `ownerId`). "Show my machines/scores publicly" appears only
+  for a private venue, because the server only honours it there.
+- `VenueInventoryPanel.tsx` on the venue page lists a home venue's machines; owner/admin get
+  add (typeahead over `api.machines.search`, the Pinball Map catalog) and remove. It reads the
+  `['venue-machines', id]` payload (`inventory`, `canManageInventory`), shared with
+  `VenueMachinesModal`, which shows the inventory as "Machines here" and removed ones under
+  "Formerly here". AddScorePage offers a venue's inventory as machine suggestions.
+- `activityHidden` on a venue payload means the owner turned the switch off and you aren't exempt:
+  the card shows name + "Address hidden" (+ your own score count), no machine pill; the venue page
+  says so and lists only your own scores.
+- **Every read in `api.ts` now sends the token when signed in** (not just the `mine` variants),
+  and UserPage/MachinePage use `useApi()` — what a score listing contains depends on who's asking.
+
 ## Duplicate venues
 - `POST /api/venues` answers **409 `duplicate_venue`** with `candidates` when a venue of the same
   normalized name already exists within 250m (`src/lib/venueDedup.ts` on the api-server). Both
