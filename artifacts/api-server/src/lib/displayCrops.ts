@@ -79,9 +79,26 @@ export function cropRect(box: BBox, width: number, height: number): { left: numb
   return { left: x0, top: y0, width: x1 - x0, height: y1 - y0 };
 }
 
-/** Crops every box out of one image, decoding it once. A box that can't be cut is null. */
+/** Largest source accepted for cropping; sharp refuses anything bigger before decoding it. */
+const MAX_INPUT_PIXELS = 40e6;
+/**
+ * The decoded bitmap is bounded to this on its long edge: ~27MB raw at most, instead of whatever the
+ * photo is (a 48MP original would be ~144MB). It's still ~2x the model's view, and every crop is
+ * upscaled to CROP_WIDTH anyway. Boxes are fractions of the image, so they apply to any scale.
+ */
+const DECODE_MAX_EDGE = 3000;
+
+/**
+ * Crops every box out of one image, decoding it once (bounded — see DECODE_MAX_EDGE). A box that
+ * can't be cut is null. An image with an EXIF rotation gets no crops: the boxes were given for the
+ * image as the model saw it, and whether that was before or after the rotation isn't knowable here.
+ */
 export async function cropDisplays(image: ExtractionImage, boxes: BBox[]): Promise<Array<Buffer | null>> {
-  const { data, info } = await sharp(Buffer.from(image.base64, 'base64'))
+  const input = Buffer.from(image.base64, 'base64');
+  const { orientation } = await sharp(input, { limitInputPixels: MAX_INPUT_PIXELS }).metadata();
+  if (orientation && orientation > 1) return boxes.map(() => null);
+  const { data, info } = await sharp(input, { limitInputPixels: MAX_INPUT_PIXELS })
+    .resize({ width: DECODE_MAX_EDGE, height: DECODE_MAX_EDGE, fit: 'inside', withoutEnlargement: true })
     .removeAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });
