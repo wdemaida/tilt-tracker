@@ -1,3 +1,5 @@
+import { buildSearchIndex, searchIndex, type IndexedMachine } from './machineSearch.js';
+
 const PM_API_TOKEN = process.env.PINBALL_MAP_API_TOKEN;
 
 export interface PinballMachine {
@@ -15,6 +17,9 @@ export interface PinballMachine {
 
 let cache: PinballMachine[] = [];
 let lastFetched = 0;
+// Normalized names precomputed alongside the cache, rebuilt whenever the cache array is replaced.
+let index: IndexedMachine<PinballMachine>[] = [];
+let indexedFrom: PinballMachine[] | null = null;
 const TTL_MS = 1000 * 60 * 60 * 6; // 6 hours
 
 export async function getAllMachines(): Promise<PinballMachine[]> {
@@ -39,6 +44,11 @@ export async function getAllMachines(): Promise<PinballMachine[]> {
 
 export async function searchMachines(query: string, limit = 10): Promise<PinballMachine[]> {
   const all = await getAllMachines();
-  const q = query.toLowerCase();
-  return all.filter(m => m.name.toLowerCase().includes(q)).slice(0, limit);
+  if (indexedFrom !== all) {
+    index = buildSearchIndex(all);
+    indexedFrom = all;
+  }
+  // Returns catalog entries untouched, so the name a client picks is the catalog's own spelling —
+  // venueInventory's resolveCatalogMachine relies on that for its exact-name match.
+  return searchIndex(index, query, limit);
 }
