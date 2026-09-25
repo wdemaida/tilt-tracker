@@ -9,7 +9,7 @@ import { syncVenueMachineHistory, getFormerMachines } from '../lib/venueHistory.
 import {
   geocodeAddress, autosuggestAddress, findVenueByName, resolveTimezone, lookupHerePlace, type Venue as HereVenue,
 } from '../lib/hereApi.js';
-import { redactVenue, canSeeFullVenue, canSeeVenueLinkage, mayAttachScoreTo } from '../lib/venuePrivacy.js';
+import { redactVenue, canSeeFullVenue, canSeeVenueLinkage } from '../lib/venuePrivacy.js';
 import { canRepairVenue, buildResyncPreview, applyResync, reenrichMachines } from '../lib/venueRepair.js';
 import {
   addressResolutionBlocker, pmLocationToPlace, formatPmAddress, buildManualAddressQuery,
@@ -89,13 +89,7 @@ router.get('/', async (req, res) => {
     // venue is nobody else's business, and the client only ever needed the yes/no.
     const redacted = rows.map(r => {
       const { createdById: _createdById, ...pub } = toPublicVenue(redactVenue(r, requester?.id, isAdmin));
-      return {
-        ...pub,
-        ...venueListFlags(r, requester),
-        // Whether this viewer may file a score here — false for someone else's residence. The
-        // score venue picker hides those rather than offering a choice the server would refuse.
-        canAttachScore: requester ? mayAttachScoreTo(r, requester) : false,
-      };
+      return { ...pub, ...venueListFlags(r, requester) };
     });
 
     res.json(redacted);

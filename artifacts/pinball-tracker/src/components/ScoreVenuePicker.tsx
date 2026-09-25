@@ -98,8 +98,7 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
   // play most?"). Attaching a venue to a score asks a different one — "where was I?" — and the answer
   // is almost always somewhere recent. Sorting here rather than changing the endpoint keeps the
   // Venues page's ordering intact. Venues with no scores yet sort last, alphabetically.
-  // Someone else's residence can't hold your score (the server refuses it), so it isn't offered.
-  const byRecency = useMemo(() => venues.filter(v => v.canAttachScore !== false).sort((a, b) => {
+  const byRecency = useMemo(() => [...venues].sort((a, b) => {
     const at = a.lastPlayedAt ? new Date(a.lastPlayedAt).getTime() : null;
     const bt = b.lastPlayedAt ? new Date(b.lastPlayedAt).getTime() : null;
     if (at === null && bt === null) return a.name.localeCompare(b.name);

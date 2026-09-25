@@ -57,16 +57,21 @@ export function canSeeVenueLinkage(venue: VenuePrivacyFields, requesterUserId: n
 }
 
 /**
- * Whether this user may file a score under this venue. Any public venue, yes; a residence or
- * restricted-tier venue only for its owner or an admin — otherwise anyone who learned a home's venue
- * id could attach scores to it.
+ * Whether a venue may be surfaced to this user through anything *location-derived* — nearby
+ * suggestions, a HERE place id from their photo's surroundings, a proximity duplicate match.
+ *
+ * The owner's rule for home venues: anyone may log a score at one, and friends find it by typing its
+ * exact name. What must never happen is a private venue turning up because of *where* someone is,
+ * because the coordinates behind those paths come from the client — any proximity reveal is a
+ * scanning oracle for where people live. Public venues always; private ones only for their owner
+ * and admins.
  */
-export function mayAttachScoreTo(
+export function mayRevealByLocation(
   venue: VenuePrivacyFields & { isResidence: boolean },
-  user: { id: number; role: string },
+  user: { id: number; role: string } | undefined,
 ): boolean {
   const isPrivate = venue.isResidence || venue.privacyTier !== 'full';
-  return !isPrivate || canSeeFullVenue(venue, user.id, user.role === 'admin');
+  return !isPrivate || (!!user && canSeeFullVenue(venue, user.id, user.role === 'admin'));
 }
 
 // A score's own latitude/longitude comes from the photo's EXIF GPS, independent of the venue record —

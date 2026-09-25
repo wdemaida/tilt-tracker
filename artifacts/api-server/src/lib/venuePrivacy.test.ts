@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 
 process.env.DATABASE_URL ??= 'postgres://unit-test@127.0.0.1:1/never-connected';
 
-const { redactVenue, canSeeVenueLinkage, mayAttachScoreTo } = await import('./venuePrivacy.js');
+const { redactVenue, canSeeVenueLinkage, mayRevealByLocation } = await import('./venuePrivacy.js');
 const { partitionDuplicates } = await import('./venueDedup.js');
 
 const OWNER = 1;
@@ -86,16 +86,18 @@ test('canSeeVenueLinkage mirrors redactVenue', () => {
   assert.equal(canSeeVenueLinkage(venue({ privacyTier: 'full' }), STRANGER, false), true);
 });
 
-test('mayAttachScoreTo: nobody files a score under someone else\'s private venue', () => {
+test('mayRevealByLocation: someone else\'s private venue never surfaces from a location', () => {
   const stranger = { id: STRANGER, role: 'user' };
-  assert.equal(mayAttachScoreTo(venue(), stranger), false);
-  assert.equal(mayAttachScoreTo(venue({ privacyTier: 'city_state' }), stranger), false);
+  assert.equal(mayRevealByLocation(venue(), stranger), false);
+  assert.equal(mayRevealByLocation(venue({ privacyTier: 'city_state' }), stranger), false);
   // A residence shown in full is still someone's home.
-  assert.equal(mayAttachScoreTo(venue({ privacyTier: 'full' }), stranger), false);
-  assert.equal(mayAttachScoreTo(venue(), { id: OWNER, role: 'user' }), true);
-  assert.equal(mayAttachScoreTo(venue(), { id: STRANGER, role: 'admin' }), true);
-  // Public venues: anyone.
-  assert.equal(mayAttachScoreTo(venue({ isResidence: false, privacyTier: 'full', ownerId: null }), stranger), true);
+  assert.equal(mayRevealByLocation(venue({ privacyTier: 'full' }), stranger), false);
+  assert.equal(mayRevealByLocation(venue(), undefined), false);
+  assert.equal(mayRevealByLocation(venue(), { id: OWNER, role: 'user' }), true);
+  assert.equal(mayRevealByLocation(venue(), { id: STRANGER, role: 'admin' }), true);
+  // Public venues: anyone, signed in or not.
+  assert.equal(mayRevealByLocation(venue({ isResidence: false, privacyTier: 'full', ownerId: null }), stranger), true);
+  assert.equal(mayRevealByLocation(venue({ isResidence: false, privacyTier: 'full', ownerId: null }), undefined), true);
 });
 
 function match(over: Record<string, unknown> = {}) {

@@ -7,7 +7,7 @@ import { addressResolutionBlocker, linkageBlockedByPrivacy } from '../lib/venueA
 import { upsertMachineByName } from '../lib/machineUpsert.js';
 import { getVenueRoster } from '../lib/pmRosterCache.js';
 import { pmLocationUrl, isPmConfigured, PmApiError } from '../lib/pinballmapApi.js';
-import { redactScoreLocation, redactVenue, canSeeVenueLinkage, mayAttachScoreTo } from '../lib/venuePrivacy.js';
+import { redactScoreLocation, redactVenue, canSeeVenueLinkage, mayRevealByLocation } from '../lib/venuePrivacy.js';
 import { getAuth } from '@clerk/express';
 import { parseScore } from '../lib/scoreRead.js';
 
@@ -28,10 +28,6 @@ async function resolveRequester(req: any): Promise<{ id: number; role: string } 
 
 const router = Router();
 
-// Scores can't be filed under someone else's private venue — see mayAttachScoreTo (venuePrivacy.ts).
-function refusePrivateVenue(res: any) {
-  return res.status(403).json({ error: 'That venue is private — only its owner can log scores there', code: 'venue_private' });
-}
 
 // GET /api/scores — all scores, newest first; ?mine=true filters to caller
 router.get('/', async (req, res) => {
@@ -113,12 +109,17 @@ router.post('/', requireAppUser, async (req, res) => {
 
     // If a venue name was provided but no existing venueId, upsert a venue record
     if (venueName && !resolvedVenueId) {
-      // The upsert below conflict-matches on here_id and would file this score under whatever venue
-      // holds it (renaming it on the way). A private venue can't normally hold one — linking is
-      // refused for restricted tiers — but one linked first and made private later still could.
+      // The upsert below conflict-matches on here_id: it would file this score under whatever venue
+      // holds that HERE place, and rename it to what the client sent. The HERE id comes from HERE's
+      // POIs around the user's photo, so landing on someone else's private venue that way would both
+      // rename their home and reveal — by location — that it's there. A private venue can't normally
+      // hold a HERE id (linking is refused, and switching to private clears it), but a legacy row
+      // could. Then this becomes an ordinary new venue without the HERE id: nothing renamed, nothing
+      // revealed. Logging at a private venue on purpose is still open to anyone — by its exact name.
+      let hereIdForInsert: string | null = venueHereId ?? null;
       if (venueHereId) {
         const [holder] = await db.select().from(venues).where(eq(venues.hereId, venueHereId)).limit(1);
-        if (holder && !mayAttachScoreTo(holder, appUser)) return refusePrivateVenue(res);
+        if (holder && !mayRevealByLocation(holder, appUser)) hereIdForInsert = null;
       }
       const [venue] = await db
         .insert(venues)
@@ -128,7 +129,7 @@ router.post('/', requireAppUser, async (req, res) => {
           latitude: venueLat ?? latitude ?? null,
           longitude: venueLng ?? longitude ?? null,
           address: venueAddress ?? null,
-          hereId: venueHereId ?? null,
+          hereId: hereIdForInsert,
           // Comes free with the venue suggestions the upload response already returned, so a venue
           // born from a photo knows its zone without an extra lookup. Null for a venue the user
           // typed by hand with no HERE match — backfill-venue-timezones.ts catches those.
@@ -149,10 +150,11 @@ router.post('/', requireAppUser, async (req, res) => {
         .returning();
       resolvedVenueId = venue?.id;
     } else if (resolvedVenueId) {
+      // Anyone may log at any venue, private ones included (the owner's rule for home venues).
       const [target] = await db.select().from(venues).where(eq(venues.id, resolvedVenueId)).limit(1);
-      if (target && !mayAttachScoreTo(target, appUser)) return refusePrivateVenue(res);
-      // Backfill pinballMapId if we now know it and the venue didn't have it
-      if (venuePinballMapId) {
+      // Backfill pinballMapId if we now know it and the venue didn't have it — never onto a private
+      // venue, which carries no Pinball Map linkage (linkageBlockedByPrivacy).
+      if (venuePinballMapId && target && !linkageBlockedByPrivacy(target)) {
         await db.update(venues)
           .set({ pinballMapId: venuePinballMapId })
           .where(eq(venues.id, resolvedVenueId));
@@ -217,9 +219,6 @@ router.patch('/:id', requireAppUser, async (req, res) => {
     } else {
       const [venue] = await db.select().from(venues).where(eq(venues.id, Number(venueId))).limit(1);
       if (!venue) return res.status(400).json({ error: 'Venue not found' });
-      // Checked against the *caller*, not the score's author: an admin editing someone's score may
-      // attach it anywhere, but no user can file a score under someone else's private residence.
-      if (venue.id !== existing.venueId && !mayAttachScoreTo(venue, appUser)) return refusePrivateVenue(res);
       updates.venueId = venue.id;
       // venueName is a denormalized snapshot the score list renders directly — keep it in step.
       updates.venueName = venue.name;

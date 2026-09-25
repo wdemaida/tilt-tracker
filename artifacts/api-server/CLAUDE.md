@@ -82,12 +82,17 @@
   exact address. `canSeeVenueLinkage()` gates the roster too — `/venues/:id/machines` and
   `/scores/:id/repair` skip the Pinball Map roster (and former machines) for viewers who couldn't see
   the venue in full, since a roster identifies the listing.
-- **Scores can't be filed under someone else's private venue** (`mayAttachScoreTo()`, 403
-  `venue_private`): `POST /api/scores` with a `venueId`, or a `venueHereId` whose holder is private,
-  and `PATCH` changing `venueId`. The venues list carries `canAttachScore` so `ScoreVenuePicker`
-  hides those. Upload-flow "history" suggestions (`getHistoryVenues` in `upload.ts`) leave out other
-  users' residences entirely — the 150m box is drawn on raw coordinates, so even a redacted entry
-  told a neighbour a named private venue was there, and how far.
+- **Home venues: anyone may log there; nobody finds one by location** (owner's decision,
+  2026-09-25). Any signed-in user can file a score under any venue, private ones included. What's
+  forbidden is a private venue surfacing because of *where* someone is — every coordinate behind
+  those paths is client-supplied, so any proximity reveal is a scanning oracle for homes.
+  `mayRevealByLocation()` is the rule (public always; private only for owner/admin):
+  - Upload-flow "history" suggestions (`getHistoryVenues` in `upload.ts`) leave other users' private
+    venues out — the 150m box is drawn on raw coordinates, so even a redacted entry told a
+    neighbour a named private venue was there, and how far.
+  - `POST /api/scores` with a `venueHereId` held by someone else's private venue does **not**
+    conflict-match onto it (that would rename their home and reveal it); the score gets a new venue
+    without the HERE id instead. `venuePinballMapId` backfill never lands on a private venue.
 - `backfill-venue-timezones.ts` filled all 36 pre-existing venues from coordinates (not city/state —
   34 of them have neither). Dry-run by default, re-runnable, `--force` to refresh existing values.
 
