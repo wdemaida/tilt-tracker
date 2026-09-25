@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useLocation } from 'wouter';
 import { Wrench, RefreshCw, ChevronDown } from 'lucide-react';
 import { useApi } from '../lib/useApi';
 import ScoreResyncModal from './ScoreResyncModal';
+import VenueMergeModal from './VenueMergeModal';
 import VenueLinkageSteps, {
-  useVenueLinkageActions, StatusChip, CollapsibleSection, NoticeBanner, PmNotConfiguredWarning,
-  type LinkageView,
+  useVenueLinkageActions, StatusChip, CollapsibleSection, NoticeBanner, PmNotConfiguredWarning, MergeIntoButton,
+  type LinkageView, type LinkedVenueRef,
 } from './VenueLinkageSteps';
 
 interface RepairStatus {
@@ -33,6 +35,9 @@ export default function VenueRepairPanel({ venueId }: { venueId: number }) {
   const api = useApi();
   const [open, setOpen] = useState(false);
   const [showResync, setShowResync] = useState(false);
+  /** The venue this one is being merged into (the merge preview modal is open while set). */
+  const [mergeTarget, setMergeTarget] = useState<LinkedVenueRef | null>(null);
+  const [, navigate] = useLocation();
 
   const { data: status, isError } = useQuery<RepairStatus>({
     queryKey: ['venue-repair', venueId],
@@ -96,9 +101,22 @@ export default function VenueRepairPanel({ venueId }: { venueId: number }) {
       {open && (
         <div className="border-t border-white/10 p-4 flex flex-col gap-5">
           <NoticeBanner notice={actions.notice} />
+          {actions.duplicateOffers.length > 0 && (
+            <ul className="flex flex-col gap-2">
+              {actions.duplicateOffers.map(d => (
+                <li key={d.id} className="flex items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-background px-3 py-2">
+                  <span className="text-xs text-muted-foreground min-w-0">
+                    Same place as <span className="font-bold text-venue">“{d.name}”</span>? Merge this venue into it —
+                    its scores move there and this one is removed.
+                  </span>
+                  <MergeIntoButton venue={d} onClick={() => setMergeTarget(d)} />
+                </li>
+              ))}
+            </ul>
+          )}
           {!status.pmConfigured && <PmNotConfiguredWarning />}
 
-          <VenueLinkageSteps status={linkage} actions={actions} />
+          <VenueLinkageSteps status={linkage} actions={actions} onMergeInto={setMergeTarget} />
 
           {/* Step 3 — bulk re-sync, the venue-page-specific action. No "done" state to collapse on —
               a re-sync is always available — but it stays collapsible to match the steps above. */}
@@ -131,6 +149,16 @@ export default function VenueRepairPanel({ venueId }: { venueId: number }) {
           venueId={venueId}
           onClose={() => setShowResync(false)}
           onApplied={() => { actions.invalidate(); actions.setNotice({ kind: 'ok', text: 'Scores re-synced.' }); }}
+        />
+      )}
+
+      {mergeTarget && (
+        <VenueMergeModal
+          sourceVenueId={venueId}
+          target={mergeTarget}
+          onClose={() => setMergeTarget(null)}
+          // This venue no longer exists — carry on at the one it was merged into.
+          onMerged={res => { setMergeTarget(null); navigate(`/venues/${res.targetId}`); }}
         />
       )}
     </div>
