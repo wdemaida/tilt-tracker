@@ -22,6 +22,12 @@ export interface GeocodeResult {
   label: string;
   /** IANA zone name, e.g. "America/Chicago". See SHOW_TZ below. */
   timezone: string | null;
+  /**
+   * How precisely HERE matched: "houseNumber" / "place" / "street" are a real spot, "locality"
+   * (a city centroid) is not. The manual-address repair shows this before the user confirms, so a
+   * typo that silently resolved to the middle of town isn't saved as the venue's position.
+   */
+  resultType?: string | null;
 }
 
 /**
@@ -53,6 +59,7 @@ export async function geocodeAddress(address: string): Promise<GeocodeResult | n
     if (!res.ok) return null;
     const data = (await res.json()) as {
       items: Array<{
+        resultType?: string;
         position: { lat: number; lng: number };
         address: { label: string; city?: string; state?: string };
         timeZone?: HereTimeZone;
@@ -67,6 +74,7 @@ export async function geocodeAddress(address: string): Promise<GeocodeResult | n
       state: item.address?.state ?? null,
       label: item.address?.label ?? address,
       timezone: item.timeZone?.name ?? null,
+      resultType: item.resultType ?? null,
     };
   } catch {
     return null;
@@ -225,7 +233,11 @@ export async function getNearbyVenues(lat: number, lng: number, limit = 8): Prom
 // coordinates from its address), find the matching HERE POI so we can store a hereId. Uses the
 // discover endpoint, which is free-text — safe here, unlike the bare global search the api-server
 // CLAUDE.md warns about, because `at` anchors it to the venue's own coordinates.
-export async function findVenueByName(name: string, lat: number, lng: number, limit = 10): Promise<Venue[]> {
+//
+// `maxDistanceM` defaults to 2km — right when the anchor is the venue's own address. The
+// address-less repair anchors on a *city* the user typed instead, and a venue can sit well outside
+// the centroid of the city it's known by (King City vs Portland, OR), so that caller widens it.
+export async function findVenueByName(name: string, lat: number, lng: number, limit = 10, maxDistanceM = 2000): Promise<Venue[]> {
   if (!HERE_API_KEY || !name.trim()) return [];
 
   const url = new URL('https://discover.search.hereapi.com/v1/discover');
@@ -241,9 +253,57 @@ export async function findVenueByName(name: string, lat: number, lng: number, li
     const data = (await res.json()) as { items: HereBrowseItem[] };
     // discover will happily return same-name POIs in other cities; keep only genuinely nearby hits.
     return (data.items ?? [])
-      .filter(item => (item.distance ?? Infinity) < 2000)
+      .filter(item => (item.distance ?? Infinity) < maxDistanceM)
       .map(toVenue);
   } catch {
     return [];
+  }
+}
+
+export interface HerePlace {
+  hereId: string;
+  name: string;
+  label: string;
+  lat: number;
+  lng: number;
+  city: string | null;
+  state: string | null;
+  timezone: string | null;
+}
+
+// One HERE place by id, via the Lookup endpoint. Used when a user picks a HERE candidate for an
+// address-less venue: the server re-reads the place itself rather than trusting coordinates and an
+// address string the client echoed back.
+export async function lookupHerePlace(hereId: string): Promise<HerePlace | null> {
+  if (!HERE_API_KEY || !hereId.trim()) return null;
+
+  const url = new URL('https://lookup.search.hereapi.com/v1/lookup');
+  url.searchParams.set('id', hereId);
+  url.searchParams.set('show', SHOW_TZ);
+  url.searchParams.set('apiKey', HERE_API_KEY);
+
+  try {
+    const res = await fetch(url.toString());
+    if (!res.ok) return null;
+    const item = (await res.json()) as {
+      id?: string;
+      title?: string;
+      position?: { lat: number; lng: number };
+      address?: { label?: string; city?: string; state?: string };
+      timeZone?: HereTimeZone;
+    };
+    if (!item?.id || !item.position) return null;
+    return {
+      hereId: item.id,
+      name: item.title ?? '',
+      label: item.address?.label ?? item.title ?? '',
+      lat: item.position.lat,
+      lng: item.position.lng,
+      city: item.address?.city ?? null,
+      state: item.address?.state ?? null,
+      timezone: item.timeZone?.name ?? null,
+    };
+  } catch {
+    return null;
   }
 }

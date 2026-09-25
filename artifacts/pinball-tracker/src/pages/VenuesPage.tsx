@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { Link } from 'wouter';
-import { MapPin, Trophy, X, ExternalLink, Pencil, Trash2, Home } from 'lucide-react';
+import { MapPin, Trophy, X, ExternalLink, Pencil, Trash2, Home, AlertTriangle } from 'lucide-react';
 import { PinballIcon } from '../components/PinballIcon';
 import VenueMachinesModal from '../components/VenueMachinesModal';
 import * as Dialog from '@radix-ui/react-dialog';
@@ -20,10 +20,13 @@ interface Venue {
   pinballMapId: number | null;
   pmMachineCount: number | null;
   ownerId: number | null;
+  createdById: number | null;
   isResidence: boolean;
   privacyTier: 'full' | 'city_state' | 'hidden';
   scoreCount: number;
   machineCount: number;
+  /** No address and not a residence — fixable from the venue page's repair panel. */
+  needsAddress?: boolean;
 }
 
 interface EditVenue {
@@ -52,6 +55,7 @@ export default function VenuesPage() {
   const [modalVenueId, setModalVenueId] = useState<number | null>(null);
   const [editVenue, setEditVenue] = useState<EditVenue | null>(null);
   const [deleteVenueId, setDeleteVenueId] = useState<number | null>(null);
+  const [onlyNeedsAddress, setOnlyNeedsAddress] = useState(false);
 
   const authApi = useApi();
   const appUser = useAppUser();
@@ -89,7 +93,15 @@ export default function VenuesPage() {
     [venues]
   );
 
+  // "Needs address" is only shown to someone who can act on it — the same people the backend lets
+  // repair a venue (admin, owner, creator). Everyone else sees the card exactly as before.
+  const canFix = (v: Venue) =>
+    !!appUser && (isAdmin || v.ownerId === appUser.id || v.createdById === appUser.id);
+  const showNeedsAddress = (v: Venue) => !!v.needsAddress && canFix(v);
+  const needsAddressCount = (venues as Venue[]).filter(showNeedsAddress).length;
+
   const filteredVenues = (venues as Venue[])
+    .filter(v => !onlyNeedsAddress || showNeedsAddress(v))
     .filter(v => {
       const q = search.toLowerCase();
       return v.name.toLowerCase().includes(q) || (v.address ?? '').toLowerCase().includes(q);
@@ -123,6 +135,18 @@ export default function VenuesPage() {
           <option value="" className="bg-card">All States</option>
           {states.map(s => <option key={s} value={s} className="bg-card">{s}</option>)}
         </select>
+        {(needsAddressCount > 0 || onlyNeedsAddress) && (
+          <button
+            onClick={() => setOnlyNeedsAddress(o => !o)}
+            aria-pressed={onlyNeedsAddress}
+            className={`flex items-center gap-1 text-xs font-bold uppercase tracking-wider rounded-full border px-2.5 py-1 transition-colors self-start sm:self-center ${
+              onlyNeedsAddress ? 'border-amber-500/60 bg-amber-500/15 text-amber-300' : 'border-amber-500/40 text-amber-400 hover:bg-amber-500/10'
+            }`}
+          >
+            <AlertTriangle className="w-3 h-3" />
+            {needsAddressCount} need{needsAddressCount === 1 ? 's' : ''} an address
+          </button>
+        )}
       </div>
 
       {isLoading ? (
@@ -158,6 +182,15 @@ export default function VenuesPage() {
                     <p className="text-xs text-muted-foreground mt-0.5 truncate">{venue.address}</p>
                   ) : venue.isResidence ? (
                     <p className="text-xs text-muted-foreground/60 italic mt-0.5">Address hidden</p>
+                  ) : showNeedsAddress(venue) ? (
+                    <Link
+                      href={`/venues/${venue.id}`}
+                      title="Open the venue page to find its address"
+                      className="inline-flex items-center gap-1 mt-1 text-[0.65rem] font-bold uppercase tracking-wider rounded px-1.5 py-0.5 border border-amber-500/40 text-amber-400 hover:bg-amber-500/10 transition-colors"
+                    >
+                      <AlertTriangle className="w-3 h-3" />
+                      Needs address
+                    </Link>
                   ) : null}
                 </div>
                 {(isAdmin || venue.ownerId === appUser?.id) && (

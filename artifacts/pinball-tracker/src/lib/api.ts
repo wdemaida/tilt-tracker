@@ -100,6 +100,18 @@ export function createApi(getToken: () => Promise<string | null>) {
           request<any>(`/venues/${id}/repair/here`, { method: 'POST', body: '{}' }, await tok()),
         attachHere: async (id: number, body: { hereId: string; latitude?: number | null; longitude?: number | null }) =>
           request<any>(`/venues/${id}/repair/here/attach`, { method: 'POST', body: JSON.stringify(body) }, await tok()),
+        // For a venue with no address at all (typed in by name with location services off): search
+        // Pinball Map and HERE by name, optionally near a city, then write the chosen place.
+        placeSearch: async (id: number, q: string, near?: string) =>
+          request<any>(
+            `/venues/${id}/repair/place-search?q=${encodeURIComponent(q)}${near ? `&near=${encodeURIComponent(near)}` : ''}`,
+            undefined, await tok(),
+          ),
+        resolvePlace: async (id: number, body:
+          | { source: 'pm'; pinballMapId: number }
+          | { source: 'here'; hereId: string }
+          | { source: 'manual'; street: string; city: string; state?: string; postalCode?: string; country?: string; confirm?: boolean }) =>
+          request<any>(`/venues/${id}/repair/place`, { method: 'POST', body: JSON.stringify(body) }, await tok()),
         pmCandidates: async (id: number, q?: string) =>
           request<any>(`/venues/${id}/repair/pm-candidates${q ? `?q=${encodeURIComponent(q)}` : ''}`, undefined, await tok()),
         pmLink: async (id: number, pinballMapId: number) =>

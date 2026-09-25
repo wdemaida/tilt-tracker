@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { MapPin, Link2, Check, AlertTriangle, Minus, ExternalLink, Search, ChevronDown } from 'lucide-react';
 import { useApi } from '../lib/useApi';
+import VenueAddressFinder from './VenueAddressFinder';
 
 // The HERE and Pinball Map linking steps, shared by the venue page's repair panel and the
 // edit-score modal. Both surfaces need identical behaviour for steps 1 and 2 and differ only in
@@ -19,7 +20,52 @@ export interface LinkageView {
   pmConfigured: boolean;
   /** Whether this user may repair the venue (admin, owner, or the venue's creator). */
   canRepair: boolean;
+  /**
+   * The venue has no address and isn't a residence, so step 1 becomes a place search (see
+   * VenueAddressFinder) instead of "Find in HERE", which needs an address to start from.
+   */
+  needsAddress?: boolean;
 }
+
+export interface LinkedVenueRef { id: number; name: string }
+
+export interface PlaceSearchResult {
+  query: string;
+  near: string | null;
+  nearResolved: string | null;
+  pm: Array<{
+    pinballMapId: number; name: string; address: string; latitude: number; longitude: number;
+    machineCount: number | null; url: string; linkedVenue: LinkedVenueRef | null;
+  }>;
+  here: Array<{
+    hereId: string; name: string; address: string; latitude: number; longitude: number;
+    linkedVenue: LinkedVenueRef | null;
+  }>;
+  pmError: string | null;
+  hereNote: string | null;
+}
+
+export interface ManualAddress {
+  street: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  country: string;
+}
+
+export interface ManualPreview {
+  query: string;
+  label: string;
+  latitude: number;
+  longitude: number;
+  resultType: string | null;
+  precise: boolean;
+}
+
+export type PlaceChoice =
+  | { source: 'pm'; pinballMapId: number }
+  | { source: 'here'; hereId: string }
+  | ({ source: 'manual'; confirm: true } & ManualAddress);
 
 interface HereCandidate {
   name: string;
@@ -104,10 +150,57 @@ export function useVenueLinkageActions(venueId: number | null, onChanged?: () =>
     onSuccess: (res: any) => {
       setPmCandidates(null);
       setManualPmId('');
+      setPmPreselectedId(null);
       setNotice({ kind: 'ok', text: `Linked to "${res.pmLocation.name}" — ${res.machineCount} machines found.` });
       invalidate();
     },
     onError: (e: any) => setNotice({ kind: 'err', text: e.message ?? 'Could not link that location' }),
+  });
+
+  // --- Address-less venues (step 1 when LinkageView.needsAddress) ---------------------------------
+  const [placeResults, setPlaceResults] = useState<PlaceSearchResult | null>(null);
+  const [manualPreview, setManualPreview] = useState<ManualPreview | null>(null);
+  /** The Pinball Map listing picked as the venue's address, offered first in step 2. */
+  const [pmPreselectedId, setPmPreselectedId] = useState<number | null>(null);
+
+  const searchPlace = useMutation({
+    mutationFn: ({ q, near }: { q: string; near: string }) => api.venues.repair.placeSearch(venueId!, q, near || undefined),
+    onSuccess: (res: PlaceSearchResult) => {
+      setPlaceResults(res);
+      setNotice(res.pm.length || res.here.length
+        ? null
+        : { kind: 'err', text: `Nothing found for "${res.query}"${res.near ? ` near ${res.near}` : ''}. Try another spelling, add a city, or enter the address by hand.` });
+    },
+    onError: (e: any) => setNotice({ kind: 'err', text: e.message ?? 'Search failed' }),
+  });
+
+  const previewManual = useMutation({
+    mutationFn: (addr: ManualAddress) => api.venues.repair.resolvePlace(venueId!, { source: 'manual', ...addr }),
+    onSuccess: (res: any) => { setManualPreview(res.preview ?? null); setNotice(null); },
+    onError: (e: any) => { setManualPreview(null); setNotice({ kind: 'err', text: e.message ?? 'HERE could not find that address' }); },
+  });
+
+  const resolvePlace = useMutation({
+    mutationFn: (choice: PlaceChoice) => api.venues.repair.resolvePlace(venueId!, choice),
+    onSuccess: (res: any) => {
+      setPlaceResults(null);
+      setManualPreview(null);
+      if (res.pmPreselect) {
+        // Step 2 opens with the listing already offered; linking stays one explicit click.
+        setPmCandidates([res.pmPreselect]);
+        setPmPreselectedId(res.pmPreselect.pinballMapId);
+      }
+      const dupes: LinkedVenueRef[] = res.possibleDuplicates ?? [];
+      const parts = [`Address set: ${res.venue?.address ?? 'saved'}.`];
+      if (res.attachedHere) parts.push(`Matched "${res.attachedHere.name}" in HERE.`);
+      if (res.pmPreselect) parts.push('Now link it to Pinball Map below.');
+      if (dupes.length) {
+        parts.push(`Heads up: TiltTrack already has ${dupes.map(d => `"${d.name}" (#${d.id})`).join(', ')} at this spot — this may be a duplicate venue.`);
+      }
+      setNotice({ kind: dupes.length ? 'err' : 'ok', text: parts.join(' ') });
+      invalidate();
+    },
+    onError: (e: any) => setNotice({ kind: 'err', text: e.message ?? 'Could not set the address' }),
   });
 
   return {
@@ -115,6 +208,8 @@ export function useVenueLinkageActions(venueId: number | null, onChanged?: () =>
     hereCandidates, pmCandidates,
     pmQuery, setPmQuery, manualPmId, setManualPmId,
     resolveHere, attachHere, findPm, linkPm, invalidate,
+    placeResults, manualPreview, setManualPreview, pmPreselectedId,
+    searchPlace, previewManual, resolvePlace,
   };
 }
 
@@ -251,8 +346,12 @@ export default function VenueLinkageSteps({ status, actions }: { status: Linkage
         icon={<MapPin className="w-4 h-4" />}
         title="1 · Resolve in HERE"
         done={hereDone}
-        detail={hereDone ? 'Linked' : status.address ? 'Optional — not linked' : 'Add an address first'}
+        detail={hereDone ? 'Linked' : status.address ? 'Optional — not linked' : status.needsAddress ? 'Needs address' : 'Add an address first'}
       >
+        {status.needsAddress ? (
+          <VenueAddressFinder status={status} actions={actions} />
+        ) : (
+        <>
         <p className="text-xs text-muted-foreground mb-3">
           {status.address ?? 'This venue has no address yet — edit it and add one, then run this.'}
           {!hereDone && status.address && (
@@ -287,6 +386,8 @@ export default function VenueLinkageSteps({ status, actions }: { status: Linkage
               </li>
             ))}
           </ul>
+        )}
+        </>
         )}
       </CollapsibleSection>
 
@@ -337,8 +438,18 @@ export default function VenueLinkageSteps({ status, actions }: { status: Linkage
         {actions.pmCandidates && actions.pmCandidates.length > 0 && (
           <ul className="flex flex-col gap-2 mb-3">
             {actions.pmCandidates.map(c => (
-              <li key={c.pinballMapId} className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-background px-3 py-2">
+              <li
+                key={c.pinballMapId}
+                className={`flex items-center justify-between gap-3 rounded-lg border bg-background px-3 py-2 ${
+                  c.pinballMapId === actions.pmPreselectedId ? 'border-primary/50' : 'border-white/10'
+                }`}
+              >
                 <span className="min-w-0">
+                  {c.pinballMapId === actions.pmPreselectedId && (
+                    <span className="block text-[0.65rem] font-bold uppercase tracking-wider text-primary">
+                      The listing you picked in step 1
+                    </span>
+                  )}
                   <span className="block text-sm font-bold text-venue truncate">{c.name}</span>
                   <span className="block text-xs text-muted-foreground truncate">
                     #{c.pinballMapId}

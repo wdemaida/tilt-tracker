@@ -55,12 +55,19 @@ async function pmFetch<T>(path: string, params: Record<string, string | number |
 export interface PmLocation {
   id: number;
   name: string;
+  /**
+   * Typed as a number, but the API actually sends decimal *strings* ("45.4063431") — coerce with
+   * Number() before comparing or storing. (Arithmetic happens to coerce, which is why the upload
+   * flow's haversine works on them as-is.)
+   */
   lat: number;
   lon: number;
-  street?: string;
-  city?: string;
-  state?: string;
-  zip?: string;
+  street?: string | null;
+  city?: string | null;
+  state?: string | null;
+  zip?: string | null;
+  /** ISO 3166 alpha-2 ("US", "GB"). Pinball Map is international — see the Salisbury "Special When Lit". */
+  country?: string | null;
   machine_count?: number;
   num_machines?: number;
   distance?: number;
@@ -105,16 +112,20 @@ export async function searchPmLocationsByName(name: string): Promise<PmLocation[
   const q = name.trim();
   if (q.length < 2) return [];
 
-  const auto = await pmFetch<Array<{ label?: string; value?: number; id?: number }> | { locations?: PmLocation[] }>(
+  const auto = await pmFetch<Array<{ label?: string; value?: number | string; id?: number }> | { locations?: PmLocation[] }>(
     '/locations/autocomplete.json',
     { name: q },
   );
 
-  // autocomplete.json returns a bare array of {label, value}; normalise it into PmLocation shape.
+  // autocomplete.json returns a bare array; normalise it into PmLocation shape. As of 2026-09-24 each
+  // entry is {label: "Special When Lit (King City, OR)", value: "Special When Lit", id: 23289} —
+  // `value` is the *name*, not the id. Reading `value` first turned every hit into a non-numeric id
+  // that the filter then discarded, so any name autocomplete matched came back as "no match".
   if (Array.isArray(auto) && auto.length > 0) {
-    return auto
-      .map(a => ({ id: a.value ?? a.id ?? 0, name: a.label ?? '', lat: 0, lon: 0 }))
+    const mapped = auto
+      .map(a => ({ id: pmAutocompleteId(a), name: a.label ?? '', lat: 0, lon: 0 }))
       .filter(l => l.id > 0);
+    if (mapped.length > 0) return mapped;
   }
 
   const data = await pmFetch<{ locations?: PmLocation[] }>('/locations.json', {
@@ -122,6 +133,37 @@ export async function searchPmLocationsByName(name: string): Promise<PmLocation[
     no_details: 1,
   });
   return data.locations ?? [];
+}
+
+/** The numeric location id from one autocomplete entry — `id` when present, `value` only if numeric. */
+export function pmAutocompleteId(entry: { value?: number | string; id?: number }): number {
+  if (typeof entry.id === 'number' && entry.id > 0) return entry.id;
+  const v = Number(entry.value);
+  return Number.isInteger(v) && v > 0 ? v : 0;
+}
+
+// Name search that returns full location records — street, city, zip, country and coordinates —
+// for the address-less venue repair, where the whole point is to learn *where* the venue is.
+// locations.json carries all of that in one request (autocomplete returns only a label), so it goes
+// first; autocomplete is the fallback for the prefix matches locations.json can miss, and those
+// hits are resolved one by one only up to a small cap to stay clear of per-record fan-out.
+export async function searchPmLocationsWithAddress(name: string, maxLookups = 3): Promise<PmLocation[]> {
+  const q = name.trim();
+  if (q.length < 2) return [];
+
+  const data = await pmFetch<{ locations?: PmLocation[] }>('/locations.json', {
+    by_location_name: q,
+    no_details: 1,
+  });
+  if (data.locations?.length) return data.locations;
+
+  const fallback = await searchPmLocationsByName(q);
+  const full: PmLocation[] = [];
+  for (const hit of fallback.slice(0, maxLookups)) {
+    const loc = await getPmLocation(hit.id);
+    if (loc) full.push(loc);
+  }
+  return full;
 }
 
 export async function getPmLocation(pmLocationId: number): Promise<PmLocation | null> {

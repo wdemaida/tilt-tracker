@@ -13,7 +13,8 @@
 - `/locations/:id.json` (the default, full response) already embeds each machine's `name`, `manufacturer` and `year` on every `location_machine_xrefs[]` entry, alongside the xref `id`. `getPmMachinesAtLocation()` reads that in **one** call; it only falls back to `/locations/:id/machine_details.json` if names are ever missing. PM's own guidance singles out per-record fan-out as what gets apps blocked.
 - Use `no_details=1` on bulk reads (`machines.json`, `closest_by_lat_lon`, `locations.json`) to cut response size.
 - Single machine lookup (`/machines/:id.json`) returns 404 — use the full cached list with in-memory search.
-- `GET /locations/autocomplete.json?name=` returns a bare array of `{label, value}` (value = location id), and only matches from the **start** of the name — `searchPmLocationsByName()` falls back to `locations.json?by_location_name=` when it comes up empty.
+- `GET /locations/autocomplete.json?name=` returns a bare array, and only matches from the **start** of the name — `searchPmLocationsByName()` falls back to `locations.json?by_location_name=` when it comes up empty. **As of 2026-09-24 each entry is `{label, value, id}` with `value` = the location *name*** ("Special When Lit") and `id` = the numeric id. The code used to read `value` as the id, which turned every autocomplete hit into a discarded non-numeric id — the repair panel's Pinball Map name search silently returned nothing for any name autocomplete matched. `pmAutocompleteId()` now prefers `id`.
+- `locations.json?by_location_name=` returns **full records** (street, city, state, zip, `country`, lat/lon) in one call; autocomplete returns only a label. PM `lat`/`lon` arrive as **decimal strings** — `Number()` them before storing. PM is international (the other "Special When Lit" is in Salisbury, UK, `state: null`).
 - **Attribution is a licence condition**, not a nicety: data shown for a specific location must link to `https://pinballmap.com/map?by_location_id=<id>` (see `pmLocationUrl()`), not just the homepage. That URL is also how a user finds a location's numeric id in PM's own UI.
 - **Rate limits / caching**: PM explicitly warns against request volume that scales with your traffic rather than with how often the data changes. **All roster reads go through `getVenueRoster()` in `pmRosterCache.ts`** — never call `getPmMachinesAtLocation()` directly from a route. It's backed by the `pm_location_cache` table, keyed by *their* location id (so the venue page, `/pm-machines/:pmId` and score cross-posting share one entry), with a 6-hour TTL. Verified: 10 venue-page views produce 0 outbound requests. Pass `{ force: true }` only for deliberate user actions where freshness is the point (linking a venue, previewing a re-sync). On a PM failure with a cached row it returns the **stale** roster with `stale: true` rather than an empty list — a venue page should never imply a venue is empty because their API was down.
 - `syncVenueMachineHistory()` now only runs when the roster was actually re-fetched (`!roster.fromCache`). A cache hit carries no new information, and re-diffing on every page view churned `lastSeenAt` and re-upserted every machine row for nothing.
@@ -25,6 +26,27 @@
 - **Per-score repair** (`/api/scores/:id/repair`, `POST .../repair/machine`) is the same machinery scoped to one score, for the edit-score modal. `rankRosterForName()` returns the venue's whole roster ranked against one machine name so the UI can show a recommendation *and* let the user override it. `retireMachineIfUnused()` is shared with the bulk path so neither strands an orphan machine row.
 - **`PATCH /api/scores/:id` is owner-or-admin**, not admin-only (changed 2026-09-11). It was `requireAdmin`, which meant no ordinary user could correct their own misread machine name — the exact thing the repair flow exists to fix. Mirrors how `DELETE` already worked.
 - Match tiers: `exact` → `normalized` → `fuzzy` (whole-word prefix, and **only when exactly one** candidate matches — ambiguity is not a match) → `unmatched`. Only `normalized` is pre-ticked in the UI; `fuzzy` requires a deliberate click, because a machine row is global and merging it rewrites that machine's identity at every venue.
+
+## Address-less venues (`src/lib/venueAddress.ts`, `/repair/place-search` + `/repair/place`, added 2026-09-24)
+- A venue typed in by name at upload with location services off has **no address, coordinates, HERE
+  id or PM link** (prod venue 47 "Special when lit"). `/repair/here` 400s on it — it geocodes the
+  existing address — and `PATCH /api/venues/:id` is admin/owner only, so its creator had no way in.
+- `GET /:id/repair/place-search?q=&near=` searches **Pinball Map by name** (`searchPmLocationsWithAddress`)
+  and **HERE anchored**: at the geocoded `near` text (50km) or, with no `near`, at each of the top 3
+  PM hits' own coordinates (2km). HERE is never searched unanchored. Candidates carry `linkedVenue`
+  when another TiltTrack venue already holds that hereId / PM id (likely duplicate).
+- `POST /:id/repair/place` takes `{source:'pm', pinballMapId}`, `{source:'here', hereId}` or
+  `{source:'manual', street, city, state?, postalCode?, country?, confirm?}`. The server **re-reads**
+  the PM listing / HERE place (Lookup endpoint) itself — the client never supplies coordinates. Manual
+  without `confirm: true` returns a geocode preview (with `precise: false` for city-centroid matches)
+  and writes nothing. PM picks don't link PM — they return `pmPreselect` so step 2 offers it and the
+  existing `pm-link` route (verification + history seeding) still does the linking.
+- Eligibility is `addressResolutionBlocker()`: `canRepairVenue` **and** not a residence (`isResidence`
+  or any non-`full` tier) **and** no address yet. Residences are excluded outright — their location is
+  the owner's to disclose via Edit Venue, where the tier is chosen. The UPDATE is guarded on
+  `address IS NULL` so it can never move a venue that someone placed concurrently.
+- The HERE auto-attach rule is now `pickConfidentHereMatch()`, shared by `/repair/here` and this flow.
+- Tests: `npx tsx --test src/lib/venueAddress.test.ts` (node:test, no deps; dummy DATABASE_URL, never dialled).
 
 ## Venue time zones (`venues.timezone`, added 2026-09-13)
 - Holds an **IANA zone name** ("America/Chicago"), never a UTC offset — an offset is wrong for half

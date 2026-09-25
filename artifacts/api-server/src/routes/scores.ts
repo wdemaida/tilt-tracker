@@ -3,6 +3,7 @@ import { db, scores, users, machines, venues } from '@workspace/db';
 import { eq, desc, sql } from 'drizzle-orm';
 import { requireAppUser } from '../middleware/requireAuth.js';
 import { canRepairVenue, rankRosterForName, retireMachineIfUnused } from '../lib/venueRepair.js';
+import { addressResolutionBlocker } from '../lib/venueAddress.js';
 import { upsertMachineByName } from '../lib/machineUpsert.js';
 import { getVenueRoster } from '../lib/pmRosterCache.js';
 import { pmLocationUrl, isPmConfigured, PmApiError } from '../lib/pinballmapApi.js';
@@ -318,6 +319,8 @@ router.get('/:id/repair', requireAppUser, async (req, res) => {
       hereId: venue.hereId,
       pinballMapId: venue.pinballMapId,
       pmLocationUrl: venue.pinballMapId ? pmLocationUrl(venue.pinballMapId) : null,
+      // Same rule as GET /api/venues/:id/repair — step 1 becomes a place search when true.
+      needsAddress: addressResolutionBlocker(venue, appUser) === null,
     },
     venueNameSnapshot: row.venueNameSnapshot,
     canRepairVenue: canRepairVenueHere,

@@ -1,14 +1,20 @@
 import { Router } from 'express';
 import { db, scores, venues, machines, users } from '@workspace/db';
-import { eq, desc, count, sql, and, max } from 'drizzle-orm';
+import { eq, desc, count, sql, and, max, inArray } from 'drizzle-orm';
 import {
-  findNearestPmLocations, searchPmLocationsByName, getPmLocation,
+  findNearestPmLocations, searchPmLocationsByName, searchPmLocationsWithAddress, getPmLocation,
   pmLocationUrl, isPmConfigured, PmApiError, type PmLocation,
 } from '../lib/pinballmapApi.js';
 import { syncVenueMachineHistory, getFormerMachines } from '../lib/venueHistory.js';
-import { geocodeAddress, autosuggestAddress, findVenueByName, resolveTimezone } from '../lib/hereApi.js';
+import {
+  geocodeAddress, autosuggestAddress, findVenueByName, resolveTimezone, lookupHerePlace, type Venue as HereVenue,
+} from '../lib/hereApi.js';
 import { redactVenue, canSeeFullVenue } from '../lib/venuePrivacy.js';
 import { canRepairVenue, buildResyncPreview, applyResync, reenrichMachines } from '../lib/venueRepair.js';
+import {
+  addressResolutionBlocker, pmLocationToPlace, formatPmAddress, buildManualAddressQuery,
+  isPreciseGeocode, pickConfidentHereMatch, stripPlaceNamePrefix, venueNeedsAddress, type AddressBlocker,
+} from '../lib/venueAddress.js';
 import { getVenueRoster } from '../lib/pmRosterCache.js';
 import { findDuplicateVenues } from '../lib/venueDedup.js';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
@@ -52,6 +58,8 @@ router.get('/', async (req, res) => {
         pinballMapId: venues.pinballMapId,
         pmMachineCount: venues.pmMachineCount,
         ownerId: venues.ownerId,
+        // Lets the Venues page show a "Needs address" badge to the one non-admin who can fix it.
+        createdById: venues.createdById,
         isResidence: venues.isResidence,
         privacyTier: venues.privacyTier,
         city: venues.city,
@@ -74,7 +82,12 @@ router.get('/', async (req, res) => {
 
     const requester = await resolveRequester(req);
     const isAdmin = requester?.role === 'admin';
-    const redacted = rows.map(r => toPublicVenue(redactVenue(r, requester?.id, isAdmin)));
+    // needsAddress is computed from the unredacted row, and is always false for a residence — a
+    // hidden-tier home legitimately shows no address and is not something to "fix".
+    const redacted = rows.map(r => ({
+      ...toPublicVenue(redactVenue(r, requester?.id, isAdmin)),
+      needsAddress: venueNeedsAddress(r),
+    }));
 
     res.json(redacted);
   } catch (err) {
@@ -451,6 +464,27 @@ async function loadRepairableVenue(req: any, res: any) {
   return venue;
 }
 
+// Searches HERE by venue name around a point and attaches the result only on an unambiguous hit (see
+// pickConfidentHereMatch). Anything less goes back to the user as a list to pick from, since hereId
+// is a unique column — attaching the wrong one is annoying to undo. Returns the column updates rather
+// than writing them, so each caller folds them into its own single UPDATE.
+async function confidentHereAttachment(venueId: number, venueName: string, lat: number, lng: number) {
+  const candidates = await findVenueByName(venueName, lat, lng);
+  const updates: Record<string, any> = {};
+  const best = pickConfidentHereMatch(venueName, candidates);
+  if (!best?.hereId) return { candidates, attached: null, updates };
+
+  // hereId is unique across venues — don't steal it from another row.
+  const [clash] = await db.select({ id: venues.id }).from(venues).where(eq(venues.hereId, best.hereId)).limit(1);
+  if (clash && clash.id !== venueId) return { candidates, attached: null, updates };
+
+  updates.hereId = best.hereId;
+  if (best.venueLat != null) updates.latitude = best.venueLat;
+  if (best.venueLng != null) updates.longitude = best.venueLng;
+  if (best.timezone) updates.timezone = best.timezone;
+  return { candidates, attached: best, updates };
+}
+
 function pmFailure(res: any, err: unknown, fallback: string) {
   if (err instanceof PmApiError) {
     return res.status(502).json({ error: err.message, code: `PM_${err.kind.toUpperCase()}` });
@@ -486,6 +520,10 @@ router.get('/:id/repair', requireAppUser, async (req, res) => {
     isAdmin: appUser.role === 'admin',
     scoreCount: Number(total),
     myScoreCount: Number(mine),
+    isResidence: venue.isResidence,
+    // True when the venue has no address and the address-less resolution flow applies to it (not a
+    // residence). The panel swaps step 1's "Find in HERE" button for a place search when it is.
+    needsAddress: addressResolutionBlocker(venue, appUser) === null,
   });
 });
 
@@ -510,8 +548,6 @@ router.post('/:id/repair/here', requireAppUser, async (req, res) => {
       return res.status(422).json({ error: `HERE could not geocode "${venue.address}"` });
     }
 
-    const candidates = await findVenueByName(venue.name, lat, lng);
-
     const updates: Record<string, any> = {};
     if (geocoded) {
       updates.address = geocoded.label;
@@ -522,28 +558,8 @@ router.post('/:id/repair/here', requireAppUser, async (req, res) => {
       if (geocoded.timezone) updates.timezone = geocoded.timezone;
     }
 
-    // Auto-attach only on an unambiguous hit: a single nearby POI, or a clear closest match whose
-    // name lines up. Anything less goes back to the user as a list to pick from, since hereId is a
-    // unique column — attaching the wrong one is annoying to undo.
-    const best = candidates[0];
-    const nameMatches = !!best && (
-      best.name.toLowerCase().includes(venue.name.toLowerCase()) ||
-      venue.name.toLowerCase().includes(best.name.toLowerCase())
-    );
-    let attached: typeof best | null = null;
-    // A lone candidate may sit further out than a contested one (large sites geocode to a centroid),
-    // but never further than 500m — otherwise "only one result" attaches a match from the next town.
-    if (best && nameMatches && best.hereId && best.distance < 500 && (candidates.length === 1 || best.distance < 100)) {
-      // hereId is unique across venues — don't steal it from another row.
-      const [clash] = await db.select({ id: venues.id }).from(venues).where(eq(venues.hereId, best.hereId)).limit(1);
-      if (!clash || clash.id === venue.id) {
-        updates.hereId = best.hereId;
-        if (best.venueLat != null) updates.latitude = best.venueLat;
-        if (best.venueLng != null) updates.longitude = best.venueLng;
-        if (best.timezone) updates.timezone = best.timezone;
-        attached = best;
-      }
-    }
+    const { candidates, attached, updates: hereUpdates } = await confidentHereAttachment(venue.id, venue.name, lat, lng);
+    Object.assign(updates, hereUpdates);
 
     const [updated] = Object.keys(updates).length
       ? await db.update(venues).set(updates).where(eq(venues.id, venue.id)).returning()
@@ -589,6 +605,282 @@ router.post('/:id/repair/here/attach', requireAppUser, async (req, res) => {
 
   const [updated] = await db.update(venues).set(updates).where(eq(venues.id, venue.id)).returning();
   res.json(toPublicVenue(redactVenue(updated, appUser.id, appUser.role === 'admin')));
+});
+
+// ---------------------------------------------------------------------------
+// Address-less venues
+//
+// A venue typed in by name at upload with location services off has no address and no coordinates,
+// so the HERE step above has nothing to geocode and nowhere to search from. These two routes are the
+// step before it: search for the place by name (Pinball Map first — its listings carry street,
+// city, zip and coordinates, and it's the directory a pinball venue is most likely to be in), pick
+// one or type an address, and write it onto the row. The existing Pinball Map link and re-sync steps
+// then work unchanged, because the venue finally has coordinates to search from.
+// ---------------------------------------------------------------------------
+
+const ADDRESS_BLOCKER_MESSAGES: Record<Exclude<AddressBlocker, 'forbidden'>, string> = {
+  residence: 'This is a residence — its owner sets its address from the Edit Venue dialog, where its privacy is chosen',
+  has_address: 'This venue already has an address — use "Find in HERE" instead',
+};
+
+/** Rejects residences and already-placed venues. Returns false after responding. */
+function ensureAddressResolvable(venue: any, appUser: any, res: any): boolean {
+  const blocker = addressResolutionBlocker(venue, appUser);
+  if (blocker == null) return true;
+  if (blocker === 'forbidden') {
+    res.status(403).json({ error: 'Only an admin, the venue owner, or whoever added this venue can repair it' });
+  } else {
+    res.status(409).json({ error: ADDRESS_BLOCKER_MESSAGES[blocker], code: `venue_${blocker}` });
+  }
+  return false;
+}
+
+/** Other venues already holding these HERE ids / Pinball Map ids, so the UI can flag likely duplicates. */
+async function venuesHolding(venueId: number, hereIds: string[], pmIds: number[]) {
+  const byHere = new Map<string, { id: number; name: string }>();
+  const byPm = new Map<number, { id: number; name: string }>();
+  if (hereIds.length) {
+    const rows = await db.select({ id: venues.id, name: venues.name, hereId: venues.hereId })
+      .from(venues).where(inArray(venues.hereId, hereIds));
+    for (const r of rows) if (r.hereId && r.id !== venueId) byHere.set(r.hereId, { id: r.id, name: r.name });
+  }
+  if (pmIds.length) {
+    const rows = await db.select({ id: venues.id, name: venues.name, pinballMapId: venues.pinballMapId })
+      .from(venues).where(inArray(venues.pinballMapId, pmIds));
+    for (const r of rows) if (r.pinballMapId && r.id !== venueId) byPm.set(r.pinballMapId, { id: r.id, name: r.name });
+  }
+  return { byHere, byPm };
+}
+
+/** City-level anchors spread wider than an address — King City, OR sits ~15km from Portland's centroid. */
+const NEAR_ANCHOR_RADIUS_M = 50_000;
+/** At most this many Pinball Map hits are used as HERE anchors when the user gave no city. */
+const MAX_PM_ANCHORS = 3;
+
+// GET /api/venues/:id/repair/place-search?q=<name>&near=<city or address> — candidates for where an
+// address-less venue actually is. Read-only.
+//
+// HERE is only ever searched *anchored* (discover with `at`, filtered by distance) — never globally,
+// per the HERE notes in CLAUDE.md. The anchor is the geocoded `near` text when given; otherwise each
+// of the top Pinball Map hits' own coordinates, which is what makes HERE useful even when the user
+// knows nothing but the name.
+router.get('/:id/repair/place-search', requireAppUser, async (req, res) => {
+  const venue = await loadRepairableVenue(req, res);
+  if (!venue) return;
+  const appUser = (req as any).appUser;
+  if (!ensureAddressResolvable(venue, appUser, res)) return;
+
+  const q = (typeof req.query.q === 'string' ? req.query.q.trim() : '') || venue.name;
+  const near = typeof req.query.near === 'string' ? req.query.near.trim() : '';
+  if (q.length < 2) return res.status(400).json({ error: 'Search for at least two characters' });
+  if (q.length > 200 || near.length > 200) return res.status(400).json({ error: 'That search is too long' });
+
+  try {
+    let pmLocations: PmLocation[] = [];
+    let pmError: string | null = null;
+    if (isPmConfigured()) {
+      try {
+        pmLocations = await searchPmLocationsWithAddress(q);
+      } catch (err) {
+        if (!(err instanceof PmApiError)) throw err;
+        pmError = err.message;
+      }
+    } else {
+      pmError = 'Pinball Map is not configured on the server';
+    }
+
+    const pm = pmLocations
+      .map(loc => ({ loc, place: pmLocationToPlace(loc) }))
+      .filter(r => r.place != null)
+      .map(({ loc, place }) => ({
+        pinballMapId: loc.id,
+        name: loc.name,
+        address: place!.address,
+        latitude: place!.latitude,
+        longitude: place!.longitude,
+        machineCount: loc.num_machines ?? loc.machine_count ?? null,
+        url: pmLocationUrl(loc.id),
+      }));
+
+    let nearResolved: string | null = null;
+    let hereNote: string | null = null;
+    const anchors: Array<{ lat: number; lng: number; radius: number }> = [];
+    if (near) {
+      const g = await geocodeAddress(near);
+      if (g) {
+        nearResolved = g.label;
+        anchors.push({ lat: g.lat, lng: g.lng, radius: NEAR_ANCHOR_RADIUS_M });
+      } else {
+        hereNote = `HERE couldn't find "${near}".`;
+      }
+    } else {
+      for (const c of pm.slice(0, MAX_PM_ANCHORS)) anchors.push({ lat: c.latitude, lng: c.longitude, radius: 2000 });
+      if (anchors.length === 0) hereNote = 'Add a city or address to search HERE — it needs somewhere to look.';
+    }
+
+    const seen = new Set<string>();
+    const hereHits: HereVenue[] = [];
+    for (const a of anchors) {
+      for (const hit of await findVenueByName(q, a.lat, a.lng, 5, a.radius)) {
+        if (!hit.hereId || seen.has(hit.hereId) || hit.venueLat == null || hit.venueLng == null) continue;
+        seen.add(hit.hereId);
+        hereHits.push(hit);
+      }
+    }
+
+    const { byHere, byPm } = await venuesHolding(venue.id, hereHits.map(h => h.hereId!), pm.map(p => p.pinballMapId));
+
+    res.json({
+      query: q,
+      near: near || null,
+      nearResolved,
+      pm: pm.map(p => ({ ...p, linkedVenue: byPm.get(p.pinballMapId) ?? null })),
+      here: hereHits.map(h => ({
+        hereId: h.hereId,
+        name: h.name,
+        address: stripPlaceNamePrefix(h.address, h.name),
+        latitude: h.venueLat,
+        longitude: h.venueLng,
+        linkedVenue: byHere.get(h.hereId!) ?? null,
+      })),
+      pmError,
+      hereNote,
+    });
+  } catch (err) {
+    console.error('Venue place search error:', err);
+    res.status(500).json({ error: 'Failed to search for this venue' });
+  }
+});
+
+// POST /api/venues/:id/repair/place — give an address-less venue its address and coordinates.
+// Body is one of:
+//   { source: 'pm', pinballMapId }                 — a Pinball Map listing (re-read server-side)
+//   { source: 'here', hereId }                     — a HERE place (re-read server-side via Lookup)
+//   { source: 'manual', street, city, state?, postalCode?, country?, confirm? }
+//       — geocoded through HERE. Without `confirm: true` nothing is written and the geocode comes
+//         back as a preview, so the user sees where HERE put it before it's saved.
+// The client never supplies coordinates or an address string — both are re-derived here.
+router.post('/:id/repair/place', requireAppUser, async (req, res) => {
+  const venue = await loadRepairableVenue(req, res);
+  if (!venue) return;
+  const appUser = (req as any).appUser;
+  if (!ensureAddressResolvable(venue, appUser, res)) return;
+
+  const source = req.body?.source;
+  const updates: Record<string, any> = {};
+  let pmPreselect: { pinballMapId: number; name: string; address: string; machineCount: number | null; distance: null; url: string } | null = null;
+  let tryHere = true;
+
+  try {
+    if (source === 'pm') {
+      const pinballMapId = Number(req.body.pinballMapId);
+      if (!Number.isInteger(pinballMapId) || pinballMapId <= 0) {
+        return res.status(400).json({ error: 'A numeric pinballMapId is required' });
+      }
+      let loc: PmLocation | null;
+      try {
+        loc = await getPmLocation(pinballMapId);
+      } catch (err) {
+        return pmFailure(res, err, 'Failed to read that Pinball Map location');
+      }
+      if (!loc) return res.status(404).json({ error: `Pinball Map has no location with id ${pinballMapId}` });
+      const place = pmLocationToPlace(loc);
+      if (!place) return res.status(422).json({ error: `Pinball Map's listing for "${loc.name}" has no coordinates` });
+
+      Object.assign(updates, {
+        address: place.address, city: place.city, state: place.state,
+        latitude: place.latitude, longitude: place.longitude,
+      });
+      // Handed back so step 2 opens with this location already offered — linking stays an explicit
+      // click through the existing pm-link route, which verifies it and seeds machine history.
+      pmPreselect = {
+        pinballMapId: loc.id, name: loc.name, address: formatPmAddress(loc),
+        machineCount: loc.num_machines ?? loc.machine_count ?? null, distance: null, url: pmLocationUrl(loc.id),
+      };
+    } else if (source === 'here') {
+      const hereId = typeof req.body.hereId === 'string' ? req.body.hereId.trim() : '';
+      if (!hereId) return res.status(400).json({ error: 'hereId is required' });
+
+      const [clash] = await db.select({ id: venues.id, name: venues.name }).from(venues).where(eq(venues.hereId, hereId)).limit(1);
+      if (clash && clash.id !== venue.id) {
+        return res.status(409).json({ error: `"${clash.name}" is already linked to that HERE place`, code: 'here_id_taken', linkedVenue: clash });
+      }
+      const place = await lookupHerePlace(hereId);
+      if (!place) return res.status(422).json({ error: 'HERE could not find that place any more — search again' });
+
+      Object.assign(updates, {
+        hereId: place.hereId,
+        address: stripPlaceNamePrefix(place.label, place.name),
+        city: place.city, state: place.state,
+        latitude: place.lat, longitude: place.lng,
+      });
+      if (place.timezone) updates.timezone = place.timezone;
+      tryHere = false; // this *is* the HERE place
+    } else if (source === 'manual') {
+      const built = buildManualAddressQuery(req.body ?? {});
+      if (!built.ok) return res.status(400).json({ error: built.error });
+
+      const geocoded = await geocodeAddress(built.query);
+      if (!geocoded) return res.status(422).json({ error: `HERE could not find "${built.query}"` });
+
+      const preview = {
+        query: built.query,
+        label: geocoded.label,
+        latitude: geocoded.lat,
+        longitude: geocoded.lng,
+        resultType: geocoded.resultType ?? null,
+        precise: isPreciseGeocode(geocoded.resultType),
+      };
+      if (req.body.confirm !== true) return res.json({ preview, venue: null });
+
+      Object.assign(updates, {
+        address: geocoded.label, city: geocoded.city, state: geocoded.state,
+        latitude: geocoded.lat, longitude: geocoded.lng,
+      });
+      if (geocoded.timezone) updates.timezone = geocoded.timezone;
+    } else {
+      return res.status(400).json({ error: "source must be 'pm', 'here' or 'manual'" });
+    }
+
+    // With coordinates in hand, try the same confident-only HERE attachment the HERE step uses.
+    // This can nudge the coordinates onto HERE's position for the place, exactly as that step does.
+    let attached: HereVenue | null = null;
+    if (tryHere) {
+      const result = await confidentHereAttachment(venue.id, venue.name, updates.latitude, updates.longitude);
+      Object.assign(updates, result.updates);
+      attached = result.attached;
+    }
+    if (!updates.timezone) {
+      const tz = await resolveTimezone(updates.latitude, updates.longitude);
+      if (tz) updates.timezone = tz;
+    }
+
+    // Guard against a concurrent resolve: only write if the row is still address-less.
+    const [updated] = await db.update(venues).set(updates)
+      .where(and(eq(venues.id, venue.id), sql`(${venues.address} IS NULL OR btrim(${venues.address}) = '')`))
+      .returning();
+    if (!updated) return res.status(409).json({ error: 'This venue was given an address in the meantime — reload the page' });
+
+    // Not a block — the venue may genuinely be a second listing — but worth saying before the user
+    // links Pinball Map and starts re-syncing scores onto what might be a duplicate row.
+    const nearbySameName = (await findDuplicateVenues({ name: venue.name, latitude: updated.latitude, longitude: updated.longitude }))
+      .filter(d => d.id !== venue.id && d.distance != null);
+    const { byPm } = await venuesHolding(venue.id, [], pmPreselect ? [pmPreselect.pinballMapId] : []);
+    const possibleDuplicates = [
+      ...nearbySameName.map(d => ({ id: d.id, name: d.name })),
+      ...[...byPm.values()].filter(v => !nearbySameName.some(d => d.id === v.id)),
+    ];
+
+    res.json({
+      venue: toPublicVenue(redactVenue(updated, appUser.id, appUser.role === 'admin')),
+      attachedHere: attached ? { name: attached.name, hereId: attached.hereId, distance: attached.distance } : null,
+      pmPreselect,
+      possibleDuplicates,
+    });
+  } catch (err) {
+    console.error('Venue place resolve error:', err);
+    res.status(500).json({ error: 'Failed to set this venue’s address' });
+  }
 });
 
 // GET /api/venues/:id/repair/pm-candidates?q=... — Pinball Map locations to link this venue to.

@@ -43,6 +43,15 @@
   new venue inline) is what unblocks the rest. It `PATCH`es `venueId` immediately rather than waiting
   for the modal's Save, matching how every other control in the repair UI behaves.
 
+- **Address-less venues** (`LinkageView.needsAddress`, from both repair payloads): step 1 renders
+  `VenueAddressFinder` instead of "Find in HERE" — name + optional city search over Pinball Map and
+  HERE, plus "Enter address manually" with a geocode preview. Every pick goes through an inline
+  confirm, because once an address is set this flow no longer applies and only an admin's Edit Venue
+  dialog can change it. A PM pick lands in step 2 highlighted ("The listing you picked in step 1").
+  `VenueRepairPanel` auto-opens once when `needsAddress`. The Venues page shows a "Needs address"
+  badge + filter chip **only** to users who could fix it (admin / owner / `createdById`); residences
+  never get it.
+
 ## Duplicate venues
 - `POST /api/venues` answers **409 `duplicate_venue`** with `candidates` when a venue of the same
   normalized name already exists within 250m (`src/lib/venueDedup.ts` on the api-server). Both

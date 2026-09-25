@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Wrench, RefreshCw, ChevronDown } from 'lucide-react';
 import { useApi } from '../lib/useApi';
@@ -20,6 +20,8 @@ interface RepairStatus {
   isAdmin: boolean;
   scoreCount: number;
   myScoreCount: number;
+  isResidence?: boolean;
+  needsAddress?: boolean;
 }
 
 // The recovery path for a venue the upload flow couldn't identify. Steps 1 and 2 are shared with the
@@ -39,6 +41,17 @@ export default function VenueRepairPanel({ venueId }: { venueId: number }) {
 
   const actions = useVenueLinkageActions(venueId);
 
+  // An address-less venue is broken in a way worth surfacing unasked: open the panel once when the
+  // status first says so (the Venues page's "Needs address" badge lands here). Only once — closing
+  // it again must stick.
+  const autoOpened = useRef(false);
+  useEffect(() => {
+    if (status?.needsAddress && !autoOpened.current) {
+      autoOpened.current = true;
+      setOpen(true);
+    }
+  }, [status?.needsAddress]);
+
   // 403 from the status endpoint means this user can't repair this venue — render nothing at all.
   if (isError || !status) return null;
 
@@ -55,6 +68,7 @@ export default function VenueRepairPanel({ venueId }: { venueId: number }) {
     pmLocationUrl: status.pmLocationUrl,
     pmConfigured: status.pmConfigured,
     canRepair: true,
+    needsAddress: !!status.needsAddress,
   };
 
   return (
@@ -68,6 +82,7 @@ export default function VenueRepairPanel({ venueId }: { venueId: number }) {
           Venue linkage
         </span>
         <span className="flex items-center gap-2">
+          {status.needsAddress && <StatusChip label="Needs address" done={false} />}
           <span className="hidden sm:flex items-center gap-2">
             <StatusChip label="HERE" done={hereDone} tone="info" />
             <StatusChip label="Pinball Map" done={pmDone} />
