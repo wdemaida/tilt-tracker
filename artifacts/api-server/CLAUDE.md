@@ -183,6 +183,31 @@
   a venue near that shop); for public ones the closest result must be under 250m **and** its name
   must overlap (`hereNamesOverlap`, the pickConfidentHereMatch rule), and no venue may already hold it.
 
+## Merging a duplicate venue (`src/lib/venueMerge.ts`, `/repair/merge-preview` + `/repair/merge`, added 2026-09-25)
+- For a hand-typed venue that turns out to be one TiltTrack already has (prod "Deep Cuts -- Pop's II"
+  vs "Pop's Pinball - Deep Cuts"): the repair panel's HERE / Pinball Map candidate says "already used
+  by …" and offers **Merge into …** instead of a dead Use button.
+- `GET /:id/repair/merge-preview?into=<id>` → counts, `players` (admins only), `adopts`, `canMerge`,
+  `blocker`/`blockerMessage`. `POST /:id/repair/merge {intoVenueId, expectedScoreCount}` → one
+  transaction; both rows locked `FOR UPDATE` in id order and every rule re-checked; a changed score
+  count is 409 `merge_stale`, a refusal 409 (403 for `target_not_visible`) with `code` = the blocker.
+- **Everything that references `venues.id`** (FK catalogue checked 2026-09-25): `scores.venue_id`
+  (plus the `venue_name` snapshot, renamed to the target's), `venue_machine_history`,
+  `venue_inventory`. A new FK to venues must be added to `applyVenueMerge` too, or merges will fail
+  on the final DELETE (or worse, if it's ON DELETE CASCADE, silently drop rows).
+- Per machine: history at both → one row, earliest first-seen / latest last-seen, **target's
+  `removedAt` stands**; source-only rows move, and a still-current one is closed at its `lastSeenAt`
+  when the target has a different PM listing. Inventory at both → the current stint wins (both
+  current: earlier start; both ended: later end). The target fills only its **gaps** from the source
+  (HERE id, PM link, address block, timezone) — never on a private venue.
+- Permission = `canRepairVenue` on the **source**. `mergeBlocker()`: target must be public or the
+  caller's own; public→public ok; public→private and private→public refused for everyone (the owner
+  makes a home public in Edit Venue first); private→private only same owner, by that owner or an
+  admin; **a non-admin can only move their own scores** (`others_scores` otherwise — creators are
+  ordinary users and could otherwise relocate other players' scores).
+- Tests: `npx tsx --test src/lib/venueMerge.test.ts` (pure rules) and `npx tsx test-venue-merge.ts`
+  (dev branch only — aborts unless the host is `ep-late-mouse-at8antth`; cleans up after itself).
+
 ## HERE vs Pinball Map — what each is load-bearing for
 - **Pinball Map is the functional dependency**: it supplies the machine roster, so machine matching
   and score re-sync are gated on `pinballMapId`. Missing = the feature genuinely can't work (amber).

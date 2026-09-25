@@ -143,7 +143,8 @@ export default function VenuePage() {
         <VenueMapThumbnail venueId={venue.id} latitude={venue.latitude} longitude={venue.longitude} />
       </div>
 
-      <VenueRepairPanel venueId={venue.id} />
+      {/* Keyed so a merge that navigates to another venue starts that panel fresh. */}
+      <VenueRepairPanel key={venue.id} venueId={venue.id} />
 
       {venue.ownerInventory && !venue.activityHidden && machinesData && (
         <VenueInventoryPanel

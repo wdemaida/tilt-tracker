@@ -27,6 +27,9 @@ import {
 } from '../lib/venueInventory.js';
 import { venueListRow, venueDetailView, venueMachinesView } from '../lib/venueView.js';
 import { findDuplicateVenues } from '../lib/venueDedup.js';
+import {
+  buildMergePreview, applyVenueMerge, MERGE_BLOCKER_MESSAGES, MergeRefusedError, MergeStaleError, MergeVenueGoneError,
+} from '../lib/venueMerge.js';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { autosuggestPlaces, type PlaceSuggestion } from '../lib/hereApi.js';
 import {
@@ -842,9 +845,17 @@ router.post('/:id/repair/here', requireAppUser, async (req, res) => {
       }
     }
 
+    // Flag candidates another venue already holds (same describeHolder rule as the place search),
+    // so the panel can offer "Merge into …" instead of a Use button the attach route would 409.
+    const { byHere } = await venuesHolding(venue.id, candidates.map(c => c.hereId).filter((h): h is string => !!h), []);
+
     res.json({
       attached: attached ? { name: attached.name, hereId: attached.hereId, distance: attached.distance } : null,
-      candidates: candidates.map(c => ({ name: c.name, address: c.address, distance: c.distance, hereId: c.hereId, latitude: c.venueLat ?? null, longitude: c.venueLng ?? null })),
+      candidates: candidates.map(c => ({
+        name: c.name, address: c.address, distance: c.distance, hereId: c.hereId,
+        latitude: c.venueLat ?? null, longitude: c.venueLng ?? null,
+        ...((c.hereId && byHere.get(c.hereId)) || NOT_HELD),
+      })),
       venue: toPublicVenue(redactVenue(updated, appUser.id, appUser.role === 'admin')),
     });
   } catch (err) {
@@ -1351,6 +1362,105 @@ router.post('/:id/repair/resync-apply', requireAppUser, async (req, res) => {
     });
   } catch (err) {
     return pmFailure(res, err, 'Failed to apply the re-sync');
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Merging a duplicate venue into an existing one (see venueMerge.ts for the rules)
+//
+// The permission check is the same as every other repair action, on the SOURCE — the venue that
+// disappears. mergeBlocker() then covers the target and privacy. Preview first, then confirm.
+// ---------------------------------------------------------------------------
+
+async function loadMergeTarget(req: any, res: any, sourceId: number, rawTargetId: unknown) {
+  const targetId = Number(rawTargetId);
+  if (!Number.isInteger(targetId) || targetId <= 0) {
+    res.status(400).json({ error: 'Choose the venue to merge into' });
+    return null;
+  }
+  if (targetId === sourceId) {
+    res.status(400).json({ error: MERGE_BLOCKER_MESSAGES.same_venue, code: 'same_venue' });
+    return null;
+  }
+  const [target] = await db.select().from(venues).where(eq(venues.id, targetId)).limit(1);
+  if (!target) {
+    res.status(404).json({ error: 'The venue to merge into no longer exists' });
+    return null;
+  }
+  return target;
+}
+
+// GET /api/venues/:id/repair/merge-preview?into=<venueId> — what merging this venue into another
+// would move. Nothing is written.
+router.get('/:id/repair/merge-preview', requireAppUser, async (req, res) => {
+  const source = await loadRepairableVenue(req, res);
+  if (!source) return;
+  const target = await loadMergeTarget(req, res, source.id, req.query.into);
+  if (!target) return;
+  const appUser = (req as any).appUser;
+  const admin = appUser.role === 'admin';
+
+  try {
+    const { counts, blocker, adopts } = await buildMergePreview(source, target, appUser);
+    // A private target the caller doesn't own isn't described at all — not even its name.
+    if (blocker === 'target_not_visible') {
+      return res.status(403).json({ error: MERGE_BLOCKER_MESSAGES[blocker], code: blocker });
+    }
+    const shownTarget = redactVenue(target, appUser.id, admin);
+    const others = counts.players.filter(p => p.userId !== appUser.id);
+    res.json({
+      source: { id: source.id, name: source.name },
+      target: { id: target.id, name: target.name, address: shownTarget.address },
+      scoreCount: counts.scoreCount,
+      myScoreCount: counts.myScoreCount,
+      // Admins see who's affected; anyone else only learns that other players are (and is refused).
+      players: admin ? counts.players.map(({ username, scoreCount }) => ({ username, scoreCount })) : null,
+      otherPlayerCount: others.length,
+      otherScoreCount: others.reduce((n, p) => n + p.scoreCount, 0),
+      historyRows: counts.historyRows,
+      historyOverlap: counts.historyOverlap,
+      inventoryRows: counts.inventoryRows,
+      inventoryOverlap: counts.inventoryOverlap,
+      adopts,
+      canMerge: blocker == null,
+      blocker,
+      blockerMessage: blocker ? MERGE_BLOCKER_MESSAGES[blocker] : null,
+    });
+  } catch (err) {
+    console.error('Venue merge preview error:', err);
+    res.status(500).json({ error: 'Failed to preview the merge' });
+  }
+});
+
+// POST /api/venues/:id/repair/merge — body { intoVenueId, expectedScoreCount }. Moves everything at
+// this venue onto the target and deletes this one, in one transaction.
+router.post('/:id/repair/merge', requireAppUser, async (req, res) => {
+  const source = await loadRepairableVenue(req, res);
+  if (!source) return;
+  const target = await loadMergeTarget(req, res, source.id, req.body?.intoVenueId);
+  if (!target) return;
+  const appUser = (req as any).appUser;
+
+  const rawExpected = req.body?.expectedScoreCount;
+  const expected = rawExpected == null ? undefined : Number(rawExpected);
+  if (expected !== undefined && (!Number.isInteger(expected) || expected < 0)) {
+    return res.status(400).json({ error: 'expectedScoreCount must be a whole number' });
+  }
+
+  try {
+    const result = await applyVenueMerge(source.id, target.id, appUser, expected);
+    console.log(`Venue merge: #${result.sourceId} "${source.name}" -> #${result.targetId} "${result.targetName}" by user ${appUser.id} (${result.scoresMoved} scores)`);
+    res.json(result);
+  } catch (err) {
+    if (err instanceof MergeRefusedError) {
+      return res.status(err.blocker === 'target_not_visible' ? 403 : 409).json({ error: err.message, code: err.blocker });
+    }
+    if (err instanceof MergeStaleError) {
+      return res.status(409).json({ error: err.message, code: 'merge_stale', scoreCount: err.scoreCount });
+    }
+    if (err instanceof MergeVenueGoneError) return res.status(404).json({ error: err.message });
+    console.error('Venue merge error:', err);
+    res.status(500).json({ error: 'Failed to merge these venues — nothing was changed' });
   }
 });
 
