@@ -3,7 +3,15 @@ import { sanitizeImageDisplays, defaultBestImageIndex, type ImageRead } from './
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+// MODEL_MAX_EDGE / MODEL_MAX_PIXELS in displayCrops.ts mirror this model's image downscale — the
+// crop boxes are read in pixels of the downscaled view. Re-check them if the model changes.
 const MODEL = 'claude-sonnet-4-6';
+
+// Per-request limits. The SDK default is a 10-minute timeout with 2 retries — far longer than a user
+// will wait on the upload spinner. The crop pass is an optional refinement: short, no retry, and a
+// failure just keeps the whole-photo read.
+const READ_REQUEST = { timeout: 60_000, maxRetries: 1 };
+const CROP_REQUEST = { timeout: 20_000, maxRetries: 0 };
 const TOOL_NAME = 'record_score_read';
 
 /** Output budget for the whole-photo read: ~800 tokens per image, within a non-streaming-safe cap. */
@@ -191,7 +199,7 @@ export async function extractScoreReads(images: ExtractionImage[], onRawInput?: 
     tools: [scoreReadTool],
     tool_choice: { type: 'tool', name: TOOL_NAME },
     messages: [{ role: 'user', content }],
-  });
+  }, READ_REQUEST);
 
   if (message.stop_reason === 'max_tokens') {
     // A truncated read would silently drop displays (or whole images) off the end — fail instead.
@@ -312,7 +320,7 @@ export async function readDisplayWindows(
     tools: [windowReadTool],
     tool_choice: { type: 'tool', name: WINDOW_TOOL_NAME },
     messages: [{ role: 'user', content }],
-  });
+  }, CROP_REQUEST);
   if (message.stop_reason === 'max_tokens') {
     console.error(`Crop read hit max_tokens (${crops.length} crops)`);
     throw new ScoreReadTruncatedError(); // the caller keeps the whole-photo read

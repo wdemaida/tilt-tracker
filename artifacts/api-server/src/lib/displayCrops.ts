@@ -34,6 +34,7 @@ const PAD_Y = 1.0;
 /** Minimum padding as a fraction of the image, for boxes so thin that 15% of them is a few pixels. */
 const MIN_PAD = 0.01;
 
+// Tied to MODEL in anthropic.ts (claude-sonnet-4-6): its image downscale limits. Re-check on a model change.
 // The API downsamples any image past these (long edge / total pixels) before the model sees it, and
 // the model reports display boxes in pixels of what it saw. (Checked: a 1506x2008 photo costs the
 // same input tokens as the 931x1236 this computes for it.) Pixel boxes land far closer than
