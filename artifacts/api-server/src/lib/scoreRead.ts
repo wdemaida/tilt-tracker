@@ -73,16 +73,35 @@ export function sanitizeWithIndexMap(raw: unknown): { template: string; indexMap
  * the one counting rule models get wrong most: commas sit every three digits from the right, so the
  * group after the last comma always has exactly three positions. A partly lit digit followed by
  * darkness after "7,205," is therefore "7205???", however many dark windows the model thought it saw.
- * Returns '' when the transcription has no digits.
+ *
+ * Only the score itself is used. The transcription can carry other text from the display ("EXTRA
+ * BALL", "P1", "BALL 2") — every whitespace-separated token containing anything but digits,
+ * separators, "?" and "_" is dropped, and of what's left the longest run is taken (consecutive
+ * three-position tokens are joined first, for a model that wrote "7 205 2__" with spaces as
+ * separators). Only "?" (partly lit) and "_" (dark) are read as unread positions; letters never are.
+ * Returns '' when no score-like token has a digit.
  */
 export function templateFromDisplayText(raw: unknown): string {
   if (typeof raw !== 'string') return '';
+  const isScoreToken = (t: string) => /^[0-9?_,.]+$/.test(t) && /[0-9?]/.test(t);
+  const positions = (t: string) => t.replace(/[,.]/g, '').length;
+
+  // Runs of score-like tokens; a token of exactly three positions continues the previous run.
+  const runs: string[] = [];
+  let current: string | null = null;
+  for (const token of raw.trim().split(/\s+/)) {
+    if (!isScoreToken(token)) { if (current != null) runs.push(current); current = null; continue; }
+    if (current != null && positions(token) === 3) current += `,${token}`;
+    else { if (current != null) runs.push(current); current = token; }
+  }
+  if (current != null) runs.push(current);
+
+  let best = '';
+  for (const r of runs) if (positions(r) > positions(best)) best = r;
   // Leading dark windows ("_") are blank positions left of a right-aligned score, not part of it. A
   // leading "?" is different: a partly lit digit, i.e. a real position.
-  const cleaned = raw.replace(/[\s.'’]/g, '').replace(/^[_,]+/, '')
-    .replace(/[xX_*\-]/g, '?').replace(/[^0-9?,]/g, '');
-  if (!/[0-9]/.test(cleaned)) return '';
-  let body = cleaned;
+  let body = best.replace(/\./g, ',').replace(/^[_,]+/, '').replace(/_/g, '?');
+  if (!/[0-9]/.test(body)) return '';
   const lastComma = body.lastIndexOf(',');
   if (lastComma >= 0) {
     const tail = body.length - lastComma - 1;
@@ -91,17 +110,39 @@ export function templateFromDisplayText(raw: unknown): string {
   return sanitizeTemplate(body.replace(/,/g, ''));
 }
 
+/**
+ * Whether the transcription-derived template may replace the model's own. It may only *refine* it:
+ * never disagree with a digit the model read, and never shorten it. Concretely, left-aligned (both
+ * start at the most-significant digit): wherever both have a digit they match, and any positions the
+ * transcription adds beyond the model's template are unread (`?`) — i.e. the comma rule completing
+ * the final group. Anything else means the transcription picked up something that isn't the score.
+ */
+export function displayRefinesModel(fromDisplay: string, fromModel: string): boolean {
+  if (!fromDisplay) return false;
+  if (!fromModel) return true;
+  if (fromDisplay.length < fromModel.length) return false;
+  if (/[0-9]/.test(fromDisplay.slice(fromModel.length))) return false;
+  for (let i = 0; i < fromModel.length; i++) {
+    const a = fromDisplay[i], b = fromModel[i];
+    if (a !== '?' && b !== '?' && a !== b) return false;
+  }
+  return true;
+}
+
 /** Sanitizes one raw per-image read from the model. */
 export function sanitizeImageRead(raw: {
   template?: unknown; displayText?: unknown; lowConfidence?: unknown; possiblyTruncated?: unknown; truncationReason?: unknown;
 }): ImageRead {
   const fromModel = sanitizeWithIndexMap(raw.template);
   const fromDisplay = templateFromDisplayText(raw.displayText);
-  // Prefer the literal transcription whenever it's at least as long: it's the model's direct reading
-  // (so a partly lit digit it wrote as "?" there isn't "improved" into a guess in the template), and
-  // the comma rule above fixes its position count. Both start at the most-significant digit, so the
-  // template's lowConfidence indexes still line up.
-  const template = fromDisplay && fromDisplay.length >= fromModel.template.length ? fromDisplay : fromModel.template;
+  // The literal transcription wins only when it refines the template (see displayRefinesModel): it's
+  // the model's direct reading, so a partly lit digit it wrote as "?" there isn't "improved" into a
+  // guess, and the comma rule fixes the position count.
+  const template = displayRefinesModel(fromDisplay, fromModel.template) ? fromDisplay : fromModel.template;
+  // lowConfidence indexes refer to the model's template. A refining transcription only ever agrees
+  // with it position-for-position from the left and adds unread positions on the right, so the
+  // left-based index map stays correct; sanitizeLowConfidence then keeps only indexes that still
+  // hold a digit (a position the transcription turned into "?" is no longer "a digit, unsure").
   const indexMap = fromModel.indexMap;
   const mappedLow = Array.isArray(raw.lowConfidence)
     ? raw.lowConfidence.map(v => (Number.isInteger(Number(v)) ? indexMap[Number(v)] ?? -1 : -1))

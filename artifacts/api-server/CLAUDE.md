@@ -116,8 +116,11 @@
   is only for fully lit digits obscured by glare/blur/angle.
 - The model also returns a literal `displayText` ("7205,?"), and `templateFromDisplayText()` applies
   the comma rule in code: the group after the last comma always has three positions. The model
-  reliably transcribes the comma but then undercounts in its own template ("7205?"); the transcription
-  wins whenever it's at least as long. `temperature: 0` — without it the same photo came back as
+  reliably transcribes the comma but then undercounts in its own template ("7205?"). The transcription
+  wins **only when it refines the template** (`displayRefinesModel`): agrees wherever both have a digit
+  and only adds trailing `?`s. It can carry other display text ("EXTRA BALL", "P1", "BALL 2"), so
+  non-score tokens are dropped and letters are never read as unread positions — without both guards
+  "P1 1,234,560" became the complete, wrong 11234560. `temperature: 0` — without it the same photo came back as
   7205?, 7205?? and 7205??? across runs.
 - **Every route that accepts a score goes through `parseScore()`** (scores POST/PATCH, Pinball Map
   submit): safe positive integers only, as a number or a `^\d+$` string, else 400 `invalid_score`.
