@@ -12,6 +12,11 @@ import { toLocalInput, localInputToIso, naiveToLocalInput } from '../lib/datetim
 import { prepareUploadImage, type PreparedImage } from '../lib/prepareUploadImage';
 import { extractVideoFrames, isVideoFile, VideoFrameError, VIDEO_UNSUPPORTED_MESSAGE } from '../lib/videoFrames';
 import { ScoreDigitInput } from '../components/ScoreDigitInput';
+import { MissingLocationNotice, type CurrentLocationState } from '../components/MissingLocationNotice';
+import {
+  describePhotoLocation, detectPlatform, queryGeoPermission, getCurrentPosition, geoFailureMessage, CurrentPositionError,
+  type PhotoLocationInfo, type PhotoSource, type GeoPermission,
+} from '../lib/photoLocation';
 import {
   type ScoreRead, type ScoreDisagreement, checkPlausibility, formatTemplate, hasUnknown, reconcileUserDigits, templateToScore,
   unknownCount, playerLabel, matchPlayerRead, LEADING_AMBIGUOUS_REASON, ALIGNMENT_WARNING,
@@ -39,6 +44,8 @@ const MAX_ITEMS = 3;
 interface UploadItem {
   kind: 'photo' | 'video';
   images: PreparedImage[];
+  /** Which input it came from — the in-browser camera, or the photo/video picker. */
+  source: PhotoSource;
 }
 type Step = 1 | 2 | 3 | 4;
 /** Index into `playerReads`, 'none' for "None of these — type it in", null for not yet chosen. */
@@ -73,7 +80,17 @@ export default function AddScorePage() {
     timezone?: string | null;
   }>>([]);
   const [selectedVenue, setSelectedVenue] = useState<SelectedVenue | null>(null);
+  // The *photo's* GPS. Spread into the saved score, so it must only ever hold what a photo carried —
+  // never the device's current position (that lives in `deviceCoords`, used for suggestions only).
   const [gps, setGps] = useState<{ latitude: number; longitude: number } | null>(null);
+  // No-GPS fallback: whether the picked photos had location, and the "Use my current location" flow.
+  // `deviceCoords` biases venue lookups only; it is never saved on the score. See photoLocation.ts.
+  const [photoLocation, setPhotoLocation] = useState<PhotoLocationInfo | null>(null);
+  const [currentLocation, setCurrentLocation] = useState<CurrentLocationState>({ status: 'idle' });
+  const [deviceCoords, setDeviceCoords] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [nearbySource, setNearbySource] = useState<'photo' | 'device'>('photo');
+  const [geoPermission, setGeoPermission] = useState<GeoPermission>('unknown');
+  const platform = useMemo(() => detectPlatform(), []);
   const [venueSearch, setVenueSearch] = useState('');
   const [showAddVenueForm, setShowAddVenueForm] = useState(false);
   const [newVenueName, setNewVenueName] = useState('');
@@ -279,7 +296,10 @@ export default function AddScorePage() {
   // Address-as-you-type suggestions for the "Add custom venue" form (HERE Autosuggest)
   const { data: addressSuggestions = [] } = useQuery({
     queryKey: ['address-autocomplete', newVenueAddress],
-    queryFn: () => api.venues.addressAutocomplete(newVenueAddress, gps ? { lat: gps.latitude, lng: gps.longitude } : undefined),
+    queryFn: () => {
+      const at = gps ?? deviceCoords;
+      return api.venues.addressAutocomplete(newVenueAddress, at ? { lat: at.latitude, lng: at.longitude } : undefined);
+    },
     enabled: showAddVenueForm && newVenueAddress.trim().length > 3,
   });
 
@@ -315,6 +335,13 @@ export default function AddScorePage() {
     setPhotoPreviews(urls);
   }
   useEffect(() => () => { photoPreviewsRef.current.forEach(u => URL.revokeObjectURL(u)); }, []);
+
+  // Step 1's "location is off for this site" tip. Reads the permission state only — never prompts.
+  useEffect(() => {
+    let cancelled = false;
+    queryGeoPermission().then(p => { if (!cancelled) setGeoPermission(p); });
+    return () => { cancelled = true; };
+  }, []);
 
   /** Sets the working template and keeps the form's score / unfilled-count in step with it. */
   function applyScoreTemplate(t: string) {
@@ -515,7 +542,7 @@ export default function AddScorePage() {
    * scoreRead.ts). A video is one item; its best few frames are sent as images and it is never
    * uploaded itself (see videoFrames.ts).
    */
-  const handleFiles = async (picked: File[], mode: 'replace' | 'add') => {
+  const handleFiles = async (picked: File[], mode: 'replace' | 'add', source: PhotoSource) => {
     const existing = mode === 'add' ? uploadItems : [];
     const room = MAX_ITEMS - existing.length;
     if (room <= 0 || picked.length === 0) return;
@@ -537,14 +564,14 @@ export default function AddScorePage() {
         setVideoProgress('Reading video…');
         try {
           const frames = await extractVideoFrames(f, p => setVideoProgress(`Picking the sharpest frames… ${Math.round((p.done / p.total) * 100)}%`));
-          fresh.push({ kind: 'video', images: frames });
+          fresh.push({ kind: 'video', images: frames, source });
         } catch (err) {
           notices.push(err instanceof VideoFrameError ? err.message : VIDEO_UNSUPPORTED_MESSAGE);
         } finally {
           setVideoProgress(null);
         }
       } else {
-        fresh.push({ kind: 'photo', images: [await prepareUploadImage(f)] });
+        fresh.push({ kind: 'photo', images: [await prepareUploadImage(f)], source });
       }
     }
     setPhotoNotice(notices.join(' '));
@@ -558,6 +585,10 @@ export default function AddScorePage() {
 
     const items = [...existing, ...fresh];
     const images = items.flatMap(i => i.images);
+
+    // Known before the upload finishes (and even if it fails): did any of these carry GPS?
+    setPhotoLocation(describePhotoLocation(images, items.every(i => i.source === 'camera')));
+    if (mode === 'replace') setCurrentLocation({ status: 'idle' });
 
     // A single HEIC the browser couldn't convert can still use the server's own decode; the
     // multi-image path refuses that (memory), so say so here rather than after the upload.
@@ -664,6 +695,10 @@ export default function AddScorePage() {
     if (result.latitude != null && result.longitude != null && !(adding && gps)) {
       setGps({ latitude: result.latitude, longitude: result.longitude });
     }
+    // The server can also find GPS the browser couldn't read (its own EXIF fallback).
+    if (result.latitude != null && result.longitude != null) {
+      setPhotoLocation(p => (p ? { ...p, hasGps: true } : p));
+    }
 
     // Thumbnail from the photo the model found most legible (default: the first).
     const best = (reads[0] ?? result.scoreRead)?.bestImageIndex ?? 0;
@@ -686,8 +721,48 @@ export default function AddScorePage() {
         timezone: first.timezone,
       });
       setNearbyVenues(result.venues);
+      setNearbySource('photo');
     }
     if (!adding) setStep(2);
+  }
+
+  /**
+   * "Use my current location": one user-initiated fix, fed into the same suggestion list a photo's GPS
+   * produces. The position is used for the lookup only — it never goes into `gps`, so it can't end
+   * up as the score's coordinates or its played-at metadata.
+   */
+  async function useCurrentLocation() {
+    setCurrentLocation({ status: 'locating' });
+    try {
+      const pos = await getCurrentPosition();
+      const { venues } = await api.venues.nearby(pos.latitude, pos.longitude);
+      setDeviceCoords({ latitude: pos.latitude, longitude: pos.longitude });
+      setNearbyVenues(venues ?? []);
+      setNearbySource('device');
+      // Same as the photo path: pre-select the top suggestion — unless the user already chose or typed one.
+      const first = venues?.[0];
+      if (first && !selectedVenue && !venueSearch) {
+        setValue('venueName', first.name);
+        setSelectedVenue({
+          venueId: first.venueId,
+          hereId: first.hereId ?? undefined,
+          address: first.address,
+          venueLat: first.venueLat,
+          venueLng: first.venueLng,
+          pinballMapId: first.pinballMapId,
+          timezone: first.timezone,
+        });
+      }
+      setCurrentLocation({ status: 'done', count: venues?.length ?? 0, accuracy: pos.accuracy });
+    } catch (err: any) {
+      if (err instanceof CurrentPositionError && err.reason === 'denied') setGeoPermission('denied');
+      setCurrentLocation({
+        status: 'error',
+        message: err instanceof CurrentPositionError
+          ? geoFailureMessage(err.reason)
+          : (err?.message ?? "Couldn't look up venues near you — pick one below instead"),
+      });
+    }
   }
 
   function selectVenueCard(v: { id?: number; name: string; address?: string | null; hereId?: string | null; venueLat?: number; venueLng?: number; pinballMapId?: number | null; timezone?: string | null }) {
@@ -786,7 +861,7 @@ export default function AddScorePage() {
             accept="image/*"
             capture="environment"
             className="hidden"
-            onChange={e => { const files = Array.from(e.target.files ?? []); e.target.value = ''; if (files.length) handleFiles(files, 'replace'); }}
+            onChange={e => { const files = Array.from(e.target.files ?? []); e.target.value = ''; if (files.length) handleFiles(files, 'replace', 'camera'); }}
           />
           <button
             type="button"
@@ -802,7 +877,7 @@ export default function AddScorePage() {
             accept="image/*,video/*"
             multiple
             className="hidden"
-            onChange={e => { const files = Array.from(e.target.files ?? []); e.target.value = ''; if (files.length) handleFiles(files, 'replace'); }}
+            onChange={e => { const files = Array.from(e.target.files ?? []); e.target.value = ''; if (files.length) handleFiles(files, 'replace', 'picker'); }}
           />
           <div className="flex flex-col gap-1 text-xs text-muted-foreground text-center -mt-3">
             <p>Up to {MAX_ITEMS} photos or videos of the same score.</p>
@@ -811,6 +886,11 @@ export default function AddScorePage() {
             <p>Have a Live Photo? Tap ••• → Save as Video, then upload the video.</p>
           </div>
           {photoNotice && <p className="text-xs text-amber-400 text-center -mt-3">{photoNotice}</p>}
+          {geoPermission === 'denied' && (
+            <p className="text-xs text-muted-foreground text-center -mt-3">
+              Location is off for this site — venue lookup works much better with it on.
+            </p>
+          )}
           <button onClick={() => setStep(2)} className="text-sm text-muted-foreground hover:text-white transition-colors uppercase tracking-wider">
             Skip AI & Enter Manually ›
           </button>
@@ -822,6 +902,15 @@ export default function AddScorePage() {
         <div className="rounded-xl border border-white/10 bg-card p-6 flex flex-col gap-4">
           <h2 className="text-xl font-black uppercase tracking-widest text-white mb-2">Where Did You Play?</h2>
           {aiError && <p className="text-xs text-yellow-400 -mt-1">{aiError}</p>}
+          {photoLocation && !photoLocation.hasGps && (
+            <MissingLocationNotice
+              info={photoLocation}
+              photoCount={uploadItems.length || 1}
+              platform={platform}
+              state={currentLocation}
+              onUseCurrentLocation={useCurrentLocation}
+            />
+          )}
 
           <div className="relative">
             {!venueSearch && <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />}
@@ -849,7 +938,7 @@ export default function AddScorePage() {
           {/* Nearby venues from AI photo */}
           {nearbyVenues.filter(v => !venueSearch || v.name.toLowerCase().includes(venueSearch.toLowerCase())).length > 0 && (
             <div>
-              <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">Nearby</p>
+              <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">{nearbySource === 'device' ? 'Near You' : 'Nearby'}</p>
               <div className="flex flex-col gap-1.5">
                 {nearbyVenues
                   .filter(v => !venueSearch || v.name.toLowerCase().includes(venueSearch.toLowerCase()))
@@ -1440,7 +1529,7 @@ export default function AddScorePage() {
                     accept="image/*"
                     capture="environment"
                     className="hidden"
-                    onChange={e => { const files = Array.from(e.target.files ?? []); e.target.value = ''; if (files.length) handleFiles(files, 'add'); }}
+                    onChange={e => { const files = Array.from(e.target.files ?? []); e.target.value = ''; if (files.length) handleFiles(files, 'add', 'camera'); }}
                   />
                   <input
                     ref={addPhotoRef}
@@ -1448,7 +1537,7 @@ export default function AddScorePage() {
                     accept="image/*,video/*"
                     multiple
                     className="hidden"
-                    onChange={e => { const files = Array.from(e.target.files ?? []); e.target.value = ''; if (files.length) handleFiles(files, 'add'); }}
+                    onChange={e => { const files = Array.from(e.target.files ?? []); e.target.value = ''; if (files.length) handleFiles(files, 'add', 'picker'); }}
                   />
                 </>
               )}

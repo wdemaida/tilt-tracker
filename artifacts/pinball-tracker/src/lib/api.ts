@@ -74,6 +74,10 @@ export function createApi(getToken: () => Promise<string | null>) {
         request<any[]>(mine ? '/venues?mine=true' : '/venues', undefined, mine ? await tok() : undefined),
       machines: async (id: number) => request<any>(`/venues/${id}/machines`, undefined, await tok()),
       pmMachines: (pmId: number) => request<any>(`/venues/pm-machines/${pmId}`),
+      // Same suggestion list a photo's GPS produces, for the device's current position — the Add
+      // Score fallback when no photo had location. Lookup only: the server stores nothing.
+      nearby: async (lat: number, lng: number) =>
+        request<{ venues: any[] }>(`/upload/nearby-venues?lat=${lat}&lng=${lng}`, undefined, await tok()),
       addressAutocomplete: (q: string, at?: { lat: number; lng: number }) =>
         request<Array<{ id: string; label: string; lat: number | null; lng: number | null }>>(
           `/venues/address-autocomplete?q=${encodeURIComponent(q)}${at ? `&lat=${at.lat}&lng=${at.lng}` : ''}`

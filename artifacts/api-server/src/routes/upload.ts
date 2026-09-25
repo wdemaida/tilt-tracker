@@ -116,6 +116,44 @@ function attachPinballMapIds(venueList: Venue[], pmLocations: PmLocation[]): Ven
   });
 }
 
+/**
+ * Venue suggestions around a point: the requester's-eyes view of venues already in TiltTrack
+ * (redacted per privacy tier), then HERE places not already listed, with Pinball Map ids attached.
+ * Shared by the photo-GPS path (`POST /`) and the "Use my current location" fallback
+ * (`GET /nearby-venues`), so both produce exactly the same list for the same point.
+ */
+async function suggestVenuesNear(req: Request, lat: number, lng: number): Promise<Venue[]> {
+  const { userId: clerkId } = getAuth(req);
+  let requesterUserId: number | undefined;
+  let isAdmin = false;
+  if (clerkId) {
+    const [u] = await db.select({ id: users.id, role: users.role }).from(users).where(eq(users.clerkId, clerkId)).limit(1);
+    requesterUserId = u?.id;
+    isAdmin = u?.role === 'admin';
+  }
+
+  const [history, here, pmLocations] = await Promise.all([
+    getHistoryVenues(lat, lng, requesterUserId, isAdmin),
+    getNearbyVenues(lat, lng),
+    // Venue suggestions are the point of this call; Pinball Map ids are a bonus on top. If PM is
+    // down or the api_token is missing, the user should still get their venue list.
+    findNearestPmLocations(lat, lng).catch(err => {
+      console.error('Pinball Map lookup failed during venue suggestion:', err?.message ?? err);
+      return [] as PmLocation[];
+    }),
+  ]);
+
+  // History venues first; de-duplicate HERE results by hereId and name
+  const hereIdsSeen = new Set(history.map(v => v.hereId).filter(Boolean));
+  const namesSeen = new Set(history.map(v => v.name.toLowerCase()));
+
+  const freshHere = here.filter(
+    v => !hereIdsSeen.has(v.hereId) && !namesSeen.has(v.name.toLowerCase())
+  );
+
+  return attachPinballMapIds([...history, ...freshHere], pmLocations);
+}
+
 // The wizard allows 3 items, and a video item contributes its best 3 frames (extracted in the
 // browser — the video itself never comes here), so up to 9 images can arrive in one request.
 const MAX_IMAGES = 9;
@@ -242,6 +280,26 @@ function differentGamesWarning(meta: PhotoMeta[]): string | null {
   }
   return null;
 }
+
+/**
+ * Venue suggestions for the device's current position — the wizard's fallback when none of the
+ * photos carried GPS ("Use my current location"). Read-only: the coordinates are used for this
+ * lookup and nothing else. They are never stored, never logged, and never become the score's
+ * location — the client keeps them out of the score it saves, too.
+ */
+router.get('/nearby-venues', requireAuth, async (req, res) => {
+  const lat = toFiniteOrNull(req.query.lat);
+  const lng = toFiniteOrNull(req.query.lng);
+  if (lat == null || lng == null || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+    return res.status(400).json({ error: 'lat and lng are required', code: 'invalid_coordinates' });
+  }
+  try {
+    res.json({ venues: await suggestVenuesNear(req, lat, lng) });
+  } catch (err: any) {
+    console.error('Nearby venue lookup failed:', err?.message ?? err);
+    res.status(502).json({ error: "Couldn't look up venues near you — pick one below instead" });
+  }
+});
 
 router.post('/', requireAuth, receivePhotos, async (req, res) => {
   const files: Express.Multer.File[] = Array.isArray(req.files) && req.files.length
@@ -384,38 +442,7 @@ router.post('/', requireAuth, receivePhotos, async (req, res) => {
     const gps = gpsMeta ? { latitude: gpsMeta.latitude!, longitude: gpsMeta.longitude! } : null;
     const exifDatetime = meta.map(m => m.exifDatetime).filter((t): t is string => !!t).sort()[0] ?? null;
 
-    let venueList: Venue[] = [];
-    if (gps) {
-      const { userId: clerkId } = getAuth(req);
-      let requesterUserId: number | undefined;
-      let isAdmin = false;
-      if (clerkId) {
-        const [u] = await db.select({ id: users.id, role: users.role }).from(users).where(eq(users.clerkId, clerkId)).limit(1);
-        requesterUserId = u?.id;
-        isAdmin = u?.role === 'admin';
-      }
-
-      const [history, here, pmLocations] = await Promise.all([
-        getHistoryVenues(gps.latitude, gps.longitude, requesterUserId, isAdmin),
-        getNearbyVenues(gps.latitude, gps.longitude),
-        // Venue suggestions are the point of this call; Pinball Map ids are a bonus on top. If PM is
-        // down or the api_token is missing, the user should still get their venue list.
-        findNearestPmLocations(gps.latitude, gps.longitude).catch(err => {
-          console.error('Pinball Map lookup failed during upload:', err?.message ?? err);
-          return [] as PmLocation[];
-        }),
-      ]);
-
-      // History venues first; de-duplicate HERE results by hereId and name
-      const hereIdsSeen = new Set(history.map(v => v.hereId).filter(Boolean));
-      const namesSeen = new Set(history.map(v => v.name.toLowerCase()));
-
-      const freshHere = here.filter(
-        v => !hereIdsSeen.has(v.hereId) && !namesSeen.has(v.name.toLowerCase())
-      );
-
-      venueList = attachPinballMapIds([...history, ...freshHere], pmLocations);
-    }
+    const venueList: Venue[] = gps ? await suggestVenuesNear(req, gps.latitude, gps.longitude) : [];
 
     res.json({
       machineName: extracted.machineName,

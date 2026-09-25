@@ -87,6 +87,20 @@
   wrote that shift back to the database. `toLocalInput` / `localInputToIso` are the round trip;
   `naiveToLocalInput` is for the zone-less wall clock `/api/upload` returns for EXIF timestamps.
 
+## Missing photo location (`MissingLocationNotice.tsx`, `src/lib/photoLocation.ts`, added 2026-09-25)
+- A page can't see whether the Camera app geotags photos — only whether the picked files carry GPS
+  (`describePhotoLocation()` over the prepared images, plus the upload result's `latitude`, since
+  the server has its own EXIF fallback). None has GPS → step 2 shows the amber notice.
+- "Use my current location" is offered only when the photo looks recent (capture time within 2h)
+  or has no time and came from the camera input (`canOfferCurrentLocation`). Old photos get "Photo
+  taken earlier? Pick the venue below." It fires `getCurrentPosition` **only on tap** and calls
+  `GET /api/upload/nearby-venues`, which shares `suggestVenuesNear()` with the photo path.
+- **The device position is never the score's location.** It lives in `deviceCoords` (lookup and
+  address-autocomplete bias only) — never in `gps`, which is spread into `POST /api/scores`.
+- On iPhone, photos from the `capture` input usually arrive without GPS, so the camera path is where
+  the fallback matters most. Step 1 says "Location is off for this site…" only when the Permissions
+  API reports `denied`; unknown/unsupported shows nothing.
+
 ## Partial score reads (`ScoreDigitInput.tsx`, `src/lib/scoreTemplate.ts`, added 2026-09-24)
 - When `/api/upload`'s `scoreRead.template` contains `?`, step 3 renders digit cells instead of the
   plain input: unread positions are amber x's filled left-to-right, low-confidence digits are amber
