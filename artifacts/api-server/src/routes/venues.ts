@@ -9,7 +9,9 @@ import { syncVenueMachineHistory, getFormerMachines } from '../lib/venueHistory.
 import {
   geocodeAddress, autosuggestAddress, findVenueByName, resolveTimezone, lookupHerePlace, type Venue as HereVenue,
 } from '../lib/hereApi.js';
-import { redactVenue, canSeeFullVenue, canSeeVenueLinkage, exactVenueNameKey, isPrivateTier } from '../lib/venuePrivacy.js';
+import {
+  redactVenue, canSeeFullVenue, canSeeVenueLinkage, exactVenueNameKey, isPrivateTier, linkageClearedForPrivacy,
+} from '../lib/venuePrivacy.js';
 import { createRateLimiter } from '../lib/rateLimit.js';
 import { canRepairVenue, buildResyncPreview, applyResync, reenrichMachines } from '../lib/venueRepair.js';
 import {
@@ -432,6 +434,13 @@ router.patch('/:id', requireAppUser, async (req, res) => {
 
   const nextTier = updates.privacyTier ?? existing.privacyTier;
   const needsCityCentroid = nextTier === 'city_state' && existing.cityLat == null;
+
+  // A venue that ends up private loses its HERE / Pinball Map links in this same UPDATE — either id
+  // resolves to where it is. Not restored on switching back (see linkageClearedForPrivacy).
+  Object.assign(updates, linkageClearedForPrivacy({
+    isResidence: updates.isResidence ?? existing.isResidence,
+    privacyTier: nextTier,
+  }));
 
   try {
     if (address && (addressChanged || needsCityCentroid)) {

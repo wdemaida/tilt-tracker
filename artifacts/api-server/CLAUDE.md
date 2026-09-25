@@ -56,6 +56,11 @@
   unredacted on venue payloads (`pinballMapId` on the list, `pmLocationUrl` and `hereId` on
   `/venues/:id/machines`), so either would publish the location the tier hides. A residence shown in
   `full` tier is allowed. Status payloads carry `linkageBlocked` so the UI explains instead of 409ing.
+- **Going private clears the links** (`linkageClearedForPrivacy()`, owner decision 2026-09-25): a
+  `PATCH /api/venues/:id` that leaves the venue private (restricted tier, or `isResidence`) nulls
+  `hereId`, `pinballMapId` and `pmMachineCount` in the same UPDATE. Not restored on switching back;
+  the Edit Venue dialog warns first. `venue_machine_history` rows are left in place (only served
+  to viewers who pass `canSeeVenueLinkage`).
 - `GET /api/venues` no longer sends `createdById`; each row carries a server-computed `canRepair`
   (`venueListFlags()`) for the requester, which is all the "Needs address" badge needed.
 - A `here_id` unique-index collision (a race past the clash check) is a 409 `here_id_taken`, not a

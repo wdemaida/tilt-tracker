@@ -88,6 +88,18 @@ export function isPrivateTier(venue: { isResidence: boolean; privacyTier: 'full'
   return venue.isResidence || venue.privacyTier !== 'full';
 }
 
+/**
+ * Column updates for a venue edit that leaves it private. A HERE place id or Pinball Map id *is* a
+ * location, so a venue that becomes (or stays) private drops them in the same UPDATE — owner decision
+ * 2026-09-25. They are not restored on switching back to public; the owner relinks from the repair
+ * panel if they want them. `pmMachineCount` goes too, since it's derived from the Pinball Map link.
+ */
+export function linkageClearedForPrivacy(
+  next: { isResidence: boolean; privacyTier: 'full' | 'city_state' | 'hidden' },
+): { hereId: null; pinballMapId: null; pmMachineCount: null } | Record<string, never> {
+  return isPrivateTier(next) ? { hereId: null, pinballMapId: null, pmMachineCount: null } : {};
+}
+
 // A score's own latitude/longitude comes from the photo's EXIF GPS, independent of the venue record —
 // redact it the same way whenever its venue restricts visibility, so the exact location can't leak via
 // the score's coordinates even after the venue's own address/coordinates are redacted.

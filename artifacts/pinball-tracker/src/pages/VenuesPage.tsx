@@ -36,7 +36,12 @@ interface EditVenue {
   address: string;
   isResidence: boolean;
   privacyTier: 'full' | 'city_state' | 'hidden';
+  /** Whether the venue was public when the dialog opened — to warn before it loses its links. */
+  wasPublic: boolean;
+  hadPinballMap: boolean;
 }
+
+const isPrivateEdit = (v: { isResidence: boolean; privacyTier: string }) => v.isResidence || v.privacyTier !== 'full';
 
 // Addresses look like "..., City, ST" or "..., City, ST ZIP, United States" — the state
 // abbreviation is whichever comma-separated segment starts with two uppercase letters.
@@ -201,6 +206,8 @@ export default function VenuesPage() {
                         address: venue.address ?? '',
                         isResidence: venue.isResidence,
                         privacyTier: venue.privacyTier,
+                        wasPublic: !isPrivateEdit(venue),
+                        hadPinballMap: venue.pinballMapId != null,
                       })}
                       className="p-1 rounded text-muted-foreground hover:text-white hover:bg-white/10 transition-colors"
                       aria-label="Edit venue"
@@ -316,6 +323,14 @@ export default function VenuesPage() {
                       </label>
                     ))}
                   </div>
+                )}
+                {editVenue.wasPublic && isPrivateEdit(editVenue) && (
+                  // The server clears hereId / pinballMapId in the same save; they don't come back.
+                  <p className="text-xs rounded-lg bg-amber-500/10 text-amber-400 px-3 py-2">
+                    Switching to private removes this venue’s Pinball Map and HERE links
+                    {editVenue.hadPinballMap ? ' — its machine list will no longer come from Pinball Map' : ''}.
+                    Switching back later won’t restore them.
+                  </p>
                 )}
                 {patchMutation.isError && (
                   <p className="text-xs text-red-400">{(patchMutation.error as any)?.message}</p>

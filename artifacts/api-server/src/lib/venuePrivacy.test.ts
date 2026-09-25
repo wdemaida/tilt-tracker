@@ -164,7 +164,8 @@ test('matchDuplicates: public venues unchanged — normalized name within 250m, 
 
 // --- Exact-name discovery (owner decision 2026-09-25) --------------------------------------------
 
-const { exactVenueNameKey, isPrivateTier } = await import('./venuePrivacy.js');
+const venuePrivacyMod = await import('./venuePrivacy.js');
+const { exactVenueNameKey, isPrivateTier } = venuePrivacyMod;
 
 test('exactVenueNameKey: trimmed and case-insensitive, nothing fuzzier', () => {
   assert.equal(exactVenueNameKey("  Will's Basement "), "will's basement");
@@ -173,6 +174,17 @@ test('exactVenueNameKey: trimmed and case-insensitive, nothing fuzzier', () => {
   assert.notEqual(exactVenueNameKey('Wills Basement'), exactVenueNameKey("Will's Basement"));
   assert.notEqual(exactVenueNameKey('The Basement'), exactVenueNameKey('Basement'));
   assert.notEqual(exactVenueNameKey("Will's  Basement"), exactVenueNameKey("Will's Basement"));
+});
+
+test('linkageClearedForPrivacy: a venue that ends up private drops HERE / PM links; public keeps them', () => {
+  const { linkageClearedForPrivacy } = venuePrivacyMod;
+  const cleared = { hereId: null, pinballMapId: null, pmMachineCount: null };
+  assert.deepEqual(linkageClearedForPrivacy({ isResidence: false, privacyTier: 'hidden' }), cleared);
+  assert.deepEqual(linkageClearedForPrivacy({ isResidence: false, privacyTier: 'city_state' }), cleared);
+  // Marking it a residence is enough, even with the tier left at full.
+  assert.deepEqual(linkageClearedForPrivacy({ isResidence: true, privacyTier: 'full' }), cleared);
+  // Switching back to public restores nothing — the update simply doesn't touch the columns.
+  assert.deepEqual(linkageClearedForPrivacy({ isResidence: false, privacyTier: 'full' }), {});
 });
 
 test('isPrivateTier', () => {
