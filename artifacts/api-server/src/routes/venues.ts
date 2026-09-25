@@ -36,7 +36,8 @@ import {
   mergeSearchResults, queryLength, placeCacheKey, MIN_QUERY_CHARS, MIN_PLACE_QUERY_CHARS,
   SEARCH_RATE_WINDOWS, PLACE_CACHE_TTL_MS,
 } from '../lib/venueSearch.js';
-import { SlidingRateLimiter, TtlCache } from '../lib/nearbyLookup.js';
+import { SlidingRateLimiter, TtlCache, cachedByCell, NEARBY_CACHE_TTL_MS } from '../lib/nearbyLookup.js';
+import { matchPmLocation, PM_MATCH_RATE_WINDOWS } from '../lib/pmMatch.js';
 import { getAuth } from '@clerk/express';
 
 // Optional — resolves the caller's app user + role for privacy redaction, without requiring auth.
@@ -324,6 +325,70 @@ router.get('/search', requireAppUser, async (req, res) => {
   } catch (err) {
     console.error('Venue search error:', err);
     res.status(500).json({ error: 'Venue search failed' });
+  }
+});
+
+// GET /api/venues/pm-match?lat=&lng=&name=  |  ?venueId=
+// The Pinball Map listing a venue-step pick *is*, so the machine step can offer that venue's roster
+// (via /pm-machines/:pmId → pmRosterCache) and the score POST can store the link. Called once per
+// pick, lazily — never per search result or keystroke. Same matching rule as the photo-GPS /
+// current-location suggestions (matchPmLocation in pmMatch.ts).
+//  - lat/lng/name: a HERE "Places" result. Its coordinates are the place's (public), not the user's.
+//  - venueId: a TiltTrack venue with no link yet; the server uses its own coordinates. A private
+//    venue gets no match (private venues carry no linkage), indistinguishable from "none nearby".
+// Pinball Map's nearby list is cached per ~110m cell for 10 minutes (failures aren't cached).
+const pmMatchLimiter = new SlidingRateLimiter(PM_MATCH_RATE_WINDOWS);
+const pmNearbyCache = new TtlCache<Promise<PmLocation[]>>(NEARBY_CACHE_TTL_MS);
+setInterval(() => { pmMatchLimiter.sweep(); pmNearbyCache.sweep(); }, 10 * 60_000).unref();
+const pmLocationsNear = cachedByCell((lat, lng) => findNearestPmLocations(lat, lng), pmNearbyCache);
+
+router.get('/pm-match', requireAppUser, async (req, res) => {
+  const appUser = (req as any).appUser as { id: number };
+  const none = { pinballMapId: null };
+
+  let subject: { name: string; lat: number; lng: number } | null = null;
+  if (req.query.venueId != null) {
+    const venueId = Number(req.query.venueId);
+    if (!Number.isInteger(venueId) || venueId <= 0) return res.status(400).json({ error: 'Invalid venueId' });
+    const [venue] = await db.select().from(venues).where(eq(venues.id, venueId)).limit(1);
+    if (!venue) return res.status(404).json({ error: 'Venue not found' });
+    if (linkageBlockedByPrivacy(venue)) return res.json(none);
+    if (venue.pinballMapId != null) {
+      return res.json({ pinballMapId: venue.pinballMapId, url: pmLocationUrl(venue.pinballMapId), linked: true });
+    }
+    if (venue.latitude == null || venue.longitude == null) return res.json(none);
+    subject = { name: venue.name, lat: venue.latitude, lng: venue.longitude };
+  } else {
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    const name = typeof req.query.name === 'string' ? req.query.name.trim().slice(0, 200) : '';
+    if (req.query.lat == null || req.query.lng == null || !Number.isFinite(lat) || !Number.isFinite(lng)
+      || Math.abs(lat) > 90 || Math.abs(lng) > 180 || !name) {
+      return res.status(400).json({ error: 'lat, lng and name (or venueId) are required' });
+    }
+    subject = { name, lat, lng };
+  }
+
+  if (!isPmConfigured()) return res.json(none);
+  const decision = pmMatchLimiter.take(String(appUser.id));
+  if (!decision.ok) {
+    res.setHeader('Retry-After', String(Math.ceil(decision.retryAfterMs / 1000)));
+    return res.status(429).json({ error: 'Too many Pinball Map lookups — wait a moment', code: 'rate_limited' });
+  }
+
+  try {
+    const match = matchPmLocation(subject, await pmLocationsNear(subject.lat, subject.lng));
+    if (!match) return res.json(none);
+    res.json({
+      pinballMapId: match.id,
+      name: match.name,
+      url: pmLocationUrl(match.id),
+      machineCount: match.num_machines ?? match.machine_count ?? null,
+      linked: false,
+    });
+  } catch (err) {
+    console.error('Pinball Map match failed:', (err as Error)?.message ?? err);
+    return pmFailure(res, err, 'Failed to look up this venue on Pinball Map');
   }
 });
 

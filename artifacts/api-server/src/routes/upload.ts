@@ -13,6 +13,7 @@ import { getMachineScoreStats } from '../lib/machineScoreStats.js';
 import { fitUnderAnthropicLimit, TARGET_RAW_BYTES } from '../lib/imageCompress.js';
 import { getNearbyVenues, type Venue } from '../lib/hereApi.js';
 import { findNearestPmLocations, type PmLocation } from '../lib/pinballmapApi.js';
+import { matchPmLocation } from '../lib/pmMatch.js';
 import { redactVenue, mayRevealByLocation } from '../lib/venuePrivacy.js';
 import {
   SlidingRateLimiter, TtlCache, cachedByCell, rateLimitMessage, NEARBY_RATE_WINDOWS, NEARBY_CACHE_TTL_MS,
@@ -114,14 +115,10 @@ function haversineM(lat1: number, lng1: number, lat2: number, lng2: number): num
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+// Same matching rule as the Add Score venue step's lazy lookup (GET /api/venues/pm-match) — see pmMatch.ts.
 function attachPinballMapIds(venueList: Venue[], pmLocations: PmLocation[]): Venue[] {
   return venueList.map(v => {
-    const vLat = v.venueLat ?? 0;
-    const vLng = v.venueLng ?? 0;
-    const match = pmLocations.find(pm => {
-      if (vLat && vLng) return haversineM(vLat, vLng, pm.lat, pm.lon) < 150;
-      return pm.name.toLowerCase().includes(v.name.toLowerCase().slice(0, 8));
-    });
+    const match = matchPmLocation({ name: v.name, lat: v.venueLat, lng: v.venueLng }, pmLocations);
     return match ? { ...v, pinballMapId: match.id } : v;
   });
 }

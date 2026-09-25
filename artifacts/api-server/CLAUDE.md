@@ -263,6 +263,28 @@
 - Cost: one HERE Autosuggest request per debounced (350ms) search of ≥3 chars that misses the cache.
 - Tests: `npx tsx --test src/lib/venueSearch.test.ts`.
 
+## Pinball Map match on pick (`GET /api/venues/pm-match`, `src/lib/pmMatch.ts`, added 2026-09-25)
+- A HERE "Places" pick in the Add Score venue step used to carry no Pinball Map id, so the machine
+  step fell back to catalog search even at a PM-listed bar (Wedgehead, Portland). Search results
+  still carry none — resolving per result per keystroke would be a PM call each. Instead the client
+  calls `pm-match` **once per pick**: `?lat=&lng=&name=` for a place (its own coordinates), or
+  `?venueId=` for a TiltTrack venue with no link (server uses the venue's coordinates; answers the
+  stored link without calling PM if it has one; a private venue gets `null`, same as no match).
+  Signed in, 30/min + 500/day per user; PM's nearby list cached per ~110m cell for 10 min.
+- **`matchPmLocation()` is the one matching rule** — `suggestVenuesNear()`'s `attachPinballMapIds`
+  uses it too. Closest PM location within 150m whose name overlaps (`pmNamesOverlap`: containment,
+  or a shared distinctive word — "pinball"/"bar"/"arcade" etc. don't count); failing that, the
+  closest within **40m** whatever its name (same building — HERE "Deep Cuts" vs PM "Pop's Pinball").
+  The old rule took the nearest within 150m regardless of name, so the coffee shop next door
+  inherited the bar's listing.
+- **Persisting on save** (`resolveScoreVenue()` in `src/lib/scoreVenue.ts`, split out of
+  `POST /api/scores`): `pmIdToPersist()` — a new venue takes the client's id; an existing venue only
+  if it has **no** link and isn't private. The `here_id` upsert is `COALESCE(venues.pinball_map_id,
+  excluded.…)` (it used to be the other way round, and the by-id backfill overwrote unconditionally).
+  The id is still client-supplied, as on the nearby path — the repair panel is how a wrong one is fixed.
+- Tests: `npx tsx --test src/lib/pmMatch.test.ts`; live + dev-DB check: `npx tsx test-score-venue-pm.ts`
+  (aborts unless DATABASE_URL is the dev branch; throwaway `zz-pm-test` venues, cleaned up).
+
 ## Photo / GPS extraction
 - Use **`exifr`** (not `exifreader`) for GPS from iPhone HEIC files: `await Exifr.gps(buffer)`.
 - Extract GPS from the **original buffer before HEIC→JPEG conversion** — conversion strips EXIF.
