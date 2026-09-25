@@ -23,9 +23,9 @@ import { getVenueRoster } from '../lib/pmRosterCache.js';
 import { visibleScoreSql, canSeeVenueActivity, canManageInventory, usesOwnerInventory } from '../lib/venueActivity.js';
 import {
   getInventory, resolveCatalogMachine, addToInventory, removeFromInventory, deleteVenueInventory,
-  inventoryCountSql, inventoryManagedSql,
+  inventoryCountSql, inventoryManagedSql, CatalogUnavailableError,
 } from '../lib/venueInventory.js';
-import { venueListRow, venueDetailView } from '../lib/venueView.js';
+import { venueListRow, venueDetailView, venueMachinesView } from '../lib/venueView.js';
 import { findDuplicateVenues } from '../lib/venueDedup.js';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { getAuth } from '@clerk/express';
@@ -322,7 +322,9 @@ router.get('/:id/machines', async (req, res) => {
     let pmError: string | null = null;
     // A restricted-tier venue's roster (and its former machines) identifies the Pinball Map listing,
     // i.e. where it is — only its owner and admins get it, matching redactVenue's linkage stripping.
-    const linkageVisible = canSeeVenueLinkage(venue, appUserId, isAdmin);
+    // ...and, like everything else about its machines, it's withheld when the owner's "Show my
+    // machines/scores publicly" switch excludes this viewer.
+    const linkageVisible = canSeeVenueLinkage(venue, appUserId, isAdmin) && activityVisible;
     if (venue.pinballMapId && linkageVisible) {
       try {
         const roster = await getVenueRoster(venue.pinballMapId);
@@ -355,9 +357,8 @@ router.get('/:id/machines', async (req, res) => {
       formerMachines = await getFormerMachines(id);
     }
 
-    const { ownerId: _ownerId, createdById: _createdById, ...redactedVenue } = toPublicVenue(redactVenue(venue, appUserId, isAdmin));
     res.json({
-      venue: redactedVenue, ownMachines, pmMachines, ttMachineNames, formerMachines, pmError,
+      venue: venueMachinesView(venue, viewer), ownMachines, pmMachines, ttMachineNames, formerMachines, pmError,
       pmLocationUrl: venue.pinballMapId && linkageVisible ? pmLocationUrl(venue.pinballMapId) : null,
       // Owner-managed inventory (private venues only); null when not applicable or not visible.
       inventory,
@@ -556,6 +557,9 @@ router.post('/:id/inventory', requireAppUser, async (req, res) => {
     const added = await addToInventory(venue.id, machine.id, appUser.id);
     res.status(added ? 201 : 200).json({ added, machine: { id: machine.id, name: machine.name }, inventory: await getInventory(venue.id) });
   } catch (err) {
+    if (err instanceof CatalogUnavailableError) {
+      return res.status(503).json({ error: err.message, code: 'catalog_unavailable' });
+    }
     console.error('Add inventory error:', err);
     res.status(500).json({ error: 'Failed to add that machine' });
   }
@@ -628,12 +632,13 @@ async function confidentHereAttachment(venueId: number, venueName: string, lat: 
   return { candidates, attached: best, updates };
 }
 
-// A restricted-tier venue never gets HERE / Pinball Map linkage — see linkageBlockedByPrivacy().
+// A private venue (residence or restricted tier) never gets HERE / Pinball Map linkage — see
+// linkageBlockedByPrivacy().
 // Responds and returns true when refused.
-function refuseRestrictedLinkage(venue: { privacyTier: 'full' | 'city_state' | 'hidden' }, res: any): boolean {
+function refuseRestrictedLinkage(venue: PrivacyFlags, res: any): boolean {
   if (!linkageBlockedByPrivacy(venue)) return false;
   res.status(409).json({
-    error: 'This venue’s address is private, so it can’t be linked to HERE or Pinball Map — both would publish where it is',
+    error: 'This is a private (home) venue, so it can’t be linked to HERE or Pinball Map — both would publish where it is',
     code: 'venue_private',
   });
   return true;
@@ -667,7 +672,10 @@ router.get('/:id/repair', requireAppUser, async (req, res) => {
   if (!venue) return;
 
   const appUser = (req as any).appUser;
-  const [{ total }] = await db.select({ total: count() }).from(scores).where(eq(scores.venueId, venue.id));
+  // Same visibility filter as every other score listing — a creator who isn't the owner of a private
+  // venue with its switch off doesn't learn how many scores are there.
+  const [{ total }] = await db.select({ total: count() }).from(scores)
+    .where(and(eq(scores.venueId, venue.id), visibleScoreSql(appUser)));
   const [{ mine }] = await db
     .select({ mine: count() })
     .from(scores)

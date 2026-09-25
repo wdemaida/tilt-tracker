@@ -357,8 +357,8 @@ export default function VenueLinkageSteps({ status, actions }: { status: Linkage
       <p className="flex items-start gap-2 text-xs rounded-lg bg-white/5 text-muted-foreground px-3 py-2">
         <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
         <span>
-          This venue’s address is private, so it isn’t linked to HERE or Pinball Map — either link
-          would publish where it is. Machine matching against a Pinball Map roster isn’t available here.
+          This is a private (home) venue, so it isn’t linked to HERE or Pinball Map — either link
+          would publish where it is. Its machines are listed by its owner on this page instead.
         </span>
       </p>
     );

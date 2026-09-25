@@ -36,6 +36,11 @@ export async function getInventory(venueId: number): Promise<InventoryView> {
   };
 }
 
+/** Pinball Map's machine catalog couldn't be read, so a picked name can't be checked against it. */
+export class CatalogUnavailableError extends Error {
+  constructor() { super('Machine catalog is unavailable right now — try again'); }
+}
+
 /**
  * Resolves a picked machine to a machines row. Only machines that already exist — in our table or
  * in Pinball Map's catalog (the same list the score wizard's typeahead searches) — are accepted, so
@@ -51,7 +56,16 @@ export async function resolveCatalogMachine(input: { machineId?: unknown; name?:
   const name = typeof input.name === 'string' ? input.name.trim() : '';
   if (!name || name.length > 200) return null;
 
-  const pm = (await getAllMachines().catch(() => [])).find(m => m.name.toLowerCase() === name.toLowerCase());
+  // No silent catch → [] (see CLAUDE.md): a Pinball Map outage must not read as "that machine
+  // isn't in the catalog". The route turns this into a 503.
+  let catalog: Awaited<ReturnType<typeof getAllMachines>>;
+  try {
+    catalog = await getAllMachines();
+  } catch (err) {
+    console.error('Machine catalog unavailable:', err);
+    throw new CatalogUnavailableError();
+  }
+  const pm = catalog.find(m => m.name.toLowerCase() === name.toLowerCase());
   if (pm) {
     return upsertMachineByName(pm.name, { manufacturer: pm.manufacturer ?? undefined, year: pm.year ?? undefined });
   }

@@ -73,13 +73,14 @@ export function describeHolder(holder: ({ id: number; name: string } & PrivacyFl
 }
 
 /**
- * Whether HERE / Pinball Map linkage may be written onto this venue. A restricted-tier venue is
- * refused: a Pinball Map id (and its public pmLocationUrl) or a HERE place id *is* a location, and
- * both go out unredacted on venue payloads — linking one would publish exactly what the tier hides.
- * A residence the owner chose to show in full has nothing hidden, so it's allowed.
+ * Whether HERE / Pinball Map linkage may be written onto this venue. Any private venue is refused —
+ * a residence or a restricted tier, the same definition (isPrivateVenue) that PATCH uses to *clear*
+ * the links (linkageClearedForPrivacy). A Pinball Map id (and its public pmLocationUrl) or a HERE
+ * place id *is* a location. This used to allow a full-tier residence, which let the repair panel
+ * re-attach links that saving the venue would then silently drop again.
  */
-export function linkageBlockedByPrivacy(v: Pick<PrivacyFlags, 'privacyTier'>): boolean {
-  return v.privacyTier !== 'full';
+export function linkageBlockedByPrivacy(v: PrivacyFlags): boolean {
+  return isPrivateVenue(v);
 }
 
 /**

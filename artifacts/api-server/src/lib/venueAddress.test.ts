@@ -194,10 +194,13 @@ test('isPrivateVenue', () => {
   assert.equal(isPrivateVenue({ isResidence: false, privacyTier: 'city_state' }), true);
 });
 
-test('linkageBlockedByPrivacy: only restricted tiers are refused HERE / Pinball Map linkage', () => {
-  assert.equal(linkageBlockedByPrivacy({ privacyTier: 'full' }), false);
-  assert.equal(linkageBlockedByPrivacy({ privacyTier: 'city_state' }), true);
-  assert.equal(linkageBlockedByPrivacy({ privacyTier: 'hidden' }), true);
+test('linkageBlockedByPrivacy: every private venue is refused HERE / Pinball Map linkage', () => {
+  assert.equal(linkageBlockedByPrivacy({ isResidence: false, privacyTier: 'full' }), false);
+  assert.equal(linkageBlockedByPrivacy({ isResidence: false, privacyTier: 'city_state' }), true);
+  assert.equal(linkageBlockedByPrivacy({ isResidence: false, privacyTier: 'hidden' }), true);
+  // A full-tier residence too — PATCH clears links on residences (linkageClearedForPrivacy), so
+  // allowing them here would let a link be attached that the next save quietly removes.
+  assert.equal(linkageBlockedByPrivacy({ isResidence: true, privacyTier: 'full' }), true);
 });
 
 test('venueListFlags: canRepair is computed server-side per requester', () => {

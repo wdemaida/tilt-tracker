@@ -54,8 +54,10 @@
 - **Restricted-tier venues get no HERE / Pinball Map linkage** (`linkageBlockedByPrivacy()`, 409
   `venue_private` from `/repair/here`, `/repair/here/attach` and `/repair/pm-link`). Both ids go out
   unredacted on venue payloads (`pinballMapId` on the list, `pmLocationUrl` and `hereId` on
-  `/venues/:id/machines`), so either would publish the location the tier hides. A residence shown in
-  `full` tier is allowed. Status payloads carry `linkageBlocked` so the UI explains instead of 409ing.
+  `/venues/:id/machines`), so either would publish the location the tier hides. Since 2026-09-25
+  this covers **every private venue** (`isPrivateVenue`: residence *or* restricted tier) — the same
+  definition PATCH uses to clear links; a full-tier residence used to be allowed and then lost the
+  link on its next save. Status payloads carry `linkageBlocked` so the UI explains instead of 409ing.
 - **Going private clears the links** (`linkageClearedForPrivacy()`, owner decision 2026-09-25): a
   `PATCH /api/venues/:id` that leaves the venue private (restricted tier, or `isResidence`) nulls
   `hereId`, `pinballMapId` and `pmMachineCount` in the same UPDATE. Not restored on switching back;
@@ -145,7 +147,13 @@
   coordinates, timezone, lastPlayedAt or linkage. `/api/venues/:id/scores`'s venue gets the same
   treatment (plus tier-redacted lat/lng/timezone for the map thumbnail) and now includes `timezone`,
   which the venue page was already reading.
-- Tests: `npx tsx --test src/lib/venueActivity.test.ts`.
+- `/api/venues/:id/machines` also withholds the Pinball Map roster / former machines /
+  `pmLocationUrl` when the switch excludes the viewer, and sends others' private venues a trimmed
+  venue object (`venueMachinesView`). Adding to an inventory answers **503 `catalog_unavailable`**
+  when Pinball Map's catalog can't be read — never a misleading "not in the catalog" 400.
+- Tests: `npx tsx --test src/lib/venueActivity.test.ts src/lib/venueActivity.sql.test.ts` — the
+  second runs `visibleScoreSql` in an in-process PGlite and checks it matches `canSeeScore` row for
+  row, for each kind of viewer.
 
 ## Duplicate venues (`src/lib/venueDedup.ts`, added 2026-09-13)
 - The unique index on `venues.here_id` only ever protected the **upload** flow. `POST /api/venues`

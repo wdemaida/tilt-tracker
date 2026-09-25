@@ -9,7 +9,7 @@ process.env.DATABASE_URL ??= 'postgres://unit-test@127.0.0.1:1/never-connected';
 const {
   activityRestricted, canSeeVenueActivity, canSeeScore, canManageInventory, usesOwnerInventory, canEditVenue, visibleScoreSql,
 } = await import('./venueActivity.js');
-const { venueListRow, venueDetailView, displayedMachineCount } = await import('./venueView.js');
+const { venueListRow, venueDetailView, venueMachinesView, displayedMachineCount } = await import('./venueView.js');
 const { PgDialect } = await import('drizzle-orm/pg-core');
 
 type Tier = 'full' | 'city_state' | 'hidden';
@@ -204,6 +204,22 @@ test('venueDetailView: others see the tier-redacted location and the inventory c
   const off = venueDetailView({ ...venue('residenceCityState', false), ...counts }, signedOut);
   assert.equal(off.machineCount, null);
   assert.equal(off.activityHidden, true);
+});
+
+test('venueMachinesView: others get name + tier-redacted location only; owner/admin get the row', () => {
+  for (const viewer of [other, signedOut]) {
+    const v = venueMachinesView({ ...venue('residenceHidden', false), createdAt: new Date() }, viewer) as Record<string, unknown>;
+    assert.deepEqual(Object.keys(v).sort(), ['address', 'id', 'isResidence', 'latitude', 'longitude', 'name', 'timezone']);
+    assert.equal(v.address, null);
+    assert.equal(v.timezone, null);
+  }
+  assert.equal(venueMachinesView(venue('residenceCityState', true), other).address, 'Brewster, MA');
+  const own = venueMachinesView(venue('residenceHidden', false), owner) as Record<string, unknown>;
+  assert.equal(own.privacyTier, 'hidden');
+  assert.ok(!('ownerId' in own) && !('createdById' in own));
+  const pub = venueMachinesView(venue('publicVenue', true), other) as Record<string, unknown>;
+  assert.equal(pub.address, '1 Secret Ln, Brewster, MA 02631');
+  assert.ok(!('ownerId' in pub));
 });
 
 // ---- the SQL twin --------------------------------------------------------------------------------

@@ -110,6 +110,25 @@ export function venueListRow(
   return { ...fullView(row, requester), scoreCount, lastPlayedAt, ...flags, ...listFlags };
 }
 
+/**
+ * The venue object on GET /api/venues/:id/machines. Someone else's private venue gets only what the
+ * machines modal and the score wizard read: name, and the tier-redacted address/position/zone.
+ * Everyone else gets the redacted row as before, minus ownerId/createdById.
+ */
+export function venueMachinesView<T extends VenueRow & { createdAt?: unknown }>(v: T, requester: Viewer | undefined) {
+  if (isOthersPrivate(v, requester)) {
+    const red = redactVenue(v, requester?.id, false);
+    return {
+      id: v.id, name: v.name, address: red.address, latitude: red.latitude, longitude: red.longitude,
+      timezone: red.timezone, isResidence: v.isResidence,
+    };
+  }
+  const {
+    ownerId: _o, createdById: _c, city: _ci, state: _s, cityLat: _la, cityLng: _ln, ...rest
+  } = redactVenue(v, requester?.id, requester?.role === 'admin');
+  return rest;
+}
+
 /** The venue object on GET /api/venues/:id/scores (the venue detail page). */
 export function venueDetailView(v: VenueRow & MachineCounts, requester: Viewer | undefined) {
   const flags = venueFlags(v, requester);
