@@ -24,6 +24,12 @@ export interface PreparedImage {
   longitude: number | null;
   /** Zone-less camera wall clock ("2026-09-10T22:01:00"), or null. */
   exifDatetime: string | null;
+  /**
+   * An *instant* (ISO with Z) for when this was captured, when that's all we have — a video's `mvhd`
+   * time (UTC) or the file's modified time. Never mixed into `exifDatetime`: rendering an instant as a
+   * naive clock bakes in the *browser's* zone, and the form then re-reads it in the venue's zone.
+   */
+  capturedAt?: string | null;
   /** True when a HEIC photo couldn't be converted and `file` is still the original HEIC. */
   heicFailed: boolean;
 }

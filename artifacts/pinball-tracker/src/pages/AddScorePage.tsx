@@ -94,6 +94,10 @@ export default function AddScorePage() {
   const [scoreTemplate, setScoreTemplate] = useState<string | null>(null);
   // Cells where the user's digit was kept over a later photo's different reading.
   const [scoreDisagreements, setScoreDisagreements] = useState<ScoreDisagreement[]>([]);
+  // When the only capture time is an *instant* (a video's container time), the form's wall clock is
+  // derived from it on the venue's clock — and re-derived if the venue changes — until the user
+  // edits the field themselves. See prepareUploadImage.ts `capturedAt`.
+  const [playedAtInstant, setPlayedAtInstant] = useState<string | null>(null);
   // The score state as of the latest render — an upload's result lands after an await, and the user
   // may have kept typing while it ran, so reconciliation must not read a stale closure.
   const latestScoreRef = useRef<{ read: ScoreRead | null; template: string | null; display: string }>({ read: null, template: null, display: '' });
@@ -319,6 +323,11 @@ export default function AddScorePage() {
     setScoreDisplay(n ? n.toLocaleString() : '');
   }
 
+  // A capture instant is re-expressed whenever the venue (and so the score's clock) changes.
+  useEffect(() => {
+    if (playedAtInstant) setValue('playedAt', toLocalInput(playedAtInstant, selectedVenue?.timezone));
+  }, [playedAtInstant, selectedVenue?.timezone]);
+
   // Digits the user currently has, x's included — what the plausibility check runs against.
   const currentScoreTemplate = scoreTemplate ?? scoreDisplay.replace(/[^0-9]/g, '');
 
@@ -523,7 +532,18 @@ export default function AddScorePage() {
     }
     setDifferentGamesWarning(result.differentGamesWarning ?? null);
     // Already a zone-less camera wall clock (the earliest photo's) — the input wants it verbatim.
-    if (result.playedAt) setValue('playedAt', naiveToLocalInput(result.playedAt));
+    const instants = images.map(i => i.capturedAt).filter((t): t is string => !!t).sort();
+    if (images.some(i => i.exifDatetime) && result.playedAt) {
+      setPlayedAtInstant(null);
+      setValue('playedAt', naiveToLocalInput(result.playedAt));
+    } else if (instants.length) {
+      // Only a container/file instant (video): show it on the venue's clock, not the browser's.
+      setPlayedAtInstant(instants[0]);
+      setValue('playedAt', toLocalInput(instants[0], selectedVenue?.timezone));
+    } else if (result.playedAt) {
+      setPlayedAtInstant(null);
+      setValue('playedAt', naiveToLocalInput(result.playedAt));
+    }
     if (result.latitude != null && result.longitude != null && !(adding && gps)) {
       setGps({ latitude: result.latitude, longitude: result.longitude });
     }
@@ -1191,7 +1211,7 @@ export default function AddScorePage() {
           {/* Date & Time */}
           <div>
             <label className="label">Date & Time</label>
-            <input {...register('playedAt')} type="datetime-local" className="input" />
+            <input {...register('playedAt', { onChange: () => setPlayedAtInstant(null) })} type="datetime-local" className="input" />
           </div>
 
           {/* Type */}

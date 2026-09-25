@@ -104,7 +104,12 @@
   third of the clip is sent (spread matters — different refresh phases light different digits).
   Limits are `MAX_VIDEO_SECONDS` / `MAX_VIDEO_BYTES`. GPS/time come from a byte scan of the QuickTime
   `moov` box (Apple ISO 6709 location + `creationdate`, `©xyz`, then `mvhd`), falling back to
-  `file.lastModified` and no GPS. A browser that can't decode the codec (HEVC .mov in Chrome on
+  `file.lastModified` and no GPS. **`mvhd` and `lastModified` are instants, not wall clocks** — they
+  travel as `capturedAt` (ISO, UTC), never `exifDatetime`, and AddScorePage renders them with
+  `toLocalInput(instant, venue.timezone)`, re-deriving when the venue changes until the user edits
+  the field. Formatting them as a naive clock in the browser's zone and then re-reading that in the
+  venue's zone shifted the time — the same bug class as the 2026-09-13 EXIF fix. Apple's
+  `creationdate` is a real wall clock and stays `exifDatetime`. A browser that can't decode the codec (HEVC .mov in Chrome on
   Windows) gets a friendly "try a photo" message, and the wizard stays on step 1.
 - iOS web file pickers hand over only the still of a Live Photo, which is why step 1 tells users to
   "Save as Video" first.

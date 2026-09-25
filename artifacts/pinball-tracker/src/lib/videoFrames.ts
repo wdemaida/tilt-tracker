@@ -9,7 +9,7 @@
 // Browser decode support is the main failure mode: e.g. an iPhone HEVC .mov won't decode in Chrome
 // on Windows. That surfaces as a friendly VideoFrameError, never a broken wizard.
 
-import { drawToJpeg, toNaiveLocal, type PreparedImage } from './prepareUploadImage';
+import { drawToJpeg, type PreparedImage } from './prepareUploadImage';
 
 export const MAX_VIDEO_SECONDS = 10;
 export const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
@@ -35,7 +35,14 @@ export function isVideoFile(file: File): boolean {
 // Metadata: GPS + capture time
 // ---------------------------------------------------------------------------
 
-interface VideoMeta { latitude: number | null; longitude: number | null; exifDatetime: string | null }
+interface VideoMeta {
+  latitude: number | null;
+  longitude: number | null;
+  /** Apple's creationdate: the camera's own wall clock (zone-less once its offset is dropped). */
+  exifDatetime: string | null;
+  /** An instant (ISO, UTC) — mvhd or file.lastModified. Rendered into the venue's zone later. */
+  capturedAt: string | null;
+}
 
 const MAX_MOOV_BYTES = 16 * 1024 * 1024;
 const QT_EPOCH_OFFSET_S = 2082844800; // seconds from 1904-01-01 to 1970-01-01
@@ -73,7 +80,7 @@ async function readMoov(file: Blob): Promise<Uint8Array | null> {
  * atom holding the same ISO 6709 string. `mvhd` creation time (UTC) is the fallback.
  */
 async function readQuickTimeMeta(file: Blob): Promise<VideoMeta> {
-  const out: VideoMeta = { latitude: null, longitude: null, exifDatetime: null };
+  const out: VideoMeta = { latitude: null, longitude: null, exifDatetime: null, capturedAt: null };
   const moov = await readMoov(file).catch(() => null);
   if (!moov) return out;
   // A single-byte decoding keeps one char per byte, so string indexes line up with the buffer.
@@ -100,8 +107,8 @@ async function readQuickTimeMeta(file: Blob): Promise<VideoMeta> {
       const version = view.getUint8(0);
       const qtSeconds = version === 1 ? Number(view.getBigUint64(4)) : view.getUint32(4);
       if (qtSeconds > QT_EPOCH_OFFSET_S) {
-        // An instant (UTC); rendered on this device's clock, the same assumption photo EXIF makes.
-        out.exifDatetime = toNaiveLocal(new Date((qtSeconds - QT_EPOCH_OFFSET_S) * 1000));
+        // An instant (UTC), so it stays one: AddScorePage renders it on the venue's clock.
+        out.capturedAt = new Date((qtSeconds - QT_EPOCH_OFFSET_S) * 1000).toISOString();
       }
     }
   }
@@ -109,7 +116,7 @@ async function readQuickTimeMeta(file: Blob): Promise<VideoMeta> {
 }
 
 async function readVideoMeta(file: File): Promise<VideoMeta> {
-  let meta: VideoMeta = { latitude: null, longitude: null, exifDatetime: null };
+  let meta: VideoMeta = { latitude: null, longitude: null, exifDatetime: null, capturedAt: null };
   // exifr first, in case a future version (or an unusual container) handles it; it currently
   // doesn't read QuickTime, which is what the moov scan below is for.
   try {
@@ -121,9 +128,10 @@ async function readVideoMeta(file: File): Promise<VideoMeta> {
   return {
     latitude: meta.latitude ?? qt.latitude,
     longitude: meta.longitude ?? qt.longitude,
-    // Last resort for the time: the file's own modified time. No GPS fallback — the venue step
-    // already copes with none (search, or pick from your venues).
-    exifDatetime: qt.exifDatetime ?? (file.lastModified ? toNaiveLocal(new Date(file.lastModified)) : null),
+    exifDatetime: qt.exifDatetime,
+    // Last resort for the time: the file's own modified time — an instant, like mvhd. No GPS
+    // fallback — the venue step already copes with none (search, or pick from your venues).
+    capturedAt: qt.exifDatetime ? null : (qt.capturedAt ?? (file.lastModified ? new Date(file.lastModified).toISOString() : null)),
   };
 }
 
@@ -269,6 +277,7 @@ export async function extractVideoFrames(file: File, onProgress?: (p: FrameProgr
         latitude: meta.latitude,
         longitude: meta.longitude,
         exifDatetime: meta.exifDatetime,
+        capturedAt: meta.capturedAt,
         heicFailed: false,
       });
       onProgress?.({ done: VIDEO_SAMPLE_FRAMES + k + 1, total });
