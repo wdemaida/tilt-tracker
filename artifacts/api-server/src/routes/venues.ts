@@ -18,7 +18,7 @@ import {
   linkageBlockedByPrivacy, isUniqueViolation, type AddressBlocker, type HolderView, type PrivacyFlags,
 } from '../lib/venueAddress.js';
 import { getVenueRoster } from '../lib/pmRosterCache.js';
-import { findDuplicateVenues, partitionDuplicates } from '../lib/venueDedup.js';
+import { findDuplicateVenues } from '../lib/venueDedup.js';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { getAuth } from '@clerk/express';
 
@@ -118,24 +118,23 @@ router.post('/', requireAppUser, async (req, res) => {
     // candidates rather than refusing keeps genuine same-name venues (a chain's other branch) creatable —
     // the client re-submits with allowDuplicate once the user confirms. See venueDedup.ts.
     if (!allowDuplicate) {
-      const matches = await findDuplicateVenues({
+      // Someone else's private venue matches only by exact name and comes back name-only
+      // (isPrivate) — never by proximity to the address typed here. See matchDuplicates.
+      const duplicates = await findDuplicateVenues({
         name,
         latitude: geocoded?.lat ?? null,
         longitude: geocoded?.lng ?? null,
-      });
-      // Private matches (someone else's residence) are reported only as a flag — no id, name,
-      // address or distance, and nothing the client could attach a score to. See partitionDuplicates.
-      const { candidates: duplicates, privateNearby } = partitionDuplicates(matches, appUser.id, appUser.role === 'admin');
-      if (duplicates.length > 0 || privateNearby) {
+      }, appUser);
+      if (duplicates.length > 0) {
+        const only = duplicates.length === 1 ? duplicates[0] : null;
         return res.status(409).json({
-          error: duplicates.length === 0
-            ? 'A private venue with this name already exists nearby. You can still add yours.'
-            : duplicates.length === 1
-              ? `"${duplicates[0].name}" already exists${duplicates[0].distance != null ? ` ${duplicates[0].distance}m away` : ''}.`
-              : `${duplicates.length} venues with this name already exist nearby.`,
+          error: only?.isPrivate
+            ? `A private venue named "${only.name}" exists — log here, or create your own.`
+            : only
+              ? `"${only.name}" already exists${only.distance != null ? ` ${only.distance}m away` : ''}.`
+              : `${duplicates.length} venues with this name already exist.`,
           code: 'duplicate_venue',
           candidates: duplicates,
-          privateNearby,
         });
       }
     }
@@ -976,8 +975,9 @@ router.post('/:id/repair/place', requireAppUser, async (req, res) => {
 
     // Not a block — the venue may genuinely be a second listing — but worth saying before the user
     // links Pinball Map and starts re-syncing scores onto what might be a duplicate row.
-    const nearbySameName = (await findDuplicateVenues({ name: venue.name, latitude: updated.latitude, longitude: updated.longitude }))
-      .filter(d => d.id !== venue.id && d.distance != null);
+    // distance != null drops the exact-name private matches, which carry no location to compare.
+    const nearbySameName = (await findDuplicateVenues({ name: venue.name, latitude: updated.latitude, longitude: updated.longitude }, appUser))
+      .filter(d => d.id !== venue.id && d.distance != null && !d.isPrivate);
     // Not partitionDuplicates(): this sits next to exact coordinates, so even an admin gets the
     // describeHolder treatment (a residence is never named here), matching the candidate lists.
     const { byPm } = await venuesHolding(venue.id, [], pmPreselect ? [pmPreselect.pinballMapId] : []);

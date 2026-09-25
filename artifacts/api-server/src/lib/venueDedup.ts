@@ -45,65 +45,92 @@ export interface DuplicateCandidate {
   address: string | null;
   /** Null when either venue has no coordinates — the match was on name alone. */
   distance: number | null;
+  /**
+   * Set on someone else's private venue matched by exact name. Such a candidate carries its id and
+   * name only — address and distance are always null — so it can be logged at, but says nothing
+   * about where it is.
+   */
+  isPrivate?: true;
 }
 
-/** A raw match, still carrying the fields that decide whether it may be shown to the requester. */
-export interface DuplicateMatch extends DuplicateCandidate {
+export interface DuplicateRow {
+  id: number;
+  name: string;
+  address: string | null;
+  latitude: number | null;
+  longitude: number | null;
   ownerId: number | null;
   isResidence: boolean;
   privacyTier: 'full' | 'city_state' | 'hidden';
 }
 
 /**
- * Splits raw matches into what the requester may see and an anonymous "a private one exists" flag.
+ * Venues that look like the one about to be created, as the requester may see them.
  *
- * A residence (or any restricted tier) is never returned to someone who couldn't already see it:
- * its name, address and — via `distance` from a point the requester chose — its position are exactly
- * what the tier withholds, and "use this one instead" would let a stranger attach their score to
- * someone's home. Its owner and admins see it like any other match, so an owner re-adding their own
- * home is still caught.
- */
-export function partitionDuplicates(
-  matches: DuplicateMatch[],
-  requesterUserId: number | undefined,
-  isAdmin: boolean,
-): { candidates: DuplicateCandidate[]; privateNearby: boolean } {
-  const candidates: DuplicateCandidate[] = [];
-  let privateNearby = false;
-  for (const m of matches) {
-    const isPrivate = m.isResidence || m.privacyTier !== 'full';
-    const canSee = isAdmin || (requesterUserId != null && m.ownerId === requesterUserId);
-    if (isPrivate && !canSee) {
-      privateNearby = true;
-      continue;
-    }
-    candidates.push({ id: m.id, name: m.name, address: m.address, distance: m.distance });
-  }
-  return { candidates, privateNearby };
-}
-
-/**
- * Venues that look like the one about to be created.
- *
- * **Name and proximity together**, because each alone is wrong:
+ * **Public venues — and the requester's own private ones (all of them, for an admin) — match on
+ * name and proximity together**, because each alone is wrong:
  * - Name alone would block a chain with branches in different cities — a second "Headquarters" in
  *   Boston is a different venue, not a duplicate.
  * - Proximity alone would block genuine neighbours. "The Alley Bar" and "Versus" sit 156m apart in
  *   this table and are unrelated.
- *
  * Requiring both catches the 92m same-name pair that prompted this and leaves the rest creatable.
+ * When the new venue couldn't be geocoded, this falls back to a name-only match — the conservative
+ * direction, since the caller surfaces candidates for confirmation rather than refusing.
  *
- * When the new venue couldn't be geocoded, this falls back to a name-only match. That's the
- * conservative direction: the caller surfaces candidates for confirmation rather than refusing, so a
- * false positive costs one extra click and a false negative costs a duplicate.
+ * **Someone else's private venue never matches by location** — not within 250m, not via the
+ * geocode-failure fallback. The coordinates here come from an address the requester typed, so any
+ * proximity match would be a way to probe where people live. It matches only when the new venue's
+ * name equals its name exactly (trimmed, case-insensitive — the same rule as
+ * GET /api/venues/exact), and then only as `{ id, name, isPrivate: true }`: "a private venue named X
+ * exists — log here, or create your own". Anywhere in the world; nothing locational.
  */
-export async function findDuplicateVenues(
+export function matchDuplicates(
   candidate: { name: string; latitude: number | null; longitude: number | null },
-): Promise<DuplicateMatch[]> {
+  rows: DuplicateRow[],
+  requester: { id: number; role: string } | undefined,
+): DuplicateCandidate[] {
   const target = normalizeVenueName(candidate.name);
+  const exactTarget = candidate.name.trim().toLowerCase();
   if (!target) return [];
 
-  const all = await db
+  const matches: DuplicateCandidate[] = [];
+  for (const v of rows) {
+    const isPrivate = v.isResidence || v.privacyTier !== 'full';
+    const canSee = !!requester && (requester.role === 'admin' || v.ownerId === requester.id);
+
+    if (isPrivate && !canSee) {
+      if (v.name.trim().toLowerCase() === exactTarget) {
+        matches.push({ id: v.id, name: v.name, address: null, distance: null, isPrivate: true });
+      }
+      continue;
+    }
+
+    if (normalizeVenueName(v.name) !== target) continue;
+
+    const bothPlaced =
+      candidate.latitude != null && candidate.longitude != null &&
+      v.latitude != null && v.longitude != null;
+
+    if (!bothPlaced) {
+      matches.push({ id: v.id, name: v.name, address: v.address, distance: null });
+      continue;
+    }
+
+    const d = distanceM(candidate.latitude!, candidate.longitude!, v.latitude!, v.longitude!);
+    if (d <= DUPLICATE_RADIUS_M) {
+      matches.push({ id: v.id, name: v.name, address: v.address, distance: d });
+    }
+  }
+
+  return matches.sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity));
+}
+
+export async function findDuplicateVenues(
+  candidate: { name: string; latitude: number | null; longitude: number | null },
+  requester: { id: number; role: string } | undefined,
+): Promise<DuplicateCandidate[]> {
+  if (!normalizeVenueName(candidate.name)) return [];
+  const rows = await db
     .select({
       id: venues.id,
       name: venues.name,
@@ -115,30 +142,5 @@ export async function findDuplicateVenues(
       privacyTier: venues.privacyTier,
     })
     .from(venues);
-
-  // Raw matches — callers must pass them through partitionDuplicates() before they go out.
-  const matches: DuplicateMatch[] = [];
-  for (const v of all) {
-    if (normalizeVenueName(v.name) !== target) continue;
-
-    const bothPlaced =
-      candidate.latitude != null && candidate.longitude != null &&
-      v.latitude != null && v.longitude != null;
-
-    if (!bothPlaced) {
-      matches.push({ ...pick(v), distance: null });
-      continue;
-    }
-
-    const d = distanceM(candidate.latitude!, candidate.longitude!, v.latitude!, v.longitude!);
-    if (d <= DUPLICATE_RADIUS_M) {
-      matches.push({ ...pick(v), distance: d });
-    }
-  }
-
-  return matches.sort((a, b) => (a.distance ?? Infinity) - (b.distance ?? Infinity));
-}
-
-function pick(v: { id: number; name: string; address: string | null; ownerId: number | null; isResidence: boolean; privacyTier: 'full' | 'city_state' | 'hidden' }) {
-  return { id: v.id, name: v.name, address: v.address, ownerId: v.ownerId, isResidence: v.isResidence, privacyTier: v.privacyTier };
+  return matchDuplicates(candidate, rows, requester);
 }

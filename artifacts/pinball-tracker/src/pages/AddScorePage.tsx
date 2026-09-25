@@ -83,12 +83,11 @@ export default function AddScorePage() {
   const [newVenueIsResidence, setNewVenueIsResidence] = useState(false);
   const [newVenuePrivacyTier, setNewVenuePrivacyTier] = useState<'full' | 'city_state' | 'hidden'>('hidden');
   // Existing venues the server matched when it rejected a create as a likely duplicate.
+  // Someone's private venue arrives as a name-only `isPrivate` candidate (exact name match, never a
+  // location match): loggable like any other, but with no address or distance to show.
   const [venueDuplicates, setVenueDuplicates] = useState<
-    Array<{ id: number; name: string; address: string | null; distance: number | null }> | null
+    Array<{ id: number; name: string; address: string | null; distance: number | null; isPrivate?: true }> | null
   >(null);
-  // The same 409 can also say a *private* venue (someone's residence) matches. That arrives with no
-  // details and nothing to pick — only a note, and the user goes on to create their own venue.
-  const [privateVenueNearby, setPrivateVenueNearby] = useState(false);
   const [machineSearch, setMachineSearch] = useState('');
   const [selectedMachine, setSelectedMachine] = useState('');
   const [aiDetectedMachine, setAiDetectedMachine] = useState('');
@@ -511,9 +510,7 @@ export default function AddScorePage() {
     // A 409 here isn't a failure to explain in red text — it's the server saying "you already have
     // this one". Show the matches so the obvious action (pick the existing venue) is one click.
     onError: (e: any) => {
-      const isDup = e.code === 'duplicate_venue';
-      setVenueDuplicates(isDup ? (e.body?.candidates ?? []) : null);
-      setPrivateVenueNearby(isDup && !!e.body?.privateNearby);
+      setVenueDuplicates(e.code === 'duplicate_venue' ? (e.body?.candidates ?? null) : null);
     },
   });
 
@@ -1063,17 +1060,16 @@ export default function AddScorePage() {
                   ))}
                 </div>
               )}
-              {venueDuplicates && (venueDuplicates.length > 0 || privateVenueNearby) && (
+              {venueDuplicates && venueDuplicates.length > 0 && (
                 <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 flex flex-col gap-2">
                   <p className="text-xs text-amber-400">
-                    {venueDuplicates.length > 0 ? (
+                    {venueDuplicates.length === 1 && venueDuplicates[0].isPrivate ? (
+                      <>A private venue named “{venueDuplicates[0].name}” exists — log here, or create your own.</>
+                    ) : (
                       <>
                         {venueDuplicates.length === 1 ? 'You already have this venue' : 'You already have venues with this name nearby'}.
                         Use the existing one, unless this really is a different place.
-                        {privateVenueNearby && ' A private venue with this name is also nearby.'}
                       </>
-                    ) : (
-                      'A private venue with this name already exists nearby. You can still add yours.'
                     )}
                   </p>
                   <ul className="flex flex-col gap-1.5">
@@ -1093,8 +1089,12 @@ export default function AddScorePage() {
                         >
                           <span className="block text-sm font-bold text-venue truncate">{d.name}</span>
                           <span className="block text-[0.65rem] text-muted-foreground truncate">
-                            {d.distance != null ? `${d.distance}m away` : 'same name'}
-                            {d.address ? ` · ${d.address}` : ''}
+                            {d.isPrivate ? 'Private venue' : (
+                              <>
+                                {d.distance != null ? `${d.distance}m away` : 'same name'}
+                                {d.address ? ` · ${d.address}` : ''}
+                              </>
+                            )}
                           </span>
                         </button>
                       </li>
@@ -1111,7 +1111,7 @@ export default function AddScorePage() {
                     })}
                     className="self-start text-xs text-muted-foreground hover:text-white underline transition-colors"
                   >
-                    {venueDuplicates.length > 0 ? 'No, this is a different venue — create it anyway' : 'Create my venue'}
+                    {venueDuplicates.length === 1 && venueDuplicates[0].isPrivate ? 'Create my own venue' : 'No, this is a different venue — create it anyway'}
                   </button>
                 </div>
               )}

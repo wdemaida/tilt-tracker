@@ -114,12 +114,13 @@
   would block a chain's branch in another city; proximity alone would block genuine neighbours
   ("The Alley Bar" and "Versus" are 156m apart and unrelated). Returns 409 with candidates rather
   than refusing — the client re-sends with `allowDuplicate: true` after the user confirms.
-- **Private matches are never described.** `findDuplicateVenues()` returns raw matches with privacy
-  fields; every caller runs them through `partitionDuplicates()` first. Someone else's residence (or
-  any restricted tier) becomes `privateNearby: true` on the 409 — no id, name, address or distance
-  (a distance from a point the requester chose *is* a location). Its owner and admins still see it
-  as a normal candidate. The 409 is sent for a private-only match too, so the UI can say "a private
-  venue exists nearby" and offer **Create my venue** (re-sends `allowDuplicate`).
+- **Someone else's private venue never matches by location** (`matchDuplicates()`, owner decision
+  2026-09-25). Not within 250m and not via the geocode-failure fallback: the coordinates come from an
+  address the requester typed, so a proximity match would let anyone probe where people live. It
+  matches only when the new name equals its name **exactly** (trimmed, case-insensitive — same rule
+  as `GET /api/venues/exact`), anywhere, and comes back as `{id, name, address: null, distance: null,
+  isPrivate: true}` — "A private venue named X exists — log here, or create your own". Owner and
+  admins keep the full candidates for their own private venues. Public venues unchanged.
 - `normalizeVenueName()` folds case, diacritics, punctuation and a leading "the" only. It must NOT
   strip anything meaningful — "Pinball Palace" and "Pinball Palace North" are different venues.
 - `POST /api/venues` also resolves a real HERE place via `findVenueByName()` (accepted only under

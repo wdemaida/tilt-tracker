@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 process.env.DATABASE_URL ??= 'postgres://unit-test@127.0.0.1:1/never-connected';
 
 const { redactVenue, canSeeVenueLinkage, mayRevealByLocation } = await import('./venuePrivacy.js');
-const { partitionDuplicates } = await import('./venueDedup.js');
+const { matchDuplicates } = await import('./venueDedup.js');
 
 const OWNER = 1;
 const STRANGER = 26;
@@ -100,47 +100,66 @@ test('mayRevealByLocation: someone else\'s private venue never surfaces from a l
   assert.equal(mayRevealByLocation(venue({ isResidence: false, privacyTier: 'full', ownerId: null }), undefined), true);
 });
 
-function match(over: Record<string, unknown> = {}) {
+// Will's Basement sits at 41.76,-70.07. A stranger types an address that geocodes 40m away.
+function row(over: Record<string, unknown> = {}) {
   return {
-    id: 44, name: "Will's Basement", address: '1 Secret Ln', distance: 40,
+    id: 44, name: "Will's Basement", address: '1 Secret Ln', latitude: 41.76, longitude: -70.07,
     ownerId: OWNER, isResidence: true, privacyTier: 'hidden' as 'full' | 'city_state' | 'hidden',
     ...over,
   };
 }
-const pubMatch = match({ id: 12, name: 'Logan Arcade', address: '2410 W Fullerton', distance: 90, ownerId: null, isResidence: false, privacyTier: 'full' });
+const pubRow = row({ id: 12, name: 'Logan Arcade', address: '2410 W Fullerton', latitude: 41.9249, longitude: -87.6877, ownerId: null, isResidence: false, privacyTier: 'full' });
+const near = { latitude: 41.7603, longitude: -70.07 };        // ~33m from #44
+const farAway = { latitude: 34.05, longitude: -118.24 };      // Los Angeles
+const nowhere = { latitude: null, longitude: null };          // geocode failed
+const strangerU = { id: STRANGER, role: 'user' };
 
-test('partitionDuplicates: a stranger gets only an anonymous flag for a private match', () => {
-  const r = partitionDuplicates([match()], STRANGER, false);
-  assert.deepEqual(r, { candidates: [], privateNearby: true });
-  // Nothing identifying survives: no id, name, address or distance.
-  const out = JSON.stringify(r);
-  for (const leak of ['Basement', 'Secret', '44', '40']) assert.equal(out.includes(leak), false, leak);
+test('matchDuplicates: a stranger never matches a private venue by proximity', () => {
+  // Same *normalized* name but not exact ("Wills Basement"), 33m away: no match at all.
+  assert.deepEqual(matchDuplicates({ name: 'Wills Basement', ...near }, [row()], strangerU), []);
+  // Nor via the geocode-failure name-only fallback.
+  assert.deepEqual(matchDuplicates({ name: 'Wills Basement', ...nowhere }, [row()], strangerU), []);
 });
 
-test('partitionDuplicates: signed-out requester is a stranger', () => {
-  assert.deepEqual(partitionDuplicates([match()], undefined, false), { candidates: [], privateNearby: true });
+test('matchDuplicates: an exact name match on a private venue is name-only, wherever the typed address is', () => {
+  const expected = [{ id: 44, name: "Will's Basement", address: null, distance: null, isPrivate: true }];
+  for (const where of [near, farAway, nowhere]) {
+    assert.deepEqual(matchDuplicates({ name: "  will's BASEMENT ", ...where }, [row()], strangerU), expected);
+  }
+  // The answer is identical near and far — so it can't be used to learn anything about location.
+  assert.deepEqual(
+    matchDuplicates({ name: "Will's Basement", ...near }, [row()], strangerU),
+    matchDuplicates({ name: "Will's Basement", ...farAway }, [row()], strangerU),
+  );
 });
 
-test('partitionDuplicates: public matches pass through without privacy fields', () => {
-  const r = partitionDuplicates([pubMatch, match()], STRANGER, false);
-  assert.equal(r.privateNearby, true);
-  assert.deepEqual(r.candidates, [{ id: 12, name: 'Logan Arcade', address: '2410 W Fullerton', distance: 90 }]);
+test('matchDuplicates: signed-out requester is a stranger', () => {
+  assert.equal(matchDuplicates({ name: "Will's Basement", ...near }, [row()], undefined)[0].isPrivate, true);
 });
 
-test('partitionDuplicates: the owner and admins see their private match as a normal candidate', () => {
-  const own = partitionDuplicates([match()], OWNER, false);
-  assert.equal(own.privateNearby, false);
-  assert.deepEqual(own.candidates, [{ id: 44, name: "Will's Basement", address: '1 Secret Ln', distance: 40 }]);
-  assert.equal(partitionDuplicates([match()], STRANGER, true).candidates.length, 1);
+test('matchDuplicates: restricted tier without the residence flag, and a full-tier residence, are private', () => {
+  assert.equal(matchDuplicates({ name: 'Wills Basement', ...near }, [row({ isResidence: false, privacyTier: 'city_state' })], strangerU).length, 0);
+  assert.equal(matchDuplicates({ name: 'Wills Basement', ...near }, [row({ privacyTier: 'full' })], strangerU).length, 0);
 });
 
-test('partitionDuplicates: restricted tier without the residence flag, and full-tier residences, are private', () => {
-  assert.equal(partitionDuplicates([match({ isResidence: false, privacyTier: 'city_state' })], STRANGER, false).privateNearby, true);
-  assert.equal(partitionDuplicates([match({ privacyTier: 'full' })], STRANGER, false).privateNearby, true);
+test('matchDuplicates: owner and admin keep today\'s full candidates for their private venue', () => {
+  for (const who of [{ id: OWNER, role: 'user' }, { id: STRANGER, role: 'admin' }]) {
+    const [m] = matchDuplicates({ name: 'Wills Basement', ...near }, [row()], who);
+    assert.equal(m.id, 44);
+    assert.equal(m.address, '1 Secret Ln');
+    assert.equal(typeof m.distance, 'number');
+    assert.equal(m.isPrivate, undefined);
+    assert.deepEqual(matchDuplicates({ name: "Will's Basement", ...farAway }, [row()], who), []);
+  }
 });
 
-test('partitionDuplicates: no matches', () => {
-  assert.deepEqual(partitionDuplicates([], STRANGER, false), { candidates: [], privateNearby: false });
+test('matchDuplicates: public venues unchanged — normalized name within 250m, or name-only without a geocode', () => {
+  const pubNear = { latitude: 41.9250, longitude: -87.6877 };
+  const [m] = matchDuplicates({ name: 'logan arcade', ...pubNear }, [pubRow], strangerU);
+  assert.equal(m.address, '2410 W Fullerton');
+  assert.ok(m.distance != null && m.distance < 250);
+  assert.deepEqual(matchDuplicates({ name: 'Logan Arcade', ...farAway }, [pubRow], strangerU), []);
+  assert.equal(matchDuplicates({ name: 'Logan Arcade', ...nowhere }, [pubRow], strangerU)[0].distance, null);
 });
 
 // --- Exact-name discovery (owner decision 2026-09-25) --------------------------------------------
