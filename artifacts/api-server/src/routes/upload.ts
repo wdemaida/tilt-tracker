@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
 import multer from 'multer';
 import sharp from 'sharp';
 import Exifr from 'exifr';
@@ -9,7 +9,7 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import { extractScoreReads } from '../lib/anthropic.js';
 import { mergeReads, templateToScore, checkPlausibility } from '../lib/scoreRead.js';
 import { getMachineScoreStats } from '../lib/machineScoreStats.js';
-import { fitUnderAnthropicLimit } from '../lib/imageCompress.js';
+import { fitUnderAnthropicLimit, TARGET_RAW_BYTES } from '../lib/imageCompress.js';
 import { getNearbyVenues, type Venue } from '../lib/hereApi.js';
 import { findNearestPmLocations, type PmLocation } from '../lib/pinballmapApi.js';
 import { redactVenue } from '../lib/venuePrivacy.js';
@@ -116,57 +116,174 @@ function attachPinballMapIds(venueList: Venue[], pmLocations: PmLocation[]): Ven
   });
 }
 
-router.post('/', requireAuth, upload.single('photo'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+const MAX_PHOTOS = 3;
+// Photos further apart than this probably aren't the same game — surfaced as a non-blocking warning.
+const SAME_GAME_MAX_MINUTES = 10;
+const SAME_GAME_MAX_METERS = 200;
 
-  try {
-    const originalBuffer = req.file.buffer;
-    let buffer = originalBuffer;
-    let mimeType = req.file.mimetype;
+// `photos` (1–3, the current client) or the legacy single `photo`. multer's own errors (too many
+// files, one over 20MB) would otherwise fall through to Express's default HTML 500.
+const acceptPhotos = upload.fields([{ name: 'photos', maxCount: MAX_PHOTOS }, { name: 'photo', maxCount: 1 }]);
+function receivePhotos(req: Request, res: Response, next: NextFunction) {
+  acceptPhotos(req, res, err => {
+    if (!err) return next();
+    if (err instanceof multer.MulterError) {
+      const message = err.code === 'LIMIT_FILE_SIZE'
+        ? 'Each photo must be under 20MB'
+        : err.code === 'LIMIT_UNEXPECTED_FILE' || err.code === 'LIMIT_FILE_COUNT'
+          ? `Up to ${MAX_PHOTOS} photos at a time`
+          : 'Upload rejected';
+      return res.status(400).json({ error: message, code: 'upload_rejected' });
+    }
+    next(err);
+  });
+}
 
-    // The frontend extracts GPS/EXIF client-side before converting/downscaling every photo, since
-    // both strip EXIF and doing the conversion client-side avoids the memory-heavy server-side HEIC
-    // decode (see prepareUploadImage.ts). Falls back to server-side extraction when absent — an older
-    // client, or a photo whose EXIF the browser couldn't read.
-    const clientLat = req.body.latitude != null ? Number(req.body.latitude) : null;
-    const clientLng = req.body.longitude != null ? Number(req.body.longitude) : null;
+interface PhotoMeta {
+  latitude: number | null;
+  longitude: number | null;
+  exifDatetime: string | null;
+}
+
+function toFiniteOrNull(v: unknown): number | null {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function cleanMeta(raw: any): PhotoMeta {
+  const latitude = toFiniteOrNull(raw?.latitude);
+  const longitude = toFiniteOrNull(raw?.longitude);
+  const hasGps = latitude != null && longitude != null;
+  return {
+    latitude: hasGps ? latitude : null,
+    longitude: hasGps ? longitude : null,
     // The client sends the same zone-less shape `toNaiveLocal` produces (prepareUploadImage.ts), but
     // normalize anyway so a stale client can't reintroduce a `Z` the frontend would misread.
-    const clientExifDatetime = normalizeNaiveDatetime(
-      typeof req.body.exifDatetime === 'string' ? req.body.exifDatetime : null
-    );
-    const hasClientGps = clientLat != null && !Number.isNaN(clientLat) && clientLng != null && !Number.isNaN(clientLng);
+    exifDatetime: normalizeNaiveDatetime(typeof raw?.exifDatetime === 'string' ? raw.exifDatetime : null),
+  };
+}
 
-    const [serverGps, serverExifDatetime] = await Promise.all([
-      hasClientGps ? Promise.resolve(null) : extractGps(originalBuffer),
-      clientExifDatetime ? Promise.resolve(null) : extractExifDatetime(originalBuffer),
-    ]);
-    const gps = hasClientGps ? { latitude: clientLat!, longitude: clientLng! } : serverGps;
-    const exifDatetime = clientExifDatetime ?? serverExifDatetime;
+/** Per-photo metadata: the JSON `meta` array, or the legacy flat latitude/longitude/exifDatetime fields. */
+function readClientMeta(body: any, count: number): PhotoMeta[] {
+  let list: any[] = [];
+  if (typeof body.meta === 'string') {
+    try {
+      const parsed = JSON.parse(body.meta);
+      if (Array.isArray(parsed)) list = parsed;
+    } catch { /* ignore — falls back to server-side extraction */ }
+  }
+  if (list.length === 0 && count === 1) list = [body];
+  return Array.from({ length: count }, (_, i) => cleanMeta(list[i]));
+}
 
-    let thumbnailBase64: string | null = null;
-    if (mimeType === 'image/heic' || mimeType === 'image/heif' || req.file.originalname.toLowerCase().endsWith('.heic')) {
-      try {
-        const heicConvert = (await import('heic-convert')).default;
-        // heic-convert's WASM decoder is memory-heavy even for an ordinary 12MP photo (measured
-        // ~365MB RSS, ~11s) — decode the HEIC source exactly once and derive the thumbnail from the
-        // resulting JPEG via sharp instead of paying that full decode cost a second time.
-        const mainBuf = await heicConvert({ buffer, format: 'JPEG', quality: 0.9 });
-        buffer = Buffer.from(mainBuf);
-        mimeType = 'image/jpeg';
-        const thumbBuf = await sharp(buffer).resize(160).jpeg({ quality: 65 }).toBuffer();
-        thumbnailBase64 = `data:image/jpeg;base64,${thumbBuf.toString('base64')}`;
-      } catch {
-        return res.status(422).json({ error: 'Failed to convert HEIC image' });
+const isHeic = (f: Express.Multer.File) =>
+  f.mimetype === 'image/heic' || f.mimetype === 'image/heif' || /\.(heic|heif)$/i.test(f.originalname);
+
+/**
+ * Minutes between two zone-less EXIF wall clocks. Both are read as if UTC purely so they share a
+ * frame — this is a difference between two readings of the same camera clock, not an instant.
+ */
+function naiveMinutesApart(a: string, b: string): number {
+  return Math.abs(Date.parse(`${a}Z`) - Date.parse(`${b}Z`)) / 60000;
+}
+
+/** Non-blocking "these may be from different games" check across the uploaded photos. */
+function differentGamesWarning(meta: PhotoMeta[]): string | null {
+  const times = meta.map(m => m.exifDatetime).filter((t): t is string => !!t);
+  const points = meta.filter(m => m.latitude != null && m.longitude != null);
+  for (let i = 0; i < times.length; i++) {
+    for (let j = i + 1; j < times.length; j++) {
+      if (naiveMinutesApart(times[i], times[j]) > SAME_GAME_MAX_MINUTES) {
+        return `These photos were taken more than ${SAME_GAME_MAX_MINUTES} minutes apart — they may be from different games.`;
       }
     }
+  }
+  for (let i = 0; i < points.length; i++) {
+    for (let j = i + 1; j < points.length; j++) {
+      if (haversineM(points[i].latitude!, points[i].longitude!, points[j].latitude!, points[j].longitude!) > SAME_GAME_MAX_METERS) {
+        return 'These photos were taken in different places — they may be from different games.';
+      }
+    }
+  }
+  return null;
+}
 
-    // Anthropic rejects images over 10MB base64 — HEIC→JPEG conversion in particular can inflate
-    // well past that. Only compresses when actually oversized; see imageCompress.ts for why quality
-    // reduction is preferred over resizing (score-screen digits need to stay legible).
-    const fitted = await fitUnderAnthropicLimit(buffer, mimeType);
-    const base64 = fitted.buffer.toString('base64');
-    const extracted = await extractScoreReads([{ base64, mimeType: fitted.mimeType }]);
+router.post('/', requireAuth, receivePhotos, async (req, res) => {
+  const fileMap = (req.files ?? {}) as Record<string, Express.Multer.File[]>;
+  const files = fileMap.photos?.length ? fileMap.photos : (fileMap.photo ?? []);
+  if (files.length === 0) return res.status(400).json({ error: 'No file uploaded' });
+  const multi = files.length > 1;
+
+  // Server-side HEIC decode costs ~380MB RSS per photo (it OOM-killed Render once — see
+  // imageCompress.ts / prepareUploadImage.ts). One is survivable; several in one request is not, so
+  // multi-photo uploads must arrive already converted by the browser.
+  if (multi && files.some(isHeic)) {
+    return res.status(400).json({
+      error: "One of these photos is in HEIC format and couldn't be converted on your device. Upload it on its own, or convert it to JPEG first.",
+      code: 'heic_multi_unsupported',
+    });
+  }
+
+  try {
+    const clientMeta = readClientMeta(req.body, files.length);
+    // Several images share one Anthropic request; keep each well under its share of the budget.
+    // The browser normally downscales to ~2000px, so this rarely has to do anything.
+    const perImageTarget = multi ? Math.floor(TARGET_RAW_BYTES / files.length) : TARGET_RAW_BYTES;
+
+    const meta: PhotoMeta[] = [];
+    const images: Array<{ base64: string; mimeType: string }> = [];
+    let thumbnailBase64: string | null = null;
+
+    // Sequential on purpose: each iteration may decode an image, and doing three at once is exactly
+    // the memory spike the upload-crash fix was about.
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const originalBuffer = file.buffer;
+      let buffer = originalBuffer;
+      let mimeType = file.mimetype;
+
+      // The frontend extracts GPS/EXIF client-side before converting/downscaling every photo, since
+      // both strip EXIF (see prepareUploadImage.ts). Falls back to server-side extraction when
+      // absent — an older client, or a photo whose EXIF the browser couldn't read.
+      const m = clientMeta[i];
+      const [serverGps, serverExifDatetime] = await Promise.all([
+        m.latitude != null ? Promise.resolve(null) : extractGps(originalBuffer),
+        m.exifDatetime ? Promise.resolve(null) : extractExifDatetime(originalBuffer),
+      ]);
+      meta.push({
+        latitude: m.latitude ?? serverGps?.latitude ?? null,
+        longitude: m.longitude ?? serverGps?.longitude ?? null,
+        exifDatetime: m.exifDatetime ?? serverExifDatetime,
+      });
+
+      if (isHeic(file)) {
+        // Single-photo only (guarded above) — the legacy fallback for a HEIC the browser couldn't convert.
+        try {
+          const heicConvert = (await import('heic-convert')).default;
+          // heic-convert's WASM decoder is memory-heavy even for an ordinary 12MP photo (measured
+          // ~365MB RSS, ~11s) — decode the HEIC source exactly once and derive the thumbnail from the
+          // resulting JPEG via sharp instead of paying that full decode cost a second time.
+          const mainBuf = await heicConvert({ buffer, format: 'JPEG', quality: 0.9 });
+          buffer = Buffer.from(mainBuf);
+          mimeType = 'image/jpeg';
+          const thumbBuf = await sharp(buffer).resize(160).jpeg({ quality: 65 }).toBuffer();
+          thumbnailBase64 = `data:image/jpeg;base64,${thumbBuf.toString('base64')}`;
+        } catch {
+          return res.status(422).json({ error: 'Failed to convert HEIC image' });
+        }
+      }
+
+      // Anthropic rejects images over 10MB base64 — HEIC→JPEG conversion in particular can inflate
+      // well past that. Only compresses when actually oversized; see imageCompress.ts for why quality
+      // reduction is preferred over resizing (score-screen digits need to stay legible).
+      const fitted = await fitUnderAnthropicLimit(buffer, mimeType, perImageTarget);
+      images.push({ base64: fitted.buffer.toString('base64'), mimeType: fitted.mimeType });
+    }
+
+    // One model call sees every photo; the per-image reads are merged in code (scoreRead.ts), so a
+    // digit dark in one shot can be read from another and disagreements surface as conflicts.
+    const extracted = await extractScoreReads(images);
     const merged = mergeReads(extracted.reads);
 
     // Deterministic "may be missing digits" check against what's already recorded on this machine.
@@ -179,6 +296,12 @@ router.post('/', requireAuth, upload.single('photo'), async (req, res) => {
         })
       : null;
     const plausibility = stats ? checkPlausibility(merged.template, stats.median, stats.count) : null;
+
+    // GPS from the first photo that has any; playedAt from the earliest camera timestamp (zone-less
+    // strings of one fixed shape, so they sort lexically).
+    const gpsMeta = meta.find(m => m.latitude != null && m.longitude != null);
+    const gps = gpsMeta ? { latitude: gpsMeta.latitude!, longitude: gpsMeta.longitude! } : null;
+    const exifDatetime = meta.map(m => m.exifDatetime).filter((t): t is string => !!t).sort()[0] ?? null;
 
     let venueList: Venue[] = [];
     if (gps) {
@@ -223,12 +346,16 @@ router.post('/', requireAuth, upload.single('photo'), async (req, res) => {
         perImage: extracted.reads.map(r => r.template),
         plausibility,
       },
+      photoCount: files.length,
+      differentGamesWarning: multi ? differentGamesWarning(meta) : null,
       // Zone-less wall clock ("2026-09-10T22:01:00") — see toNaiveLocal. The browser resolves it
       // against the viewer's timezone; do not hand this to `new Date()` on the server.
       playedAt: exifDatetime ?? normalizeNaiveDatetime(extracted.playedAt),
       latitude: gps?.latitude ?? null,
       longitude: gps?.longitude ?? null,
       venues: venueList,
+      // Only the legacy server-side HEIC path makes one; the browser builds its own thumbnail from
+      // the photo at `scoreRead.bestImageIndex` otherwise.
       thumbnailBase64,
     });
   } catch (err) {

@@ -155,18 +155,19 @@ export function createApi(getToken: () => Promise<string | null>) {
         return res.json() as Promise<{ status: 'starting' | 'already-running' }>;
       },
     },
-    // `opts` carries client-extracted GPS/timestamp (see prepareUploadImage.ts) — HEIC conversion and
-    // the client-side downscale both strip EXIF, so that data can't be recovered server-side from the
-    // uploaded file. When absent the server tries its own extraction from the buffer, as before.
-    upload: async (file: File | Blob, opts?: { filename?: string; latitude?: number | null; longitude?: number | null; exifDatetime?: string | null }) => {
+    // One request for every photo of a score (1–3). Each photo's client-extracted GPS/timestamp goes
+    // in the JSON `meta` field, index-aligned with `photos` (see prepareUploadImage.ts) — HEIC
+    // conversion and the client-side downscale both strip EXIF, so that data can't be recovered
+    // server-side from the uploaded files. When absent the server tries its own extraction.
+    upload: async (images: Array<{ file: Blob; filename?: string; latitude?: number | null; longitude?: number | null; exifDatetime?: string | null }>) => {
       const token = await tok();
       const form = new FormData();
-      form.append('photo', file, opts?.filename);
-      if (opts?.latitude != null && opts?.longitude != null) {
-        form.append('latitude', String(opts.latitude));
-        form.append('longitude', String(opts.longitude));
-      }
-      if (opts?.exifDatetime) form.append('exifDatetime', opts.exifDatetime);
+      images.forEach((img, i) => form.append('photos', img.file, img.filename ?? `photo-${i + 1}.jpg`));
+      form.append('meta', JSON.stringify(images.map(img => ({
+        latitude: img.latitude ?? null,
+        longitude: img.longitude ?? null,
+        exifDatetime: img.exifDatetime ?? null,
+      }))));
 
       const headers: Record<string, string> = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;

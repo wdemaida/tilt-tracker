@@ -88,3 +88,7 @@
   change event; don't "simplify" it to an empty controlled input.
 - "Edit as plain number" starts the field **empty** when x's remain — dropping the x's would shrink
   the score by orders of magnitude.
+- Every file goes through `prepareUploadImage()` (EXIF first, then HEIC convert, then a ~2000px JPEG
+  downscale) — it replaced `heicClientConvert.ts`. The file input takes up to 3 photos, and step 3's
+  "Add another photo" re-uploads the **whole set** so the server can merge the reads; it deliberately
+  doesn't overwrite a machine or venue the user already picked.

@@ -118,3 +118,11 @@
   `machineScoreStats.ts` (id → case-insensitive name → unique `normalizeMachineName` match), served
   read-only at `GET /api/machines/score-stats`. The frontend mirrors the check in
   `src/lib/scoreTemplate.ts` — keep the two in step.
+- **Multi-photo uploads** (`photos`, up to 3; the legacy single `photo` field still works). Per-photo
+  GPS/EXIF comes as a JSON `meta` array. Photos are processed **sequentially** and the multi path
+  **refuses server-side HEIC decode** with 400 `heic_multi_unsupported` — one ~380MB decode is
+  survivable, three in one request is the OOM this route already had once. One model call sees all
+  images; `mergeReads()` right-aligns the per-image templates, a position is known if any image read
+  it, disagreement becomes `?` plus a `conflicts` entry, and the longest template sets the length.
+  GPS = first photo with GPS; playedAt = earliest EXIF time; `differentGamesWarning` when photos are
+  >10 min or >200m apart. Photos aren't stored — no schema change; the thumbnail stays single.

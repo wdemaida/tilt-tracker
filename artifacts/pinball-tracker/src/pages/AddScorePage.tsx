@@ -9,7 +9,7 @@ import { useApi } from '../lib/useApi';
 import { queryClient } from '../lib/queryClient';
 import { PinballIcon } from '../components/PinballIcon';
 import { toLocalInput, localInputToIso, naiveToLocalInput } from '../lib/datetime';
-import { prepareUploadImage } from '../lib/prepareUploadImage';
+import { prepareUploadImage, type PreparedImage } from '../lib/prepareUploadImage';
 import { ScoreDigitInput } from '../components/ScoreDigitInput';
 import {
   type ScoreRead, checkPlausibility, formatTemplate, hasUnknown, templateToScore, unknownCount,
@@ -29,6 +29,9 @@ const schema = z.object({
 });
 
 type FormData = z.infer<typeof schema>;
+
+/** Photos per upload — each is a separate look at the same display, merged server-side. */
+const MAX_PHOTOS = 3;
 type Step = 1 | 2 | 3 | 4;
 
 interface SelectedVenue {
@@ -84,6 +87,11 @@ export default function AddScorePage() {
   // Object URLs for the larger photo preview shown while filling in x's. Revoked on replace/unmount.
   const [photoPreviews, setPhotoPreviews] = useState<string[]>([]);
   const photoPreviewsRef = useRef<string[]>([]);
+  // Every photo read so far (already prepared), so "Add another photo" can re-read the whole set.
+  const [preparedImages, setPreparedImages] = useState<PreparedImage[]>([]);
+  const [photoNotice, setPhotoNotice] = useState('');
+  const [differentGamesWarning, setDifferentGamesWarning] = useState<string | null>(null);
+  const addPhotoRef = useRef<HTMLInputElement>(null);
   const [savedScore, setSavedScore] = useState<SavedScore | null>(null);
   const [pmEmail, setPmEmail] = useState('');
   const [pmPassword, setPmPassword] = useState('');
@@ -376,73 +384,106 @@ export default function AddScorePage() {
     },
   });
 
-  const handlePhoto = async (file: File) => {
+  /**
+   * Handles a pick from the file input. `add` appends to the photos already read (from step 3's "Add
+   * another photo") and re-reads them all together; otherwise it starts over. Either way the whole
+   * set goes up in one request — the server merges the per-photo reads (see api-server scoreRead.ts).
+   */
+  const handleFiles = async (picked: File[], mode: 'replace' | 'add') => {
+    const existing = mode === 'add' ? preparedImages : [];
+    const room = MAX_PHOTOS - existing.length;
+    if (room <= 0 || picked.length === 0) return;
+    setPhotoNotice(picked.length > room
+      ? `Only ${MAX_PHOTOS} photos can be used at once — kept the first ${room === 1 ? 'one' : room}.`
+      : '');
+    const chosen = picked.slice(0, room);
+
     setAiLoading(true);
     setAiError('');
-    thumbnailSucceeded.current = false;
 
     // EXIF, HEIC conversion and a ~2000px downscale all happen client-side — see
-    // prepareUploadImage.ts for why (keeps the memory-heavy decode off the server). A HEIC photo the
-    // browser couldn't convert goes up as-is and falls back to the server's own decode.
-    const prepared = await prepareUploadImage(file);
-    const uploadFile: File | Blob = prepared.file;
+    // prepareUploadImage.ts for why (keeps the memory-heavy decode off the server). One at a time:
+    // HEIC decoding is heavy on a phone too.
+    const fresh: PreparedImage[] = [];
+    for (const f of chosen) fresh.push(await prepareUploadImage(f));
+    const images = [...existing, ...fresh];
 
-    generateThumbnail(uploadFile).then(t => { setThumbnail(t); thumbnailSucceeded.current = true; }).catch(() => {});
-    replacePhotoPreviews([URL.createObjectURL(uploadFile)]);
+    // A single HEIC the browser couldn't convert can still use the server's own decode; the
+    // multi-photo path refuses that (memory), so say so here rather than after the upload.
+    if (images.length > 1 && images.some(i => i.heicFailed)) {
+      setAiLoading(false);
+      setAiError("One of these photos is HEIC and couldn't be converted on this device — upload it on its own, or use a JPEG.");
+      if (mode === 'replace') setStep(2);
+      return;
+    }
+
+    setPreparedImages(images);
+    replacePhotoPreviews(images.map(i => URL.createObjectURL(i.file)));
+    thumbnailSucceeded.current = false;
+    generateThumbnail(images[0].file).then(t => { setThumbnail(t); thumbnailSucceeded.current = true; }).catch(() => {});
+
     try {
-      const result = await api.upload(uploadFile, {
-        filename: prepared.filename,
-        latitude: prepared.latitude,
-        longitude: prepared.longitude,
-        exifDatetime: prepared.exifDatetime,
-      });
-      if (result.machineName) {
-        setValue('machineName', result.machineName);
-        setMachineSearch(result.machineName);
-        setAiDetectedMachine(result.machineName);
-        // Don't pre-select — auto-select handles exact PM matches; banner guides the rest
-      }
-      const read: ScoreRead | null = result.scoreRead ?? null;
-      setScoreRead(read);
-      if (read && hasUnknown(read.template)) {
-        // Partial read — the display was caught mid-refresh. Step 3 shows digit cells with x's.
-        applyScoreTemplate(read.template);
-      } else if (result.score) {
-        setScoreTemplate(null);
-        setValue('scoreUnfilled', 0);
-        setValue('score', result.score);
-        setScoreDisplay(Number(result.score).toLocaleString());
-      }
-      // Already a zone-less camera wall clock — the input wants it verbatim, not round-tripped.
-      if (result.playedAt) setValue('playedAt', naiveToLocalInput(result.playedAt));
-      if (result.latitude != null && result.longitude != null) {
-        setGps({ latitude: result.latitude, longitude: result.longitude });
-      }
-      if (result.thumbnailBase64 && !thumbnailSucceeded.current) {
-        resizeImage(result.thumbnailBase64).then(setThumbnail).catch(() => setThumbnail(result.thumbnailBase64));
-      }
-      if (result.venues?.length) {
-        const first = result.venues[0];
-        setValue('venueName', first.name);
-        setSelectedVenue({
-          venueId: first.venueId,
-          hereId: first.hereId ?? undefined,
-          address: first.address,
-          venueLat: first.venueLat,
-          venueLng: first.venueLng,
-          pinballMapId: first.pinballMapId,
-          timezone: first.timezone,
-        });
-        setNearbyVenues(result.venues);
-      }
-      setStep(2);
+      const result = await api.upload(images);
+      applyUploadResult(result, images, mode);
     } catch (err: any) {
       setAiError(err?.message ?? 'AI extraction failed — enter details manually');
-      setStep(2);
+      if (mode === 'replace') setStep(2);
     } finally {
       setAiLoading(false);
     }
   };
+
+  function applyUploadResult(result: any, images: PreparedImage[], mode: 'replace' | 'add') {
+    const adding = mode === 'add';
+    // Adding a photo re-reads the score; it shouldn't undo a machine or venue the user already chose.
+    if (result.machineName && !(adding && (selectedMachine || aiDetectedMachine))) {
+      setValue('machineName', result.machineName);
+      setMachineSearch(result.machineName);
+      setAiDetectedMachine(result.machineName);
+      // Don't pre-select — auto-select handles exact PM matches; banner guides the rest
+    }
+    const read: ScoreRead | null = result.scoreRead ?? null;
+    setScoreRead(read);
+    if (read && hasUnknown(read.template)) {
+      // Partial read — the display was caught mid-refresh. Step 3 shows digit cells with x's.
+      applyScoreTemplate(read.template);
+    } else if (result.score) {
+      setScoreTemplate(null);
+      setValue('scoreUnfilled', 0);
+      setValue('score', result.score);
+      setScoreDisplay(Number(result.score).toLocaleString());
+    }
+    setDifferentGamesWarning(result.differentGamesWarning ?? null);
+    // Already a zone-less camera wall clock (the earliest photo's) — the input wants it verbatim.
+    if (result.playedAt) setValue('playedAt', naiveToLocalInput(result.playedAt));
+    if (result.latitude != null && result.longitude != null && !(adding && gps)) {
+      setGps({ latitude: result.latitude, longitude: result.longitude });
+    }
+
+    // Thumbnail from the photo the model found most legible (default: the first).
+    const best = read?.bestImageIndex ?? 0;
+    if (best > 0 && images[best]) {
+      generateThumbnail(images[best].file).then(t => { setThumbnail(t); thumbnailSucceeded.current = true; }).catch(() => {});
+    } else if (result.thumbnailBase64 && !thumbnailSucceeded.current) {
+      resizeImage(result.thumbnailBase64).then(setThumbnail).catch(() => setThumbnail(result.thumbnailBase64));
+    }
+
+    if (result.venues?.length && !(adding && (selectedVenue || nearbyVenues.length))) {
+      const first = result.venues[0];
+      setValue('venueName', first.name);
+      setSelectedVenue({
+        venueId: first.venueId,
+        hereId: first.hereId ?? undefined,
+        address: first.address,
+        venueLat: first.venueLat,
+        venueLng: first.venueLng,
+        pinballMapId: first.pinballMapId,
+        timezone: first.timezone,
+      });
+      setNearbyVenues(result.venues);
+    }
+    if (!adding) setStep(2);
+  }
 
   function selectVenueCard(v: { id?: number; name: string; address?: string | null; hereId?: string | null; venueLat?: number; venueLng?: number; pinballMapId?: number | null; timezone?: string | null }) {
     setValue('venueName', v.name);
@@ -531,7 +572,18 @@ export default function AddScorePage() {
             </span>
             {!aiLoading && <span className="text-xs text-muted-foreground">or choose from camera roll</span>}
           </button>
-          <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) handlePhoto(f); }} />
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            multiple
+            className="hidden"
+            onChange={e => { const files = Array.from(e.target.files ?? []); e.target.value = ''; if (files.length) handleFiles(files, 'replace'); }}
+          />
+          <p className="text-xs text-muted-foreground text-center -mt-3">
+            Up to {MAX_PHOTOS} photos of the same score — extra shots help read flickering digits.
+          </p>
+          {photoNotice && <p className="text-xs text-amber-400 text-center -mt-3">{photoNotice}</p>}
           <button onClick={() => setStep(2)} className="text-sm text-muted-foreground hover:text-white transition-colors uppercase tracking-wider">
             Skip AI & Enter Manually ›
           </button>
@@ -1027,6 +1079,41 @@ export default function AddScorePage() {
               </div>
             )}
           </div>
+
+          {/* More photos of the same display — re-reads the whole set and merges the digits */}
+          {(differentGamesWarning || (preparedImages.length > 0 && preparedImages.length < MAX_PHOTOS) || (aiError && preparedImages.length > 0)) && (
+            <div className="flex flex-col gap-2 -mt-1">
+              {differentGamesWarning && (
+                <p className="flex items-start gap-2 text-xs rounded-lg bg-amber-500/10 text-amber-400 px-3 py-2">
+                  <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                  {differentGamesWarning}
+                </p>
+              )}
+              {aiError && preparedImages.length > 0 && <p className="text-xs text-yellow-400">{aiError}</p>}
+              {photoNotice && <p className="text-xs text-amber-400">{photoNotice}</p>}
+              {preparedImages.length > 0 && preparedImages.length < MAX_PHOTOS && (
+                <>
+                  <button
+                    type="button"
+                    disabled={aiLoading}
+                    onClick={() => addPhotoRef.current?.click()}
+                    className="flex items-center justify-center gap-2 py-2 rounded-lg border border-dashed border-primary/40 text-xs font-bold uppercase tracking-wider text-primary hover:border-primary transition-colors disabled:opacity-50"
+                  >
+                    {aiLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Camera className="w-3.5 h-3.5" />}
+                    {aiLoading ? 'Re-reading...' : `Add another photo (${preparedImages.length}/${MAX_PHOTOS})`}
+                  </button>
+                  <input
+                    ref={addPhotoRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    className="hidden"
+                    onChange={e => { const files = Array.from(e.target.files ?? []); e.target.value = ''; if (files.length) handleFiles(files, 'add'); }}
+                  />
+                </>
+              )}
+            </div>
+          )}
 
           {/* Date & Time */}
           <div>
