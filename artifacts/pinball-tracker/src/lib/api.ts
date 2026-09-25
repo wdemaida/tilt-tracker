@@ -25,6 +25,21 @@ export interface VenueInventory {
   former: Array<{ id: number; name: string; manufacturer: string | null; year: number | null; addedAt: string; removedAt: string }>;
 }
 
+/** `GET /api/venues/search` — see venueSearch.ts on the api-server. */
+export interface VenueSearchResult {
+  tiltTrack: Array<{
+    id: number; name: string; address: string | null; venueLat: number | null; venueLng: number | null;
+    hereId: string | null; pinballMapId: number | null; timezone: string | null; distance: number | null;
+    isPrivate: boolean; matchedBy: 'name' | 'place';
+  }>;
+  places: Array<{
+    hereId: string; name: string; address: string; venueLat: number | null; venueLng: number | null;
+    timezone: string | null; distance: number | null;
+  }>;
+  /** What biased the HERE half: the client's location, the user's last venue, a default, or none (too short). */
+  anchor: 'client' | 'history' | 'default' | 'none';
+}
+
 export function createApi(getToken: () => Promise<string | null>) {
   const tok = () => getToken();
 
@@ -105,6 +120,14 @@ export function createApi(getToken: () => Promise<string | null>) {
       addressAutocomplete: (q: string, at?: { lat: number; lng: number }) =>
         request<Array<{ id: string; label: string; lat: number | null; lng: number | null }>>(
           `/venues/address-autocomplete?q=${encodeURIComponent(q)}${at ? `&lat=${Math.round(at.lat * 1e3) / 1e3}&lng=${Math.round(at.lng * 1e3) / 1e3}` : ''}`
+        ),
+      // Add Score venue search: TiltTrack venues by any word + HERE places by name, a place that
+      // already is a venue folded into it. `at` biases HERE and yields distances; rounded to 3
+      // decimals (~110m) since it rides in the query string, like addressAutocomplete's.
+      search: async (q: string, at?: { lat: number; lng: number }) =>
+        request<VenueSearchResult>(
+          `/venues/search?q=${encodeURIComponent(q)}${at ? `&lat=${Math.round(at.lat * 1e3) / 1e3}&lng=${Math.round(at.lng * 1e3) / 1e3}` : ''}`,
+          undefined, await tok(),
         ),
       scores: async (id: number, mine = false) =>
         request<any>(mine ? `/venues/${id}/scores?mine=true` : `/venues/${id}/scores`, undefined, await tok()),

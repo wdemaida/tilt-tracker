@@ -64,6 +64,22 @@
   browse/substring list (`isOthersPrivateVenue`), since the venues list itself still carries every
   venue by name.
 
+## Add Score venue step: search, pick, or add (`src/lib/venueSearch.ts`, added 2026-09-25)
+- The box used to filter only the Nearby list and *your own* venues (substring), so "pop" found
+  nothing for anyone who'd never logged at Pop's — and Continue then saved the typed text as a new,
+  unplaced venue (the score POST upserts a bare `venueName`). Two real users did exactly that.
+- Now: typing searches, it never *is* the venue. `searchTerm` (what was typed) drives the lists and
+  `useVenueSearch()` → `GET /api/venues/search`; `venueSearch` is just what the box shows (the
+  picked name after a pick). Sections: Nearby, Your Venues (local, `venueMatches()` — any word,
+  punctuation-insensitive), **On TiltTrack** and **Places** (server), Private venue (exact name).
+  Search results already shown in Nearby / Your Venues are dropped client-side.
+- **Continue is disabled until a venue is picked.** "Skip — no venue" is the explicit way on
+  without one; "Not listed? Add “…” with its address" (under the results) and "+ Add a new venue"
+  open the name + address form (HERE address autocomplete, `POST /api/venues` with its duplicate 409).
+- Picking a Place sends `venueHereId` + coordinates/address/timezone through the existing score
+  POST, which upserts on `here_id` — no new create path. `searchTokens()` here must stay in step
+  with the api-server's `venueSearch.ts`.
+
 ## Home-venue inventory and the show-publicly switch (added 2026-09-25)
 - The Edit Venue dialog is one component, `EditVenueDialog.tsx`, used by the Venues page card and
   the venue detail page header — same pencil, same permission (the row's server-computed

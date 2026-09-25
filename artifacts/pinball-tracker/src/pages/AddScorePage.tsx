@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo, useEffect } from 'react';
+import { useState, useRef, useMemo, useEffect, type ReactNode } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -7,6 +7,7 @@ import { useLocation } from 'wouter';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useApi } from '../lib/useApi';
 import { useExactPrivateVenues } from '../lib/useExactPrivateVenues';
+import { useVenueSearch, venueMatches, MIN_PLACE_SEARCH_CHARS } from '../lib/venueSearch';
 import { queryClient } from '../lib/queryClient';
 import { PinballIcon } from '../components/PinballIcon';
 import { toLocalInput, localInputToIso, naiveToLocalInput } from '../lib/datetime';
@@ -98,7 +99,11 @@ export default function AddScorePage() {
   // The venue "Use my current location" pre-selected by itself — not a choice the user made.
   const deviceAutoPickRef = useRef<SelectedVenue | null>(null);
   const platform = useMemo(() => detectPlatform(), []);
+  // What the search box shows — the typed text, or the name of the venue picked.
   const [venueSearch, setVenueSearch] = useState('');
+  // What the user actually *typed*. The lists filter and the server search on this, so picking a
+  // result doesn't narrow the lists to that one name or fire a fresh search for it.
+  const [searchTerm, setSearchTerm] = useState('');
   const [showAddVenueForm, setShowAddVenueForm] = useState(false);
   const [newVenueName, setNewVenueName] = useState('');
   const [newVenueAddress, setNewVenueAddress] = useState('');
@@ -329,15 +334,21 @@ export default function AddScorePage() {
   });
 
   // A friend's home venue: never suggested by location, found only by typing its exact name.
-  const exactPrivateVenues = useExactPrivateVenues(venueSearch);
+  const exactPrivateVenues = useExactPrivateVenues(searchTerm);
 
-  // Filtered venue history for step 2 (user's venues only)
-  const filteredVenueHistory = useMemo(() => {
-    const q = venueSearch.toLowerCase();
-    return (venueHistory as any[]).filter(
-      (v: any) => !q || v.name.toLowerCase().includes(q) || (v.address ?? '').toLowerCase().includes(q)
-    );
-  }, [venueHistory, venueSearch]);
+  // Filtered venue history for step 2 (user's venues only) — any word, punctuation-insensitive.
+  const filteredVenueHistory = useMemo(
+    () => (venueHistory as any[]).filter((v: any) => venueMatches(searchTerm, v.name, v.address)),
+    [venueHistory, searchTerm]
+  );
+
+  // Everything else: TiltTrack venues by any word, and HERE places by name, biased to the photo's
+  // GPS or else the device's position (bias only — never saved). See lib/venueSearch.ts.
+  const searchAt = useMemo(() => {
+    const p = gps ?? deviceCoords;
+    return p ? { lat: p.latitude, lng: p.longitude } : null;
+  }, [gps, deviceCoords]);
+  const venueSearchState = useVenueSearch(searchTerm, searchAt);
 
   const canPostToPm = savedScore?.venueId != null && selectedVenue?.pinballMapId != null;
 
@@ -980,17 +991,21 @@ export default function AddScorePage() {
             <input
               value={venueSearch}
               onChange={e => {
+                // Typing searches; it never *is* the venue. Only picking a result (or adding a venue
+                // below) sets one — a bare typed name used to be saved as a new, unplaced venue.
                 setVenueSearch(e.target.value);
-                setValue('venueName', e.target.value);
+                setSearchTerm(e.target.value);
+                setValue('venueName', '');
                 setSelectedVenue(null);
               }}
-              placeholder="Search or enter venue name..."
+              placeholder="Search venues, bars, arcades..."
+              autoComplete="off"
               className={`input ${venueSearch ? 'pr-8' : 'pl-9'}`}
             />
             {venueSearch && (
               <button
                 type="button"
-                onClick={() => { setVenueSearch(''); setValue('venueName', ''); setSelectedVenue(null); }}
+                onClick={() => { setVenueSearch(''); setSearchTerm(''); setValue('venueName', ''); setSelectedVenue(null); }}
                 className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-white transition-colors"
               >
                 <X className="w-4 h-4" />
@@ -999,12 +1014,12 @@ export default function AddScorePage() {
           </div>
 
           {/* Nearby venues from AI photo */}
-          {nearbyVenues.filter(v => !venueSearch || v.name.toLowerCase().includes(venueSearch.toLowerCase())).length > 0 && (
+          {nearbyVenues.filter(v => venueMatches(searchTerm, v.name, v.address)).length > 0 && (
             <div>
               <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">{nearbySource === 'device' ? 'Near You' : 'Nearby'}</p>
               <div className="flex flex-col gap-1.5">
                 {nearbyVenues
-                  .filter(v => !venueSearch || v.name.toLowerCase().includes(venueSearch.toLowerCase()))
+                  .filter(v => venueMatches(searchTerm, v.name, v.address))
                   .map(v => {
                     const isSelected = selectedVenue?.venueId != null
                       ? selectedVenue.venueId === v.venueId
@@ -1103,8 +1118,88 @@ export default function AddScorePage() {
             );
           })()}
 
-          {filteredVenueHistory.length === 0 && nearbyVenues.length === 0 && !venueSearch && (
-            <p className="text-sm text-muted-foreground text-center py-2">Type a venue name above to add a new one</p>
+          {/* Search results: TiltTrack venues the lists above don't already show, then HERE places.
+              A place that already is a TiltTrack venue arrives as that venue, never as a place. */}
+          {venueSearchState.active && (() => {
+            const shownIds = new Set<number>([
+              ...nearbyVenues.filter(v => venueMatches(searchTerm, v.name, v.address)).map(v => v.venueId).filter((id): id is number => id != null),
+              ...filteredVenueHistory.map((v: any) => v.id as number),
+            ]);
+            const shownHere = new Set(nearbyVenues.map(v => v.hereId).filter(Boolean));
+            const result = venueSearchState.result;
+            const ttHits = (result?.tiltTrack ?? []).filter(h => !shownIds.has(h.id));
+            const placeHits = (result?.places ?? []).filter(p => !shownHere.has(p.hereId));
+            const typedLength = searchTerm.replace(/[^\p{L}\p{N}]/gu, '').length;
+            return (
+              <>
+                {ttHits.length > 0 && (
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">On TiltTrack</p>
+                    <div className="flex flex-col gap-1.5">
+                      {ttHits.map(h => (
+                        <VenueOption
+                          key={`tt-${h.id}`}
+                          name={h.name}
+                          address={h.address}
+                          selected={selectedVenue?.venueId === h.id}
+                          icon={h.isPrivate ? 'home' : 'pin'}
+                          badges={<>{myVenueIds.has(h.id) ? <TagV /> : <TagTT />}{h.pinballMapId && <TagPM />}</>}
+                          right={formatDistance(h.distance)}
+                          onClick={() => selectVenueCard({ id: h.id, name: h.name, address: h.address, hereId: h.hereId, venueLat: h.venueLat ?? undefined, venueLng: h.venueLng ?? undefined, pinballMapId: h.pinballMapId, timezone: h.timezone })}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {placeHits.length > 0 && (
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">Places</p>
+                    <div className="flex flex-col gap-1.5">
+                      {placeHits.map(p => (
+                        <VenueOption
+                          key={`here-${p.hereId}`}
+                          name={p.name}
+                          address={p.address}
+                          selected={selectedVenue?.venueId == null && selectedVenue?.hereId === p.hereId}
+                          icon="pin"
+                          right={formatDistance(p.distance)}
+                          onClick={() => selectVenueCard({ name: p.name, address: p.address, hereId: p.hereId, venueLat: p.venueLat ?? undefined, venueLng: p.venueLng ?? undefined, timezone: p.timezone })}
+                        />
+                      ))}
+                    </div>
+                    {result?.anchor !== 'client' && (
+                      <p className="text-xs text-muted-foreground mt-1.5">Not the right one? Add the town, e.g. “{searchTerm.trim()} medford”.</p>
+                    )}
+                  </div>
+                )}
+                {venueSearchState.pending && !result && (
+                  <p className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Searching venues and places…</p>
+                )}
+                {venueSearchState.failed && (
+                  <p className="text-xs text-amber-400">Venue search isn't working right now — pick from the lists above, or add the venue below.</p>
+                )}
+                {result && ttHits.length === 0 && placeHits.length === 0 && shownIds.size === 0 && (
+                  <p className="text-sm text-muted-foreground">
+                    {typedLength < MIN_PLACE_SEARCH_CHARS ? 'Keep typing to search places too…' : `Nothing found for “${searchTerm.trim()}”. Try adding the town, or add it below.`}
+                  </p>
+                )}
+                {/* Last resort, offered right under the results instead of as small print below Continue. */}
+                {result && !showAddVenueForm && !selectedVenue && (
+                  <button
+                    type="button"
+                    onClick={() => { setNewVenueName(searchTerm.trim()); setShowAddVenueForm(true); }}
+                    className="text-left px-3 py-2.5 rounded-lg border border-dashed border-venue/40 hover:bg-venue/5 transition-colors"
+                  >
+                    <span className="block text-sm font-bold text-venue">Not listed? Add “{searchTerm.trim()}” with its address</span>
+                    <span className="block text-xs text-muted-foreground mt-0.5">The address puts it on the map and keeps it from being added twice.</span>
+                  </button>
+                )}
+              </>
+            );
+          })()}
+
+          {filteredVenueHistory.length === 0 && nearbyVenues.length === 0 && !searchTerm && (
+            <p className="text-sm text-muted-foreground text-center py-2">Search by name — bars, arcades, anywhere with a machine</p>
           )}
 
           <div className="flex gap-3 pt-2">
@@ -1112,31 +1207,39 @@ export default function AddScorePage() {
               className="flex-1 py-2.5 rounded-lg border border-white/10 text-sm text-muted-foreground hover:text-white transition-colors">
               Back
             </button>
-            <button type="button" onClick={() => setStep(3)}
-              className="flex-1 py-2.5 rounded-lg bg-primary text-white font-bold uppercase tracking-wider text-sm hover:opacity-90 transition-opacity">
+            {/* Continue needs a picked venue. Going on without one is its own, clearly-labelled choice
+                ("Skip — no venue") — a typed-but-unpicked name is no longer quietly saved as a venue. */}
+            <button type="button" onClick={() => setStep(3)} disabled={!selectedVenue}
+              className="flex-1 py-2.5 rounded-lg bg-primary text-white font-bold uppercase tracking-wider text-sm hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed">
               Continue
             </button>
           </div>
+          {!selectedVenue && (
+            <p className="text-xs text-muted-foreground text-center -mt-2">
+              {searchTerm.trim() ? 'Pick a venue from the list to continue — or add it, or skip.' : 'Pick a venue to continue.'}
+            </p>
+          )}
           {!showAddVenueForm ? (
             <div className="flex items-center justify-center gap-4">
               <button
                 type="button"
-                onClick={() => { setSelectedVenue(null); setValue('venueName', ''); setVenueSearch(''); setStep(3); }}
+                onClick={() => { setSelectedVenue(null); setValue('venueName', ''); setVenueSearch(''); setSearchTerm(''); setStep(3); }}
                 className="text-xs text-muted-foreground hover:text-white transition-colors text-center"
               >
                 Skip — no venue
               </button>
               <button
                 type="button"
-                onClick={() => { setNewVenueName(venueSearch); setShowAddVenueForm(true); }}
+                onClick={() => { setNewVenueName(searchTerm.trim()); setShowAddVenueForm(true); }}
                 className="text-xs text-venue hover:text-venue/80 transition-colors text-center"
               >
-                + Add custom venue
+                + Add a new venue
               </button>
             </div>
           ) : (
             <div className="rounded-lg border border-venue/30 bg-venue/5 p-4 flex flex-col gap-3">
-              <p className="text-xs font-bold uppercase tracking-widest text-venue">Add Custom Venue</p>
+              <p className="text-xs font-bold uppercase tracking-widest text-venue">Add a New Venue</p>
+              <p className="text-xs text-muted-foreground -mt-2">Only if it isn't in the search above. Name and street address, so it lands on the map.</p>
               <div>
                 <label className="label">Name</label>
                 <input
@@ -1153,7 +1256,7 @@ export default function AddScorePage() {
                   onChange={e => { setNewVenueAddress(e.target.value); setShowAddressSuggestions(true); }}
                   onFocus={() => setShowAddressSuggestions(true)}
                   onBlur={() => setTimeout(() => setShowAddressSuggestions(false), 150)}
-                  placeholder="Street, City, State"
+                  placeholder="Street address, town"
                   className="input"
                   autoComplete="off"
                 />
@@ -1792,5 +1895,38 @@ export default function AddScorePage() {
         .err { font-size: 0.75rem; color: #f87171; margin-top: 0.25rem; }
       `}</style>
     </div>
+  );
+}
+
+function formatDistance(m: number | null | undefined): string | undefined {
+  if (m == null) return undefined;
+  return m < 1000 ? `${m}m` : `${(m / 1609.34).toFixed(m < 16093 ? 1 : 0)} mi`;
+}
+
+/** One pickable venue row in the search results — same look as the Nearby / Your Venues rows. */
+function VenueOption({ name, address, selected, icon, badges, right, onClick }: {
+  name: string;
+  address?: string | null;
+  selected: boolean;
+  icon: 'pin' | 'home';
+  badges?: ReactNode;
+  right?: string;
+  onClick: () => void;
+}) {
+  const Icon = icon === 'home' ? Home : MapPin;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`text-left px-3 py-2.5 rounded-lg border transition-colors ${selected ? 'border-venue/60 bg-venue/10' : 'border-white/10 hover:border-venue/40 hover:bg-white/5'}`}
+    >
+      <div className="flex items-center gap-2 min-w-0">
+        <Icon className={`w-3.5 h-3.5 flex-shrink-0 ${selected ? 'text-venue' : 'text-muted-foreground'}`} />
+        <span className={`text-sm font-bold truncate ${selected ? 'text-white' : 'text-white/80'}`}>{name}</span>
+        {badges}
+        {right && <span className="text-xs text-muted-foreground ml-auto flex-shrink-0">{right}</span>}
+      </div>
+      {address && <p className="text-xs text-muted-foreground truncate mt-0.5 pl-5">{address}</p>}
+    </button>
   );
 }
