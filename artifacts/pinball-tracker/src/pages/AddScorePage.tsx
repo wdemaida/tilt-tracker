@@ -964,10 +964,11 @@ export default function AddScorePage() {
         <div className="rounded-xl border border-white/10 bg-card p-6 flex flex-col gap-4">
           <h2 className="text-xl font-black uppercase tracking-widest text-white mb-2">Where Did You Play?</h2>
           {aiError && <p className="text-xs text-yellow-400 -mt-1">{aiError}</p>}
-          {photoLocation && !photoLocation.hasGps && (
+          {/* No photo GPS — or no photo at all ("Skip AI & Enter Manually") — offer the device's position. */}
+          {!photoLocation?.hasGps && (
             <MissingLocationNotice
               info={photoLocation}
-              photoCount={photoLocation.count}
+              photoCount={photoLocation?.count ?? 0}
               platform={platform}
               state={currentLocation}
               onUseCurrentLocation={useCurrentLocation}

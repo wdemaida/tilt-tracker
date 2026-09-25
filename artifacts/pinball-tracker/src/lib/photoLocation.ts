@@ -51,12 +51,19 @@ export function describePhotoLocation(images: PreparedImage[], fromCamera: boole
 }
 
 /**
- * Whether "Use my current location" makes sense: the photo looks like it was taken just now, so the
- * user is plausibly still at the machine. A camera-input photo with no timestamp counts — it was
- * taken seconds ago by definition. An old photo, or a picked one of unknown age, does not.
+ * How to offer "Use my current location" when no photo had GPS. It's always offered — the user taps
+ * it, so they're the one saying "I'm still here" — but its prominence follows the photo's age:
+ *  - 'primary': the photo looks like it was taken just now (within RECENT_PHOTO_MS), or we can't
+ *    tell its age at all (camera input; or a picked file with no timestamp — screenshots and photos
+ *    forwarded through messaging apps arrive with EXIF stripped). Nothing suggests they've left.
+ *  - 'secondary': the photo's own clock says it's older — they may have gone home, so manual search
+ *    leads and current location is a quieter "still there?" link. (2026-09-25: users with an old,
+ *    GPS-less photo typed a new venue by hand, one of them duplicating an existing venue.)
  */
-export function canOfferCurrentLocation(info: PhotoLocationInfo): boolean {
-  return info.recency === 'recent' || (info.recency === 'unknown' && info.fromCamera);
+export type CurrentLocationOffer = 'primary' | 'secondary';
+
+export function currentLocationOffer(info: PhotoLocationInfo): CurrentLocationOffer {
+  return info.recency === 'old' ? 'secondary' : 'primary';
 }
 
 export type Platform = 'ios' | 'android' | 'other';

@@ -100,9 +100,11 @@ export function createApi(getToken: () => Promise<string | null>) {
           method: 'POST',
           body: JSON.stringify({ lat: Math.round(lat * 1e4) / 1e4, lng: Math.round(lng * 1e4) / 1e4 }),
         }, await tok()),
+      // `at` only biases the suggestions (it may be the device's position). It rides in the query
+      // string, so it's rounded to 3 decimals (~110m) — ample for a bias, and less precise in logs.
       addressAutocomplete: (q: string, at?: { lat: number; lng: number }) =>
         request<Array<{ id: string; label: string; lat: number | null; lng: number | null }>>(
-          `/venues/address-autocomplete?q=${encodeURIComponent(q)}${at ? `&lat=${at.lat}&lng=${at.lng}` : ''}`
+          `/venues/address-autocomplete?q=${encodeURIComponent(q)}${at ? `&lat=${Math.round(at.lat * 1e3) / 1e3}&lng=${Math.round(at.lng * 1e3) / 1e3}` : ''}`
         ),
       scores: async (id: number, mine = false) =>
         request<any>(mine ? `/venues/${id}/scores?mine=true` : `/venues/${id}/scores`, undefined, await tok()),
