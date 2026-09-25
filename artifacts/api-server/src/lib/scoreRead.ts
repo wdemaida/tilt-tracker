@@ -34,6 +34,10 @@ export interface DisplayRead {
    * up with the whole-photo read. Its positions were kept, the contested digits marked lowConfidence.
    */
   alignmentWarning?: boolean;
+  /** Positions the crop pass couldn't settle: "?" in the template, both readings offered. */
+  conflicts?: ScoreConflict[];
+  /** Index among the image's displays in the model's own order, before player sorting. */
+  position?: number;
   // Pass-1 details the crop pass needs; never sent to the client (mergeReads builds fresh objects).
   displayKind?: string;
   /** The digit-window strip, as fractions of the image (0–1). */
@@ -369,22 +373,25 @@ export function mergeReads(reads: DisplayRead[]): MergedRead {
   for (let index = 0; index < length; index++) {
     const fromRight = length - 1 - index;
     const contributions: Array<{ digit: string; low: boolean }> = [];
+    const offered = new Set<string>(); // candidates a crop-pass conflict left at this position
     for (const r of usable) {
       const i = r.template.length - 1 - fromRight;
       if (i < 0) continue;
       const c = r.template[i];
       if (c >= '0' && c <= '9') contributions.push({ digit: c, low: r.lowConfidence.includes(i) });
+      for (const cf of r.conflicts ?? []) if (cf.index === i) cf.candidates.forEach(d => offered.add(d));
     }
 
     const distinct = [...new Set(contributions.map(c => c.digit))].sort();
     if (distinct.length === 0) {
       chars.push('?');
+      if (offered.size) conflicts.push({ index, candidates: [...offered].sort() });
     } else if (distinct.length === 1) {
       chars.push(distinct[0]);
       if (contributions.every(c => c.low)) lowConfidence.push(index);
     } else {
       chars.push('?');
-      conflicts.push({ index, candidates: distinct });
+      conflicts.push({ index, candidates: [...new Set([...distinct, ...offered])].sort() });
     }
   }
 
@@ -567,59 +574,105 @@ export function windowsToText(windows: unknown): string | null {
 /** The known digits of a template, in order ("8807?0" → "88070"). */
 const knownSequence = (t: string) => t.replace(/\?/g, '');
 
+/** Template indexes of the known digits, in order ("8807?0" → [0,1,2,3,5]). */
+const digitIndexes = (t: string) => [...t].flatMap((c, i) => (c === '?' ? [] : [i]));
+
 /**
  * Folds a crop-pass window read into a whole-photo (pass 1) read. Returns pass 1 unchanged when the
  * crop read can't be trusted:
+ *  - pass 1 is a complete non-segment read (DMD/LCD) — nothing for a window re-read to fix;
  *  - its list isn't a clean window transcription, has no digit at all, or knows two or more fewer
  *    digits than pass 1 (the crop missed the display);
  *  - it counts more than MAX_DISPLAY_WINDOWS windows, more than one window off pass 1's own count, or
  *    disagrees with its own stated windowCount — the signature of dark glass or bezel beyond the last
- *    window being counted as windows, which turns "7205???" into "7205??????".
- * Otherwise the crop read's positions win (that's what it's for: placing dark windows), built through
- * the same comma rule as pass 1. The two *agree* when no position holds different digits after
- * right-alignment, or when their known digits are the same sequence (the crop only moved a dark
- * window — "88070?" → "8807?0"). When they disagree, the crop read is still used but the display is
- * flagged `alignmentWarning` and its contested digits are marked lowConfidence.
+ *    window being counted as windows, which turns "7205???" into "7205??????";
+ *  - most of the digits both reads have disagree (right-aligned) — the crop is of a different
+ *    display, or hallucinated: "123450" vs a neighbour's "987600", or "8807?" vs "880700".
+ * Otherwise, comparing the two reads' known digits as sequences:
+ *  - same sequence → the crop only moved dark windows ("88070?" → "8807?0"): its positions win.
+ *  - the crop has exactly one extra digit, the rest in order ("8807?" → "8807?0") → its positions
+ *    win; the extra digit is marked lowConfidence and the display flagged `alignmentWarning`.
+ *  - the crop has exactly one digit fewer, the rest in order (it judged one partly lit) → its
+ *    positions win, flagged `alignmentWarning`.
+ *  - anything else → the crop's positions, but every position where the two disagree (right-aligned)
+ *    becomes "?" with a conflict offering both digits — the picker the UI already shows for photos
+ *    that disagree. Also `alignmentWarning`. Never a silent replacement of a digit pass 1 read.
+ * The comma rule and leading-dark logic apply to the crop exactly as to pass 1.
  */
 export function reconcileWindowRead(pass1: DisplayRead, crop: WindowRead): DisplayRead {
+  if (pass1.displayKind !== 'segment' && !pass1.template.includes('?')) return pass1;
   const text = windowsToText(crop.windows);
   if (text == null) return pass1;
   const count = text.replace(/,/g, '').length;
   if (count === 0 || count > MAX_DISPLAY_WINDOWS) return pass1;
   if (pass1.digitWindows != null && Math.abs(count - pass1.digitWindows) > 1) return pass1;
   if (Number.isInteger(crop.windowCount) && crop.windowCount !== count) return pass1;
-  const template = templateFromDisplayText(text);
+  let template = templateFromDisplayText(text);
   if (!/[0-9]/.test(template)) return pass1;
   // A crop that sees clearly reads at least what the whole photo did; one that lost two or more
   // digits was cut from the wrong place (a box off by a display-height catches only the edge of the
   // digits). One fewer is allowed — deciding a pass-1 digit was only partly lit is the crop's job.
   if (knownDigitCount(template) < knownDigitCount(pass1.template) - 1) return pass1;
 
-  const disagree: number[] = [];
-  const agreeLow: number[] = [];
+  // Right-aligned comparison of the positions where both reads have a digit.
+  const disagree: Array<{ i: number; a: string; b: string }> = [];
+  let agreeCount = 0;
   for (let k = 1; k <= Math.min(template.length, pass1.template.length); k++) {
     const i = template.length - k, j = pass1.template.length - k;
     const a = template[i], b = pass1.template[j];
     if (a === '?' || b === '?') continue;
-    if (a !== b) disagree.push(i);
-    else if (pass1.lowConfidence.includes(j)) agreeLow.push(i);
+    if (a !== b) disagree.push({ i, a, b }); else agreeCount++;
   }
-  const agrees = disagree.length === 0 || knownSequence(template) === knownSequence(pass1.template);
-  const lowConfidence = agrees
-    ? (disagree.length === 0 ? agreeLow : [])
-    : [...disagree, ...agreeLow];
 
+  const seqCrop = knownSequence(template), seqPass1 = knownSequence(pass1.template);
+  const cropIdx = digitIndexes(template), pass1Idx = digitIndexes(pass1.template);
+  let lowConfidence: number[] = [];
+  const conflicts: ScoreConflict[] = [];
+  let alignmentWarning = false;
+
+  if (seqCrop === seqPass1) {
+    // Relocation only: carry pass 1's unsure digits across by their order among the known digits.
+    lowConfidence = pass1Idx.flatMap((j, n) => (pass1.lowConfidence.includes(j) ? [cropIdx[n]] : []));
+  } else if (seqCrop.length === seqPass1.length + 1 && extraDigit(seqPass1, seqCrop) != null) {
+    lowConfidence = [cropIdx[extraDigit(seqPass1, seqCrop)!]];
+    alignmentWarning = true;
+  } else if (seqPass1.length === seqCrop.length + 1 && extraDigit(seqCrop, seqPass1) != null) {
+    // The crop saw one pass-1 digit as only partly lit ("?"): its positions win, flagged.
+    alignmentWarning = true;
+  } else {
+    if (disagree.length > agreeCount) return pass1;
+    for (const { i, a, b } of disagree) {
+      template = template.slice(0, i) + '?' + template.slice(i + 1);
+      conflicts.push({ index: i, candidates: [a, b].sort() });
+    }
+    conflicts.sort((x, y) => x.index - y.index);
+    alignmentWarning = true;
+    if (!/[0-9]/.test(template)) return pass1;
+  }
+
+  const truncated = pass1.possiblyTruncated && template.length <= pass1.template.length;
   return {
     ...pass1,
     template,
     lowConfidence: sanitizeLowConfidence(template, lowConfidence),
     status: templateStatus(template),
     // Pass 1's "may have more digits" is answered once the crop counted more positions than it read.
-    possiblyTruncated: pass1.possiblyTruncated && template.length <= pass1.template.length,
-    truncationReason: pass1.possiblyTruncated && template.length <= pass1.template.length ? pass1.truncationReason : null,
+    possiblyTruncated: truncated,
+    truncationReason: truncated ? pass1.truncationReason : null,
     leadingPositionAmbiguous: pass1.displayKind === 'segment' && displayLeadsWithDark(text) && template.includes('?'),
-    alignmentWarning: !agrees,
+    alignmentWarning,
+    conflicts,
   };
+}
+
+/**
+ * When `longer` is `shorter` with exactly one digit inserted, the index (in `longer`) of that digit —
+ * the first place they diverge. null when `longer` isn't one insertion away.
+ */
+function extraDigit(shorter: string, longer: string): number | null {
+  let n = 0;
+  while (n < shorter.length && shorter[n] === longer[n]) n++;
+  return shorter.slice(n) === longer.slice(n + 1) ? n : null;
 }
 
 // ---------------------------------------------------------------------------

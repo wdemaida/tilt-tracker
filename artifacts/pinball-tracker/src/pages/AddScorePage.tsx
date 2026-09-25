@@ -364,7 +364,7 @@ export default function AddScorePage() {
     setScoreDisagreements([]);
     if (carry && read?.template) {
       const { template, disagreements } = reconcileUserDigits(carry.prevRead, carry.prevValue, read.template);
-      if (hasUnknown(template) || disagreements.length > 0 || template !== read.template) {
+      if (hasUnknown(template) || disagreements.length > 0 || template !== read.template || read.alignmentWarning) {
         applyScoreTemplate(template);
         setScoreDisagreements(disagreements);
       } else {
@@ -373,8 +373,10 @@ export default function AddScorePage() {
       }
       return;
     }
-    if (read && hasUnknown(read.template)) {
-      // Partial read — the display was caught mid-refresh. Step 3 shows digit cells with x's.
+    // Partial read — the display was caught mid-refresh — or one the server's close-up re-read
+    // disputed: digit cells, so x's and the amber unsure digits are visible. A disputed read is
+    // never prefilled into the plain number field, even when every digit is there.
+    if (read && (hasUnknown(read.template) || read.alignmentWarning)) {
       applyScoreTemplate(read.template);
       return;
     }
