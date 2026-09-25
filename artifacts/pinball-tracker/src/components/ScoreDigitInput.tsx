@@ -1,5 +1,7 @@
 import { useRef, useState } from 'react';
-import { commaBefore, formatTemplate, setAt, trailingZerosSuggestion, unknownCount, type ScoreConflict } from '../lib/scoreTemplate';
+import {
+  commaBefore, formatTemplate, setAt, trailingZerosSuggestion, unknownCount, type ScoreConflict, type ScoreDisagreement,
+} from '../lib/scoreTemplate';
 
 interface Props {
   /** Current template: digits plus `?` for positions still to fill. */
@@ -10,6 +12,12 @@ interface Props {
   lowConfidence: number[];
   /** Positions where multiple photos disagreed — offered as a small picker. */
   conflicts: ScoreConflict[];
+  /**
+   * Cells where the user's own digit was kept over a later photo's different reading (see
+   * reconcileUserDigits). Amber, with a one-tap way to take the photo's digit or keep theirs.
+   */
+  disagreements?: ScoreDisagreement[];
+  onDismissDisagreement?: (index: number) => void;
   onChange: (next: string) => void;
   /** "Edit as plain number" escape hatch. */
   onPlainMode: () => void;
@@ -26,7 +34,9 @@ const SENTINEL = ' ';
  * it so the next digit overwrites that cell instead. Backspace clears the selected cell back to x,
  * or — with nothing selected — un-fills the most recently filled x.
  */
-export function ScoreDigitInput({ value, original, lowConfidence, conflicts, onChange, onPlainMode }: Props) {
+export function ScoreDigitInput({
+  value, original, lowConfidence, conflicts, disagreements = [], onDismissDisagreement, onChange, onPlainMode,
+}: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [selected, setSelected] = useState<number | null>(null);
   const [focused, setFocused] = useState(false);
@@ -35,6 +45,7 @@ export function ScoreDigitInput({ value, original, lowConfidence, conflicts, onC
   const nextUnknown = value.indexOf('?');
   const zeros = trailingZerosSuggestion(value);
   const openConflicts = conflicts.filter(c => value[c.index] === '?');
+  const openDisagreements = disagreements.filter(d => /[0-9]/.test(value[d.index] ?? '') && value[d.index] !== d.readDigit);
 
   function focus(cell: number | null) {
     setSelected(cell);
@@ -88,7 +99,8 @@ export function ScoreDigitInput({ value, original, lowConfidence, conflicts, onC
         {[...value].map((ch, i) => {
           const unknown = ch === '?';
           const filledByUser = original[i] === '?' && !unknown;
-          const low = !unknown && lowConfidence.includes(i) && !filledByUser;
+          const disputed = !unknown && openDisagreements.some(d => d.index === i);
+          const low = !unknown && (disputed || (lowConfidence.includes(i) && !filledByUser));
           const isSelected = selected === i;
           const isNext = focused && selected == null && i === nextUnknown;
           const cls = unknown
@@ -103,7 +115,7 @@ export function ScoreDigitInput({ value, original, lowConfidence, conflicts, onC
               {commaBefore(value, i) && <span className="text-muted-foreground text-lg font-bold px-0.5 select-none">,</span>}
               <button
                 type="button"
-                aria-label={unknown ? `Digit ${i + 1}: unread` : `Digit ${i + 1}: ${ch}${low ? ' (unsure)' : ''}`}
+                aria-label={unknown ? `Digit ${i + 1}: unread` : `Digit ${i + 1}: ${ch}${disputed ? ' (differs from photo)' : low ? ' (unsure)' : ''}`}
                 onClick={e => { e.stopPropagation(); focus(isSelected ? null : i); }}
                 className={`w-7 h-10 rounded-md border text-lg font-bold font-mono flex items-center justify-center transition-colors ${cls} ${isSelected || isNext ? 'ring-2 ring-primary' : ''}`}
               >
@@ -142,6 +154,28 @@ export function ScoreDigitInput({ value, original, lowConfidence, conflicts, onC
             </span>
           ))}
           <span className="text-muted-foreground">?</span>
+        </div>
+      ))}
+
+      {openDisagreements.map(d => (
+        <div key={`d${d.index}`} className="flex items-center gap-2 text-xs text-amber-400 flex-wrap">
+          <span>Digit {d.index + 1}: you entered {value[d.index]}, the new photo reads {d.readDigit}.</span>
+          <button
+            type="button"
+            onClick={() => { onChange(setAt(value, d.index, d.readDigit)); onDismissDisagreement?.(d.index); }}
+            className="px-2 h-6 rounded-md border border-amber-500/50 bg-amber-500/10 font-bold text-amber-300 hover:bg-amber-500/20"
+          >
+            Use {d.readDigit}
+          </button>
+          {onDismissDisagreement && (
+            <button
+              type="button"
+              onClick={() => onDismissDisagreement(d.index)}
+              className="px-2 h-6 rounded-md border border-white/10 text-muted-foreground hover:text-white"
+            >
+              Keep {value[d.index]}
+            </button>
+          )}
         </div>
       ))}
 

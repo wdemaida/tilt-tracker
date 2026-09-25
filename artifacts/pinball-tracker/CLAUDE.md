@@ -92,6 +92,12 @@
   downscale) — it replaced `heicClientConvert.ts`. The file input takes up to 3 photos, and step 3's
   "Add another photo" re-uploads the **whole set** so the server can merge the reads; it deliberately
   doesn't overwrite a machine or venue the user already picked.
+- **Adding a photo never throws away digits the user typed.** `reconcileUserDigits()` carries every
+  user entry (a filled x, or a corrected digit) onto the new read, right-aligned like the server merge.
+  Where the new read has a *different* digit the user's wins, and the cell turns amber with
+  "Use 7 / Keep 2" buttons (`disagreements` prop on `ScoreDigitInput`). Plain-number mode counts every
+  digit as the user's. It reads the score state from `latestScoreRef`, not the closure — the upload
+  result lands after an await and the user may have kept typing.
 - **Video input** (`src/lib/videoFrames.ts`): a video counts as one of the 3 items and is never
   uploaded. ~15 frames are sampled (seek + `seeked`, plus `requestVideoFrameCallback` where it
   exists), scored by Laplacian variance on a small grayscale copy, and the sharpest frame from each

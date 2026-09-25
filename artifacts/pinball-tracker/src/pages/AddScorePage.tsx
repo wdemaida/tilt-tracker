@@ -13,7 +13,8 @@ import { prepareUploadImage, type PreparedImage } from '../lib/prepareUploadImag
 import { extractVideoFrames, isVideoFile, VideoFrameError, VIDEO_UNSUPPORTED_MESSAGE } from '../lib/videoFrames';
 import { ScoreDigitInput } from '../components/ScoreDigitInput';
 import {
-  type ScoreRead, checkPlausibility, formatTemplate, hasUnknown, templateToScore, unknownCount,
+  type ScoreRead, type ScoreDisagreement, checkPlausibility, formatTemplate, hasUnknown, reconcileUserDigits, templateToScore,
+  unknownCount,
 } from '../lib/scoreTemplate';
 
 const schema = z.object({
@@ -91,6 +92,11 @@ export default function AddScorePage() {
   // user fills in; null means plain-number entry (a complete read, no photo, or the escape hatch).
   const [scoreRead, setScoreRead] = useState<ScoreRead | null>(null);
   const [scoreTemplate, setScoreTemplate] = useState<string | null>(null);
+  // Cells where the user's digit was kept over a later photo's different reading.
+  const [scoreDisagreements, setScoreDisagreements] = useState<ScoreDisagreement[]>([]);
+  // The score state as of the latest render — an upload's result lands after an await, and the user
+  // may have kept typing while it ran, so reconciliation must not read a stale closure.
+  const latestScoreRef = useRef<{ read: ScoreRead | null; template: string | null; display: string }>({ read: null, template: null, display: '' });
   // Object URLs for the larger photo preview shown while filling in x's. Revoked on replace/unmount.
   const [photoPreviews, setPhotoPreviews] = useState<string[]>([]);
   const photoPreviewsRef = useRef<string[]>([]);
@@ -276,6 +282,7 @@ export default function AddScorePage() {
   });
 
   const venueName = watch('venueName');
+  latestScoreRef.current = { read: scoreRead, template: scoreTemplate, display: scoreDisplay };
 
   function replacePhotoPreviews(urls: string[]) {
     photoPreviewsRef.current.forEach(u => URL.revokeObjectURL(u));
@@ -290,6 +297,15 @@ export default function AddScorePage() {
     const n = templateToScore(t);
     setValue('score', n ?? ('' as any), { shouldValidate: false });
     setValue('scoreUnfilled', unknownCount(t));
+    setScoreDisplay(n ? n.toLocaleString() : '');
+  }
+
+  /** Plain-number mode holding a known-complete template (used after reconciliation). */
+  function enterPlainScoreModeWith(t: string) {
+    const n = templateToScore(t);
+    setScoreTemplate(null);
+    setValue('scoreUnfilled', 0);
+    setValue('score', n ?? ('' as any));
     setScoreDisplay(n ? n.toLocaleString() : '');
   }
 
@@ -479,7 +495,24 @@ export default function AddScorePage() {
     }
     const read: ScoreRead | null = result.scoreRead ?? null;
     setScoreRead(read);
-    if (read && hasUnknown(read.template)) {
+    setScoreDisagreements([]);
+
+    // Adding a photo re-reads the whole set; digits the user already entered must survive that.
+    const prev = latestScoreRef.current;
+    const prevDigits = prev.display.replace(/[^0-9]/g, '');
+    const [prevRead, prevValue] = prev.template != null
+      ? [prev.read?.template ?? prev.template, prev.template]
+      : [ '?'.repeat(prevDigits.length), prevDigits ]; // plain-number mode: every digit is the user's
+    if (adding && read?.template && prevValue) {
+      const { template, disagreements } = reconcileUserDigits(prevRead, prevValue, read.template);
+      if (hasUnknown(template) || disagreements.length > 0 || template !== read.template) {
+        applyScoreTemplate(template);
+        setScoreDisagreements(disagreements);
+      } else {
+        // A complete new read that confirms what the user had — nothing left to fill or check.
+        enterPlainScoreModeWith(template);
+      }
+    } else if (read && hasUnknown(read.template)) {
       // Partial read — the display was caught mid-refresh. Step 3 shows digit cells with x's.
       applyScoreTemplate(read.template);
     } else if (result.score) {
@@ -1073,6 +1106,8 @@ export default function AddScorePage() {
                 original={scoreRead?.template ?? scoreTemplate}
                 lowConfidence={scoreRead?.lowConfidence ?? []}
                 conflicts={scoreRead?.conflicts ?? []}
+                disagreements={scoreDisagreements}
+                onDismissDisagreement={i => setScoreDisagreements(ds => ds.filter(d => d.index !== i))}
                 onChange={applyScoreTemplate}
                 onPlainMode={enterPlainScoreMode}
               />
