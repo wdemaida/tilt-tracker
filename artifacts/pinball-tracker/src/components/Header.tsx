@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'wouter';
-import { Trophy, Map, BarChart2, PlusCircle, Building2, ShieldCheck, Menu, X } from 'lucide-react';
+import { Trophy, Map, BarChart2, PlusCircle, Building2, ShieldCheck, Menu, X, Users } from 'lucide-react';
 import { PinballIcon } from './PinballIcon';
 import { SignedIn, SignedOut, UserButton, useAuth } from '@clerk/clerk-react';
 import { useQuery } from '@tanstack/react-query';
@@ -41,8 +41,14 @@ export default function Header() {
 
   const isAdmin = appUser?.role === 'admin';
 
-  const allNavItems = [
+  // Pods are private to their owner, so the entry only exists for signed-in users.
+  const mainNavItems = [
     ...navItems,
+    ...(isSignedIn ? [{ href: '/pods', label: 'Pods', Icon: Users }] : []),
+  ];
+
+  const allNavItems = [
+    ...mainNavItems,
     ...(isAdmin ? [{ href: '/admin', label: 'Admin', Icon: ShieldCheck }] : []),
   ];
 
@@ -60,7 +66,7 @@ export default function Header() {
           </Link>
 
           <nav className="hidden md:flex items-center space-x-8">
-            {navItems.map(({ href, label, Icon }) => (
+            {mainNavItems.map(({ href, label, Icon }) => (
               <Link
                 key={href}
                 href={href}

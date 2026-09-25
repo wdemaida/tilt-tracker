@@ -13,6 +13,7 @@ import MapPage from './pages/MapPage';
 import VenuesPage from './pages/VenuesPage';
 import VenuePage from './pages/VenuePage';
 import StatsPage from './pages/StatsPage';
+import PodsPage from './pages/PodsPage';
 import AddScorePage from './pages/AddScorePage';
 import SetupPage from './pages/SetupPage';
 import UserPage from './pages/UserPage';
@@ -104,6 +105,9 @@ export default function App() {
         <Route path="/map" component={MapPage} />
         <Route path="/stats">
           <AuthGate><StatsPage /></AuthGate>
+        </Route>
+        <Route path="/pods">
+          <AuthGate><PodsPage /></AuthGate>
         </Route>
         <Route path="/add">
           <AuthGate><AddScorePage /></AuthGate>

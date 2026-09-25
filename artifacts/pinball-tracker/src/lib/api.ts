@@ -25,6 +25,25 @@ export interface VenueInventory {
   former: Array<{ id: number; name: string; manufacturer: string | null; year: number | null; addedAt: string; removedAt: string }>;
 }
 
+/** A user as the pod member picker / member list shows them — public profile fields only. */
+export interface PodUser {
+  id: number;
+  username: string;
+  displayName: string;
+}
+
+/** One of the caller's pods, as `/api/pods` returns it. Only ever the caller's own. */
+export interface Pod {
+  id: number;
+  name: string;
+  /** `#rrggbb`, lowercase — render through podColorVars / PodChip, never raw. */
+  color: string;
+  createdAt: string;
+  updatedAt: string;
+  memberCount: number;
+  members: Array<PodUser & { addedAt: string }>;
+}
+
 export function createApi(getToken: () => Promise<string | null>) {
   const tok = () => getToken();
 
@@ -72,6 +91,24 @@ export function createApi(getToken: () => Promise<string | null>) {
       setup: async (body: { username: string; displayName: string }) =>
         request('/users/setup', { method: 'POST', body: JSON.stringify(body) }, await tok()),
       get: async (username: string) => request<any>(`/users/${username}`, undefined, await tok()),
+    },
+    // Pods — the caller's own private groupings. Signed-in only; every call is scoped to pods the
+    // caller owns, and a pod they don't own is a 404. Always use through useApi() — the static `api`
+    // export has no token and every pods call would 401.
+    pods: {
+      list: async () => request<Pod[]>('/pods', undefined, await tok()),
+      create: async (body: { name: string; color?: string }) =>
+        request<Pod>('/pods', { method: 'POST', body: JSON.stringify(body) }, await tok()),
+      update: async (id: number, body: { name?: string; color?: string }) =>
+        request<Pod>(`/pods/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, await tok()),
+      delete: async (id: number) =>
+        request<void>(`/pods/${id}`, { method: 'DELETE' }, await tok()),
+      addMember: async (id: number, userId: number) =>
+        request<Pod>(`/pods/${id}/members`, { method: 'POST', body: JSON.stringify({ userId }) }, await tok()),
+      removeMember: async (id: number, userId: number) =>
+        request<Pod>(`/pods/${id}/members/${userId}`, { method: 'DELETE' }, await tok()),
+      searchUsers: async (q: string) =>
+        request<PodUser[]>(`/pods/user-search?q=${encodeURIComponent(q)}`, undefined, await tok()),
     },
     stats: {
       get: async (mine = true) => request<any>(`/stats?mine=${mine}`, undefined, await tok()),
