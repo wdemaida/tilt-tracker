@@ -27,6 +27,8 @@ const ROLLING_WINDOW = 5;
 type ChartMode = 'play' | 'visit' | 'scatter';
 /** Scatter only: each group's rolling-average line (with its turning points), or every score as a dot. */
 type ScatterView = 'trend' | 'scores';
+/** Scatter only: y axis scale. Log keeps low scores readable next to others' much higher ones. */
+type ScatterScale = 'linear' | 'log';
 type VisitAgg  = 'best' | 'average';
 type ViewMode  = 'aggregate' | 'chaos';
 type SortKey   = 'playedAt' | 'username' | 'type' | 'score';
@@ -42,6 +44,31 @@ function formatScore(v: number) {
   if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
   if (v >= 1_000)     return `${Math.round(v / 1_000)}K`;
   return String(v);
+}
+
+/**
+ * Log-scale y axis for Scatter: a domain from a 1-2-5 value at/below the lowest value (with a
+ * little padding so its dot isn't cut in half) to one above the highest (with headroom), and ticks
+ * on the 1-2-5 sequence inside it — thinned to 1-3 or powers of ten when the range spans too many
+ * decades to label every step. `values` must all be > 0.
+ */
+function logAxis(values: number[]): { domain: [number, number]; ticks: number[] } {
+  const lo = Math.min(...values) / 1.2, hi = Math.max(...values) * 1.15;
+  const steps = (mantissas: number[]) => {
+    const out: number[] = [];
+    for (let e = Math.floor(Math.log10(lo)) - 1; e <= Math.ceil(Math.log10(hi)) + 1; e++) {
+      for (const m of mantissas) out.push(m * 10 ** e);
+    }
+    return out;
+  };
+  const all = steps([1, 2, 5]);
+  const floor = Math.max(1, [...all].reverse().find(v => v <= lo) ?? 1);
+  const top = all.find(v => v >= hi) ?? hi;
+  const inRange = (vs: number[]) => vs.filter(v => v >= floor && v <= top);
+  let ticks = inRange(all);
+  if (ticks.length > 7) ticks = inRange(steps([1, 3]));
+  if (ticks.length > 7) ticks = inRange(steps([1]));
+  return { domain: [floor, top], ticks };
 }
 
 function statsMedian(arr: number[]): number | null {
@@ -382,6 +409,7 @@ export default function MachinePage() {
   const [visitAgg,  setVisitAgg]  = useState<VisitAgg>('best');
   const [viewMode,  setViewMode]  = useState<ViewMode>('aggregate');
   const [scatterView, setScatterView] = useState<ScatterView>('trend');
+  const [scatterScale, setScatterScale] = useState<ScatterScale>('linear');
   const [selectedVenueIds, setSelectedVenueIds] = useState<number[]>([]);
 
   const authApi = useApi();
@@ -493,16 +521,27 @@ export default function MachinePage() {
   // Scatter axes. Recharts' 'auto' domains put the earliest/latest play and the top score exactly
   // on the plot edge, so those dots were cut in half. Pad the time axis a little on both sides and
   // leave headroom above the highest thing drawn (rolling averages in Trend, scores in Scores).
+  // Log scale can't place values <= 0, so in log mode those points (a 0 score, or a rolling average
+  // of all zeros) are dropped from what's drawn and counted for a note. Averages are still computed
+  // on the raw scores — only the axis changes.
   const scatterAxes = useMemo(() => {
     if (!scatterResult) return null;
     const dots = [...scatterResult.myDots, ...scatterResult.podDots, ...scatterResult.fieldDots];
     if (!dots.length) return null;
+    const log = scatterScale === 'log';
+    const keep = <T extends { y: number }>(pts: T[]) => log ? pts.filter(p => p.y > 0) : pts;
+    const plot = {
+      myDots: keep(scatterResult.myDots), podDots: keep(scatterResult.podDots), fieldDots: keep(scatterResult.fieldDots),
+      myTrend: keep(scatterResult.myTrend), podTrend: keep(scatterResult.podTrend), fieldTrend: keep(scatterResult.fieldTrend),
+    };
     const xs = dots.map(d => d.x);
     const xMin = Math.min(...xs), xMax = Math.max(...xs);
     const xPad = Math.max((xMax - xMin) * 0.03, 12 * 3600 * 1000);
-    const ys = scatterView === 'trend'
+    const allYs = scatterView === 'trend'
       ? [...scatterResult.myTrend, ...scatterResult.podTrend, ...scatterResult.fieldTrend].map(p => p.y)
       : dots.map(d => d.y);
+    const ys = allYs.filter(y => !log || y > 0);
+    const excluded = allYs.length - ys.length;
     // Round, evenly spaced y ticks (0, 30M, 60M…) with the top one above the highest value.
     const yRaw = Math.max(...ys, 1) * 1.05;
     const mag = 10 ** Math.floor(Math.log10(yRaw / 4));
@@ -520,11 +559,15 @@ export default function MachinePage() {
       xTicks.push(d.getTime());
       if (monthly) d.setMonth(d.getMonth() + 1); else d.setDate(d.getDate() + 7);
     }
+    const yLog = log && ys.length ? logAxis(ys) : null;
     return {
       x: [x0, x1] as [number, number], xTicks, xFormat: monthly ? 'MMM' : 'MMM d',
-      yTicks, yMax: yTicks[yTicks.length - 1],
+      yScale: yLog ? 'log' as const : 'linear' as const,
+      yDomain: yLog ? yLog.domain : [0, yTicks[yTicks.length - 1]] as [number, number],
+      yTicks: yLog ? yLog.ticks : yTicks,
+      plot, excluded,
     };
-  }, [scatterResult, scatterView]);
+  }, [scatterResult, scatterView, scatterScale]);
 
   // ── guards ──────────────────────────────────────────────────────────────────
 
@@ -776,7 +819,8 @@ export default function MachinePage() {
 
           {/* Scatter sub-toggle: rolling-average lines, or every individual score. */}
           {chartMode === 'scatter' && (
-            <div className="flex items-center gap-2 mb-3">
+            <div className="flex items-center gap-x-4 gap-y-2 flex-wrap mb-3">
+            <div className="flex items-center gap-2">
               <span className="text-xs text-muted-foreground">Show:</span>
               <div role="group" aria-label="Scatter shows"
                 className="flex items-center bg-white/5 rounded-lg p-0.5 border border-white/10 text-xs font-bold uppercase tracking-wider">
@@ -793,6 +837,25 @@ export default function MachinePage() {
                   </button>
                 ))}
               </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">Scale:</span>
+              <div role="group" aria-label="Scatter y axis scale"
+                className="flex items-center bg-white/5 rounded-lg p-0.5 border border-white/10 text-xs font-bold uppercase tracking-wider">
+                {(['linear', 'log'] as ScatterScale[]).map(v => (
+                  <button
+                    key={v}
+                    type="button"
+                    aria-pressed={scatterScale === v}
+                    title={v === 'linear' ? 'Evenly spaced score axis' : 'Logarithmic score axis: low and high scores both stay readable'}
+                    onClick={() => setScatterScale(v)}
+                    className={`px-3 py-1 rounded-md transition-colors ${scatterScale === v ? 'bg-white/15 text-white' : 'text-muted-foreground hover:text-white'}`}
+                  >
+                    {v === 'linear' ? 'Linear' : 'Log'}
+                  </button>
+                ))}
+              </div>
+            </div>
             </div>
           )}
 
@@ -906,27 +969,28 @@ export default function MachinePage() {
                   ticks={scatterAxes.xTicks} interval="preserveStartEnd"
                   tick={AXIS_STYLE} tickLine={false} axisLine={false}
                   tickFormatter={v => format(new Date(v), scatterAxes.xFormat)} />
-                <YAxis dataKey="y" type="number" domain={[0, scatterAxes.yMax]} ticks={scatterAxes.yTicks}
+                <YAxis dataKey="y" type="number" scale={scatterAxes.yScale} domain={scatterAxes.yDomain} ticks={scatterAxes.yTicks}
+                  allowDataOverflow={scatterAxes.yScale === 'log'}
                   tick={AXIS_STYLE} tickLine={false} axisLine={false} tickFormatter={formatScore} width={48} />
                 <Tooltip content={<ScatterTooltip podName={podName} podText={podTokens?.text} othersLabel={othersLabel} />} cursor={false} />
                 {scatterView === 'scores' ? (
                   <>
                     {/* Drawn back to front, you on top. Full opacity for everyone: nobody is dimmed. */}
-                    {scatterResult.fieldDots.length > 0 && (
-                      <Scatter data={scatterResult.fieldDots} name="field" fill={FIELD_COLOR} isAnimationActive={false} />
+                    {scatterAxes.plot.fieldDots.length > 0 && (
+                      <Scatter data={scatterAxes.plot.fieldDots} name="field" fill={FIELD_COLOR} isAnimationActive={false} />
                     )}
-                    {podTokens && scatterResult.podDots.length > 0 && (
-                      <Scatter data={scatterResult.podDots} name="pod" fill={podTokens.graphic} isAnimationActive={false} />
+                    {podTokens && scatterAxes.plot.podDots.length > 0 && (
+                      <Scatter data={scatterAxes.plot.podDots} name="pod" fill={podTokens.graphic} isAnimationActive={false} />
                     )}
-                    {scatterResult.myDots.length > 0 && (
-                      <Scatter data={scatterResult.myDots} name="me" fill="hsl(var(--username))" isAnimationActive={false} />
+                    {scatterAxes.plot.myDots.length > 0 && (
+                      <Scatter data={scatterAxes.plot.myDots} name="me" fill="hsl(var(--username))" isAnimationActive={false} />
                     )}
                   </>
                 ) : (
                   ([
-                    ['field', scatterResult.fieldTrend, FIELD_COLOR],
-                    ['pod', podTokens ? scatterResult.podTrend : [], podTokens?.graphic ?? FIELD_COLOR],
-                    ['me', scatterResult.myTrend, 'hsl(var(--username))'],
+                    ['field', scatterAxes.plot.fieldTrend, FIELD_COLOR],
+                    ['pod', podTokens ? scatterAxes.plot.podTrend : [], podTokens?.graphic ?? FIELD_COLOR],
+                    ['me', scatterAxes.plot.myTrend, 'hsl(var(--username))'],
                   ] as [string, TrendPoint[], string][]).filter(([, pts]) => pts.length > 0).map(([owner, pts, color]) => (
                     <Scatter key={owner} data={pts} name={owner} fill={color}
                       line={{ stroke: color, strokeWidth: owner === 'me' ? 2 : 1.5, strokeDasharray: owner === 'me' ? undefined : '5 3' }}
@@ -950,6 +1014,13 @@ export default function MachinePage() {
           <p className="text-xs text-muted-foreground text-center mt-2 leading-relaxed">
             {chartDescription()}
           </p>
+          {chartMode === 'scatter' && scatterAxes?.yScale === 'log' && scatterAxes.excluded > 0 && (
+            <p className="text-xs text-muted-foreground text-center mt-1">
+              {scatterView === 'scores'
+                ? `${scatterAxes.excluded} score${scatterAxes.excluded !== 1 ? 's' : ''} of 0 not shown: a log scale can't plot zero.`
+                : `${scatterAxes.excluded} average point${scatterAxes.excluded !== 1 ? 's' : ''} of 0 not shown: a log scale can't plot zero.`}
+            </p>
+          )}
         </div>
       )}
 
