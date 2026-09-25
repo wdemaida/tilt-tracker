@@ -12,6 +12,8 @@ import statsRouter from './routes/stats.js';
 import venuesRouter from './routes/venues.js';
 import pinballmapRouter from './routes/pinballmap.js';
 import adminRouter from './routes/admin.js';
+import podsRouter from './routes/pods.js';
+import { requireAppUser } from './middleware/requireAuth.js';
 import { captureStatSnapshot } from './lib/statSnapshot.js';
 
 const app = express();
@@ -58,6 +60,7 @@ app.use('/api/stats', statsRouter);
 app.use('/api/venues', venuesRouter);
 app.use('/api/pinballmap', pinballmapRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/pods', requireAppUser, podsRouter);
 
 // Backup in-process trigger for the same snapshot — fires if the dyno happens to already be warm
 // at 1am America/New_York. The GitHub Actions workflow calling /api/cron/stat-snapshot above is the

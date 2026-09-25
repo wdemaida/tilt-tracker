@@ -1,4 +1,5 @@
-import { pgTable, serial, text, bigint, timestamp, real, integer, pgEnum, uniqueIndex, date, boolean, jsonb } from 'drizzle-orm/pg-core';
+import { pgTable, serial, text, bigint, timestamp, real, integer, pgEnum, uniqueIndex, index, primaryKey, date, boolean, jsonb, varchar } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 export const scoreTypeEnum = pgEnum('score_type', ['casual', 'tournament']);
 export const userRoleEnum = pgEnum('user_role', ['admin', 'user']);
@@ -153,6 +154,38 @@ export const statHistory = pgTable('stat_history', {
 }, (table) => ({
   statDateUnique: uniqueIndex('stat_history_stat_id_period_date_idx').on(table.statId, table.periodDate),
 }));
+
+// Pods — a private grouping of other users, owned by one user, used to compare scores against
+// "just these people". Fully private: only the owner ever sees a pod, its name or its members, and
+// members are never told (see src/routes/pods.ts on the api-server). Names are unique per owner,
+// case-insensitive (expression index on lower(name)); different owners may reuse a name. `color` is
+// the owner's chosen `#rrggbb`, lowercase — validated server-side by normalizePodColor().
+// A future `visibility` column (default 'private') would slot in here; nothing reads one today.
+export const pods = pgTable('pods', {
+  id: serial('id').primaryKey(),
+  ownerId: integer('owner_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  name: text('name').notNull(),
+  color: varchar('color', { length: 7 }).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  ownerIdx: index('pods_owner_id_idx').on(table.ownerId),
+  ownerNameUnique: uniqueIndex('pods_owner_lower_name_idx').on(table.ownerId, sql`lower(${table.name})`),
+}));
+
+// One row per (pod, member). The composite primary key is the unique(pod_id, user_id) constraint.
+export const podMembers = pgTable('pod_members', {
+  podId: integer('pod_id').references(() => pods.id, { onDelete: 'cascade' }).notNull(),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  addedAt: timestamp('added_at').defaultNow().notNull(),
+}, (table) => ({
+  pk: primaryKey({ name: 'pod_members_pkey', columns: [table.podId, table.userId] }),
+  userIdx: index('pod_members_user_id_idx').on(table.userId),
+}));
+
+export type Pod = typeof pods.$inferSelect;
+export type NewPod = typeof pods.$inferInsert;
+export type PodMember = typeof podMembers.$inferSelect;
 
 export type Stat = typeof stats.$inferSelect;
 export type NewStat = typeof stats.$inferInsert;
