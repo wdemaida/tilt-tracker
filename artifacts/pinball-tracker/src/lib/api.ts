@@ -159,10 +159,13 @@ export function createApi(getToken: () => Promise<string | null>) {
     // in the JSON `meta` field, index-aligned with `photos` (see prepareUploadImage.ts) — HEIC
     // conversion and the client-side downscale both strip EXIF, so that data can't be recovered
     // server-side from the uploaded files. When absent the server tries its own extraction.
-    upload: async (images: Array<{ file: Blob; filename?: string; latitude?: number | null; longitude?: number | null; exifDatetime?: string | null }>) => {
+    upload: async (images: Array<{ file: Blob; filename?: string; latitude?: number | null; longitude?: number | null; exifDatetime?: string | null; heicFailed?: boolean }>) => {
       const token = await tok();
       const form = new FormData();
-      images.forEach((img, i) => form.append('photos', img.file, img.filename ?? `photo-${i + 1}.jpg`));
+      // A lone HEIC the browser couldn't convert is the camera original — too big for the set path's
+      // per-image limit, so it goes up the legacy single-`photo` way to the server's own HEIC decode.
+      const legacy = images.length === 1 && !!images[0].heicFailed;
+      images.forEach((img, i) => form.append(legacy ? 'photo' : 'photos', img.file, img.filename ?? `photo-${i + 1}.jpg`));
       form.append('meta', JSON.stringify(images.map(img => ({
         latitude: img.latitude ?? null,
         longitude: img.longitude ?? null,
@@ -171,7 +174,7 @@ export function createApi(getToken: () => Promise<string | null>) {
 
       const headers: Record<string, string> = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;
-      const res = await fetch(`${BASE}/upload`, { method: 'POST', body: form, headers });
+      const res = await fetch(`${BASE}/upload${legacy ? '' : '?set=1'}`, { method: 'POST', body: form, headers });
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: res.statusText }));
         throw Object.assign(new Error(err.error ?? 'Upload failed'), { status: res.status });

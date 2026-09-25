@@ -15,7 +15,6 @@ import { findNearestPmLocations, type PmLocation } from '../lib/pinballmapApi.js
 import { redactVenue } from '../lib/venuePrivacy.js';
 
 const router = Router();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 async function extractGps(buffer: Buffer): Promise<{ latitude: number; longitude: number } | null> {
   try {
@@ -123,17 +122,49 @@ const MAX_IMAGES = 9;
 const SAME_GAME_MAX_MINUTES = 10;
 const SAME_GAME_MAX_METERS = 200;
 
-// `photos` (1–9, the current client) or the legacy single `photo`. multer's own errors (too many
-// files, one over 20MB) would otherwise fall through to Express's default HTML 500.
-const acceptPhotos = upload.fields([{ name: 'photos', maxCount: MAX_IMAGES }, { name: 'photo', maxCount: 1 }]);
-function receivePhotos(req: Request, res: Response, next: NextFunction) {
-  acceptPhotos(req, res, err => {
+// Two upload shapes, two multer instances, because memoryStorage holds every byte in RAM:
+//  - `?set=1` + `photos` (current client): 1–9 images the browser already downscaled to ~2000px
+//    (~1MB each), so 8MB per file is generous and 9 of them can't approach the old 9 × 20MB.
+//  - legacy single `photo`, no query flag: 20MB, because it's also the path for a HEIC the browser
+//    couldn't convert, which arrives as the camera original.
+// Both also check Content-Length up front — a hard cap on the request body (Node won't read past the
+// declared length), so a request can't queue up more than its budget in memory. A body without one
+// (chunked) is refused; browsers always send it for FormData.
+const MB = 1024 * 1024;
+const SET_FILE_BYTES = 8 * MB;
+const SET_TOTAL_BYTES = 40 * MB;
+const LEGACY_FILE_BYTES = 20 * MB;
+const LEGACY_TOTAL_BYTES = 21 * MB;
+const DRAIN_CEILING_BYTES = 200 * MB;
+
+const setUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: SET_FILE_BYTES, files: MAX_IMAGES } })
+  .array('photos', MAX_IMAGES);
+const legacyUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: LEGACY_FILE_BYTES, files: 1 } })
+  .single('photo');
+
+export function receivePhotos(req: Request, res: Response, next: NextFunction) {
+  const isSet = req.query.set === '1';
+  const cap = isSet ? SET_TOTAL_BYTES : LEGACY_TOTAL_BYTES;
+  const declared = Number(req.headers['content-length']);
+  if (!Number.isFinite(declared) || declared <= 0) {
+    return res.status(411).json({ error: 'Upload needs a Content-Length', code: 'upload_rejected' });
+  }
+  if (declared > cap) {
+    // Drain (read and discard — nothing is buffered) before answering: replying mid-upload makes the
+    // browser see a reset connection instead of this message. Past the drain ceiling, just hang up.
+    if (declared > DRAIN_CEILING_BYTES) return req.destroy();
+    res.set('Connection', 'close');
+    req.resume();
+    req.once('end', () => res.status(413).json({ error: `Upload too large (max ${cap / MB}MB)`, code: 'upload_too_large' }));
+    return;
+  }
+  (isSet ? setUpload : legacyUpload)(req, res, err => {
     if (!err) return next();
     if (err instanceof multer.MulterError) {
       const message = err.code === 'LIMIT_FILE_SIZE'
-        ? 'Each photo must be under 20MB'
+        ? `Each ${isSet ? 'image' : 'photo'} must be under ${(isSet ? SET_FILE_BYTES : LEGACY_FILE_BYTES) / MB}MB`
         : err.code === 'LIMIT_UNEXPECTED_FILE' || err.code === 'LIMIT_FILE_COUNT'
-          ? `Up to ${MAX_IMAGES} images at a time`
+          ? (isSet ? `Up to ${MAX_IMAGES} images at a time` : 'Send one photo as "photo", or several as "photos" with ?set=1')
           : 'Upload rejected';
       return res.status(400).json({ error: message, code: 'upload_rejected' });
     }
@@ -212,8 +243,9 @@ function differentGamesWarning(meta: PhotoMeta[]): string | null {
 }
 
 router.post('/', requireAuth, receivePhotos, async (req, res) => {
-  const fileMap = (req.files ?? {}) as Record<string, Express.Multer.File[]>;
-  const files = fileMap.photos?.length ? fileMap.photos : (fileMap.photo ?? []);
+  const files: Express.Multer.File[] = Array.isArray(req.files) && req.files.length
+    ? req.files
+    : req.file ? [req.file] : [];
   if (files.length === 0) return res.status(400).json({ error: 'No file uploaded' });
   const multi = files.length > 1;
 
