@@ -57,7 +57,7 @@ function normalizeNaiveDatetime(value: string | null): string | null {
 async function extractExifDatetime(buffer: Buffer): Promise<string | null> {
   try {
     // `pick` is exifr's documented tag filter — `{ DateTimeOriginal: true }` happened to work but
-    // isn't in its Options type, and this matches the client-side path in heicClientConvert.ts.
+    // isn't in its Options type, and this matches the client-side path in prepareUploadImage.ts.
     const tags = await Exifr.parse(buffer, { pick: ['DateTimeOriginal'] });
     const dt = tags?.DateTimeOriginal;
     return dt instanceof Date && !Number.isNaN(dt.getTime()) ? toNaiveLocal(dt) : null;
@@ -124,13 +124,13 @@ router.post('/', requireAuth, upload.single('photo'), async (req, res) => {
     let buffer = originalBuffer;
     let mimeType = req.file.mimetype;
 
-    // The frontend extracts GPS/EXIF from HEIC photos client-side before converting them, since
-    // conversion strips EXIF and doing the conversion client-side avoids the memory-heavy server-side
-    // HEIC decode for the common case (see imageCompress.ts). Falls back to server-side extraction
-    // when absent — non-HEIC uploads, or the client's conversion attempt failed.
+    // The frontend extracts GPS/EXIF client-side before converting/downscaling every photo, since
+    // both strip EXIF and doing the conversion client-side avoids the memory-heavy server-side HEIC
+    // decode (see prepareUploadImage.ts). Falls back to server-side extraction when absent — an older
+    // client, or a photo whose EXIF the browser couldn't read.
     const clientLat = req.body.latitude != null ? Number(req.body.latitude) : null;
     const clientLng = req.body.longitude != null ? Number(req.body.longitude) : null;
-    // The client sends the same zone-less shape `toNaiveLocal` produces (heicClientConvert.ts), but
+    // The client sends the same zone-less shape `toNaiveLocal` produces (prepareUploadImage.ts), but
     // normalize anyway so a stale client can't reintroduce a `Z` the frontend would misread.
     const clientExifDatetime = normalizeNaiveDatetime(
       typeof req.body.exifDatetime === 'string' ? req.body.exifDatetime : null

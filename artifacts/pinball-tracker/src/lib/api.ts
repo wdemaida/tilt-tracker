@@ -155,10 +155,9 @@ export function createApi(getToken: () => Promise<string | null>) {
         return res.json() as Promise<{ status: 'starting' | 'already-running' }>;
       },
     },
-    // `opts` carries client-extracted GPS/timestamp when the caller already converted a HEIC photo
-    // client-side (see heicClientConvert.ts) — HEIC->JPEG conversion strips EXIF, so that data can't
-    // be recovered server-side once converted. Omitted entirely for non-HEIC uploads, where the
-    // server extracts it from the buffer exactly as before.
+    // `opts` carries client-extracted GPS/timestamp (see prepareUploadImage.ts) — HEIC conversion and
+    // the client-side downscale both strip EXIF, so that data can't be recovered server-side from the
+    // uploaded file. When absent the server tries its own extraction from the buffer, as before.
     upload: async (file: File | Blob, opts?: { filename?: string; latitude?: number | null; longitude?: number | null; exifDatetime?: string | null }) => {
       const token = await tok();
       const form = new FormData();

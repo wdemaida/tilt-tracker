@@ -9,7 +9,7 @@ import { useApi } from '../lib/useApi';
 import { queryClient } from '../lib/queryClient';
 import { PinballIcon } from '../components/PinballIcon';
 import { toLocalInput, localInputToIso, naiveToLocalInput } from '../lib/datetime';
-import { isHeicFile, convertHeicClientSide } from '../lib/heicClientConvert';
+import { prepareUploadImage } from '../lib/prepareUploadImage';
 import { ScoreDigitInput } from '../components/ScoreDigitInput';
 import {
   type ScoreRead, checkPlausibility, formatTemplate, hasUnknown, templateToScore, unknownCount,
@@ -381,19 +381,20 @@ export default function AddScorePage() {
     setAiError('');
     thumbnailSucceeded.current = false;
 
-    // Convert HEIC client-side — see heicClientConvert.ts for why (moves the memory-heavy decode
-    // off the server). Falls back to uploading the original file untouched if conversion fails.
-    const converted = isHeicFile(file) ? await convertHeicClientSide(file) : null;
-    const uploadFile: File | Blob = converted?.file ?? file;
+    // EXIF, HEIC conversion and a ~2000px downscale all happen client-side — see
+    // prepareUploadImage.ts for why (keeps the memory-heavy decode off the server). A HEIC photo the
+    // browser couldn't convert goes up as-is and falls back to the server's own decode.
+    const prepared = await prepareUploadImage(file);
+    const uploadFile: File | Blob = prepared.file;
 
     generateThumbnail(uploadFile).then(t => { setThumbnail(t); thumbnailSucceeded.current = true; }).catch(() => {});
     replacePhotoPreviews([URL.createObjectURL(uploadFile)]);
     try {
       const result = await api.upload(uploadFile, {
-        filename: converted?.filename,
-        latitude: converted?.latitude,
-        longitude: converted?.longitude,
-        exifDatetime: converted?.exifDatetime,
+        filename: prepared.filename,
+        latitude: prepared.latitude,
+        longitude: prepared.longitude,
+        exifDatetime: prepared.exifDatetime,
       });
       if (result.machineName) {
         setValue('machineName', result.machineName);
