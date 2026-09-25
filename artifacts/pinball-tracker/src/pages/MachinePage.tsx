@@ -24,6 +24,7 @@ import { podColorTokens, podColorVars } from '../lib/podColor';
 const VENUE_COLORS  = ['#22d3ee', '#f97316', '#34d399', '#f472b6', '#60a5fa', '#e879f9'];
 const VISIT_GAP_MS  = 6 * 3600 * 1000; // 6-hour gap = new visit
 const ROLLING_WINDOW = 5;
+const NO_VENUES: number[] = []; // stable identity for useMemo deps
 
 type ChartMode = 'play' | 'visit' | 'scatter';
 type VisitAgg  = 'best' | 'average';
@@ -226,8 +227,8 @@ function buildScatterData(
     return { type: 'venue' as const, perVenue };
   }
 
-  // aggregate — mine (always) + the pod's (pod scope) + field. Field dots render in All scope only
-  // when "All Players" is on; in pod scope whenever the server sent them ("All others" is on).
+  // aggregate — every group the Compare scope put in the response: you, the pod (pod scope) and
+  // everyone else (All scope, or pod scope with "All others"). Nothing in the chart hides a group.
   const dotsFor = (grp: Group) => sorted.filter(s => groupOf(s, myUsername) === grp).map(s => ({
     x: new Date(s.playedAt).getTime(), y: Number(s.score),
     venue: s.venueName, venueTimezone: s.venueTimezone, playedAt: s.playedAt,
@@ -422,9 +423,15 @@ export default function MachinePage() {
 
   const podTokens = useMemo(() => (pod ? podColorTokens(pod.color) : null), [pod]);
   const podName = pod?.name ?? 'Pod';
-  const othersLabel = scope.kind === 'pod' ? 'Others' : 'Field';
-  // Mine has nobody to split out, so the individual-lines view collapses to the aggregate one.
-  const effectiveViewMode: ViewMode = scope.kind === 'mine' ? 'aggregate' : viewMode;
+  // Everyone outside you (and the pod): "Field" in All scope, "Everyone else" next to a pod.
+  const othersLabel = scope.kind === 'pod' ? 'Everyone else' : 'Field';
+  // Compare decides WHO is on the chart; the Median | Each Player switch only decides HOW the other
+  // players are drawn in By Play / By Visit. Mine has nobody to split out, and Scatter already plots
+  // every individual play, so both always use the aggregate view (the switch is hidden there).
+  const effectiveViewMode: ViewMode = scope.kind === 'mine' || chartMode === 'scatter' ? 'aggregate' : viewMode;
+  // The venue picker is only offered in the aggregate view; don't let a selection made there keep
+  // filtering invisibly after switching to Each Player. (It's kept, and reapplies on switching back.)
+  const activeVenueIds = effectiveViewMode === 'aggregate' ? selectedVenueIds : NO_VENUES;
   const scopeLabel =
     scope.kind === 'mine' ? 'Just you'
     : scope.kind === 'pod' ? `You + ${podName}${scope.others ? ' + everyone else' : ''}`
@@ -478,13 +485,13 @@ export default function MachinePage() {
   const lineResult = useMemo(() => {
     if (chartMode === 'scatter' || scores.length < 2) return null;
     const agg = chartMode === 'visit' ? visitAgg : 'play';
-    return buildLineData(scores, myUsername, selectedVenueIds, effectiveViewMode, agg);
-  }, [scores, chartMode, visitAgg, myUsername, selectedVenueIds, effectiveViewMode]);
+    return buildLineData(scores, myUsername, activeVenueIds, effectiveViewMode, agg);
+  }, [scores, chartMode, visitAgg, myUsername, activeVenueIds, effectiveViewMode]);
 
   const scatterResult = useMemo(() => {
     if (chartMode !== 'scatter' || scores.length < 2) return null;
-    return buildScatterData(scores, myUsername, selectedVenueIds);
-  }, [chartMode, scores, myUsername, selectedVenueIds]);
+    return buildScatterData(scores, myUsername, activeVenueIds);
+  }, [chartMode, scores, myUsername, activeVenueIds]);
 
   // ── guards ──────────────────────────────────────────────────────────────────
 
@@ -544,47 +551,46 @@ export default function MachinePage() {
     return g === 'self' ? 'hsl(var(--username))' : g === 'pod' ? (podTokens?.graphic ?? FIELD_COLOR) : FIELD_COLOR;
   }
   function chaosLineColor(u: string) { return groupColor(lineResult?.userGroup[u] ?? 'other'); }
-  // In All scope, field dots are the "All Players" toggle; in pod scope they're only present when
-  // "All others" asked the server for them; in Mine there are none.
-  const showFieldDots = scope.kind === 'all' ? effectiveViewMode === 'chaos' : true;
 
   // ── chart description ───────────────────────────────────────────────────────
 
   function chartDescription() {
-    const venueNote = selectedVenueIds.length > 0 ? ' (filtered by selected venue' + (selectedVenueIds.length > 1 ? 's' : '') + ')' : '';
+    const n = activeVenueIds.length;
     const aggNoun = visitAgg === 'best' ? 'best score' : 'average score';
+    const visitNote = 'Visits = groups of plays within 6 hours of each other';
+    // Picking venues switches to a per-venue comparison of your own plays — say so, since it
+    // drops everyone else from the chart whatever Compare is set to.
+    if (n > 0) {
+      const venues = n > 1 ? 'each selected venue' : 'the selected venue';
+      const others = scope.kind === 'mine' ? '' : ' Other players are hidden while comparing venues.';
+      if (chartMode === 'scatter') return `Your plays at ${venues} as dots on their actual dates, one color per venue.${others}`;
+      if (chartMode === 'visit') return `Your ${aggNoun} per visit at ${venues}, one line per venue. ${visitNote}.${others}`;
+      return `Your score on each play at ${venues}, one line per venue.${others}`;
+    }
     if (scope.kind === 'mine') {
-      if (chartMode === 'scatter') return `Every one of your plays as a dot on its actual date. The dashed line is a ${ROLLING_WINDOW}-play rolling average${venueNote}.`;
-      if (chartMode === 'visit') return `Your ${aggNoun} per venue visit. Visits = groups of plays within 6 hours of each other${venueNote}.`;
-      return `Your score on each play, in order. Plays from the same visit appear as consecutive points${venueNote}.`;
+      if (chartMode === 'scatter') return `Every one of your plays as a dot on its actual date. The dashed line is a ${ROLLING_WINDOW}-play rolling average.`;
+      if (chartMode === 'visit') return `Your ${aggNoun} per venue visit. ${visitNote}.`;
+      return `Your score on each play, in order. Plays from the same visit appear as consecutive points.`;
     }
-    if (scope.kind === 'pod') {
-      const others = scope.others ? ', everyone else in purple' : '';
-      if (chartMode === 'scatter') {
-        return `Every play as a dot on its actual date — yours in yellow, ${podName} in its color${others}. Dashed lines are each group's ${ROLLING_WINDOW}-play rolling average${venueNote}.`;
-      }
-      if (effectiveViewMode === 'chaos') {
-        return `${chartMode === 'visit' ? `${aggNoun.charAt(0).toUpperCase() + aggNoun.slice(1)} per visit` : 'Every play numbered chronologically'}, one line per player — yours in yellow, ${podName} in its color${others}${venueNote}.`;
-      }
-      const vs = `the ${podName} median${scope.others ? " and everyone else's median" : ''}`;
-      return chartMode === 'visit'
-        ? `Your ${aggNoun} per venue visit vs. ${vs}. Visits = groups of plays within 6 hours of each other${venueNote}.`
-        : `Your score on each play vs. ${vs}. Plays from the same visit appear as consecutive points${venueNote}.`;
-    }
+    // Who else Compare put on the chart, and in which color.
+    const who = scope.kind === 'pod'
+      ? `${podName} in its color${scope.others ? ', everyone else in purple' : ''}`
+      : 'everyone else in purple';
     if (chartMode === 'scatter') {
-      return viewMode === 'chaos'
-        ? `Every individual play as a dot on its actual date — yours in yellow, everyone else's in purple. Dashed lines are each group's ${ROLLING_WINDOW}-play rolling average${venueNote}.`
-        : `Every individual play as a dot on its actual date. Multiple dots on the same day are plays from the same visit. The dashed line is a ${ROLLING_WINDOW}-play rolling average${venueNote}.`;
+      return `Every play as a dot on its actual date — yours in yellow, ${who}. Dashed lines are each group's ${ROLLING_WINDOW}-play rolling average.`;
     }
-    if (chartMode === 'visit') {
-      const aggNote = visitAgg === 'best' ? 'best score' : 'average score';
-      return viewMode === 'chaos'
-        ? `${aggNote.charAt(0).toUpperCase() + aggNote.slice(1)} per venue visit (plays within 6 hours of each other = one visit)${venueNote}.`
-        : `Your ${aggNote} per venue visit vs. the field median. Visits = groups of plays within 6 hours of each other${venueNote}.`;
+    if (effectiveViewMode === 'chaos') {
+      const what = chartMode === 'visit'
+        ? `${aggNoun.charAt(0).toUpperCase() + aggNoun.slice(1)} per visit`
+        : 'Every play numbered chronologically';
+      return `${what}, one line per player — yours in yellow, ${who}.${chartMode === 'visit' ? ` ${visitNote}.` : ''}`;
     }
-    return viewMode === 'chaos'
-      ? `Every play numbered chronologically per player. Plays from the same visit are consecutive${venueNote}.`
-      : `Your score on each play vs. the field median. Plays from the same visit appear as consecutive points${venueNote}.`;
+    const vs = scope.kind === 'pod'
+      ? `the ${podName} median${scope.others ? " and everyone else's median" : ''}`
+      : 'the field median (everyone else)';
+    return chartMode === 'visit'
+      ? `Your ${aggNoun} per venue visit vs. ${vs}. ${visitNote}.`
+      : `Your score on each play vs. ${vs}. Plays from the same visit appear as consecutive points.`;
   }
 
   // ── render ──────────────────────────────────────────────────────────────────
@@ -689,18 +695,27 @@ export default function MachinePage() {
               ))}
             </div>
 
-            {/* Individual-lines toggle. All scope: "All Players" (unchanged). Pod scope: "Each Player"
-                — which players are in play is the scope picker's job there, so this only splits the
-                medians into one line per player; it has no effect on the scatter, so it's hidden
-                there. Mine: nobody to split, hidden. */}
-            {(scope.kind === 'all' || (scope.kind === 'pod' && chartMode !== 'scatter')) && (
-              <button
-                onClick={() => { setViewMode(v => v === 'chaos' ? 'aggregate' : 'chaos'); setSelectedVenueIds([]); }}
-                aria-pressed={viewMode === 'chaos'}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold uppercase tracking-wider transition-colors ${viewMode === 'chaos' ? 'border-fuchsia-500 text-fuchsia-400 bg-fuchsia-500/10' : 'border-white/20 text-muted-foreground hover:text-white hover:border-white/40'}`}
-              >
-                <Users className="w-3 h-3" /> {scope.kind === 'pod' ? 'Each Player' : 'All Players'}
-              </button>
+            {/* Median | Each Player — a display switch only. Compare (above) decides who is on the
+                chart; this decides whether the other players are drawn as one median line per group
+                or as one line per player. Same meaning in All and pod scope. Hidden in Mine (only
+                you) and in Scatter (every play is already its own dot there). */}
+            {scope.kind !== 'mine' && chartMode !== 'scatter' && (
+              <div role="group" aria-label="Draw other players as"
+                className="flex items-center bg-white/5 rounded-lg p-0.5 border border-white/10 text-xs font-bold uppercase tracking-wider">
+                {(['aggregate', 'chaos'] as ViewMode[]).map(m => (
+                  <button
+                    key={m}
+                    type="button"
+                    aria-pressed={viewMode === m}
+                    title={m === 'aggregate' ? 'One median line per group' : 'One line per player'}
+                    onClick={() => setViewMode(m)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors ${viewMode === m ? 'bg-white/15 text-white' : 'text-muted-foreground hover:text-white'}`}
+                  >
+                    {m === 'chaos' && <Users className="w-3 h-3" />}
+                    {m === 'aggregate' ? 'Median' : 'Each Player'}
+                  </button>
+                ))}
+              </div>
             )}
           </div>
 
@@ -725,8 +740,8 @@ export default function MachinePage() {
             </div>
           )}
 
-          {/* Aggregate mode legend */}
-          {effectiveViewMode === 'aggregate' && chartMode !== 'scatter' && lineResult?.type === 'aggregate' && (
+          {/* Legends — one entry per group actually drawn. */}
+          {lineResult?.type === 'aggregate' && (
             <div className="flex items-center gap-4 mb-3 text-xs flex-wrap">
               {myUsername && <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 rounded bg-username" /><span className="text-muted-foreground">You ({myUsername})</span></div>}
               {pod && podTokens && lineResult.hasPod && (
@@ -736,7 +751,7 @@ export default function MachinePage() {
                   <span className="text-muted-foreground">median</span>
                 </div>
               )}
-              {(scope.kind === 'all' || lineResult.hasField) && (
+              {lineResult.hasField && (
                 <div className="flex items-center gap-1.5">
                   <svg width="16" height="6"><line x1="0" y1="3" x2="16" y2="3" stroke="hsl(var(--field))" strokeWidth="1.5" strokeDasharray="4 3" /></svg>
                   <span className="text-muted-foreground">{othersLabel} median</span>
@@ -744,23 +759,30 @@ export default function MachinePage() {
               )}
             </div>
           )}
-          {/* Pod scope, one line per player: say which color is which */}
-          {scope.kind === 'pod' && pod && chartMode !== 'scatter' && lineResult?.type === 'chaos' && (
-            <div className="flex items-center gap-4 mb-3 text-xs flex-wrap">
-              {myUsername && <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 rounded bg-username" /><span className="text-muted-foreground">You</span></div>}
-              <div className="flex items-center gap-1.5" style={podColorVars(pod.color)}>
-                <div className="w-3 h-0.5 rounded bg-pod" /><span className="text-pod-text font-semibold truncate max-w-[10rem]">{pod.name}</span>
+          {lineResult?.type === 'chaos' && (() => {
+            const groups = new Set(Object.values(lineResult.userGroup));
+            return (
+              <div className="flex items-center gap-4 mb-3 text-xs flex-wrap">
+                {groups.has('self') && <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 rounded bg-username" /><span className="text-muted-foreground">You ({myUsername})</span></div>}
+                {pod && groups.has('pod') && (
+                  <div className="flex items-center gap-1.5" style={podColorVars(pod.color)}>
+                    <div className="w-3 h-0.5 rounded bg-pod" /><span className="text-pod-text font-semibold truncate max-w-[10rem]">{pod.name}</span>
+                    <span className="text-muted-foreground">(each player)</span>
+                  </div>
+                )}
+                {groups.has('other') && <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 rounded bg-field" /><span className="text-muted-foreground">{othersLabel} (each player)</span></div>}
               </div>
-              {scope.others && <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 rounded bg-field" /><span className="text-muted-foreground">Everyone else</span></div>}
-            </div>
-          )}
-          {chartMode === 'scatter' && scatterResult?.type === 'aggregate' && myUsername && (
+            );
+          })()}
+          {scatterResult?.type === 'aggregate' && (
             <div className="flex items-center gap-4 mb-3 text-xs flex-wrap">
-              <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-username" /><span className="text-muted-foreground">Your plays</span></div>
-              <div className="flex items-center gap-1.5">
-                <svg width="16" height="6"><line x1="0" y1="3" x2="16" y2="3" stroke="hsl(var(--username))" strokeWidth="1.5" strokeDasharray="4 3" /></svg>
-                <span className="text-muted-foreground">{ROLLING_WINDOW}-play rolling avg</span>
-              </div>
+              {scatterResult.myDots.length > 0 && (
+                <div className="flex items-center gap-1.5">
+                  <div className="w-2 h-2 rounded-full bg-username" />
+                  <svg width="16" height="6"><line x1="0" y1="3" x2="16" y2="3" stroke="hsl(var(--username))" strokeWidth="1.5" strokeDasharray="4 3" /></svg>
+                  <span className="text-muted-foreground">Your plays &amp; {ROLLING_WINDOW}-play avg</span>
+                </div>
+              )}
               {pod && podTokens && scatterResult.podDots.length > 0 && (
                 <div className="flex items-center gap-1.5" style={podColorVars(pod.color)}>
                   <div className="w-2 h-2 rounded-full bg-pod" />
@@ -769,14 +791,12 @@ export default function MachinePage() {
                   <span className="text-muted-foreground">plays &amp; avg</span>
                 </div>
               )}
-              {showFieldDots && (scope.kind === 'all' || scatterResult.fieldDots.length > 0) && (
-                <>
-                  <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-field opacity-40" /><span className="text-muted-foreground">Others' plays</span></div>
-                  <div className="flex items-center gap-1.5">
-                    <svg width="16" height="6"><line x1="0" y1="3" x2="16" y2="3" stroke="hsl(var(--field))" strokeWidth="1.5" strokeDasharray="4 3" /></svg>
-                    <span className="text-muted-foreground">Others' rolling avg</span>
-                  </div>
-                </>
+              {scatterResult.fieldDots.length > 0 && (
+                <div className="flex items-center gap-1.5">
+                  <div className="w-2 h-2 rounded-full bg-field opacity-40" />
+                  <svg width="16" height="6"><line x1="0" y1="3" x2="16" y2="3" stroke="hsl(var(--field))" strokeWidth="1.5" strokeDasharray="4 3" /></svg>
+                  <span className="text-muted-foreground">{othersLabel} plays &amp; avg</span>
+                </div>
               )}
             </div>
           )}
@@ -845,18 +865,18 @@ export default function MachinePage() {
                 data={
                   scatterResult.type === 'venue'
                     ? scatterResult.perVenue.flatMap(v => v.dots)
-                    : [...scatterResult.myDots, ...scatterResult.podDots, ...(showFieldDots ? scatterResult.fieldDots : [])]
+                    : [...scatterResult.myDots, ...scatterResult.podDots, ...scatterResult.fieldDots]
                 }>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
                 <XAxis dataKey="x" type="number" scale="time" domain={['auto', 'auto']}
                   tick={AXIS_STYLE} tickLine={false} axisLine={false}
                   tickFormatter={v => format(new Date(v), 'MMM d')} />
                 <YAxis dataKey="y" type="number" domain={['auto', 'auto']} tick={AXIS_STYLE} tickLine={false} axisLine={false} tickFormatter={formatScore} width={48} />
-                <Tooltip content={<ScatterTooltip podName={podName} podText={podTokens?.text} othersLabel="Others'" />} cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }} />
+                <Tooltip content={<ScatterTooltip podName={podName} podText={podTokens?.text} othersLabel={othersLabel} />} cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }} />
 
                 {scatterResult.type === 'aggregate' && (
                   <>
-                    {showFieldDots && scatterResult.fieldDots.length > 0 && (
+                    {scatterResult.fieldDots.length > 0 && (
                       <Scatter dataKey="y" data={scatterResult.fieldDots} name="Others" fill="hsl(var(--field))" fillOpacity={0.4} />
                     )}
                     {podTokens && scatterResult.podDots.length > 0 && (
@@ -868,7 +888,7 @@ export default function MachinePage() {
                     {scatterResult.trendLine.length >= 2 && (
                       <Line dataKey="trend" data={scatterResult.trendLine} stroke="hsl(var(--username))" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
                     )}
-                    {showFieldDots && scatterResult.fieldTrendLine.length >= 2 && (
+                    {scatterResult.fieldTrendLine.length >= 2 && (
                       <Line dataKey="trend" data={scatterResult.fieldTrendLine} stroke="hsl(var(--field))" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
                     )}
                     {podTokens && scatterResult.podTrendLine.length >= 2 && (
