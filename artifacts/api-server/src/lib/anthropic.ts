@@ -6,6 +6,16 @@ const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const MODEL = 'claude-sonnet-4-6';
 const TOOL_NAME = 'record_score_read';
 
+/** Output budget for the whole-photo read: ~800 tokens per image, within a non-streaming-safe cap. */
+export function readMaxTokens(imageCount: number): number {
+  return Math.min(16000, 1024 + 800 * Math.max(1, imageCount));
+}
+
+/** The model ran out of output tokens mid-read; the read is incomplete and must not be used. */
+export class ScoreReadTruncatedError extends Error {
+  constructor() { super('Score read was cut off (max_tokens)'); this.name = 'ScoreReadTruncatedError'; }
+}
+
 export interface ExtractionImage {
   base64: string;
   mimeType: string;
@@ -173,8 +183,9 @@ export async function extractScoreReads(images: ExtractionImage[], onRawInput?: 
   const started = Date.now();
   const message = await client.messages.create({
     model: MODEL,
-    // Four player displays per image, up to nine images.
-    max_tokens: 4096,
+    // Scaled by image count: a 4-player photo measured 510-614 output tokens, and an upload can
+    // carry nine images. A cut-off tool call is incomplete JSON, so it's checked below.
+    max_tokens: readMaxTokens(images.length),
     // A transcription task — the same photo should read the same way every time.
     temperature: 0,
     tools: [scoreReadTool],
@@ -182,6 +193,11 @@ export async function extractScoreReads(images: ExtractionImage[], onRawInput?: 
     messages: [{ role: 'user', content }],
   });
 
+  if (message.stop_reason === 'max_tokens') {
+    // A truncated read would silently drop displays (or whole images) off the end — fail instead.
+    console.error(`Score read hit max_tokens (${message.usage.output_tokens} output tokens, ${images.length} images)`);
+    throw new ScoreReadTruncatedError();
+  }
   const toolUse = message.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === TOOL_NAME);
   onRawInput?.(toolUse?.input);
   const input = (toolUse?.input ?? {}) as {
@@ -297,6 +313,10 @@ export async function readDisplayWindows(
     tool_choice: { type: 'tool', name: WINDOW_TOOL_NAME },
     messages: [{ role: 'user', content }],
   });
+  if (message.stop_reason === 'max_tokens') {
+    console.error(`Crop read hit max_tokens (${crops.length} crops)`);
+    throw new ScoreReadTruncatedError(); // the caller keeps the whole-photo read
+  }
   const toolUse = message.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === WINDOW_TOOL_NAME);
   onRawInput?.(toolUse?.input);
   const list = Array.isArray((toolUse?.input as any)?.displays) ? ((toolUse!.input as any).displays as any[]) : [];
