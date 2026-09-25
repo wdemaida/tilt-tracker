@@ -8,6 +8,9 @@ import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { getAuth } from '@clerk/express';
 import { visibleScoreSql } from '../lib/venueActivity.js';
 import { machineInInventory } from '../lib/venueInventory.js';
+import {
+  parseComparisonScope, resolveComparisonScope, scopeFilterSql, scoreGroupSql, scopeView, POD_NOT_FOUND,
+} from '../lib/comparisonScope.js';
 
 // Optional — the caller's app user + role, for score visibility. Undefined when signed out.
 async function resolveRequester(req: any): Promise<{ id: number; role: string } | undefined> {
@@ -93,13 +96,19 @@ router.get('/score-stats', async (req, res) => {
   }
 });
 
-// GET /api/machines/:name — detail with all scores
+// GET /api/machines/:name — detail with all scores. Comparison scope (lib/comparisonScope.ts):
+// ?mine=true → only the caller's; ?pod=<id>[&others=1] → the caller + that pod's members (+ everyone
+// else). Each row carries `group` ('self' | 'pod' | 'other') so the chart can split its series.
 router.get('/:name', async (req, res) => {
   const name = decodeURIComponent(req.params.name);
   try {
+    const requester = await resolveRequester(req);
+    // Scope before the machine lookup, so a bad pod id is the same 404 whichever machine it names.
+    const scope = await resolveComparisonScope(parseComparisonScope(req.query), requester);
+    if (!scope) return res.status(404).json(POD_NOT_FOUND);
+
     const [machine] = await db.select().from(machines).where(eq(machines.name, name)).limit(1);
     if (!machine) return res.status(404).json({ error: 'Machine not found' });
-    const requester = await resolveRequester(req);
 
     const scoreRows = await db
       .select({
@@ -114,16 +123,18 @@ router.get('/:name', async (req, res) => {
         photoUrl: scores.photoUrl,
         username: users.username,
         displayName: users.displayName,
+        group: scoreGroupSql(scope, requester),
       })
       .from(scores)
       .innerJoin(users, eq(scores.userId, users.id))
       .leftJoin(venues, eq(scores.venueId, venues.id))
       // Scores at a home venue whose owner turned "Show my machines/scores publicly" off are only
-      // listed for the owner, admins and whoever posted them.
-      .where(and(eq(scores.machineId, machine.id), visibleScoreSql(requester)))
+      // listed for the owner, admins and whoever posted them. The scope filter only narrows on top
+      // of that — pod membership never widens what the caller may see.
+      .where(and(eq(scores.machineId, machine.id), visibleScoreSql(requester), scopeFilterSql(scope)))
       .orderBy(desc(scores.score));
 
-    res.json({ machine, scores: scoreRows });
+    res.json({ machine, scores: scoreRows, scope: scopeView(scope) });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch machine' });
   }
