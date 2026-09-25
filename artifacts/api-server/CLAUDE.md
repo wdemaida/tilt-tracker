@@ -197,8 +197,11 @@
     unconfirmed digits unsure (that's the leading-vs-trailing dark ambiguity: "8807??" vs a crop's
     "__8807"). Relocating dark windows at equal length and lengthening are allowed.
     Otherwise it compares the two reads' known digits as sequences:
-    same sequence → the crop only moved a dark window, its positions win, no warning; one digit
-    added → crop positions, `alignmentWarning`, the added digit `lowConfidence`; one dropped →
+    same sequence → the crop only moved a dark window, its positions win (flagged only if that
+    lengthened it — the added positions are all x's); one digit added → kept as `lowConfidence`
+    only where pass 1 had an x in that spot, otherwise it becomes an x with the crop's digit as the
+    sole `conflicts` candidate — it would lengthen the score and shift every higher digit up a place
+    ("202" → "2052" is 10x), so Save stays blocked until the user confirms it; one dropped →
     crop positions only if the crop has an x exactly where it was, else pass 1 flagged with that
     digit unsure; anything else → if most shared (right-aligned) positions disagree it's a
     different display or a hallucination and **pass 1 stands** ("8807?" vs a crop's "880700",

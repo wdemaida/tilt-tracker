@@ -603,9 +603,12 @@ const digitIndexes = (t: string) => [...t].flatMap((c, i) => (c === '?' ? [] : [
  *  - most of the digits both reads have disagree (right-aligned) — the crop is of a different
  *    display, or hallucinated: "123450" vs a neighbour's "987600", or "8807?" vs "880700".
  * Otherwise, comparing the two reads' known digits as sequences:
- *  - same sequence → the crop only moved dark windows ("88070?" → "8807?0"): its positions win.
- *  - the crop has exactly one extra digit, the rest in order ("8807?" → "8807?0") → its positions
- *    win; the extra digit is marked lowConfidence and the display flagged `alignmentWarning`.
+ *  - same sequence → the crop only moved dark windows ("88070?" → "8807?0"): its positions win,
+ *    flagged only if that made the template longer (the added positions are all x's).
+ *  - the crop has exactly one extra digit, the rest in order → its positions win, flagged. The extra
+ *    digit is kept (lowConfidence) only where pass 1 had an x in that spot ("8807?" → "8807?0");
+ *    anywhere else it would lengthen the score and shift every higher digit, so it becomes an x
+ *    with the crop's digit offered as a conflict ("202" → "20x2", Save blocked until confirmed).
  *  - the crop has exactly one digit fewer, the rest in order → its positions win (flagged) only if
  *    it has an x exactly where the missing digit was — it judged that digit partly lit. Otherwise
  *    pass 1 stands, flagged, with that digit marked unsure.
@@ -663,8 +666,22 @@ export function reconcileWindowRead(pass1: DisplayRead, crop: WindowRead): Displ
   if (seqCrop === seqPass1) {
     // Relocation only: carry pass 1's unsure digits across by their order among the known digits.
     lowConfidence = pass1Idx.flatMap((j, n) => (pass1.lowConfidence.includes(j) ? [cropIdx[n]] : []));
+    // A longer crop read adds only x's here (never saveable as-is), but it still moves every digit
+    // up a place from what the whole photo showed ("6042" → "6042x"), so say so.
+    alignmentWarning = template.length > pass1.template.length;
   } else if (seqCrop.length === seqPass1.length + 1 && extraDigit(seqPass1, seqCrop) != null) {
-    lowConfidence = [cropIdx[extraDigit(seqPass1, seqCrop)!]];
+    // One digit the whole photo didn't have. Where pass 1 had an x at that spot (right-aligned), the
+    // crop has simply read it: keep it, unsure. Anywhere else it lengthens the score — every higher
+    // pass-1 digit moves up a place ("202" → "2052" is 10x) — so it goes in as an x with the crop's
+    // digit offered, and Save stays blocked until the user confirms the digit exists.
+    const ins = cropIdx[extraDigit(seqPass1, seqCrop)!];
+    const at = ins - (template.length - pass1.template.length);
+    if (at >= 0 && pass1.template[at] === '?') {
+      lowConfidence = [ins];
+    } else {
+      conflicts.push({ index: ins, candidates: [template[ins]] });
+      template = template.slice(0, ins) + '?' + template.slice(ins + 1);
+    }
     alignmentWarning = true;
   } else if (seqPass1.length === seqCrop.length + 1 && extraDigit(seqCrop, seqPass1) != null) {
     // One pass-1 digit is missing from the crop. Fine only if the crop has an x exactly where that
@@ -683,8 +700,8 @@ export function reconcileWindowRead(pass1: DisplayRead, crop: WindowRead): Displ
     }
     conflicts.sort((x, y) => x.index - y.index);
     alignmentWarning = true;
-    if (!/[0-9]/.test(template)) return pass1;
   }
+  if (!/[0-9]/.test(template)) return pass1;
 
   const truncated = pass1.possiblyTruncated && template.length <= pass1.template.length;
   return {
