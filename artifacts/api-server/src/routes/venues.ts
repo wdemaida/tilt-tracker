@@ -30,6 +30,9 @@ import { findDuplicateVenues } from '../lib/venueDedup.js';
 import {
   buildMergePreview, applyVenueMerge, MERGE_BLOCKER_MESSAGES, MergeRefusedError, MergeStaleError, MergeVenueGoneError,
 } from '../lib/venueMerge.js';
+import {
+  parseComparisonScope, resolveComparisonScope, scopeFilterSql, scoreGroupSql, scopeView, POD_NOT_FOUND,
+} from '../lib/comparisonScope.js';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { getAuth } from '@clerk/express';
 
@@ -374,10 +377,20 @@ router.get('/:id/machines', async (req, res) => {
   }
 });
 
-// GET /api/venues/:id/scores — all individual score entries at a venue; ?mine=true filters to caller
+// GET /api/venues/:id/scores — all individual score entries at a venue.
+// Comparison scope (lib/comparisonScope.ts): ?mine=true → only the caller's; ?pod=<id>[&others=1] →
+// the caller + that pod's members (+ everyone else). Each row carries `group` ('self'|'pod'|'other').
+// Scope narrows the score LIST only. The venue itself — address, map, machine count, and the
+// `totals` block (every score here the requester may see) — is a fact about the venue and is the
+// same in every scope.
 router.get('/:id/scores', async (req, res) => {
   const id = Number(req.params.id);
   try {
+    const requester = await resolveRequester(req);
+    // Scope before the venue lookup, so a bad pod id is the same 404 whichever venue it names.
+    const scope = await resolveComparisonScope(parseComparisonScope(req.query), requester);
+    if (!scope) return void res.status(404).json(POD_NOT_FOUND);
+
     const [venue] = await db.select({
       id: venues.id,
       name: venues.name,
@@ -401,8 +414,6 @@ router.get('/:id/scores', async (req, res) => {
     }).from(venues).where(eq(venues.id, id)).limit(1);
     if (!venue) return void res.status(404).json({ error: 'Venue not found' });
 
-    const requester = await resolveRequester(req);
-    const mineUserId = req.query.mine === 'true' ? requester?.id : undefined;
     const rows = await db
       .select({
         id: scores.id,
@@ -413,20 +424,42 @@ router.get('/:id/scores', async (req, res) => {
         machineName: machines.name,
         username: users.username,
         displayName: users.displayName,
+        group: scoreGroupSql(scope, requester),
       })
       .from(scores)
       .innerJoin(machines, eq(scores.machineId, machines.id))
       .innerJoin(users, eq(scores.userId, users.id))
       .where(and(
         eq(scores.venueId, id),
-        mineUserId !== undefined ? eq(scores.userId, mineUserId) : undefined,
-        // With the owner's switch off, everyone else sees only their own scores here.
+        // With the owner's switch off, everyone else sees only their own scores here. The scope
+        // filter only narrows on top of that — pod membership never widens what the caller may see.
         visibleScoreSql(requester),
+        scopeFilterSql(scope),
       ))
       .orderBy(desc(scores.playedAt));
 
-    const playedMachineCount = new Set(rows.map(r => r.machineId)).size;
-    res.json({ venue: venueDetailView({ ...venue, playedMachineCount }, requester), scores: rows });
+    // Venue-wide totals, independent of scope (same visibility rule, no scope filter). When the
+    // scope doesn't narrow, the listing already is the whole set.
+    let totals: { scores: number; machines: number };
+    if (scopeFilterSql(scope) === undefined) {
+      totals = { scores: rows.length, machines: new Set(rows.map(r => r.machineId)).size };
+    } else {
+      const [t] = await db
+        .select({
+          scores: sql<number>`count(*)`.mapWith(Number),
+          machines: sql<number>`count(DISTINCT ${scores.machineId})`.mapWith(Number),
+        })
+        .from(scores)
+        .where(and(eq(scores.venueId, id), visibleScoreSql(requester)));
+      totals = t;
+    }
+
+    res.json({
+      venue: venueDetailView({ ...venue, playedMachineCount: totals.machines }, requester),
+      scores: rows,
+      totals,
+      scope: scopeView(scope),
+    });
   } catch (err) {
     console.error('Venue scores error:', err);
     res.status(500).json({ error: 'Failed to fetch venue scores' });
