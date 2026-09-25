@@ -618,17 +618,6 @@ export default function MachinePage() {
         </div>
       </div>
 
-      {/* Comparison scope — applies to everything below */}
-      {cs.signedIn && (
-        <div className="flex flex-wrap items-center gap-2 mb-4">
-          <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Compare</span>
-          <ComparisonScopePicker state={cs} />
-        </div>
-      )}
-      {cs.unknownPod && (
-        <p className="text-xs text-muted-foreground mb-4">That pod isn't one of yours — showing all players.</p>
-      )}
-
       {/* Top Score */}
       {best && (
         <div className="rounded-xl border border-primary/30 bg-primary/10 p-5 flex items-center gap-4 mb-6">
@@ -647,6 +636,22 @@ export default function MachinePage() {
               {best.venueName && <> · <span className="text-venue">{best.venueName}</span></>}
             </p>
           </div>
+        </div>
+      )}
+
+      {/* Comparison scope — sits with the chart it drives (it also scopes the Top Score above).
+          The hairline + top padding separates it from the Top Score banner. */}
+      {(cs.signedIn || cs.unknownPod) && (
+        <div className="border-t border-white/10 pt-4 mb-3">
+          {cs.signedIn && (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Compare</span>
+              <ComparisonScopePicker state={cs} />
+            </div>
+          )}
+          {cs.unknownPod && (
+            <p className={`text-xs text-muted-foreground ${cs.signedIn ? 'mt-2' : ''}`}>That pod isn't one of yours — showing all players.</p>
+          )}
         </div>
       )}
 
