@@ -192,21 +192,29 @@
     `reconcileWindowRead()` distrusts it — keeping pass 1 — when it counts >10 windows, differs from
     pass 1's `digitWindows` by >1, disagrees with its own `windowCount`, has no digit, or knows 2+
     fewer digits than pass 1 (the crop missed). It never touches a complete non-segment read.
+    **Governing rule: a crop may never shorten the template, or take away a pass-1 digit without an
+    x in its place.** A crop read shorter than pass 1 never replaces it — pass 1 stands, flagged,
+    unconfirmed digits unsure (that's the leading-vs-trailing dark ambiguity: "8807??" vs a crop's
+    "__8807"). Relocating dark windows at equal length and lengthening are allowed.
     Otherwise it compares the two reads' known digits as sequences:
     same sequence → the crop only moved a dark window, its positions win, no warning; one digit
-    added or dropped, rest in order → crop positions, `alignmentWarning`, an added digit marked
-    `lowConfidence`; anything else → if most shared (right-aligned) positions disagree it's a
+    added → crop positions, `alignmentWarning`, the added digit `lowConfidence`; one dropped →
+    crop positions only if the crop has an x exactly where it was, else pass 1 flagged with that
+    digit unsure; anything else → if most shared (right-aligned) positions disagree it's a
     different display or a hallucination and **pass 1 stands** ("8807?" vs a crop's "880700",
     "123450" vs a neighbour's "987600"); else each contested position becomes `?` with a
     `conflicts` entry offering both digits (mergeReads carries these into the existing picker).
     **A crop never silently replaces a digit pass 1 read.** The wizard opens any flagged read in
     digit-cell mode, even when complete, and shows "Digits were hard to line up".
   - Any failure (bad box, sharp error, API error, timeout) keeps pass 1 for that photo; it never
-    fails the upload. Request limits: pass 1 60s with 1 retry, the crop pass 20s with none (both
-    were on the SDK default of 10 minutes × 2 retries). Pass 1's `max_tokens` is
-    `readMaxTokens(images)` = min(16000, 1024 + 800/image) — a 4-player photo is 510–614 output
-    tokens — and a `stop_reason` of `max_tokens` throws `ScoreReadTruncatedError` rather than
-    parsing a cut-off tool call. Cost on the test photos: ~2s / ~1.7k input tokens for one display, ~3.5s / ~3.8k input
+    fails the upload. Request limits (`readRequestOptions`): pass 1 gets 30s + 12s per image, capped
+    at 150s, with one retry only for ≤3 images; the crop pass 20s with none (both were on the SDK
+    default of 10 minutes × 2 retries). The browser calls Render directly (`VITE_API_URL`) — no
+    Vercel proxy hop — and Node's requestTimeout/headersTimeout bound only receiving the request.
+    Pass 1's `max_tokens` is `readMaxTokens(images)` = min(16000, 1024 + 800/image) — a 4-player
+    photo is 510–614 output tokens — and a `stop_reason` of `max_tokens` throws
+    `ScoreReadTruncatedError` rather than parsing a cut-off tool call; `/api/upload` then answers
+    normally with no reads and a `readNotice` (GPS, venues and thumbnail kept), never a 500. Cost on the test photos: ~2s / ~1.7k input tokens for one display, ~3.5s / ~3.8k input
     tokens for four (Sonnet 4.6: about $0.006 and $0.014).
   - Known limit: a display whose window dividers aren't visible (unlit windows are just dark glass)
     gets counted by its lit digits — Stars 1UP "8076" as 4 windows — and is rejected by the ±1
