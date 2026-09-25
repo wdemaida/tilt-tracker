@@ -54,6 +54,11 @@ export const venues = pgTable('venues', {
   // interpreted in, which is the only way to store the right instant when you upload after
   // travelling home. Never store a UTC offset here: an offset is wrong for half the year.
   timezone: text('timezone'),
+  // The Edit Venue dialog's "Show my machines/scores publicly" switch (migrate12.ts). Only takes
+  // effect on a private venue (residence or restricted tier — see venueActivity.ts): when false,
+  // nobody but the owner, admins and each score's own author sees the venue's machine inventory or
+  // the scores logged there. A public venue's scores are never hideable by whoever created its row.
+  showMachinesAndScores: boolean('show_machines_and_scores').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
@@ -83,6 +88,26 @@ export const venueMachineHistory = pgTable('venue_machine_history', {
 }, (table) => ({
   venueMachineUnique: uniqueIndex('venue_machine_history_venue_machine_idx').on(table.venueId, table.machineId),
 }));
+
+// Owner-managed machine inventory for private (home) venues, which can't use a Pinball Map roster
+// (a PM listing would publish where the venue is). One row per venue+machine: `removedAt` null means
+// it's there now; set means it left, and re-adding clears it and restarts `addedAt`. Kept apart
+// from venue_machine_history on purpose: that table is derived from Pinball Map, is re-diffed
+// against PM's roster (which would mark every owner-added machine removed), and is only served to
+// viewers who may see the PM linkage — this one is governed by showMachinesAndScores instead.
+export const venueInventory = pgTable('venue_inventory', {
+  id: serial('id').primaryKey(),
+  venueId: integer('venue_id').references(() => venues.id).notNull(),
+  machineId: integer('machine_id').references(() => machines.id).notNull(),
+  addedAt: timestamp('added_at').defaultNow().notNull(),
+  addedById: integer('added_by_id').references(() => users.id),
+  removedAt: timestamp('removed_at'),
+  removedById: integer('removed_by_id').references(() => users.id),
+}, (table) => ({
+  venueMachineUnique: uniqueIndex('venue_inventory_venue_machine_idx').on(table.venueId, table.machineId),
+}));
+
+export type VenueInventory = typeof venueInventory.$inferSelect;
 
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;

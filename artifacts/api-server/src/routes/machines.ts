@@ -1,17 +1,20 @@
 import { Router } from 'express';
 import { db, machines, scores, users, venues } from '@workspace/db';
-import { eq, desc, max, count, isNotNull, sql } from 'drizzle-orm';
+import { eq, desc, max, count, isNotNull, sql, and } from 'drizzle-orm';
 import { searchMachines } from '../lib/pinballMap.js';
 import { upsertMachineByName } from '../lib/machineUpsert.js';
 import { getMachineScoreStats } from '../lib/machineScoreStats.js';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { getAuth } from '@clerk/express';
+import { visibleScoreSql } from '../lib/venueActivity.js';
+import { machineInInventory } from '../lib/venueInventory.js';
 
-async function resolveMinedUserId(req: any): Promise<number | undefined> {
+// Optional — the caller's app user + role, for score visibility. Undefined when signed out.
+async function resolveRequester(req: any): Promise<{ id: number; role: string } | undefined> {
   const { userId: clerkId } = getAuth(req);
   if (!clerkId) return undefined;
-  const [user] = await db.select({ id: users.id }).from(users).where(eq(users.clerkId, clerkId)).limit(1);
-  return user?.id;
+  const [user] = await db.select({ id: users.id, role: users.role }).from(users).where(eq(users.clerkId, clerkId)).limit(1);
+  return user;
 }
 
 const router = Router();
@@ -19,7 +22,8 @@ const router = Router();
 // GET /api/machines — list with best score per machine; ?mine=true filters to caller
 router.get('/', async (req, res) => {
   try {
-    const userId = req.query.mine === 'true' ? await resolveMinedUserId(req) : undefined;
+    const requester = await resolveRequester(req);
+    const userId = req.query.mine === 'true' ? requester?.id : undefined;
     const rows = await db
       .select({
         id: machines.id,
@@ -33,7 +37,9 @@ router.get('/', async (req, res) => {
         lastPlayed: max(scores.playedAt),
       })
       .from(machines)
-      .leftJoin(scores, eq(scores.machineId, machines.id))
+      // Best score / play count / top scorer count only scores this requester may see — a home
+      // venue's owner can keep the scores there private (venueActivity.ts).
+      .leftJoin(scores, and(eq(scores.machineId, machines.id), visibleScoreSql(requester)))
       .where(userId !== undefined ? eq(scores.userId, userId) : undefined)
       .groupBy(machines.id, machines.name, machines.variant, machines.manufacturer, machines.year, machines.imageUrl)
       .orderBy(desc(max(scores.score)));
@@ -48,6 +54,7 @@ router.get('/', async (req, res) => {
         })
         .from(scores)
         .innerJoin(users, eq(scores.userId, users.id))
+        .where(visibleScoreSql(requester))
         .orderBy(scores.machineId, desc(scores.score), scores.playedAt);
       topScorerByMachineId = new Map(topScorers.map(t => [t.machineId, t.username]));
     }
@@ -92,6 +99,7 @@ router.get('/:name', async (req, res) => {
   try {
     const [machine] = await db.select().from(machines).where(eq(machines.name, name)).limit(1);
     if (!machine) return res.status(404).json({ error: 'Machine not found' });
+    const requester = await resolveRequester(req);
 
     const scoreRows = await db
       .select({
@@ -110,7 +118,9 @@ router.get('/:name', async (req, res) => {
       .from(scores)
       .innerJoin(users, eq(scores.userId, users.id))
       .leftJoin(venues, eq(scores.venueId, venues.id))
-      .where(eq(scores.machineId, machine.id))
+      // Scores at a home venue whose owner turned "Show my machines/scores publicly" off are only
+      // listed for the owner, admins and whoever posted them.
+      .where(and(eq(scores.machineId, machine.id), visibleScoreSql(requester)))
       .orderBy(desc(scores.score));
 
     res.json({ machine, scores: scoreRows });
@@ -159,6 +169,9 @@ router.delete('/:id', requireAppUser, requireAdmin, async (req, res) => {
   const [{ total }] = await db.select({ total: count() }).from(scores).where(eq(scores.machineId, id));
   if (total > 0) {
     return res.status(409).json({ error: `Cannot delete — ${total} score${total === 1 ? '' : 's'} reference this machine` });
+  }
+  if (await machineInInventory(id)) {
+    return res.status(409).json({ error: 'Cannot delete — a home venue lists this machine in its inventory' });
   }
 
   await db.delete(machines).where(eq(machines.id, id));

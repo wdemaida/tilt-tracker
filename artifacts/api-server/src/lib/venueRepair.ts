@@ -1,4 +1,4 @@
-import { db, scores, machines, venueMachineHistory } from '@workspace/db';
+import { db, scores, machines, venueMachineHistory, venueInventory } from '@workspace/db';
 import { and, eq, count, inArray } from 'drizzle-orm';
 import { upsertMachineByName } from './machineUpsert.js';
 import type { PmLocationMachineXref } from './pinballmapApi.js';
@@ -125,7 +125,13 @@ export async function retireMachineIfUnused(machineId: number): Promise<boolean>
     .from(venueMachineHistory)
     .where(eq(venueMachineHistory.machineId, machineId));
 
-  if (Number(remaining) === 0 && Number(histRefs) === 0) {
+  // A home venue's inventory references machines too, current or former.
+  const [{ invRefs }] = await db
+    .select({ invRefs: count() })
+    .from(venueInventory)
+    .where(eq(venueInventory.machineId, machineId));
+
+  if (Number(remaining) === 0 && Number(histRefs) === 0 && Number(invRefs) === 0) {
     await db.delete(machines).where(eq(machines.id, machineId));
     return true;
   }

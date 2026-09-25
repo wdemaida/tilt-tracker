@@ -10,7 +10,7 @@ import {
   geocodeAddress, autosuggestAddress, findVenueByName, resolveTimezone, lookupHerePlace, type Venue as HereVenue,
 } from '../lib/hereApi.js';
 import {
-  redactVenue, canSeeFullVenue, canSeeVenueLinkage, exactVenueNameKey, isPrivateTier, linkageClearedForPrivacy,
+  redactVenue, canSeeVenueLinkage, exactVenueNameKey, isPrivateTier, linkageClearedForPrivacy,
 } from '../lib/venuePrivacy.js';
 import { createRateLimiter } from '../lib/rateLimit.js';
 import { canRepairVenue, buildResyncPreview, applyResync, reenrichMachines } from '../lib/venueRepair.js';
@@ -20,16 +20,15 @@ import {
   linkageBlockedByPrivacy, isUniqueViolation, type AddressBlocker, type HolderView, type PrivacyFlags,
 } from '../lib/venueAddress.js';
 import { getVenueRoster } from '../lib/pmRosterCache.js';
+import { visibleScoreSql, canSeeVenueActivity, canManageInventory, usesOwnerInventory } from '../lib/venueActivity.js';
+import {
+  getInventory, resolveCatalogMachine, addToInventory, removeFromInventory, deleteVenueInventory,
+  inventoryCountSql, inventoryManagedSql,
+} from '../lib/venueInventory.js';
+import { venueListRow, venueDetailView } from '../lib/venueView.js';
 import { findDuplicateVenues } from '../lib/venueDedup.js';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { getAuth } from '@clerk/express';
-
-async function resolveMinedUserId(req: any): Promise<number | undefined> {
-  const { userId: clerkId } = getAuth(req);
-  if (!clerkId) return undefined;
-  const [user] = await db.select({ id: users.id }).from(users).where(eq(users.clerkId, clerkId)).limit(1);
-  return user?.id;
-}
 
 // Optional — resolves the caller's app user + role for privacy redaction, without requiring auth.
 async function resolveRequester(req: any): Promise<{ id: number; role: string } | undefined> {
@@ -51,7 +50,9 @@ const router = Router();
 // GET /api/venues — all venues with score/machine counts; ?mine=true filters to caller
 router.get('/', async (req, res) => {
   try {
-    const userId = req.query.mine === 'true' ? await resolveMinedUserId(req) : undefined;
+    const requester = await resolveRequester(req);
+    const isAdmin = requester?.role === 'admin';
+    const userId = req.query.mine === 'true' ? requester?.id : undefined;
     const rows = await db
       .select({
         id: venues.id,
@@ -71,31 +72,25 @@ router.get('/', async (req, res) => {
         cityLat: venues.cityLat,
         cityLng: venues.cityLng,
         timezone: venues.timezone,
+        showMachinesAndScores: venues.showMachinesAndScores,
+        // Counts only scores this requester may see (visibleScoreSql, in the join) — a home venue
+        // whose owner turned "Show my machines/scores publicly" off counts only your own there.
         scoreCount: count(scores.id),
-        machineCount: sql<number>`count(distinct ${scores.machineId})`,
+        playedMachineCount: sql<number>`count(distinct ${scores.machineId})`.mapWith(Number),
+        inventoryCount: inventoryCountSql.mapWith(Number),
+        inventoryManaged: inventoryManagedSql.mapWith(Boolean),
         // When anyone last *played* here, not when the score was uploaded — a batch of old photos
         // shouldn't make a venue look recently visited. ScoreVenuePicker sorts on this; the list
         // itself stays ordered by play count, which is what the Venues page wants.
         lastPlayedAt: max(scores.playedAt),
       })
       .from(venues)
-      .leftJoin(scores, eq(scores.venueId, venues.id))
+      .leftJoin(scores, and(eq(scores.venueId, venues.id), visibleScoreSql(requester)))
       .where(userId !== undefined ? eq(scores.userId, userId) : undefined)
       .groupBy(venues.id)
       .orderBy(desc(count(scores.id)));
 
-    const requester = await resolveRequester(req);
-    const isAdmin = requester?.role === 'admin';
-    // needsAddress is computed from the unredacted row, and is always false for a residence — a
-    // hidden-tier home legitimately shows no address and is not something to "fix".
-    // `canRepair` is decided here rather than by shipping createdById to every client: who added a
-    // venue is nobody else's business, and the client only ever needed the yes/no.
-    const redacted = rows.map(r => {
-      const { createdById: _createdById, ...pub } = toPublicVenue(redactVenue(r, requester?.id, isAdmin));
-      return { ...pub, ...venueListFlags(r, requester) };
-    });
-
-    res.json(redacted);
+    res.json(rows.map(r => venueListRow(r, requester)));
   } catch (err) {
     console.error('Venues list error:', err);
     res.status(500).json({ error: 'Failed to fetch venues' });
@@ -278,13 +273,16 @@ router.get('/:id/machines', async (req, res) => {
     // Resolve current user (optional — for per-user play counts and privacy redaction)
     let appUserId: number | undefined;
     let isAdmin = false;
+    let viewer: { id: number; role: string } | undefined;
     if (clerkId) {
       const [u] = await db.select({ id: users.id, role: users.role }).from(users).where(eq(users.clerkId, clerkId)).limit(1);
       appUserId = u?.id;
       isAdmin = u?.role === 'admin';
+      viewer = u;
     }
 
-    // Machines played at this venue by the current user (for play count badge)
+    // Machines played at this venue by the current user (for play count badge). Signed out, it's
+    // everyone's — minus scores the venue's owner keeps private (visibleScoreSql).
     const ownMachines = await db
       .select({
         id: machines.id,
@@ -298,18 +296,23 @@ router.get('/:id/machines', async (req, res) => {
       .innerJoin(machines, eq(scores.machineId, machines.id))
       .where(appUserId
         ? and(eq(scores.venueId, id), eq(scores.userId, appUserId))
-        : eq(scores.venueId, id))
+        : and(eq(scores.venueId, id), visibleScoreSql(undefined)))
       .groupBy(machines.id, machines.name, machines.manufacturer, machines.year)
       .orderBy(desc(sql<number>`max(${scores.score})`));
 
-    // All machine names played at this venue by anyone (for TT tag)
+    // All machine names played at this venue by anyone this viewer may see (for TT tag)
     const ttRows = await db
       .select({ name: machines.name })
       .from(scores)
       .innerJoin(machines, eq(scores.machineId, machines.id))
-      .where(eq(scores.venueId, id))
+      .where(and(eq(scores.venueId, id), visibleScoreSql(viewer)))
       .groupBy(machines.name);
     const ttMachineNames = ttRows.map(r => r.name);
+
+    // A private venue's roster is its owner-managed inventory. Withheld entirely from viewers the
+    // owner's "Show my machines/scores publicly" switch excludes.
+    const activityVisible = canSeeVenueActivity(venue, viewer);
+    const inventory = usesOwnerInventory(venue) && activityVisible ? await getInventory(id) : null;
 
     let pmMachines: Array<{ xrefId: number; id: number; name: string; manufacturer?: string; year?: number }> = [];
     let formerMachines: Awaited<ReturnType<typeof getFormerMachines>> = [];
@@ -352,10 +355,14 @@ router.get('/:id/machines', async (req, res) => {
       formerMachines = await getFormerMachines(id);
     }
 
-    const redactedVenue = toPublicVenue(redactVenue(venue, appUserId, isAdmin));
+    const { ownerId: _ownerId, createdById: _createdById, ...redactedVenue } = toPublicVenue(redactVenue(venue, appUserId, isAdmin));
     res.json({
       venue: redactedVenue, ownMachines, pmMachines, ttMachineNames, formerMachines, pmError,
       pmLocationUrl: venue.pinballMapId && linkageVisible ? pmLocationUrl(venue.pinballMapId) : null,
+      // Owner-managed inventory (private venues only); null when not applicable or not visible.
+      inventory,
+      activityHidden: !activityVisible,
+      canManageInventory: canManageInventory(venue, viewer),
     });
   } catch (err) {
     console.error('Venue machines error:', err);
@@ -380,11 +387,18 @@ router.get('/:id/scores', async (req, res) => {
       state: venues.state,
       cityLat: venues.cityLat,
       cityLng: venues.cityLng,
+      pinballMapId: venues.pinballMapId,
       pmMachineCount: venues.pmMachineCount,
+      createdById: venues.createdById,
+      timezone: venues.timezone,
+      showMachinesAndScores: venues.showMachinesAndScores,
+      inventoryCount: inventoryCountSql.mapWith(Number),
+      inventoryManaged: inventoryManagedSql.mapWith(Boolean),
     }).from(venues).where(eq(venues.id, id)).limit(1);
     if (!venue) return void res.status(404).json({ error: 'Venue not found' });
 
-    const mineUserId = req.query.mine === 'true' ? await resolveMinedUserId(req) : undefined;
+    const requester = await resolveRequester(req);
+    const mineUserId = req.query.mine === 'true' ? requester?.id : undefined;
     const rows = await db
       .select({
         id: scores.id,
@@ -399,13 +413,16 @@ router.get('/:id/scores', async (req, res) => {
       .from(scores)
       .innerJoin(machines, eq(scores.machineId, machines.id))
       .innerJoin(users, eq(scores.userId, users.id))
-      .where(mineUserId !== undefined ? and(eq(scores.venueId, id), eq(scores.userId, mineUserId)) : eq(scores.venueId, id))
+      .where(and(
+        eq(scores.venueId, id),
+        mineUserId !== undefined ? eq(scores.userId, mineUserId) : undefined,
+        // With the owner's switch off, everyone else sees only their own scores here.
+        visibleScoreSql(requester),
+      ))
       .orderBy(desc(scores.playedAt));
 
-    const requester = await resolveRequester(req);
-    const isAdmin = requester?.role === 'admin';
-    const machineCount = new Set(rows.map(r => r.machineId)).size;
-    res.json({ venue: { ...toPublicVenue(redactVenue(venue, requester?.id, isAdmin)), machineCount }, scores: rows });
+    const playedMachineCount = new Set(rows.map(r => r.machineId)).size;
+    res.json({ venue: venueDetailView({ ...venue, playedMachineCount }, requester), scores: rows });
   } catch (err) {
     console.error('Venue scores error:', err);
     res.status(500).json({ error: 'Failed to fetch venue scores' });
@@ -416,7 +433,7 @@ router.get('/:id/scores', async (req, res) => {
 router.patch('/:id', requireAppUser, async (req, res) => {
   const appUser = (req as any).appUser;
   const id = Number(req.params.id);
-  const { name, address, isResidence, privacyTier } = req.body;
+  const { name, address, isResidence, privacyTier, showMachinesAndScores } = req.body;
 
   const [existing] = await db.select().from(venues).where(eq(venues.id, id)).limit(1);
   if (!existing) return res.status(404).json({ error: 'Venue not found' });
@@ -433,6 +450,8 @@ router.patch('/:id', requireAppUser, async (req, res) => {
   if (privacyTier !== undefined && ['full', 'city_state', 'hidden'].includes(privacyTier)) {
     updates.privacyTier = privacyTier;
   }
+  // Stored whatever the tier, but only honoured on a private venue (venueActivity.ts).
+  if (typeof showMachinesAndScores === 'boolean') updates.showMachinesAndScores = showMachinesAndScores;
 
   const addressChanged = address !== undefined && address !== existing.address;
   if (addressChanged) updates.address = address === '' ? null : address;
@@ -490,8 +509,73 @@ router.delete('/:id', requireAppUser, requireAdmin, async (req, res) => {
     return res.status(409).json({ error: `Cannot delete — ${total} score${total === 1 ? '' : 's'} are logged at this venue` });
   }
 
+  await deleteVenueInventory(id);
   await db.delete(venues).where(eq(venues.id, id));
   res.status(204).send();
+});
+
+// ---------------------------------------------------------------------------
+// Owner-managed inventory (private venues)
+//
+// A home venue can't be linked to Pinball Map, so its machines are listed by hand: the owner (or
+// an admin) picks from the machine catalog on the venue page. See venueActivity.ts for who sees it.
+// ---------------------------------------------------------------------------
+
+async function loadInventoryVenue(req: any, res: any) {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) {
+    res.status(400).json({ error: 'Invalid venue id' });
+    return null;
+  }
+  const [venue] = await db.select().from(venues).where(eq(venues.id, id)).limit(1);
+  if (!venue) {
+    res.status(404).json({ error: 'Venue not found' });
+    return null;
+  }
+  if (!usesOwnerInventory(venue)) {
+    res.status(409).json({ error: 'This venue’s machines come from Pinball Map, not a hand-kept list', code: 'venue_public' });
+    return null;
+  }
+  if (!canManageInventory(venue, req.appUser)) {
+    res.status(403).json({ error: 'Only the venue’s owner or an admin can change its machines' });
+    return null;
+  }
+  return venue;
+}
+
+// POST /api/venues/:id/inventory — body { name } (a machine from the catalog search) or { machineId }.
+router.post('/:id/inventory', requireAppUser, async (req, res) => {
+  const venue = await loadInventoryVenue(req, res);
+  if (!venue) return;
+  const appUser = (req as any).appUser;
+  try {
+    const machine = await resolveCatalogMachine({ machineId: req.body?.machineId, name: req.body?.name });
+    if (!machine) {
+      return res.status(400).json({ error: 'Pick a machine from the list — that one isn’t in the catalog', code: 'unknown_machine' });
+    }
+    const added = await addToInventory(venue.id, machine.id, appUser.id);
+    res.status(added ? 201 : 200).json({ added, machine: { id: machine.id, name: machine.name }, inventory: await getInventory(venue.id) });
+  } catch (err) {
+    console.error('Add inventory error:', err);
+    res.status(500).json({ error: 'Failed to add that machine' });
+  }
+});
+
+// DELETE /api/venues/:id/inventory/:machineId — the machine left. Kept as a former machine.
+router.delete('/:id/inventory/:machineId', requireAppUser, async (req, res) => {
+  const venue = await loadInventoryVenue(req, res);
+  if (!venue) return;
+  const appUser = (req as any).appUser;
+  const machineId = Number(req.params.machineId);
+  if (!Number.isInteger(machineId) || machineId <= 0) return res.status(400).json({ error: 'Invalid machine id' });
+  try {
+    const removed = await removeFromInventory(venue.id, machineId, appUser.id);
+    if (!removed) return res.status(404).json({ error: 'That machine isn’t listed at this venue' });
+    res.json({ removed, inventory: await getInventory(venue.id) });
+  } catch (err) {
+    console.error('Remove inventory error:', err);
+    res.status(500).json({ error: 'Failed to remove that machine' });
+  }
 });
 
 // ---------------------------------------------------------------------------

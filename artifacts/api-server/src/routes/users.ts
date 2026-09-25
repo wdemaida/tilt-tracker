@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import { db, users, scores, machines, venues } from '@workspace/db';
-import { eq, desc, sql } from 'drizzle-orm';
+import { eq, desc, sql, and } from 'drizzle-orm';
 import { getAuth } from '@clerk/express';
 import { requireAuth } from '../middleware/requireAuth.js';
+import { visibleScoreSql } from '../lib/venueActivity.js';
 
 const router = Router();
 
@@ -49,6 +50,13 @@ router.get('/:username', async (req, res) => {
     const [user] = await db.select().from(users).where(eq(users.username, username)).limit(1);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
+    // Who's looking — a profile viewed by its own user shows every score; anyone else doesn't see
+    // scores at a home venue whose owner keeps them private (venueActivity.ts).
+    const { userId: clerkId } = getAuth(req);
+    const [viewer] = clerkId
+      ? await db.select({ id: users.id, role: users.role }).from(users).where(eq(users.clerkId, clerkId)).limit(1)
+      : [];
+
     const userScores = await db
       .select({
         id: scores.id,
@@ -68,7 +76,7 @@ router.get('/:username', async (req, res) => {
       .from(scores)
       .innerJoin(machines, eq(scores.machineId, machines.id))
       .leftJoin(venues, eq(scores.venueId, venues.id))
-      .where(eq(scores.userId, user.id))
+      .where(and(eq(scores.userId, user.id), visibleScoreSql(viewer)))
       .orderBy(desc(scores.playedAt));
 
     res.json({ user: { id: user.id, username: user.username, displayName: user.displayName }, scores: userScores });

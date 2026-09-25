@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { db, scores, machines, venues, users, stats, statHistory } from '@workspace/db';
 import { eq, desc, count } from 'drizzle-orm';
+import { visibleScoreSql } from '../lib/venueActivity.js';
 import { requireAppUser } from '../middleware/requireAuth.js';
 import { computeVisits, computeCurrentMonthCounts } from '../lib/statsCalc.js';
 
@@ -32,7 +33,10 @@ router.get('/', requireAppUser, async (req, res) => {
       })
       .from(scores)
       .innerJoin(machines, eq(scores.machineId, machines.id))
-      .where(mine ? eq(scores.userId, appUser.id) : undefined);
+      // Site-wide, a score you can't see anywhere else (a private venue's, with its owner's
+      // "Show my machines/scores publicly" off) doesn't feed the numbers either — the all-time high
+      // names its machine and venue. Your own scores are always yours.
+      .where(mine ? eq(scores.userId, appUser.id) : visibleScoreSql(appUser));
 
     const totalGames = allScores.length;
     const best = allScores.reduce((a, b) => (b.score > a.score ? b : a), allScores[0] ?? { score: 0, machineName: null, venueName: null });
