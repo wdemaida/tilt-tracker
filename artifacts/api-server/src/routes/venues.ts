@@ -28,6 +28,12 @@ import {
 import { venueListRow, venueDetailView, venueMachinesView } from '../lib/venueView.js';
 import { findDuplicateVenues } from '../lib/venueDedup.js';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
+import { autosuggestPlaces, type PlaceSuggestion } from '../lib/hereApi.js';
+import {
+  mergeSearchResults, queryLength, placeCacheKey, MIN_QUERY_CHARS, MIN_PLACE_QUERY_CHARS,
+  SEARCH_RATE_WINDOWS, PLACE_CACHE_TTL_MS,
+} from '../lib/venueSearch.js';
+import { SlidingRateLimiter, TtlCache } from '../lib/nearbyLookup.js';
 import { getAuth } from '@clerk/express';
 
 // Optional — resolves the caller's app user + role for privacy redaction, without requiring auth.
@@ -235,6 +241,86 @@ router.get('/exact', requireAppUser, async (req, res) => {
   } catch (err) {
     console.error('Exact venue lookup error:', err);
     res.status(500).json({ error: 'Failed to look up that venue' });
+  }
+});
+
+// GET /api/venues/search?q=&lat=&lng= — the Add Score wizard's venue search: TiltTrack venues
+// matched on any word (only those this requester may see by location), plus HERE places by name,
+// with a place that already is a TiltTrack venue shown once, as that venue. See venueSearch.ts.
+// `lat`/`lng` are the client's best location (photo GPS or device), rounded client-side; they bias
+// HERE and give distances, and are neither stored nor logged here. Without them HERE is biased to
+// the requester's most recent public venue, else Boston, and no distances are returned.
+const venueSearchLimiter = new SlidingRateLimiter(SEARCH_RATE_WINDOWS);
+const placeSearchCache = new TtlCache<PlaceSuggestion[]>(PLACE_CACHE_TTL_MS);
+setInterval(() => { venueSearchLimiter.sweep(); placeSearchCache.sweep(); }, 10 * 60_000).unref();
+const DEFAULT_PLACE_BIAS = { lat: 42.36, lng: -71.06 }; // Boston — autosuggestAddress's fallback too
+
+router.get('/search', requireAppUser, async (req, res) => {
+  const appUser = (req as any).appUser as { id: number; role: string };
+  const q = typeof req.query.q === 'string' ? req.query.q.slice(0, 100) : '';
+  if (queryLength(q) < MIN_QUERY_CHARS) return res.json({ tiltTrack: [], places: [], anchor: 'none' });
+
+  const lat = Number(req.query.lat);
+  const lng = Number(req.query.lng);
+  const from = req.query.lat != null && req.query.lng != null && Number.isFinite(lat) && Number.isFinite(lng)
+    && Math.abs(lat) <= 90 && Math.abs(lng) <= 180 ? { lat, lng } : null;
+
+  const decision = venueSearchLimiter.take(String(appUser.id));
+  if (!decision.ok) {
+    res.setHeader('Retry-After', String(Math.ceil(decision.retryAfterMs / 1000)));
+    return res.status(429).json({ error: 'Too many venue searches — wait a moment and try again', code: 'rate_limited' });
+  }
+
+  try {
+    const rows = await db.select({
+      id: venues.id, name: venues.name, address: venues.address,
+      latitude: venues.latitude, longitude: venues.longitude,
+      hereId: venues.hereId, pinballMapId: venues.pinballMapId, timezone: venues.timezone,
+      ownerId: venues.ownerId, isResidence: venues.isResidence, privacyTier: venues.privacyTier,
+    }).from(venues);
+
+    let places: PlaceSuggestion[] = [];
+    let anchor: 'client' | 'history' | 'default' | 'none' = 'none';
+    let placeBias: { lat: number; lng: number } | null = null;
+    if (queryLength(q) >= MIN_PLACE_QUERY_CHARS) {
+      let bias = from;
+      anchor = from ? 'client' : 'default';
+      if (!bias) {
+        // A bias only (HERE ranks by it; no distances go back), and only from a public venue —
+        // a friend's home venue must not steer anything, even this.
+        const recent = await db.select({
+          latitude: venues.latitude, longitude: venues.longitude, ownerId: venues.ownerId,
+          isResidence: venues.isResidence, privacyTier: venues.privacyTier,
+        }).from(scores).innerJoin(venues, eq(scores.venueId, venues.id))
+          .where(and(eq(scores.userId, appUser.id), sql`${venues.latitude} is not null`))
+          .orderBy(desc(scores.playedAt)).limit(10);
+        const usable = recent.find(v => !isPrivateTier(v) || v.ownerId === appUser.id);
+        if (usable?.latitude != null && usable.longitude != null) {
+          bias = { lat: usable.latitude, lng: usable.longitude };
+          anchor = 'history';
+        }
+      }
+      const at = bias ?? DEFAULT_PLACE_BIAS;
+      placeBias = at;
+      const key = placeCacheKey(q, at);
+      const cached = placeSearchCache.get(key);
+      places = cached ?? await autosuggestPlaces(q, at);
+      // An empty answer is how HERE failures surface — don't keep it.
+      if (!cached && places.length > 0) placeSearchCache.set(key, places);
+    }
+
+    const merged = mergeSearchResults({
+      query: q,
+      rows,
+      places: places.map(p => ({ hereId: p.hereId, name: p.name, address: p.address, lat: p.lat, lng: p.lng, timezone: p.timezone })),
+      requester: appUser,
+      from,
+      bias: placeBias,
+    });
+    res.json({ ...merged, anchor });
+  } catch (err) {
+    console.error('Venue search error:', err);
+    res.status(500).json({ error: 'Venue search failed' });
   }
 });
 

@@ -211,6 +211,33 @@
   fresh (they're redacted per requester). In-memory, per process — a restart forgets both.
 - Tests: `npx tsx --test src/lib/nearbyLookup.test.ts`.
 
+## Venue search (`GET /api/venues/search`, `src/lib/venueSearch.ts`, added 2026-09-25)
+- The Add Score wizard's one search box. `?q=` (≥2 letters/digits) plus optional `lat`/`lng`
+  (client's photo GPS or device position, rounded to 3 decimals; never stored or logged). Returns
+  `{ tiltTrack, places, anchor }`. Signed in (`requireAppUser`), 60/min + 1500/day per user
+  (`SlidingRateLimiter`), 429 `rate_limited`.
+- **tiltTrack**: every venue row is read and matched in JS (`matchScore`: every query word must
+  start a word of the name — or of the address, with at least one in the name; apostrophes are
+  removed, so "pop"/"pops"/"Pop's" all hit "Pop's Pinball - Deep Cuts"). Ranked by match quality,
+  then distance from `lat`/`lng`. Fine at today's size (dozens of rows); move matching into SQL
+  (`pg_trgm` or a tokens column) if the table reaches thousands. **Only venues the requester may
+  see by location** (`searchableBy` = public, or own/admin private): results carry address,
+  coordinates and a distance from a client-supplied point. Others' home venues stay reachable only
+  through `/venues/exact`.
+- **places**: HERE **Autosuggest** (`autosuggestPlaces`, `place` results only, arcades/bars moved
+  ahead, `show=tz`), from 3 characters. Autosuggest beat Discover for partial input — Discover
+  returned one result for "pop". Bias: client location → the requester's most recent *public* venue
+  → Boston; distances only when the client sent a location. Places >150km from the bias are
+  dropped unless a query word names their town/street (`placeIsRelevant`) — so "pops medford"
+  works from anywhere. Cached per (normalized query, 3-decimal bias) for 10 min; empty answers
+  aren't cached.
+- **Dedupe**: a place holding a visible venue's `hereId`, or within 150m with an overlapping name
+  (`venueForPlace`), is returned once, as that venue. The second rule is load-bearing: venue 19 is
+  linked to HERE's "Deep Cuts" listing while HERE also lists "Pop's Pinball" at 21 Main St under
+  another id. A place near someone else's private venue stays a plain place (nothing revealed).
+- Cost: one HERE Autosuggest request per debounced (350ms) search of ≥3 chars that misses the cache.
+- Tests: `npx tsx --test src/lib/venueSearch.test.ts`.
+
 ## Photo / GPS extraction
 - Use **`exifr`** (not `exifreader`) for GPS from iPhone HEIC files: `await Exifr.gps(buffer)`.
 - Extract GPS from the **original buffer before HEIC→JPEG conversion** — conversion strips EXIF.

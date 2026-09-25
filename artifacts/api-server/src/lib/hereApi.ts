@@ -124,6 +124,67 @@ export async function autosuggestAddress(query: string, at?: { lat: number; lng:
   }
 }
 
+export interface PlaceSuggestion {
+  hereId: string;
+  name: string;
+  /** The address part of HERE's label (the place's own name prefix stripped). */
+  address: string;
+  lat: number | null;
+  lng: number | null;
+  timezone: string | null;
+}
+
+// Places by name for the Add Score venue search — Autosuggest again, but keeping only `place`
+// results (streets, chain/category refinements dropped). Chosen over Discover because it's built
+// for partial input: verified 2026-09-25 that "pop" near Medford returns Pop's Pinball first, and
+// "pop's pinball medford" finds it even when biased to Chicago, so a typed town works as a location
+// when the client has none. `at` is required by the endpoint and is a bias, not a filter.
+// Returns [] on any failure, like the other lookups here — the TiltTrack half of the search still works.
+export async function autosuggestPlaces(query: string, at: { lat: number; lng: number }, limit = 10): Promise<PlaceSuggestion[]> {
+  if (!HERE_API_KEY || query.trim().length < 3) return [];
+
+  const url = new URL('https://autosuggest.search.hereapi.com/v1/autosuggest');
+  url.searchParams.set('q', query);
+  url.searchParams.set('at', `${at.lat},${at.lng}`);
+  url.searchParams.set('limit', String(limit));
+  url.searchParams.set('show', SHOW_TZ);
+  url.searchParams.set('apiKey', HERE_API_KEY);
+
+  try {
+    const res = await fetch(url.toString());
+    if (!res.ok) return [];
+    const data = (await res.json()) as {
+      items?: Array<{
+        id?: string; title?: string; resultType?: string;
+        address?: { label?: string }; position?: { lat: number; lng: number }; timeZone?: HereTimeZone;
+        categories?: Array<{ id?: string }>;
+      }>;
+    };
+    // HERE's text relevance order is kept, except that arcades and bars (tiers 0-1, see
+    // CATEGORY_TIERS) move ahead of everything else — "versus" should offer the arcade bar before a
+    // jiu-jitsu gym. A stable sort, so each group keeps HERE's order.
+    return (data.items ?? [])
+      .filter(item => item.resultType === 'place' && !!item.id && !!item.title)
+      .map((item, i) => ({ item, i, group: Math.min(categoryTier(item.categories), 2) }))
+      .sort((a, b) => a.group - b.group || a.i - b.i)
+      .map(({ item }) => {
+        const name = item.title!;
+        const label = item.address?.label ?? '';
+        const prefix = `${name}, `;
+        return {
+          hereId: item.id!,
+          name,
+          address: label.startsWith(prefix) ? label.slice(prefix.length) : label,
+          lat: item.position?.lat ?? null,
+          lng: item.position?.lng ?? null,
+          timezone: item.timeZone?.name ?? null,
+        };
+      });
+  } catch {
+    return [];
+  }
+}
+
 // HERE's browse ranking is distance-first with an arbitrary tiebreak, which falls apart inside a
 // dense mixed-use building: at 213 W Institute Pl, Chicago every tenant geocodes to the same point,
 // so a dozen law offices and a pharmacy tied at 18m sorted ahead of the barcade that was actually
