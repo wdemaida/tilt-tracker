@@ -10,6 +10,7 @@ import { useScopeContext } from '../lib/ScopeContext';
 import { ScopeToggle } from '../components/ScopeToggle';
 import { queryClient } from '../lib/queryClient';
 import ScoreCard from '../components/ScoreCard';
+import { usePodMembership } from '../lib/myPods';
 import ScoreRepairSection from '../components/ScoreRepairSection';
 import ScoreVenuePicker from '../components/ScoreVenuePicker';
 import { toLocalInput, localInputToIso } from '../lib/datetime';
@@ -45,6 +46,7 @@ export default function HomePage() {
   const appUser = useAppUser();
   const isAdmin = appUser?.role === 'admin';
   const { mine } = useScopeContext();
+  const podMembership = usePodMembership();
 
   const { data: scores = [], isLoading } = useQuery({
     queryKey: ['scores', mine],
@@ -180,6 +182,7 @@ export default function HomePage() {
                 {...s}
                 isHighScore={bestScores.get(s.machineId) === s.score}
                 isCurrentUser={!mine && !!appUser && s.username === appUser.username}
+                pods={podMembership.get(s.username)}
                 onEdit={isAdmin || s.username === appUser?.username ? () => openEdit(s) : undefined}
                 onDelete={isAdmin || s.username === appUser?.username ? () => setDeleteScoreId(s.id) : undefined}
               />
