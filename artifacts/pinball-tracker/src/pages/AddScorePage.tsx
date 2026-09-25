@@ -14,7 +14,7 @@ import { extractVideoFrames, isVideoFile, VideoFrameError, VIDEO_UNSUPPORTED_MES
 import { ScoreDigitInput } from '../components/ScoreDigitInput';
 import {
   type ScoreRead, type ScoreDisagreement, checkPlausibility, formatTemplate, hasUnknown, reconcileUserDigits, templateToScore,
-  unknownCount,
+  unknownCount, playerLabel, matchPlayerRead, LEADING_AMBIGUOUS_REASON,
 } from '../lib/scoreTemplate';
 
 const schema = z.object({
@@ -41,6 +41,8 @@ interface UploadItem {
   images: PreparedImage[];
 }
 type Step = 1 | 2 | 3 | 4;
+/** Index into `playerReads`, 'none' for "None of these — type it in", null for not yet chosen. */
+type PlayerChoice = number | 'none' | null;
 
 interface SelectedVenue {
   venueId?: number;
@@ -100,7 +102,21 @@ export default function AddScorePage() {
   const [playedAtInstant, setPlayedAtInstant] = useState<string | null>(null);
   // The score state as of the latest render — an upload's result lands after an await, and the user
   // may have kept typing while it ran, so reconciliation must not read a stale closure.
-  const latestScoreRef = useRef<{ read: ScoreRead | null; template: string | null; display: string }>({ read: null, template: null, display: '' });
+  const latestScoreRef = useRef<{
+    read: ScoreRead | null; template: string | null; display: string; players: ScoreRead[]; selected: PlayerChoice;
+  }>({ read: null, template: null, display: '', players: [], selected: null });
+  // Every player display the photos showed (a 4-player backglass has four). With more than one, the
+  // user picks theirs ("Which player were you?") and that read becomes `scoreRead`. 'none' = "None
+  // of these", typing the score by hand. `choosingPlayer` reopens the picker after a pick.
+  const [playerReads, setPlayerReads] = useState<ScoreRead[]>([]);
+  const [selectedPlayer, setSelectedPlayer] = useState<PlayerChoice>(null);
+  const [choosingPlayer, setChoosingPlayer] = useState(false);
+  // Digits typed before an added photo lost track of which player they belonged to (the re-read's
+  // displays didn't line up with the old ones). Carried onto whichever player the user picks next,
+  // so adding a photo still never throws away what they typed.
+  const pendingCarryRef = useRef<{ prevRead: string; prevValue: string } | null>(null);
+  const needsPlayerChoice = playerReads.length > 1 && selectedPlayer == null;
+  const showPlayerPicker = playerReads.length > 1 && (selectedPlayer == null || choosingPlayer);
   // Object URLs for the larger photo preview shown while filling in x's. Revoked on replace/unmount.
   const [photoPreviews, setPhotoPreviews] = useState<string[]>([]);
   const photoPreviewsRef = useRef<string[]>([]);
@@ -291,7 +307,7 @@ export default function AddScorePage() {
   });
 
   const venueName = watch('venueName');
-  latestScoreRef.current = { read: scoreRead, template: scoreTemplate, display: scoreDisplay };
+  latestScoreRef.current = { read: scoreRead, template: scoreTemplate, display: scoreDisplay, players: playerReads, selected: selectedPlayer };
 
   function replacePhotoPreviews(urls: string[]) {
     photoPreviewsRef.current.forEach(u => URL.revokeObjectURL(u));
@@ -328,6 +344,69 @@ export default function AddScorePage() {
     setScoreDisplay(n ? n.toLocaleString() : '');
   }
 
+  /** Empties the score field (plain mode) — nothing is known until a player is picked. */
+  function clearScoreEntry() {
+    setScoreRead(null);
+    setScoreDisagreements([]);
+    setScoreTemplate(null);
+    setValue('scoreUnfilled', 0);
+    setValue('score', '' as any);
+    setScoreDisplay('');
+  }
+
+  /**
+   * Makes one display's read the one the user fills in: digit cells if it has x's, else the plain
+   * number. `carry` is what the user had typed before an added photo re-read the set — reconciled
+   * onto the new read so none of it is lost (see reconcileUserDigits).
+   */
+  function applyChosenRead(read: ScoreRead | null, carry: { prevRead: string; prevValue: string } | null) {
+    setScoreRead(read);
+    setScoreDisagreements([]);
+    if (carry && read?.template) {
+      const { template, disagreements } = reconcileUserDigits(carry.prevRead, carry.prevValue, read.template);
+      if (hasUnknown(template) || disagreements.length > 0 || template !== read.template) {
+        applyScoreTemplate(template);
+        setScoreDisagreements(disagreements);
+      } else {
+        // A complete new read that confirms what the user had — nothing left to fill or check.
+        enterPlainScoreModeWith(template);
+      }
+      return;
+    }
+    if (read && hasUnknown(read.template)) {
+      // Partial read — the display was caught mid-refresh. Step 3 shows digit cells with x's.
+      applyScoreTemplate(read.template);
+      return;
+    }
+    const n = read ? templateToScore(read.template) : null;
+    if (n) enterPlainScoreModeWith(read!.template);
+  }
+
+  /** "Which player were you?" — a tap on one display's card. */
+  function selectPlayer(i: number) {
+    const read = playerReads[i];
+    if (!read) return;
+    const carry = pendingCarryRef.current;
+    pendingCarryRef.current = null;
+    setChoosingPlayer(false);
+    // Re-tapping the current pick just closes the picker; it mustn't wipe what they've typed.
+    if (selectedPlayer === i) return;
+    setSelectedPlayer(i);
+    applyChosenRead(read, carry);
+  }
+
+  /** "None of these — type it in": plain-number entry, no photo read to fill. */
+  function selectNoPlayer() {
+    const carry = pendingCarryRef.current;
+    pendingCarryRef.current = null;
+    setChoosingPlayer(false);
+    if (selectedPlayer === 'none') return;
+    setSelectedPlayer('none');
+    clearScoreEntry();
+    // Plain-mode digits they'd already typed are still theirs.
+    if (carry && !carry.prevRead.replace(/\?/g, '')) enterPlainScoreModeWith(carry.prevValue);
+  }
+
   // A capture instant is re-expressed whenever the venue (and so the score's clock) changes.
   useEffect(() => {
     if (playedAtInstant) setValue('playedAt', toLocalInput(playedAtInstant, selectedVenue?.timezone));
@@ -351,6 +430,11 @@ export default function AddScorePage() {
     // The model's flag describes its own read; once the user has typed a longer number it's answered.
     if (scoreRead?.possiblyTruncated && currentScoreTemplate.length <= scoreRead.template.length) {
       reasons.push(scoreRead.truncationReason ?? 'The display may show more digits than were read');
+    }
+    // A dark first window on a strobing display: a blank, or a digit caught unlit. Same answer as
+    // above — once the user has entered a longer number, they've checked.
+    if (scoreRead?.leadingPositionAmbiguous && currentScoreTemplate.length <= scoreRead.template.length) {
+      reasons.push(LEADING_AMBIGUOUS_REASON);
     }
     const p = machineScoreStats
       ? checkPlausibility(currentScoreTemplate, machineScoreStats.median, machineScoreStats.count)
@@ -512,15 +596,14 @@ export default function AddScorePage() {
       setAiDetectedMachine(result.machineName);
       // Don't pre-select — auto-select handles exact PM matches; banner guides the rest
     }
-    const read: ScoreRead | null = result.scoreRead ?? null;
+    // One read per player display. Older servers only send `scoreRead` (a single display).
+    const reads: ScoreRead[] = Array.isArray(result.playerReads)
+      ? result.playerReads
+      : result.scoreRead ? [result.scoreRead] : [];
     // An added photo that read nothing (empty template) says nothing about the score: keep the read
     // the user is filling in. Replacing it would make the next add's reconcile see no "original", drop
     // every digit they typed, and break backspace's un-fill (it compares against the original).
-    const unreadableAdd = adding && !read?.template;
-    if (!unreadableAdd) {
-      setScoreRead(read);
-      setScoreDisagreements([]);
-    }
+    const unreadableAdd = adding && !reads.some(r => r.template);
 
     // Adding a photo re-reads the whole set; digits the user already entered must survive that.
     const prev = latestScoreRef.current;
@@ -528,25 +611,36 @@ export default function AddScorePage() {
     const [prevRead, prevValue] = prev.template != null
       ? [prev.read?.template || prev.template, prev.template]
       : [ '?'.repeat(prevDigits.length), prevDigits ]; // plain-number mode: every digit is the user's
+    const carry = adding && prevValue ? { prevRead, prevValue } : null;
+
     if (unreadableAdd) {
       setAiError("Couldn't read the score in the added photo — kept what you had.");
-    } else if (adding && read?.template && prevValue) {
-      const { template, disagreements } = reconcileUserDigits(prevRead, prevValue, read.template);
-      if (hasUnknown(template) || disagreements.length > 0 || template !== read.template) {
-        applyScoreTemplate(template);
-        setScoreDisagreements(disagreements);
+    } else {
+      setPlayerReads(reads);
+      setChoosingPlayer(false);
+      pendingCarryRef.current = null;
+      if (reads.length > 1) {
+        // Several player displays: only the user knows which was theirs. After an add, keep their
+        // pick if it still lines up with a display in the new read; otherwise ask again, and carry
+        // what they'd typed onto whichever display they pick.
+        const kept = adding && typeof prev.selected === 'number'
+          ? matchPlayerRead(prev.players, prev.selected, reads)
+          : null;
+        if (kept != null) {
+          setSelectedPlayer(kept);
+          applyChosenRead(reads[kept], carry);
+        } else if (adding && prev.selected === 'none') {
+          // They chose to type it themselves; a new photo doesn't change that.
+          setSelectedPlayer('none');
+        } else {
+          setSelectedPlayer(null);
+          pendingCarryRef.current = carry;
+          clearScoreEntry();
+        }
       } else {
-        // A complete new read that confirms what the user had — nothing left to fill or check.
-        enterPlainScoreModeWith(template);
+        setSelectedPlayer(reads.length === 1 ? 0 : null);
+        applyChosenRead(reads[0] ?? result.scoreRead ?? null, carry);
       }
-    } else if (read && hasUnknown(read.template)) {
-      // Partial read — the display was caught mid-refresh. Step 3 shows digit cells with x's.
-      applyScoreTemplate(read.template);
-    } else if (result.score) {
-      setScoreTemplate(null);
-      setValue('scoreUnfilled', 0);
-      setValue('score', result.score);
-      setScoreDisplay(Number(result.score).toLocaleString());
     }
     setDifferentGamesWarning(result.differentGamesWarning ?? null);
     // Already a zone-less camera wall clock (the earliest photo's) — the input wants it verbatim.
@@ -567,7 +661,7 @@ export default function AddScorePage() {
     }
 
     // Thumbnail from the photo the model found most legible (default: the first).
-    const best = read?.bestImageIndex ?? 0;
+    const best = (reads[0] ?? result.scoreRead)?.bestImageIndex ?? 0;
     if (best > 0 && images[best]) {
       generateThumbnail(images[best].file).then(t => { setThumbnail(t); thumbnailSucceeded.current = true; }).catch(() => {});
     } else if (result.thumbnailBase64 && !thumbnailSucceeded.current) {
@@ -708,6 +802,7 @@ export default function AddScorePage() {
           <div className="flex flex-col gap-1 text-xs text-muted-foreground text-center -mt-3">
             <p>Up to {MAX_ITEMS} photos or videos of the same score.</p>
             <p>Old machine with flickering digits? Take a 2-second video or a few photos.</p>
+            <p>Take the photo as soon as your last ball drains — older machines start a light show a few seconds later.</p>
             <p>Have a Live Photo? Tap ••• → Save as Video, then upload the video.</p>
           </div>
           {photoNotice && <p className="text-xs text-amber-400 text-center -mt-3">{photoNotice}</p>}
@@ -1135,12 +1230,34 @@ export default function AddScorePage() {
           {/* Score */}
           <div>
             <label className="label">Score</label>
-            {scoreTemplate != null && scoreRead && hasUnknown(scoreRead.template) && (
-              <div className="flex flex-col gap-2 mb-2">
-                <p className="flex items-start gap-2 text-xs rounded-lg bg-amber-500/10 text-amber-400 px-3 py-2">
-                  <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
-                  Display was mid-refresh — fill in the x's from the machine
+            {showPlayerPicker && (
+              <div className="flex flex-col gap-2">
+                <p className="text-sm font-bold text-white">Which player were you?</p>
+                <p className="text-xs text-muted-foreground -mt-1.5">
+                  The photo shows {playerReads.length} player scores — tap yours.
                 </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {playerReads.map((r, i) => {
+                    const isSelected = selectedPlayer === i;
+                    return (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => selectPlayer(i)}
+                        aria-pressed={isSelected}
+                        aria-label={`${playerLabel(r, i)}: ${formatTemplate(r.template)}`}
+                        className={`flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-lg border text-left transition-colors ${isSelected ? 'border-primary/60 bg-primary/10' : 'border-white/10 hover:border-primary/40 hover:bg-white/5'}`}
+                      >
+                        <span className="text-[0.65rem] font-bold uppercase tracking-wider text-muted-foreground">{playerLabel(r, i)}</span>
+                        <span className="font-mono font-bold text-lg text-white tracking-wide">
+                          {[...formatTemplate(r.template)].map((ch, k) => (
+                            <span key={k} className={ch === 'x' ? 'text-amber-400' : undefined}>{ch}</span>
+                          ))}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
                 {photoPreviews.length > 0 && (
                   <div className="flex gap-2 overflow-x-auto">
                     {photoPreviews.map((src, i) => (
@@ -1154,58 +1271,117 @@ export default function AddScorePage() {
                     ))}
                   </div>
                 )}
-              </div>
-            )}
-            {scoreTemplate != null ? (
-              <ScoreDigitInput
-                value={scoreTemplate}
-                original={scoreRead?.template ?? scoreTemplate}
-                lowConfidence={scoreRead?.lowConfidence ?? []}
-                conflicts={scoreRead?.conflicts ?? []}
-                disagreements={scoreDisagreements}
-                onDismissDisagreement={i => setScoreDisagreements(ds => ds.filter(d => d.index !== i))}
-                onChange={applyScoreTemplate}
-                onPlainMode={enterPlainScoreMode}
-              />
-            ) : (
-              <>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={scoreDisplay}
-                  onChange={e => {
-                    const raw = e.target.value.replace(/[^0-9]/g, '');
-                    setScoreDisplay(raw ? Number(raw).toLocaleString() : '');
-                    setValue('score', raw ? Number(raw) : ('' as any));
-                  }}
-                  placeholder={scoreRead && hasUnknown(scoreRead.template) ? `Photo read ${formatTemplate(scoreRead.template)}` : 'e.g. 21,955,670'}
-                  className="input"
-                />
-                {scoreRead && hasUnknown(scoreRead.template) && (
+                <div className="flex items-center gap-3">
                   <button
                     type="button"
-                    onClick={() => applyScoreTemplate(scoreRead.template)}
-                    className="text-xs text-muted-foreground hover:text-white transition-colors mt-1"
+                    onClick={selectNoPlayer}
+                    className="text-xs text-muted-foreground hover:text-white transition-colors"
                   >
-                    ‹ Back to filling in the x's
+                    None of these — type it in
                   </button>
-                )}
-              </>
-            )}
-            {errors.scoreUnfilled
-              ? <p className="err">{errors.scoreUnfilled.message}</p>
-              : errors.score && <p className="err">{errors.score.message}</p>}
-            {missingDigitReasons.length > 0 && (
-              <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5">
-                <p className="flex items-start gap-2 text-xs text-amber-400 font-bold">
-                  <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
-                  This score may be missing digits
-                </p>
-                <ul className="mt-1 pl-5 list-disc text-xs text-amber-400/80">
-                  {missingDigitReasons.map(r => <li key={r}>{r}</li>)}
-                </ul>
-                <p className="mt-1 pl-5 text-xs text-muted-foreground">Check the machine — you can still save as-is.</p>
+                  {selectedPlayer != null && (
+                    <button
+                      type="button"
+                      onClick={() => setChoosingPlayer(false)}
+                      className="text-xs text-muted-foreground hover:text-white transition-colors ml-auto"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </div>
               </div>
+            )}
+            {!showPlayerPicker && playerReads.length > 1 && selectedPlayer != null && (
+              <div className="flex items-center gap-2 mb-2 text-xs">
+                <span className="text-muted-foreground">
+                  {selectedPlayer === 'none'
+                    ? 'Typing the score yourself'
+                    : <>You were <span className="font-bold text-white">{playerLabel(playerReads[selectedPlayer], selectedPlayer)}</span></>}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setChoosingPlayer(true)}
+                  className="ml-auto text-primary font-medium hover:underline"
+                >
+                  {selectedPlayer === 'none' ? 'Pick a player' : 'Change player'}
+                </button>
+              </div>
+            )}
+            {!showPlayerPicker && (
+              <>
+              {scoreTemplate != null && scoreRead && hasUnknown(scoreRead.template) && (
+                <div className="flex flex-col gap-2 mb-2">
+                  <p className="flex items-start gap-2 text-xs rounded-lg bg-amber-500/10 text-amber-400 px-3 py-2">
+                    <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                    Display was mid-refresh — fill in the x's from the machine
+                  </p>
+                  {photoPreviews.length > 0 && (
+                    <div className="flex gap-2 overflow-x-auto">
+                      {photoPreviews.map((src, i) => (
+                        <img
+                          key={src}
+                          src={src}
+                          alt={`Uploaded photo ${i + 1}`}
+                          className="max-h-64 rounded-lg border border-white/10 object-contain bg-black flex-shrink-0"
+                          style={{ maxWidth: photoPreviews.length > 1 ? '80%' : '100%' }}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              {scoreTemplate != null ? (
+                <ScoreDigitInput
+                  value={scoreTemplate}
+                  original={scoreRead?.template ?? scoreTemplate}
+                  lowConfidence={scoreRead?.lowConfidence ?? []}
+                  conflicts={scoreRead?.conflicts ?? []}
+                  disagreements={scoreDisagreements}
+                  onDismissDisagreement={i => setScoreDisagreements(ds => ds.filter(d => d.index !== i))}
+                  onChange={applyScoreTemplate}
+                  onPlainMode={enterPlainScoreMode}
+                />
+              ) : (
+                <>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={scoreDisplay}
+                    onChange={e => {
+                      const raw = e.target.value.replace(/[^0-9]/g, '');
+                      setScoreDisplay(raw ? Number(raw).toLocaleString() : '');
+                      setValue('score', raw ? Number(raw) : ('' as any));
+                    }}
+                    placeholder={scoreRead && hasUnknown(scoreRead.template) ? `Photo read ${formatTemplate(scoreRead.template)}` : 'e.g. 21,955,670'}
+                    className="input"
+                  />
+                  {scoreRead && hasUnknown(scoreRead.template) && (
+                    <button
+                      type="button"
+                      onClick={() => applyScoreTemplate(scoreRead.template)}
+                      className="text-xs text-muted-foreground hover:text-white transition-colors mt-1"
+                    >
+                      ‹ Back to filling in the x's
+                    </button>
+                  )}
+                </>
+              )}
+              {errors.scoreUnfilled
+                ? <p className="err">{errors.scoreUnfilled.message}</p>
+                : errors.score && <p className="err">{errors.score.message}</p>}
+              {missingDigitReasons.length > 0 && (
+                <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5">
+                  <p className="flex items-start gap-2 text-xs text-amber-400 font-bold">
+                    <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                    This score may be missing digits
+                  </p>
+                  <ul className="mt-1 pl-5 list-disc text-xs text-amber-400/80">
+                    {missingDigitReasons.map(r => <li key={r}>{r}</li>)}
+                  </ul>
+                  <p className="mt-1 pl-5 text-xs text-muted-foreground">Check the machine — you can still save as-is.</p>
+                </div>
+              )}
+              </>
             )}
           </div>
 
@@ -1283,6 +1459,9 @@ export default function AddScorePage() {
             </select>
           </div>
 
+          {needsPlayerChoice && (
+            <p className="text-xs text-amber-400 text-center -mb-2">Pick which player you were before saving</p>
+          )}
           {scoreTemplate != null && unknownCount(scoreTemplate) > 0 && (
             <p className="text-xs text-amber-400 text-center -mb-2">
               Fill in every x before saving ({unknownCount(scoreTemplate)} left)
@@ -1293,7 +1472,7 @@ export default function AddScorePage() {
               className="flex-1 py-2.5 rounded-lg border border-white/10 text-sm text-muted-foreground hover:text-white transition-colors">
               Back
             </button>
-            <button type="submit" disabled={isSubmitting || createScore.isPending || (scoreTemplate != null && unknownCount(scoreTemplate) > 0)}
+            <button type="submit" disabled={isSubmitting || createScore.isPending || needsPlayerChoice || (scoreTemplate != null && unknownCount(scoreTemplate) > 0)}
               className="flex-1 py-2.5 rounded-lg bg-primary text-white font-bold uppercase tracking-wider text-sm hover:opacity-90 transition-opacity disabled:opacity-50">
               {createScore.isPending ? 'Saving...' : 'Save Score'}
             </button>

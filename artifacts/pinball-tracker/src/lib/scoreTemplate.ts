@@ -15,17 +15,47 @@ export interface ScorePlausibility {
   sampleSize: number;
 }
 
-/** What /api/upload returns as `scoreRead`. */
+/**
+ * One player display's read, merged across every uploaded photo. /api/upload returns one per player
+ * display as `playerReads`, and the default one again as `scoreRead` (for older clients).
+ */
 export interface ScoreRead {
+  /** 1–4 from a "1UP"/"PLAYER 1" label or the layout; null when it can't be told. */
+  player?: number | null;
   template: string;
   lowConfidence: number[];
   status: 'complete' | 'partial' | 'unreadable';
   possiblyTruncated: boolean;
   truncationReason: string | null;
+  /** The leftmost window was dark on a strobing display — it may hide a leading digit. */
+  leadingPositionAmbiguous?: boolean;
   conflicts: ScoreConflict[];
   bestImageIndex: number;
   perImage: string[];
   plausibility: ScorePlausibility | null;
+}
+
+/** "May be missing digits" reason for `leadingPositionAmbiguous`. */
+export const LEADING_AMBIGUOUS_REASON = 'The first digit position was dark — check the machine for a leading digit.';
+
+/** "Player 2", or "Display 2" (1-based position) when the display carries no player number. */
+export function playerLabel(read: Pick<ScoreRead, 'player'>, index: number): string {
+  return read.player != null ? `Player ${read.player}` : `Display ${index + 1}`;
+}
+
+/**
+ * After "Add another photo" re-reads the set, which of the new player reads is the one the user had
+ * picked? By player number when the old pick had one; otherwise by position, but only when the
+ * number of displays didn't change (a lone display stays itself). null means ask again.
+ */
+export function matchPlayerRead(prev: ScoreRead[], prevIndex: number | null, next: ScoreRead[]): number | null {
+  if (prevIndex == null || !prev[prevIndex] || next.length === 0) return null;
+  const player = prev[prevIndex].player;
+  if (player != null) {
+    const i = next.findIndex(r => r.player === player);
+    if (i >= 0) return i;
+  }
+  return prev.length === next.length ? prevIndex : null;
 }
 
 export const unknownCount = (template: string) => (template.match(/\?/g) ?? []).length;

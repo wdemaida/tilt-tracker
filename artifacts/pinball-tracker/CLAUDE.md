@@ -117,3 +117,16 @@
   input, so the big "Take photo" target is `accept="image/*" capture="environment"` with no `multiple`,
   and multi-select (photos or videos) is the secondary button. Step 3's add row mirrors it. Don't
   merge them back into one input.
+- **"Which player were you?"** (added 2026-09-24): when `/api/upload` returns more than one
+  `playerReads` entry, step 3 shows a card per display (x's in amber) in place of the score field,
+  and Save is disabled until one is picked. The pick becomes `scoreRead`, so ScoreDigitInput, the
+  trailing-zeros chip and plausibility all run on that player only. "Change player" reopens the
+  cards; "None of these — type it in" is plain-number entry. One display skips the question. Never
+  pre-select from `selectedPlayerIndex` — that's only the old-client fallback.
+- After "Add another photo", `matchPlayerRead()` keeps the pick by player number, else by position
+  when the display count didn't change. If it can't, the user is asked again and whatever they had
+  typed waits in `pendingCarryRef` to be reconciled onto the player they pick — adding a photo
+  still never throws away their digits. Switching player *deliberately* does start fresh.
+- `leadingPositionAmbiguous` surfaces as a "may be missing digits" reason
+  (`LEADING_AMBIGUOUS_REASON`), non-blocking, dropped once the typed number is longer than the read.
+  There are deliberately no +/- digit controls.
