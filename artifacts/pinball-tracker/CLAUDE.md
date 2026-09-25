@@ -113,3 +113,7 @@
   Windows) gets a friendly "try a photo" message, and the wizard stays on step 1.
 - iOS web file pickers hand over only the still of a Live Photo, which is why step 1 tells users to
   "Save as Video" first.
+- **Camera and picker are separate inputs.** Android Chrome skips offering the camera for a `multiple`
+  input, so the big "Take photo" target is `accept="image/*" capture="environment"` with no `multiple`,
+  and multi-select (photos or videos) is the secondary button. Step 3's add row mirrors it. Don't
+  merge them back into one input.

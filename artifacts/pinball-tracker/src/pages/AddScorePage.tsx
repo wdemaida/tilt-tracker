@@ -110,6 +110,8 @@ export default function AddScorePage() {
   const [photoNotice, setPhotoNotice] = useState('');
   const [differentGamesWarning, setDifferentGamesWarning] = useState<string | null>(null);
   const addPhotoRef = useRef<HTMLInputElement>(null);
+  const cameraRef = useRef<HTMLInputElement>(null);
+  const addCameraRef = useRef<HTMLInputElement>(null);
   // A set that went up as a server-decoded HEIC can't grow: the multi-image path refuses HEIC.
   const addBlockedByHeic = uploadItems.some(i => i.images.some(im => im.heicFailed));
   const canAddMore = uploadItems.length > 0 && uploadItems.length < MAX_ITEMS && !addBlockedByHeic;
@@ -665,8 +667,11 @@ export default function AddScorePage() {
           <p className="text-sm text-muted-foreground text-center">
             Snap a pic or a short video of the DMD or score screen. Our AI will extract the machine name, score, time, and location.
           </p>
+          {/* Two inputs on purpose: Android Chrome skips offering the camera for a `multiple` input and
+              opens the photo picker instead, so the big target is a camera-first single-photo input and
+              multi-select (photos or videos) is the secondary one. */}
           <button
-            onClick={() => fileRef.current?.click()}
+            onClick={() => cameraRef.current?.click()}
             disabled={aiLoading}
             className="w-full rounded-xl border-2 border-dashed border-primary/50 p-12 flex flex-col items-center gap-3 hover:border-primary transition-colors disabled:opacity-50"
           >
@@ -675,7 +680,22 @@ export default function AddScorePage() {
               {aiLoading ? (videoProgress ? 'Reading video...' : 'Analyzing...') : 'Tap to Take Photo'}
             </span>
             {aiLoading && videoProgress && <span className="text-xs text-muted-foreground">{videoProgress}</span>}
-            {!aiLoading && <span className="text-xs text-muted-foreground">or choose photos or a video from your camera roll</span>}
+          </button>
+          <input
+            ref={cameraRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            onChange={e => { const files = Array.from(e.target.files ?? []); e.target.value = ''; if (files.length) handleFiles(files, 'replace'); }}
+          />
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            disabled={aiLoading}
+            className="-mt-3 w-full py-2.5 rounded-lg border border-white/10 text-sm font-bold uppercase tracking-wider text-white/80 hover:border-primary/40 hover:text-white transition-colors disabled:opacity-50"
+          >
+            Choose photos or videos
           </button>
           <input
             ref={fileRef}
@@ -1208,15 +1228,33 @@ export default function AddScorePage() {
               )}
               {canAddMore && (
                 <>
-                  <button
-                    type="button"
-                    disabled={aiLoading}
-                    onClick={() => addPhotoRef.current?.click()}
-                    className="flex items-center justify-center gap-2 py-2 rounded-lg border border-dashed border-primary/40 text-xs font-bold uppercase tracking-wider text-primary hover:border-primary transition-colors disabled:opacity-50"
-                  >
-                    {aiLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Camera className="w-3.5 h-3.5" />}
-                    {aiLoading ? (videoProgress ?? 'Re-reading...') : `Add another photo or video (${uploadItems.length}/${MAX_ITEMS})`}
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      disabled={aiLoading}
+                      onClick={() => addCameraRef.current?.click()}
+                      className="flex-1 flex items-center justify-center gap-2 py-2 rounded-lg border border-dashed border-primary/40 text-xs font-bold uppercase tracking-wider text-primary hover:border-primary transition-colors disabled:opacity-50"
+                    >
+                      {aiLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Camera className="w-3.5 h-3.5" />}
+                      {aiLoading ? (videoProgress ?? 'Re-reading...') : `Take another photo (${uploadItems.length}/${MAX_ITEMS})`}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={aiLoading}
+                      onClick={() => addPhotoRef.current?.click()}
+                      className="px-3 py-2 rounded-lg border border-white/10 text-xs font-bold uppercase tracking-wider text-white/70 hover:text-white hover:border-primary/40 transition-colors disabled:opacity-50"
+                    >
+                      Choose
+                    </button>
+                  </div>
+                  <input
+                    ref={addCameraRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                    onChange={e => { const files = Array.from(e.target.files ?? []); e.target.value = ''; if (files.length) handleFiles(files, 'add'); }}
+                  />
                   <input
                     ref={addPhotoRef}
                     type="file"
