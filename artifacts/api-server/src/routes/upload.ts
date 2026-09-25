@@ -325,15 +325,20 @@ router.post('/', requireAuth, receivePhotos, async (req, res) => {
     for (const img of images) sized.push(await modelViewSize(img).catch(() => img));
     // A read cut off by max_tokens is incomplete and unusable — but the photos' GPS, time and venue
     // suggestions are still good, so answer normally with no score and say why (`readNotice`).
+    // (try/catch rather than .catch(): an assignment inside a callback isn't seen by TS's flow
+    // analysis, which then typed `readNotice` in the response as always null.)
     let readNotice: string | null = null;
-    const extracted: ExtractedScoreReads = await extractScoreReads(sized).catch(err => {
+    let extracted: ExtractedScoreReads;
+    try {
+      extracted = await extractScoreReads(sized);
+    } catch (err) {
       if (!(err instanceof ScoreReadTruncatedError)) throw err;
       readNotice = "Couldn't read the score from this many photos at once — enter it below, or try fewer photos.";
-      return {
+      extracted = {
         usage: { inputTokens: 0, outputTokens: 0, ms: 0 }, machineName: null, playedAt: null,
         reads: images.map(() => ({ displays: [] })), bestImageIndex: 0,
       };
-    });
+    }
     // Second pass: re-read each score display from a close crop, window by window, when the photo has
     // several displays or a strobed segment read (see displayCrops.ts). Skipped for a lone complete
     // DMD/LCD read. Any failure keeps the whole-photo read — this can never fail the upload.
