@@ -6,7 +6,9 @@ import { and, between, eq } from 'drizzle-orm';
 import { db, venues, users } from '@workspace/db';
 import { getAuth } from '@clerk/express';
 import { requireAuth } from '../middleware/requireAuth.js';
-import { extractScoreFromImage } from '../lib/anthropic.js';
+import { extractScoreReads } from '../lib/anthropic.js';
+import { mergeReads, templateToScore, checkPlausibility } from '../lib/scoreRead.js';
+import { getMachineScoreStats } from '../lib/machineScoreStats.js';
 import { fitUnderAnthropicLimit } from '../lib/imageCompress.js';
 import { getNearbyVenues, type Venue } from '../lib/hereApi.js';
 import { findNearestPmLocations, type PmLocation } from '../lib/pinballmapApi.js';
@@ -164,7 +166,19 @@ router.post('/', requireAuth, upload.single('photo'), async (req, res) => {
     // reduction is preferred over resizing (score-screen digits need to stay legible).
     const fitted = await fitUnderAnthropicLimit(buffer, mimeType);
     const base64 = fitted.buffer.toString('base64');
-    const extracted = await extractScoreFromImage(base64, fitted.mimeType);
+    const extracted = await extractScoreReads([{ base64, mimeType: fitted.mimeType }]);
+    const merged = mergeReads(extracted.reads);
+
+    // Deterministic "may be missing digits" check against what's already recorded on this machine.
+    // The machine here is only the AI's reading of the name; the wizard re-runs the same check via
+    // /api/machines/score-stats once the user has actually picked one. Never fails the upload.
+    const stats = extracted.machineName
+      ? await getMachineScoreStats({ name: extracted.machineName }).catch(err => {
+          console.error('Score plausibility lookup failed:', err?.message ?? err);
+          return null;
+        })
+      : null;
+    const plausibility = stats ? checkPlausibility(merged.template, stats.median, stats.count) : null;
 
     let venueList: Venue[] = [];
     if (gps) {
@@ -201,7 +215,14 @@ router.post('/', requireAuth, upload.single('photo'), async (req, res) => {
 
     res.json({
       machineName: extracted.machineName,
-      score: extracted.score,
+      // Only set when every digit was read — kept for older clients. `scoreRead` carries the rest.
+      score: templateToScore(merged.template),
+      scoreRead: {
+        ...merged,
+        bestImageIndex: extracted.bestImageIndex,
+        perImage: extracted.reads.map(r => r.template),
+        plausibility,
+      },
       // Zone-less wall clock ("2026-09-10T22:01:00") — see toNaiveLocal. The browser resolves it
       // against the viewer's timezone; do not hand this to `new Date()` on the server.
       playedAt: exifDatetime ?? normalizeNaiveDatetime(extracted.playedAt),

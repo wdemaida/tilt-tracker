@@ -8,6 +8,7 @@ import { getVenueRoster } from '../lib/pmRosterCache.js';
 import { pmLocationUrl, isPmConfigured, PmApiError } from '../lib/pinballmapApi.js';
 import { redactScoreLocation } from '../lib/venuePrivacy.js';
 import { getAuth } from '@clerk/express';
+import { parseScore } from '../lib/scoreRead.js';
 
 async function resolveMinedUserId(req: any): Promise<number | undefined> {
   const { userId: clerkId } = getAuth(req);
@@ -90,8 +91,14 @@ router.post('/', requireAppUser, async (req, res) => {
   const appUser = (req as any).appUser;
   const { machineId, score, playedAt, type, venueName, venueId: rawVenueId, venueHereId, venueAddress, venueLat, venueLng, venueTimezone, venuePinballMapId, latitude, longitude, photoUrl, photoThumbnail } = req.body;
 
-  if (!machineId || !score || !playedAt) {
+  if (!machineId || score == null || !playedAt) {
     return res.status(400).json({ error: 'machineId, score, and playedAt are required' });
+  }
+  // Only a safe positive integer gets in — a decimal, a negative, "7,205,200" or a template with x's
+  // still in it would otherwise reach a bigint column (or Pinball Map) as garbage. See parseScore.
+  const parsedScore = parseScore(score);
+  if (parsedScore == null) {
+    return res.status(400).json({ error: 'score must be a positive whole number', code: 'invalid_score' });
   }
 
   try {
@@ -142,7 +149,7 @@ router.post('/', requireAppUser, async (req, res) => {
     const [row] = await db.insert(scores).values({
       userId: appUser.id,
       machineId,
-      score,
+      score: parsedScore,
       playedAt: new Date(playedAt),
       type: type ?? 'casual',
       venueId: resolvedVenueId ?? null,
@@ -174,7 +181,13 @@ router.patch('/:id', requireAppUser, async (req, res) => {
   }
 
   const updates: Record<string, any> = {};
-  if (score !== undefined) updates.score = Number(score);
+  if (score !== undefined) {
+    const parsedScore = parseScore(score);
+    if (parsedScore == null) {
+      return res.status(400).json({ error: 'score must be a positive whole number', code: 'invalid_score' });
+    }
+    updates.score = parsedScore;
+  }
   if (type !== undefined) updates.type = type;
   if (playedAt !== undefined) updates.playedAt = new Date(playedAt);
   if (machineId !== undefined) updates.machineId = Number(machineId);

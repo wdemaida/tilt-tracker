@@ -2,7 +2,7 @@ import { useState, useRef, useMemo, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Camera, Loader2, CheckCircle2, ExternalLink, MapPin, Search, X, ChevronDown } from 'lucide-react';
+import { Camera, Loader2, CheckCircle2, ExternalLink, MapPin, Search, X, ChevronDown, AlertTriangle } from 'lucide-react';
 import { useLocation } from 'wouter';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useApi } from '../lib/useApi';
@@ -10,10 +10,19 @@ import { queryClient } from '../lib/queryClient';
 import { PinballIcon } from '../components/PinballIcon';
 import { toLocalInput, localInputToIso, naiveToLocalInput } from '../lib/datetime';
 import { isHeicFile, convertHeicClientSide } from '../lib/heicClientConvert';
+import { ScoreDigitInput } from '../components/ScoreDigitInput';
+import {
+  type ScoreRead, checkPlausibility, formatTemplate, hasUnknown, templateToScore, unknownCount,
+} from '../lib/scoreTemplate';
 
 const schema = z.object({
   machineName: z.string().min(1, 'Required'),
-  score: z.coerce.number().positive('Must be positive'),
+  score: z.coerce.number().int('Whole numbers only').positive('Must be positive'),
+  // x's still unfilled in a partial read (see ScoreDigitInput). Not sent to the server — it's here
+  // so saving is blocked by validation, not just by the disabled button.
+  scoreUnfilled: z.number().int().superRefine((n, ctx) => {
+    if (n > 0) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `Fill in every x before saving (${n} left)` });
+  }),
   playedAt: z.string().min(1, 'Required'),
   type: z.enum(['casual', 'tournament']),
   venueName: z.string().optional(),
@@ -68,6 +77,13 @@ export default function AddScorePage() {
   const [aiDetectedMachine, setAiDetectedMachine] = useState('');
   const [selectedMachineExtra, setSelectedMachineExtra] = useState<{ manufacturer?: string; year?: number } | null>(null);
   const [scoreDisplay, setScoreDisplay] = useState('');
+  // The AI's read of the score, including unread positions. `scoreTemplate` is the working copy the
+  // user fills in; null means plain-number entry (a complete read, no photo, or the escape hatch).
+  const [scoreRead, setScoreRead] = useState<ScoreRead | null>(null);
+  const [scoreTemplate, setScoreTemplate] = useState<string | null>(null);
+  // Object URLs for the larger photo preview shown while filling in x's. Revoked on replace/unmount.
+  const [photoPreviews, setPhotoPreviews] = useState<string[]>([]);
+  const photoPreviewsRef = useRef<string[]>([]);
   const [savedScore, setSavedScore] = useState<SavedScore | null>(null);
   const [pmEmail, setPmEmail] = useState('');
   const [pmPassword, setPmPassword] = useState('');
@@ -240,10 +256,62 @@ export default function AddScorePage() {
   const { register, handleSubmit, setValue, watch, formState: { errors, isSubmitting } } = useForm<FormData>({
     resolver: zodResolver(schema),
     // Local wall clock, not UTC — see datetime.ts for why toISOString() is wrong here.
-    defaultValues: { type: 'casual', playedAt: toLocalInput(new Date()) },
+    defaultValues: { type: 'casual', playedAt: toLocalInput(new Date()), scoreUnfilled: 0 },
   });
 
   const venueName = watch('venueName');
+
+  function replacePhotoPreviews(urls: string[]) {
+    photoPreviewsRef.current.forEach(u => URL.revokeObjectURL(u));
+    photoPreviewsRef.current = urls;
+    setPhotoPreviews(urls);
+  }
+  useEffect(() => () => { photoPreviewsRef.current.forEach(u => URL.revokeObjectURL(u)); }, []);
+
+  /** Sets the working template and keeps the form's score / unfilled-count in step with it. */
+  function applyScoreTemplate(t: string) {
+    setScoreTemplate(t);
+    const n = templateToScore(t);
+    setValue('score', n ?? ('' as any), { shouldValidate: false });
+    setValue('scoreUnfilled', unknownCount(t));
+    setScoreDisplay(n ? n.toLocaleString() : '');
+  }
+
+  function enterPlainScoreMode() {
+    const n = scoreTemplate ? templateToScore(scoreTemplate) : null;
+    setScoreTemplate(null);
+    setValue('scoreUnfilled', 0);
+    // A half-filled template has no honest plain-number equivalent — start the field empty rather
+    // than silently dropping the x's (which would shrink the score by orders of magnitude).
+    setValue('score', n ?? ('' as any));
+    setScoreDisplay(n ? n.toLocaleString() : '');
+  }
+
+  // Digits the user currently has, x's included — what the plausibility check runs against.
+  const currentScoreTemplate = scoreTemplate ?? scoreDisplay.replace(/[^0-9]/g, '');
+
+  // "This score may be missing digits" — never blocks saving. Two independent signals: the model saw
+  // signs of truncation on the display itself, or the number is implausibly small for this machine.
+  const plausibilityMachine = selectedMachine || aiDetectedMachine;
+  const { data: machineScoreStats } = useQuery({
+    queryKey: ['machine-score-stats', plausibilityMachine],
+    queryFn: () => api.machines.scoreStats(plausibilityMachine),
+    enabled: step === 3 && plausibilityMachine.length > 0,
+    staleTime: 5 * 60 * 1000,
+  });
+  const missingDigitReasons = useMemo(() => {
+    const reasons: string[] = [];
+    if (!currentScoreTemplate) return reasons;
+    // The model's flag describes its own read; once the user has typed a longer number it's answered.
+    if (scoreRead?.possiblyTruncated && currentScoreTemplate.length <= scoreRead.template.length) {
+      reasons.push(scoreRead.truncationReason ?? 'The display may show more digits than were read');
+    }
+    const p = machineScoreStats
+      ? checkPlausibility(currentScoreTemplate, machineScoreStats.median, machineScoreStats.count)
+      : scoreRead?.plausibility && scoreRead.template === currentScoreTemplate ? scoreRead.plausibility : null;
+    if (p?.flagged) reasons.push(`${p.reason} (typical: ${Math.round(p.median).toLocaleString()})`);
+    return reasons;
+  }, [currentScoreTemplate, scoreRead, machineScoreStats]);
 
   // True when the effective machine name (selected or AI-detected) isn't in the PM list for this venue
   const effectiveMachineName = selectedMachine || aiDetectedMachine;
@@ -252,7 +320,7 @@ export default function AddScorePage() {
     && !allVenueMachines.some(m => m.name.toLowerCase() === effectiveMachineName.toLowerCase());
 
   const createScore = useMutation({
-    mutationFn: async (data: FormData) => {
+    mutationFn: async ({ scoreUnfilled: _unfilled, ...data }: FormData) => {
       const machine = await api.machines.upsert({ name: data.machineName, ...selectedMachineExtra });
       return api.scores.create({
         ...data,
@@ -319,6 +387,7 @@ export default function AddScorePage() {
     const uploadFile: File | Blob = converted?.file ?? file;
 
     generateThumbnail(uploadFile).then(t => { setThumbnail(t); thumbnailSucceeded.current = true; }).catch(() => {});
+    replacePhotoPreviews([URL.createObjectURL(uploadFile)]);
     try {
       const result = await api.upload(uploadFile, {
         filename: converted?.filename,
@@ -332,7 +401,14 @@ export default function AddScorePage() {
         setAiDetectedMachine(result.machineName);
         // Don't pre-select — auto-select handles exact PM matches; banner guides the rest
       }
-      if (result.score) {
+      const read: ScoreRead | null = result.scoreRead ?? null;
+      setScoreRead(read);
+      if (read && hasUnknown(read.template)) {
+        // Partial read — the display was caught mid-refresh. Step 3 shows digit cells with x's.
+        applyScoreTemplate(read.template);
+      } else if (result.score) {
+        setScoreTemplate(null);
+        setValue('scoreUnfilled', 0);
         setValue('score', result.score);
         setScoreDisplay(Number(result.score).toLocaleString());
       }
@@ -879,19 +955,76 @@ export default function AddScorePage() {
           {/* Score */}
           <div>
             <label className="label">Score</label>
-            <input
-              type="text"
-              inputMode="numeric"
-              value={scoreDisplay}
-              onChange={e => {
-                const raw = e.target.value.replace(/[^0-9]/g, '');
-                setScoreDisplay(raw ? Number(raw).toLocaleString() : '');
-                setValue('score', raw ? Number(raw) : ('' as any));
-              }}
-              placeholder="e.g. 21,955,670"
-              className="input"
-            />
-            {errors.score && <p className="err">{errors.score.message}</p>}
+            {scoreTemplate != null && scoreRead && hasUnknown(scoreRead.template) && (
+              <div className="flex flex-col gap-2 mb-2">
+                <p className="flex items-start gap-2 text-xs rounded-lg bg-amber-500/10 text-amber-400 px-3 py-2">
+                  <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                  Display was mid-refresh — fill in the x's from the machine
+                </p>
+                {photoPreviews.length > 0 && (
+                  <div className="flex gap-2 overflow-x-auto">
+                    {photoPreviews.map((src, i) => (
+                      <img
+                        key={src}
+                        src={src}
+                        alt={`Uploaded photo ${i + 1}`}
+                        className="max-h-64 rounded-lg border border-white/10 object-contain bg-black flex-shrink-0"
+                        style={{ maxWidth: photoPreviews.length > 1 ? '80%' : '100%' }}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {scoreTemplate != null ? (
+              <ScoreDigitInput
+                value={scoreTemplate}
+                original={scoreRead?.template ?? scoreTemplate}
+                lowConfidence={scoreRead?.lowConfidence ?? []}
+                conflicts={scoreRead?.conflicts ?? []}
+                onChange={applyScoreTemplate}
+                onPlainMode={enterPlainScoreMode}
+              />
+            ) : (
+              <>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={scoreDisplay}
+                  onChange={e => {
+                    const raw = e.target.value.replace(/[^0-9]/g, '');
+                    setScoreDisplay(raw ? Number(raw).toLocaleString() : '');
+                    setValue('score', raw ? Number(raw) : ('' as any));
+                  }}
+                  placeholder={scoreRead && hasUnknown(scoreRead.template) ? `Photo read ${formatTemplate(scoreRead.template)}` : 'e.g. 21,955,670'}
+                  className="input"
+                />
+                {scoreRead && hasUnknown(scoreRead.template) && (
+                  <button
+                    type="button"
+                    onClick={() => applyScoreTemplate(scoreRead.template)}
+                    className="text-xs text-muted-foreground hover:text-white transition-colors mt-1"
+                  >
+                    ‹ Back to filling in the x's
+                  </button>
+                )}
+              </>
+            )}
+            {errors.scoreUnfilled
+              ? <p className="err">{errors.scoreUnfilled.message}</p>
+              : errors.score && <p className="err">{errors.score.message}</p>}
+            {missingDigitReasons.length > 0 && (
+              <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5">
+                <p className="flex items-start gap-2 text-xs text-amber-400 font-bold">
+                  <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                  This score may be missing digits
+                </p>
+                <ul className="mt-1 pl-5 list-disc text-xs text-amber-400/80">
+                  {missingDigitReasons.map(r => <li key={r}>{r}</li>)}
+                </ul>
+                <p className="mt-1 pl-5 text-xs text-muted-foreground">Check the machine — you can still save as-is.</p>
+              </div>
+            )}
           </div>
 
           {/* Date & Time */}
@@ -909,12 +1042,17 @@ export default function AddScorePage() {
             </select>
           </div>
 
+          {scoreTemplate != null && unknownCount(scoreTemplate) > 0 && (
+            <p className="text-xs text-amber-400 text-center -mb-2">
+              Fill in every x before saving ({unknownCount(scoreTemplate)} left)
+            </p>
+          )}
           <div className="flex gap-3 pt-2">
             <button type="button" onClick={() => setStep(2)}
               className="flex-1 py-2.5 rounded-lg border border-white/10 text-sm text-muted-foreground hover:text-white transition-colors">
               Back
             </button>
-            <button type="submit" disabled={isSubmitting || createScore.isPending}
+            <button type="submit" disabled={isSubmitting || createScore.isPending || (scoreTemplate != null && unknownCount(scoreTemplate) > 0)}
               className="flex-1 py-2.5 rounded-lg bg-primary text-white font-bold uppercase tracking-wider text-sm hover:opacity-90 transition-opacity disabled:opacity-50">
               {createScore.isPending ? 'Saving...' : 'Save Score'}
             </button>

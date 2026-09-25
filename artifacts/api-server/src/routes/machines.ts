@@ -3,6 +3,7 @@ import { db, machines, scores, users, venues } from '@workspace/db';
 import { eq, desc, max, count, isNotNull, sql } from 'drizzle-orm';
 import { searchMachines } from '../lib/pinballMap.js';
 import { upsertMachineByName } from '../lib/machineUpsert.js';
+import { getMachineScoreStats } from '../lib/machineScoreStats.js';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { getAuth } from '@clerk/express';
 
@@ -66,6 +67,22 @@ router.get('/search', async (req, res) => {
     res.json(results);
   } catch (err) {
     res.status(500).json({ error: 'Search failed' });
+  }
+});
+
+// GET /api/machines/score-stats?machineId=&name= — count + median of recorded scores on a machine.
+// Feeds the add-score "this score may be missing digits" check once the user has picked a machine
+// (the upload route runs the same check itself against the AI-read name). Registered before /:name,
+// which would otherwise swallow it. Read-only.
+router.get('/score-stats', async (req, res) => {
+  const machineId = req.query.machineId != null ? Number(req.query.machineId) : undefined;
+  const name = typeof req.query.name === 'string' ? req.query.name : undefined;
+  if (machineId == null && !name) return res.status(400).json({ error: 'machineId or name is required' });
+  try {
+    res.json(await getMachineScoreStats({ machineId, name }));
+  } catch (err) {
+    console.error('Machine score stats error:', err);
+    res.status(500).json({ error: 'Failed to fetch machine score stats' });
   }
 });
 

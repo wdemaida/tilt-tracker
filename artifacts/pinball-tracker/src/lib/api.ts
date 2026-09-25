@@ -45,6 +45,10 @@ export function createApi(getToken: () => Promise<string | null>) {
         request<any[]>(mine ? '/machines?mine=true' : '/machines', undefined, mine ? await tok() : undefined),
       get: (name: string) => request<any>(`/machines/${encodeURIComponent(name)}`),
       search: (q: string) => request<any[]>(`/machines/search?q=${encodeURIComponent(q)}`),
+      // Count + median of recorded scores — drives the "may be missing digits" check on AddScorePage.
+      scoreStats: (name: string) =>
+        request<{ machineId: number | null; machineName: string | null; count: number; median: number | null }>(
+          `/machines/score-stats?name=${encodeURIComponent(name)}`),
       upsert: async (body: Record<string, unknown>) =>
         request<any>('/machines', { method: 'POST', body: JSON.stringify(body) }, await tok()),
       patch: async (id: number, body: { name?: string; manufacturer?: string; year?: number | null }) =>

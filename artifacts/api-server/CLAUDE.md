@@ -102,3 +102,19 @@
 - Guards against `getPmMachinesAtLocation()` returning `[]` on a fetch failure (a real thing it does) — `syncVenueMachineHistory` only marks machines removed when the live list is non-empty, so a transient PM API blip can't mass-mark an entire venue's roster as gone.
 - Pre-existing venue history (before this table existed) is **not recoverable** — verified by checking both Pinball Map's API and our own `scores` table for a specific venue with no trace of an earlier machine. Don't try to backfill; the table only knows what it's observed since 2026-07-01.
 - `AddScorePage.tsx` unions in machines removed within the last 90 days (`RECENTLY_LEFT_DAYS`) as valid suggestions, tagged "Recently left" — this is what makes late score uploads work (e.g. photo taken Friday night, uploaded Monday, machine swapped Saturday): the machine just shows a badge instead of triggering the "not found in Pinball Map" confirmation dialog. Score submission itself was never gated on live PM presence anyway (that confirm-and-continue escape hatch already existed) — this table only makes the UX honest about it.
+
+## Score extraction (`src/lib/anthropic.ts`, `src/lib/scoreRead.ts`, added 2026-09-24)
+- The model answers through a **forced tool call** (`record_score_read`, `strict: true`) — no more
+  regex-parsing JSON out of prose. `strict` isn't in the pinned SDK's `Tool` type (0.36), hence the
+  intersection type; the API accepts it on `claude-sonnet-4-6`.
+- A read is a **template**: digits plus `?` for positions that exist but were dark. Old multiplexed
+  segment displays get caught mid-refresh by a phone shutter; the prompt tells the model to never
+  guess a digit. `upload.ts` returns `score` only when the template has no `?` (older clients) and
+  the full read as `scoreRead`. The template's `status` is derived in code, not trusted from the model.
+- **Every route that accepts a score goes through `parseScore()`** (scores POST/PATCH, Pinball Map
+  submit): safe positive integers only, as a number or a `^\d+$` string, else 400 `invalid_score`.
+- "May be missing digits" plausibility: `checkPlausibility()` flags a read whose *upper bound*
+  (x's taken as 9s) is under 1/50 of the machine's median recorded score. Machine stats come from
+  `machineScoreStats.ts` (id → case-insensitive name → unique `normalizeMachineName` match), served
+  read-only at `GET /api/machines/score-stats`. The frontend mirrors the check in
+  `src/lib/scoreTemplate.ts` — keep the two in step.

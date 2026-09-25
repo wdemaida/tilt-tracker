@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import { requireAppUser } from '../middleware/requireAuth.js';
 import { getPmUserToken, submitPmScore } from '../lib/pinballmapApi.js';
 import { getVenueRoster } from '../lib/pmRosterCache.js';
+import { parseScore } from '../lib/scoreRead.js';
 
 const router = Router();
 
@@ -38,8 +39,12 @@ router.post('/submit-score', requireAppUser, async (req, res) => {
   const userToken: string | undefined = req.body.userToken ?? user.pinballMapToken ?? undefined;
   const usingStoredToken = !req.body.userToken && !!user.pinballMapToken;
 
-  if (!userToken || !venueId || !machineName || !score) {
+  if (!userToken || !venueId || !machineName || score == null) {
     return res.status(400).json({ error: 'venueId, machineName, and score are required; no Pinball Map token available' });
+  }
+  const parsedScore = parseScore(score);
+  if (parsedScore == null) {
+    return res.status(400).json({ error: 'score must be a positive whole number', code: 'invalid_score' });
   }
 
   try {
@@ -58,7 +63,7 @@ router.post('/submit-score', requireAppUser, async (req, res) => {
       return res.status(422).json({ error: `"${machineName}" not found on Pinball Map at this venue` });
     }
 
-    const ok = await submitPmScore(userToken, xref.id, Number(score));
+    const ok = await submitPmScore(userToken, xref.id, parsedScore);
     if (!ok) {
       if (usingStoredToken) {
         await db.update(users).set({ pinballMapToken: null }).where(eq(users.id, user.id));

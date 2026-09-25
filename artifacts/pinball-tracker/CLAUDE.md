@@ -77,3 +77,14 @@
   as **local**, so the edit modal and the score card disagreed by the viewer's offset and saving
   wrote that shift back to the database. `toLocalInput` / `localInputToIso` are the round trip;
   `naiveToLocalInput` is for the zone-less wall clock `/api/upload` returns for EXIF timestamps.
+
+## Partial score reads (`ScoreDigitInput.tsx`, `src/lib/scoreTemplate.ts`, added 2026-09-24)
+- When `/api/upload`'s `scoreRead.template` contains `?`, step 3 renders digit cells instead of the
+  plain input: unread positions are amber x's filled left-to-right, low-confidence digits are amber
+  but need no confirmation. **Never auto-fill** — the trailing-zeros chip is a one-tap suggestion only.
+- Save is blocked two ways while x's remain: the button is disabled, and the zod schema's
+  `scoreUnfilled` field fails validation. `scoreUnfilled` is stripped before `POST /api/scores`.
+- The hidden input keeps a one-space sentinel value so a mobile keyboard's backspace still fires a
+  change event; don't "simplify" it to an empty controlled input.
+- "Edit as plain number" starts the field **empty** when x's remain — dropping the x's would shrink
+  the score by orders of magnitude.
