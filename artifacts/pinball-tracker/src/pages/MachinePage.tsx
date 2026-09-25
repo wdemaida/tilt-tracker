@@ -8,7 +8,7 @@ import {
 import { format, parseISO } from 'date-fns';
 import { formatScoreTime } from '../lib/scoreTime';
 import {
-  ComposedChart, LineChart, Line, Scatter, XAxis, YAxis,
+  ScatterChart, LineChart, Line, Scatter, XAxis, YAxis,
   CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
@@ -21,12 +21,12 @@ import { podColorTokens, podColorVars } from '../lib/podColor';
 
 // ─── constants ────────────────────────────────────────────────────────────────
 
-const VENUE_COLORS  = ['#22d3ee', '#f97316', '#34d399', '#f472b6', '#60a5fa', '#e879f9'];
 const VISIT_GAP_MS  = 6 * 3600 * 1000; // 6-hour gap = new visit
 const ROLLING_WINDOW = 5;
-const NO_VENUES: number[] = []; // stable identity for useMemo deps
 
 type ChartMode = 'play' | 'visit' | 'scatter';
+/** Scatter only: each group's rolling-average line (with its turning points), or every score as a dot. */
+type ScatterView = 'trend' | 'scores';
 type VisitAgg  = 'best' | 'average';
 type ViewMode  = 'aggregate' | 'chaos';
 type SortKey   = 'playedAt' | 'username' | 'type' | 'score';
@@ -70,11 +70,41 @@ function groupOf(s: any, myUsername: string | null): Group {
   return myUsername && s.username === myUsername ? 'self' : 'other';
 }
 
-function rollingAvg(plays: { x: number; y: number }[], window = ROLLING_WINDOW) {
-  return plays.map((p, i) => {
-    const slice = plays.slice(Math.max(0, i - window + 1), i + 1);
-    return { x: p.x, trend: Math.round(slice.reduce((s, d) => s + d.y, 0) / slice.length) };
+interface ScatterDot {
+  x: number; y: number; playedAt: string;
+  venue?: string; venueTimezone?: string; username?: string;
+}
+type TrendOwner = 'me' | 'pod' | 'field';
+interface TrendPoint { x: number; y: number; n: number; turn: boolean; owner: TrendOwner; play: ScatterDot }
+
+/**
+ * A group's rolling average over its plays in date order, one point per calendar day (the average
+ * as it stood after that day's last play). Several plays on one day share almost the same x, so a
+ * point per play drew vertical spikes. `turn` marks where the line changes direction (local peaks
+ * and valleys) plus its first and last points — the only places the Trend view draws a dot.
+ *
+ * Until a group has ROLLING_WINDOW plays, a point averages all of its plays so far (the tooltip
+ * says so), so the line covers the group's whole history rather than starting mid-series.
+ */
+function rollingTrend(dots: ScatterDot[], owner: TrendOwner, window = ROLLING_WINDOW): TrendPoint[] {
+  const perPlay = dots.map((p, i) => {
+    const slice = dots.slice(Math.max(0, i - window + 1), i + 1);
+    return { x: p.x, y: Math.round(slice.reduce((s, d) => s + d.y, 0) / slice.length), n: slice.length, turn: false, owner, play: p };
   });
+  const byDay = new Map<string, TrendPoint>();
+  for (const p of perPlay) byDay.set(format(new Date(p.x), 'yyyy-MM-dd'), p); // last play of the day wins
+  const pts = [...byDay.values()];
+  let prevDir = 0;
+  pts.forEach((p, i) => {
+    if (i === 0 || i === pts.length - 1) { p.turn = true; }
+    const next = pts[i + 1];
+    if (!next) return;
+    const dir = Math.sign(next.y - p.y);
+    if (dir === 0) return; // a flat step keeps the previous direction
+    if (i > 0 && prevDir !== 0 && dir !== prevDir) p.turn = true;
+    prevDir = dir;
+  });
+  return pts;
 }
 
 // ─── line-chart data builders ─────────────────────────────────────────────────
@@ -109,15 +139,11 @@ function seriesByUser(plays: any[], agg: VisitAgg | 'play') {
 }
 
 function buildLineData(
-  scores: any[],
+  filtered: any[],
   myUsername: string | null,
-  selectedVenueIds: number[],
   viewMode: ViewMode,
   agg: VisitAgg | 'play',
 ) {
-  const filtered = selectedVenueIds.length
-    ? scores.filter(s => selectedVenueIds.includes(s.venueId))
-    : scores;
 
   const userGroup: Record<string, Group> = {};
   for (const s of filtered) userGroup[s.username] = groupOf(s, myUsername);
@@ -145,30 +171,6 @@ function buildLineData(
       return entry;
     });
     return { data, lineKeys: ordered, userGroup, hasPod: false, hasField: false, type: 'chaos' as const };
-  }
-
-  // venue comparison mode
-  if (selectedVenueIds.length > 0) {
-    const venues = [...new Map<number, string>(
-      filtered.filter(s => s.venueName).map(s => [s.venueId as number, s.venueName as string]),
-    ).entries()].map(([id, name]) => ({ id, name }));
-    const seriesMap: Record<string, { idx: number; score: number; date?: string }[]> = {};
-    for (const v of venues) {
-      const vPlays = filtered.filter(s => s.venueId === v.id && s.username === myUsername);
-      seriesMap[v.name] = userOrdinalData(vPlays, agg).map(d => ({
-        idx: d.idx, score: d.score, date: d.playedAt,
-      }));
-    }
-    const maxLen = Math.max(...venues.map(v => seriesMap[v.name].length), 0);
-    const data = Array.from({ length: maxLen }, (_, i) => {
-      const entry: any = { x: i + 1 };
-      for (const v of venues) {
-        const p = seriesMap[v.name][i];
-        if (p) { entry[v.name] = p.score; entry[`${v.name}_date`] = p.date; }
-      }
-      return entry;
-    });
-    return { data, lineKeys: venues.map(v => v.name), userGroup, hasPod: false, hasField: false, type: 'venue' as const };
   }
 
   // aggregate mode — you vs the pod's median (pod scope) vs the field median (everyone else)
@@ -202,43 +204,22 @@ function buildLineData(
 
 // ─── scatter data builder ─────────────────────────────────────────────────────
 
-function buildScatterData(
-  scores: any[],
-  myUsername: string | null,
-  selectedVenueIds: number[],
-) {
-  const filtered = selectedVenueIds.length
-    ? scores.filter(s => selectedVenueIds.includes(s.venueId))
-    : scores;
+function buildScatterData(filtered: any[], myUsername: string | null) {
   const sorted = [...filtered].sort(
     (a, b) => new Date(a.playedAt).getTime() - new Date(b.playedAt).getTime(),
   );
-
-  if (selectedVenueIds.length > 0) {
-    const venues = [...new Map<number, string>(
-      filtered.filter(s => s.venueName).map(s => [s.venueId as number, s.venueName as string]),
-    ).entries()].map(([id, name]) => ({ id, name }));
-    const perVenue = venues.map(v => ({
-      venueName: v.name,
-      dots: sorted.filter(s => s.venueId === v.id && s.username === myUsername).map(s => ({
-        x: new Date(s.playedAt).getTime(), y: Number(s.score), playedAt: s.playedAt,
-      })),
-    }));
-    return { type: 'venue' as const, perVenue };
-  }
-
-  // aggregate — every group the Compare scope put in the response: you, the pod (pod scope) and
-  // everyone else (All scope, or pod scope with "All others"). Nothing in the chart hides a group.
-  const dotsFor = (grp: Group) => sorted.filter(s => groupOf(s, myUsername) === grp).map(s => ({
+  // Every group the Compare scope put in the response: you, the pod (pod scope) and everyone else
+  // (All scope, or pod scope with "All others"). Nothing in the chart hides a group.
+  const dotsFor = (grp: Group): ScatterDot[] => sorted.filter(s => groupOf(s, myUsername) === grp).map(s => ({
     x: new Date(s.playedAt).getTime(), y: Number(s.score),
     venue: s.venueName, venueTimezone: s.venueTimezone, playedAt: s.playedAt,
     ...(grp === 'self' ? {} : { username: s.username as string }),
   }));
   const myDots = dotsFor('self'), podDots = dotsFor('pod'), fieldDots = dotsFor('other');
-  const trendLine = rollingAvg(myDots).map(p => ({ ...p, owner: 'me' as const }));
-  const podTrendLine = rollingAvg(podDots).map(p => ({ ...p, owner: 'pod' as const }));
-  const fieldTrendLine = rollingAvg(fieldDots).map(p => ({ ...p, owner: 'field' as const }));
-  return { type: 'aggregate' as const, myDots, podDots, fieldDots, trendLine, podTrendLine, fieldTrendLine };
+  return {
+    myDots, podDots, fieldDots,
+    myTrend: rollingTrend(myDots, 'me'), podTrend: rollingTrend(podDots, 'pod'), fieldTrend: rollingTrend(fieldDots, 'field'),
+  };
 }
 
 // ─── tooltips ─────────────────────────────────────────────────────────────────
@@ -286,23 +267,28 @@ function LineTooltip({ active, payload, label, chartMode, visitAgg, myUsername, 
 
 function ScatterTooltip({ active, payload, podName, podText, othersLabel }: any) {
   if (!active || !payload?.length) return null;
-  // recharts always puts the trend-line entry first when a dot and a trend
-  // point share the same x — prefer an actual dot's payload when one is present.
-  const dotEntry = payload.find((p: any) => p.payload && !('trend' in p.payload));
-  const d = (dotEntry ?? payload[0])?.payload;
+  const entry = payload[0];
+  const d = entry?.payload;
   if (!d) return null;
-  // trend line hover
-  if ('trend' in d) {
-    const isField = d.owner === 'field';
-    const isPod = d.owner === 'pod';
-    const who = isPod ? podName : isField ? othersLabel : 'Your';
+  // A turning point on a rolling-average line (Trend view).
+  if ('turn' in d) {
+    const owner: TrendOwner = d.owner;
+    const who = owner === 'pod' ? `${podName}` : owner === 'field' ? othersLabel : 'Your';
+    const play: ScatterDot = d.play;
     return (
-      <div className="rounded-lg border border-white/20 bg-zinc-900/95 p-2.5 text-xs shadow-xl">
-        <p className="text-muted-foreground">{who} rolling avg ({ROLLING_WINDOW}-play)</p>
-        <p className={`font-bold ${isField ? 'text-field' : isPod ? '' : 'text-primary'}`} style={isPod ? { color: podText } : undefined}>
-          {Number(d.trend).toLocaleString()}
+      <div className="rounded-lg border border-white/20 bg-zinc-900/95 p-2.5 text-xs shadow-xl max-w-[220px]">
+        <p className="text-muted-foreground">
+          {who} {d.n < ROLLING_WINDOW ? `avg of first ${d.n} play${d.n === 1 ? '' : 's'}` : `${ROLLING_WINDOW}-play avg`}
+        </p>
+        <p className={`font-bold ${owner === 'field' ? 'text-field' : owner === 'pod' ? '' : 'text-username'}`} style={owner === 'pod' ? { color: podText } : undefined}>
+          {Number(d.y).toLocaleString()}
         </p>
         <p className="text-muted-foreground">{format(new Date(d.x), 'MMM d, yyyy')}</p>
+        <div className="mt-1.5 pt-1.5 border-t border-white/10">
+          <p className="text-muted-foreground">Latest play: <span className="text-white font-semibold">{Number(play.y).toLocaleString()}</span></p>
+          {play.username && <p className="text-username">@{play.username}</p>}
+          {play.venue && <p className="text-venue">{play.venue}</p>}
+        </div>
       </div>
     );
   }
@@ -395,6 +381,7 @@ export default function MachinePage() {
   const [chartMode, setChartMode] = useState<ChartMode>('play');
   const [visitAgg,  setVisitAgg]  = useState<VisitAgg>('best');
   const [viewMode,  setViewMode]  = useState<ViewMode>('aggregate');
+  const [scatterView, setScatterView] = useState<ScatterView>('trend');
   const [selectedVenueIds, setSelectedVenueIds] = useState<number[]>([]);
 
   const authApi = useApi();
@@ -429,9 +416,6 @@ export default function MachinePage() {
   // players are drawn in By Play / By Visit. Mine has nobody to split out, and Scatter already plots
   // every individual play, so both always use the aggregate view (the switch is hidden there).
   const effectiveViewMode: ViewMode = scope.kind === 'mine' || chartMode === 'scatter' ? 'aggregate' : viewMode;
-  // The venue picker is only offered in the aggregate view; don't let a selection made there keep
-  // filtering invisibly after switching to Each Player. (It's kept, and reapplies on switching back.)
-  const activeVenueIds = effectiveViewMode === 'aggregate' ? selectedVenueIds : NO_VENUES;
   const scopeLabel =
     scope.kind === 'mine' ? 'Just you'
     : scope.kind === 'pod' ? `You + ${podName}${scope.others ? ' + everyone else' : ''}`
@@ -443,6 +427,19 @@ export default function MachinePage() {
             .map(s => [s.venueId, { venueId: s.venueId, venueName: s.venueName }]),
     ).values()];
   }, [scores]);
+
+  // The venue picker is a pure filter on the chart's records: same series, same colors, fewer
+  // points. It doesn't touch Top Score, Venue Difficulty or the table. Only venues still present in
+  // the current Compare scope count (a selection can outlive a scope switch), and a picker that
+  // isn't shown (scores at one venue) never filters.
+  const activeVenueIds = useMemo(
+    () => uniqueVenues.length < 2 ? [] : selectedVenueIds.filter(id => uniqueVenues.some(v => v.venueId === id)),
+    [selectedVenueIds, uniqueVenues],
+  );
+  const chartScores = useMemo(
+    () => activeVenueIds.length ? scores.filter(s => activeVenueIds.includes(s.venueId)) : scores,
+    [scores, activeVenueIds],
+  );
 
   const machineAvgScore = useMemo(() => {
     if (!scores.length) return 0;
@@ -485,13 +482,49 @@ export default function MachinePage() {
   const lineResult = useMemo(() => {
     if (chartMode === 'scatter' || scores.length < 2) return null;
     const agg = chartMode === 'visit' ? visitAgg : 'play';
-    return buildLineData(scores, myUsername, activeVenueIds, effectiveViewMode, agg);
-  }, [scores, chartMode, visitAgg, myUsername, activeVenueIds, effectiveViewMode]);
+    return buildLineData(chartScores, myUsername, effectiveViewMode, agg);
+  }, [scores.length, chartScores, chartMode, visitAgg, myUsername, effectiveViewMode]);
 
   const scatterResult = useMemo(() => {
     if (chartMode !== 'scatter' || scores.length < 2) return null;
-    return buildScatterData(scores, myUsername, activeVenueIds);
-  }, [chartMode, scores, myUsername, activeVenueIds]);
+    return buildScatterData(chartScores, myUsername);
+  }, [chartMode, scores.length, chartScores, myUsername]);
+
+  // Scatter axes. Recharts' 'auto' domains put the earliest/latest play and the top score exactly
+  // on the plot edge, so those dots were cut in half. Pad the time axis a little on both sides and
+  // leave headroom above the highest thing drawn (rolling averages in Trend, scores in Scores).
+  const scatterAxes = useMemo(() => {
+    if (!scatterResult) return null;
+    const dots = [...scatterResult.myDots, ...scatterResult.podDots, ...scatterResult.fieldDots];
+    if (!dots.length) return null;
+    const xs = dots.map(d => d.x);
+    const xMin = Math.min(...xs), xMax = Math.max(...xs);
+    const xPad = Math.max((xMax - xMin) * 0.03, 12 * 3600 * 1000);
+    const ys = scatterView === 'trend'
+      ? [...scatterResult.myTrend, ...scatterResult.podTrend, ...scatterResult.fieldTrend].map(p => p.y)
+      : dots.map(d => d.y);
+    // Round, evenly spaced y ticks (0, 30M, 60M…) with the top one above the highest value.
+    const yRaw = Math.max(...ys, 1) * 1.05;
+    const mag = 10 ** Math.floor(Math.log10(yRaw / 4));
+    const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(st => yRaw / st <= 5) ?? 10 * mag;
+    const yTicks = Array.from({ length: Math.ceil(yRaw / step) + 1 }, (_, i) => i * step);
+    // Time ticks on month starts (or on Mondays for a span under ~2 months), so they read as dates
+    // rather than the arbitrary days a numeric axis picks.
+    const x0 = xMin - xPad, x1 = xMax + xPad;
+    const monthly = x1 - x0 > 60 * 86_400_000;
+    const xTicks: number[] = [];
+    const d = new Date(x0);
+    if (monthly) { d.setDate(1); d.setHours(0, 0, 0, 0); d.setMonth(d.getMonth() + 1); }
+    else { d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + ((8 - d.getDay()) % 7 || 7)); }
+    while (d.getTime() <= x1) {
+      xTicks.push(d.getTime());
+      if (monthly) d.setMonth(d.getMonth() + 1); else d.setDate(d.getDate() + 7);
+    }
+    return {
+      x: [x0, x1] as [number, number], xTicks, xFormat: monthly ? 'MMM' : 'MMM d',
+      yTicks, yMax: yTicks[yTicks.length - 1],
+    };
+  }, [scatterResult, scatterView]);
 
   // ── guards ──────────────────────────────────────────────────────────────────
 
@@ -555,42 +588,43 @@ export default function MachinePage() {
   // ── chart description ───────────────────────────────────────────────────────
 
   function chartDescription() {
-    const n = activeVenueIds.length;
     const aggNoun = visitAgg === 'best' ? 'best score' : 'average score';
     const visitNote = 'Visits = groups of plays within 6 hours of each other';
-    // Picking venues switches to a per-venue comparison of your own plays — say so, since it
-    // drops everyone else from the chart whatever Compare is set to.
-    if (n > 0) {
-      const venues = n > 1 ? 'each selected venue' : 'the selected venue';
-      const others = scope.kind === 'mine' ? '' : ' Other players are hidden while comparing venues.';
-      if (chartMode === 'scatter') return `Your plays at ${venues} as dots on their actual dates, one color per venue.${others}`;
-      if (chartMode === 'visit') return `Your ${aggNoun} per visit at ${venues}, one line per venue. ${visitNote}.${others}`;
-      return `Your score on each play at ${venues}, one line per venue.${others}`;
-    }
+    const n = activeVenueIds.length;
+    const venueNote = n === 0 ? ''
+      : n === 1 ? ` Only plays at ${uniqueVenues.find(v => v.venueId === activeVenueIds[0])?.venueName ?? 'the selected venue'}.`
+      : ` Only plays at the ${n} selected venues.`;
+    const trendNote = `Lines are ${ROLLING_WINDOW}-play rolling averages, one point per day; dots mark where a line turns.`;
     if (scope.kind === 'mine') {
-      if (chartMode === 'scatter') return `Every one of your plays as a dot on its actual date. The dashed line is a ${ROLLING_WINDOW}-play rolling average.`;
-      if (chartMode === 'visit') return `Your ${aggNoun} per venue visit. ${visitNote}.`;
-      return `Your score on each play, in order. Plays from the same visit appear as consecutive points.`;
+      if (chartMode === 'scatter') {
+        return (scatterView === 'trend'
+          ? `Your ${ROLLING_WINDOW}-play rolling average over time, one point per day; dots mark where it turns.`
+          : 'Every one of your plays as a dot on its actual date.') + venueNote;
+      }
+      if (chartMode === 'visit') return `Your ${aggNoun} per venue visit. ${visitNote}.${venueNote}`;
+      return `Your score on each play, in order. Plays from the same visit appear as consecutive points.${venueNote}`;
     }
     // Who else Compare put on the chart, and in which color.
     const who = scope.kind === 'pod'
       ? `${podName} in its color${scope.others ? ', everyone else in purple' : ''}`
       : 'everyone else in purple';
     if (chartMode === 'scatter') {
-      return `Every play as a dot on its actual date — yours in yellow, ${who}. Dashed lines are each group's ${ROLLING_WINDOW}-play rolling average.`;
+      return (scatterView === 'trend'
+        ? `Yours in yellow, ${who}. ${trendNote}`
+        : `Every play as a dot on its actual date — yours in yellow, ${who}.`) + venueNote;
     }
     if (effectiveViewMode === 'chaos') {
       const what = chartMode === 'visit'
         ? `${aggNoun.charAt(0).toUpperCase() + aggNoun.slice(1)} per visit`
         : 'Every play numbered chronologically';
-      return `${what}, one line per player — yours in yellow, ${who}.${chartMode === 'visit' ? ` ${visitNote}.` : ''}`;
+      return `${what}, one line per player — yours in yellow, ${who}.${chartMode === 'visit' ? ` ${visitNote}.` : ''}${venueNote}`;
     }
     const vs = scope.kind === 'pod'
       ? `the ${podName} median${scope.others ? " and everyone else's median" : ''}`
       : 'the field median (everyone else)';
-    return chartMode === 'visit'
+    return (chartMode === 'visit'
       ? `Your ${aggNoun} per venue visit vs. ${vs}. ${visitNote}.`
-      : `Your score on each play vs. ${vs}. Plays from the same visit appear as consecutive points.`;
+      : `Your score on each play vs. ${vs}. Plays from the same visit appear as consecutive points.`) + venueNote;
   }
 
   // ── render ──────────────────────────────────────────────────────────────────
@@ -673,11 +707,11 @@ export default function MachinePage() {
             </div>
 
             {/* Venue filter */}
-            {uniqueVenues.length >= 2 && effectiveViewMode === 'aggregate' && (
+            {uniqueVenues.length >= 2 && (
               <VenueDropdown
                 venues={uniqueVenues}
-                selectedIds={selectedVenueIds}
-                onToggle={id => setSelectedVenueIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])}
+                selectedIds={activeVenueIds}
+                onToggle={id => setSelectedVenueIds(activeVenueIds.includes(id) ? activeVenueIds.filter(x => x !== id) : [...activeVenueIds, id])}
                 onClear={() => setSelectedVenueIds([])}
               />
             )}
@@ -740,6 +774,28 @@ export default function MachinePage() {
             </div>
           )}
 
+          {/* Scatter sub-toggle: rolling-average lines, or every individual score. */}
+          {chartMode === 'scatter' && (
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-xs text-muted-foreground">Show:</span>
+              <div role="group" aria-label="Scatter shows"
+                className="flex items-center bg-white/5 rounded-lg p-0.5 border border-white/10 text-xs font-bold uppercase tracking-wider">
+                {(['trend', 'scores'] as ScatterView[]).map(v => (
+                  <button
+                    key={v}
+                    type="button"
+                    aria-pressed={scatterView === v}
+                    title={v === 'trend' ? `Each group's ${ROLLING_WINDOW}-play rolling average` : 'Every individual score as a dot'}
+                    onClick={() => setScatterView(v)}
+                    className={`px-3 py-1 rounded-md transition-colors ${scatterView === v ? 'bg-white/15 text-white' : 'text-muted-foreground hover:text-white'}`}
+                  >
+                    {v === 'trend' ? `${ROLLING_WINDOW}-Play Avg` : 'Every Score'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Legends — one entry per group actually drawn. */}
           {lineResult?.type === 'aggregate' && (
             <div className="flex items-center gap-4 mb-3 text-xs flex-wrap">
@@ -774,44 +830,33 @@ export default function MachinePage() {
               </div>
             );
           })()}
-          {scatterResult?.type === 'aggregate' && (
-            <div className="flex items-center gap-4 mb-3 text-xs flex-wrap">
-              {scatterResult.myDots.length > 0 && (
-                <div className="flex items-center gap-1.5">
-                  <div className="w-2 h-2 rounded-full bg-username" />
-                  <svg width="16" height="6"><line x1="0" y1="3" x2="16" y2="3" stroke="hsl(var(--username))" strokeWidth="1.5" strokeDasharray="4 3" /></svg>
-                  <span className="text-muted-foreground">Your plays &amp; {ROLLING_WINDOW}-play avg</span>
-                </div>
-              )}
-              {pod && podTokens && scatterResult.podDots.length > 0 && (
-                <div className="flex items-center gap-1.5" style={podColorVars(pod.color)}>
-                  <div className="w-2 h-2 rounded-full bg-pod" />
-                  <svg width="16" height="6"><line x1="0" y1="3" x2="16" y2="3" stroke={podTokens.graphic} strokeWidth="1.5" strokeDasharray="4 3" /></svg>
-                  <span className="text-pod-text font-semibold truncate max-w-[10rem]">{pod.name}</span>
-                  <span className="text-muted-foreground">plays &amp; avg</span>
-                </div>
-              )}
-              {scatterResult.fieldDots.length > 0 && (
-                <div className="flex items-center gap-1.5">
-                  <div className="w-2 h-2 rounded-full bg-field opacity-40" />
-                  <svg width="16" height="6"><line x1="0" y1="3" x2="16" y2="3" stroke="hsl(var(--field))" strokeWidth="1.5" strokeDasharray="4 3" /></svg>
-                  <span className="text-muted-foreground">{othersLabel} plays &amp; avg</span>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Venue comparison legend */}
-          {lineResult?.type === 'venue' && lineResult.lineKeys.length > 0 && (
-            <div className="flex flex-wrap items-center gap-3 mb-3 text-xs">
-              {lineResult.lineKeys.map((vn, i) => (
-                <div key={vn} className="flex items-center gap-1.5">
-                  <div className="w-3 h-0.5 rounded" style={{ background: VENUE_COLORS[i % VENUE_COLORS.length] }} />
-                  <span className="text-muted-foreground truncate max-w-[120px]">{vn}</span>
-                </div>
-              ))}
-            </div>
-          )}
+          {scatterResult && (() => {
+            const trend = scatterView === 'trend';
+            // Matches the chart: your line is solid, the others dashed.
+            const mark = (color: string, solid = false) => trend ? (
+              <svg width="18" height="8"><line x1="0" y1="4" x2="18" y2="4" stroke={color} strokeWidth={solid ? 2 : 1.5} strokeDasharray={solid ? undefined : '4 3'} /><circle cx="9" cy="4" r="3" fill={color} /></svg>
+            ) : (
+              <svg width="8" height="8"><circle cx="4" cy="4" r="4" fill={color} /></svg>
+            );
+            const noun = trend ? `${ROLLING_WINDOW}-play avg` : 'plays';
+            return (
+              <div className="flex items-center gap-4 mb-3 text-xs flex-wrap">
+                {scatterResult.myDots.length > 0 && (
+                  <div className="flex items-center gap-1.5">{mark('hsl(var(--username))', true)}<span className="text-muted-foreground">Your {noun}</span></div>
+                )}
+                {pod && podTokens && scatterResult.podDots.length > 0 && (
+                  <div className="flex items-center gap-1.5" style={podColorVars(pod.color)}>
+                    {mark(podTokens.graphic)}
+                    <span className="text-pod-text font-semibold truncate max-w-[10rem]">{pod.name}</span>
+                    <span className="text-muted-foreground">{noun}</span>
+                  </div>
+                )}
+                {scatterResult.fieldDots.length > 0 && (
+                  <div className="flex items-center gap-1.5">{mark('hsl(var(--field))')}<span className="text-muted-foreground">{othersLabel} {noun}</span></div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Chart */}
           <ResponsiveContainer width="100%" height={220}>
@@ -841,12 +886,6 @@ export default function MachinePage() {
                     )}
                   </>
                 )}
-                {lineResult.type === 'venue' && lineResult.lineKeys.map((vn, i) => (
-                  <Line key={vn} type="monotone" dataKey={vn}
-                    stroke={VENUE_COLORS[i % VENUE_COLORS.length]} strokeWidth={2}
-                    dot={{ fill: VENUE_COLORS[i % VENUE_COLORS.length], r: 4, strokeWidth: 0 }}
-                    activeDot={{ r: 6, strokeWidth: 0 }} connectNulls={false} />
-                ))}
                 {/* Drawn back to front: everyone else, then the pod, then you on top. */}
                 {lineResult.type === 'chaos' && [...lineResult.lineKeys].reverse().map(u => {
                   const g = lineResult.userGroup[u] ?? 'other';
@@ -860,46 +899,46 @@ export default function MachinePage() {
                   );
                 })}
               </LineChart>
-            ) : scatterResult ? (
-              <ComposedChart margin={{ top: 4, right: 8, left: 0, bottom: 4 }}
-                data={
-                  scatterResult.type === 'venue'
-                    ? scatterResult.perVenue.flatMap(v => v.dots)
-                    : [...scatterResult.myDots, ...scatterResult.podDots, ...scatterResult.fieldDots]
-                }>
+            ) : scatterResult && scatterAxes ? (
+              <ScatterChart margin={{ top: 10, right: 12, left: 0, bottom: 4 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
-                <XAxis dataKey="x" type="number" scale="time" domain={['auto', 'auto']}
+                <XAxis dataKey="x" type="number" scale="time" domain={scatterAxes.x} allowDataOverflow
+                  ticks={scatterAxes.xTicks} interval="preserveStartEnd"
                   tick={AXIS_STYLE} tickLine={false} axisLine={false}
-                  tickFormatter={v => format(new Date(v), 'MMM d')} />
-                <YAxis dataKey="y" type="number" domain={['auto', 'auto']} tick={AXIS_STYLE} tickLine={false} axisLine={false} tickFormatter={formatScore} width={48} />
-                <Tooltip content={<ScatterTooltip podName={podName} podText={podTokens?.text} othersLabel={othersLabel} />} cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }} />
-
-                {scatterResult.type === 'aggregate' && (
+                  tickFormatter={v => format(new Date(v), scatterAxes.xFormat)} />
+                <YAxis dataKey="y" type="number" domain={[0, scatterAxes.yMax]} ticks={scatterAxes.yTicks}
+                  tick={AXIS_STYLE} tickLine={false} axisLine={false} tickFormatter={formatScore} width={48} />
+                <Tooltip content={<ScatterTooltip podName={podName} podText={podTokens?.text} othersLabel={othersLabel} />} cursor={false} />
+                {scatterView === 'scores' ? (
                   <>
+                    {/* Drawn back to front, you on top. Full opacity for everyone: nobody is dimmed. */}
                     {scatterResult.fieldDots.length > 0 && (
-                      <Scatter dataKey="y" data={scatterResult.fieldDots} name="Others" fill="hsl(var(--field))" fillOpacity={0.4} />
+                      <Scatter data={scatterResult.fieldDots} name="field" fill={FIELD_COLOR} isAnimationActive={false} />
                     )}
                     {podTokens && scatterResult.podDots.length > 0 && (
-                      <Scatter dataKey="y" data={scatterResult.podDots} name={podName} fill={podTokens.graphic} fillOpacity={0.85} />
+                      <Scatter data={scatterResult.podDots} name="pod" fill={podTokens.graphic} isAnimationActive={false} />
                     )}
                     {scatterResult.myDots.length > 0 && (
-                      <Scatter dataKey="y" data={scatterResult.myDots} name={myUsername ?? 'You'} fill="hsl(var(--username))" />
-                    )}
-                    {scatterResult.trendLine.length >= 2 && (
-                      <Line dataKey="trend" data={scatterResult.trendLine} stroke="hsl(var(--username))" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
-                    )}
-                    {scatterResult.fieldTrendLine.length >= 2 && (
-                      <Line dataKey="trend" data={scatterResult.fieldTrendLine} stroke="hsl(var(--field))" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
-                    )}
-                    {podTokens && scatterResult.podTrendLine.length >= 2 && (
-                      <Line dataKey="trend" data={scatterResult.podTrendLine} stroke={podTokens.graphic} strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
+                      <Scatter data={scatterResult.myDots} name="me" fill="hsl(var(--username))" isAnimationActive={false} />
                     )}
                   </>
+                ) : (
+                  ([
+                    ['field', scatterResult.fieldTrend, FIELD_COLOR],
+                    ['pod', podTokens ? scatterResult.podTrend : [], podTokens?.graphic ?? FIELD_COLOR],
+                    ['me', scatterResult.myTrend, 'hsl(var(--username))'],
+                  ] as [string, TrendPoint[], string][]).filter(([, pts]) => pts.length > 0).map(([owner, pts, color]) => (
+                    <Scatter key={owner} data={pts} name={owner} fill={color}
+                      line={{ stroke: color, strokeWidth: owner === 'me' ? 2 : 1.5, strokeDasharray: owner === 'me' ? undefined : '5 3' }}
+                      isAnimationActive={false}
+                      // Dots only where the average turns (and at its ends); other points draw nothing,
+                      // so they also can't be hovered: the tooltips live on the turning points.
+                      shape={(props: any) => props.payload?.turn
+                        ? <circle cx={props.cx} cy={props.cy} r={owner === 'me' ? 4 : 3.5} fill={color} />
+                        : <g />} />
+                  ))
                 )}
-                {scatterResult.type === 'venue' && scatterResult.perVenue.map((v, i) => (
-                  <Scatter key={v.venueName} dataKey="y" data={v.dots} name={v.venueName} fill={VENUE_COLORS[i % VENUE_COLORS.length]} />
-                ))}
-              </ComposedChart>
+              </ScatterChart>
             ) : (
               <LineChart data={[]} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
                 <XAxis /><YAxis />
