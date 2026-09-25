@@ -44,6 +44,21 @@ export interface Pod {
   members: Array<PodUser & { addedAt: string }>;
 }
 
+/** `GET /api/venues/search` — see venueSearch.ts on the api-server. */
+export interface VenueSearchResult {
+  tiltTrack: Array<{
+    id: number; name: string; address: string | null; venueLat: number | null; venueLng: number | null;
+    hereId: string | null; pinballMapId: number | null; timezone: string | null; distance: number | null;
+    isPrivate: boolean; matchedBy: 'name' | 'place';
+  }>;
+  places: Array<{
+    hereId: string; name: string; address: string; venueLat: number | null; venueLng: number | null;
+    timezone: string | null; distance: number | null;
+  }>;
+  /** What biased the HERE half: the client's location, the user's last venue, a default, or none (too short). */
+  anchor: 'client' | 'history' | 'default' | 'none';
+}
+
 /** GET /venues/:id/repair/merge-preview — what merging this venue into another would move. */
 export interface VenueMergePreview {
   source: { id: number; name: string };
@@ -158,6 +173,17 @@ export function createApi(getToken: () => Promise<string | null>) {
         request<any[]>(mine ? '/venues?mine=true' : '/venues', undefined, await tok()),
       machines: async (id: number) => request<any>(`/venues/${id}/machines`, undefined, await tok()),
       pmMachines: (pmId: number) => request<any>(`/venues/pm-machines/${pmId}`),
+      // The Pinball Map listing a venue-step pick is, resolved lazily on pick (never per search
+      // result): a HERE place by its own coordinates + name, or a TiltTrack venue by id (the server
+      // uses its coordinates, and answers null for a private venue). Same matching rule as the
+      // nearby suggestions. `pinballMapId: null` = no match; the machine step then stays as before.
+      pmMatch: async (q: { venueId: number } | { lat: number; lng: number; name: string }) =>
+        request<{ pinballMapId: number | null; name?: string; url?: string; machineCount?: number | null; linked?: boolean }>(
+          'venueId' in q
+            ? `/venues/pm-match?venueId=${q.venueId}`
+            : `/venues/pm-match?lat=${q.lat}&lng=${q.lng}&name=${encodeURIComponent(q.name)}`,
+          undefined, await tok(),
+        ),
       // Private venues (homes) whose name matches exactly — name only, never a location. How a
       // friend finds someone's home venue to log a score there.
       exact: async (name: string) =>
@@ -173,9 +199,19 @@ export function createApi(getToken: () => Promise<string | null>) {
           method: 'POST',
           body: JSON.stringify({ lat: Math.round(lat * 1e4) / 1e4, lng: Math.round(lng * 1e4) / 1e4 }),
         }, await tok()),
+      // `at` only biases the suggestions (it may be the device's position). It rides in the query
+      // string, so it's rounded to 3 decimals (~110m) — ample for a bias, and less precise in logs.
       addressAutocomplete: (q: string, at?: { lat: number; lng: number }) =>
         request<Array<{ id: string; label: string; lat: number | null; lng: number | null }>>(
-          `/venues/address-autocomplete?q=${encodeURIComponent(q)}${at ? `&lat=${at.lat}&lng=${at.lng}` : ''}`
+          `/venues/address-autocomplete?q=${encodeURIComponent(q)}${at ? `&lat=${Math.round(at.lat * 1e3) / 1e3}&lng=${Math.round(at.lng * 1e3) / 1e3}` : ''}`
+        ),
+      // Add Score venue search: TiltTrack venues by any word + HERE places by name, a place that
+      // already is a venue folded into it. `at` biases HERE and yields distances; rounded to 3
+      // decimals (~110m) since it rides in the query string, like addressAutocomplete's.
+      search: async (q: string, at?: { lat: number; lng: number }) =>
+        request<VenueSearchResult>(
+          `/venues/search?q=${encodeURIComponent(q)}${at ? `&lat=${Math.round(at.lat * 1e3) / 1e3}&lng=${Math.round(at.lng * 1e3) / 1e3}` : ''}`,
+          undefined, await tok(),
         ),
       // `scopeQuery` comes from lib/comparisonScope.ts ('' | '?mine=true' | '?pod=<id>[&others=1]').
       // Scope narrows `scores` only; `venue` and `totals` are the same in every scope. A pod scope

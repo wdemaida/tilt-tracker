@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo, useEffect } from 'react';
+import { useState, useRef, useMemo, useEffect, type ReactNode } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -7,6 +7,7 @@ import { useLocation } from 'wouter';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useApi } from '../lib/useApi';
 import { useExactPrivateVenues } from '../lib/useExactPrivateVenues';
+import { useVenueSearch, venueMatches, MIN_PLACE_SEARCH_CHARS } from '../lib/venueSearch';
 import { queryClient } from '../lib/queryClient';
 import { PinballIcon } from '../components/PinballIcon';
 import { toLocalInput, localInputToIso, naiveToLocalInput } from '../lib/datetime';
@@ -54,11 +55,21 @@ type PlayerChoice = number | 'none' | null;
 
 interface SelectedVenue {
   venueId?: number;
+  /** For the Pinball Map lookup on pick (a HERE place is matched by its name and coordinates). */
+  name?: string;
   hereId?: string;
   address?: string;
   venueLat?: number;
   venueLng?: number;
   pinballMapId?: number;
+  /**
+   * True when a Pinball Map match was already attempted for this pick — the nearby suggestions
+   * (photo GPS / current location) come with it, by the same rule — so a HERE place from that list
+   * isn't looked up a second time.
+   */
+  pmChecked?: boolean;
+  /** A private venue: carries no Pinball Map link, so there's nothing to look up. */
+  isPrivate?: boolean;
   /** IANA zone. The photo's EXIF wall clock is read in *this*, not the browser's — see below. */
   timezone?: string | null;
 }
@@ -98,7 +109,11 @@ export default function AddScorePage() {
   // The venue "Use my current location" pre-selected by itself — not a choice the user made.
   const deviceAutoPickRef = useRef<SelectedVenue | null>(null);
   const platform = useMemo(() => detectPlatform(), []);
+  // What the search box shows — the typed text, or the name of the venue picked.
   const [venueSearch, setVenueSearch] = useState('');
+  // What the user actually *typed*. The lists filter and the server search on this, so picking a
+  // result doesn't narrow the lists to that one name or fire a fresh search for it.
+  const [searchTerm, setSearchTerm] = useState('');
   const [showAddVenueForm, setShowAddVenueForm] = useState(false);
   const [newVenueName, setNewVenueName] = useState('');
   const [newVenueAddress, setNewVenueAddress] = useState('');
@@ -113,6 +128,8 @@ export default function AddScorePage() {
   >(null);
   const [machineSearch, setMachineSearch] = useState('');
   const [selectedMachine, setSelectedMachine] = useState('');
+  // "Not listed?" under a venue's machine list: type any machine (catalog search) instead.
+  const [machineFreeText, setMachineFreeText] = useState(false);
   const [aiDetectedMachine, setAiDetectedMachine] = useState('');
   const [selectedMachineExtra, setSelectedMachineExtra] = useState<{ manufacturer?: string; year?: number } | null>(null);
   const [scoreDisplay, setScoreDisplay] = useState('');
@@ -218,16 +235,55 @@ export default function AddScorePage() {
     queryFn: () => api.venues.machines(selectedVenue!.venueId!),
     enabled: selectedVenue?.venueId != null,
   });
-  const hasVenueRoster = selectedVenue?.pinballMapId != null || (venueMachinesData?.inventory?.machines?.length ?? 0) > 0;
-  const venueData = hasVenueRoster ? venueMachinesData : undefined;
-  const venueDataLoading = venueMachinesLoading && selectedVenue?.pinballMapId != null;
 
-  // Fallback: load PM machines by pinballMapId when the venue isn't in our DB yet
-  const { data: pmOnlyData, isLoading: pmOnlyLoading } = useQuery({
-    queryKey: ['pm-only-machines', selectedVenue?.pinballMapId],
-    queryFn: () => api.venues.pmMachines(selectedVenue!.pinballMapId!),
-    enabled: selectedVenue?.venueId == null && selectedVenue?.pinballMapId != null,
+  // A pick with no Pinball Map link yet — a HERE "Places" result, or a TiltTrack venue nobody has
+  // linked — is matched to its Pinball Map listing now, once per pick (never per search result), so
+  // the machine step can offer what's there. The score POST then stores the link on the venue.
+  // No match (or Pinball Map down) leaves everything as it was: catalog search.
+  const pmLookup = useMemo(() => {
+    const v = selectedVenue;
+    if (!v || v.pinballMapId != null || v.isPrivate) return null;
+    // By id even for a nearby suggestion: history venues are matched by name only there, and the
+    // server answers from the venue's stored link without calling Pinball Map when it has one.
+    if (v.venueId != null) return { venueId: v.venueId };
+    if (v.pmChecked) return null;
+    if (v.venueLat != null && v.venueLng != null && v.name) return { lat: v.venueLat, lng: v.venueLng, name: v.name };
+    return null;
+  }, [selectedVenue]);
+  const { data: pmMatch, isLoading: pmMatchLoading } = useQuery({
+    queryKey: ['pm-match', pmLookup],
+    queryFn: () => api.venues.pmMatch(pmLookup!),
+    enabled: pmLookup != null,
+    staleTime: 10 * 60_000,
+    retry: false,
   });
+  // The venue's own link, else the one just resolved for this pick.
+  const effectivePmId = selectedVenue?.pinballMapId ?? (pmLookup ? pmMatch?.pinballMapId ?? undefined : undefined);
+  // Resolved here rather than stored on the venue — /venues/:id/machines has no roster for it yet.
+  const pmResolvedOnPick = selectedVenue?.pinballMapId == null && effectivePmId != null;
+
+  const hasVenueRoster = effectivePmId != null || (venueMachinesData?.inventory?.machines?.length ?? 0) > 0;
+  const venuePayload = hasVenueRoster ? venueMachinesData : undefined;
+  const venueDataLoading = (venueMachinesLoading && effectivePmId != null) || pmMatchLoading;
+
+  // PM machines by Pinball Map id when the venue's own payload can't carry them: not in our DB yet,
+  // or its link was only just resolved. Read through the server's roster cache (/pm-machines/:pmId).
+  const { data: pmOnlyData, isLoading: pmOnlyLoading } = useQuery({
+    queryKey: ['pm-only-machines', effectivePmId],
+    queryFn: () => api.venues.pmMachines(effectivePmId!),
+    enabled: effectivePmId != null && (selectedVenue?.venueId == null || pmResolvedOnPick),
+  });
+  // A different venue gets its own machine list first, not the previous one's "type it" mode.
+  useEffect(() => { setMachineFreeText(false); }, [selectedVenue]);
+
+  // A TiltTrack venue whose link was resolved on pick: its own payload (plays, TiltTrack names)
+  // plus the roster fetched by Pinball Map id.
+  const venueData = useMemo(
+    () => (venuePayload && pmResolvedOnPick && pmOnlyData?.pmMachines
+      ? { ...venuePayload, pmMachines: pmOnlyData.pmMachines }
+      : venuePayload),
+    [venuePayload, pmResolvedOnPick, pmOnlyData],
+  );
 
   // Recently-removed machines still count as valid suggestions — e.g. a photo taken Friday
   // night might not get uploaded until Monday, after an operator swap already hit Pinball Map.
@@ -315,7 +371,7 @@ export default function AddScorePage() {
   const { data: machineSuggestions = [] } = useQuery({
     queryKey: ['machine-search', machineSearch],
     queryFn: () => api.machines.search(machineSearch),
-    enabled: allVenueMachines.length === 0 && !venueDataLoading && !pmOnlyLoading && machineSearch.length > 1,
+    enabled: (allVenueMachines.length === 0 || machineFreeText) && !venueDataLoading && !pmOnlyLoading && machineSearch.length > 1,
   });
 
   // Address-as-you-type suggestions for the "Add custom venue" form (HERE Autosuggest)
@@ -329,17 +385,25 @@ export default function AddScorePage() {
   });
 
   // A friend's home venue: never suggested by location, found only by typing its exact name.
-  const exactPrivateVenues = useExactPrivateVenues(venueSearch);
+  const exactPrivateVenues = useExactPrivateVenues(searchTerm);
 
-  // Filtered venue history for step 2 (user's venues only)
-  const filteredVenueHistory = useMemo(() => {
-    const q = venueSearch.toLowerCase();
-    return (venueHistory as any[]).filter(
-      (v: any) => !q || v.name.toLowerCase().includes(q) || (v.address ?? '').toLowerCase().includes(q)
-    );
-  }, [venueHistory, venueSearch]);
+  // Filtered venue history for step 2 (user's venues only) — any word, punctuation-insensitive.
+  const filteredVenueHistory = useMemo(
+    () => (venueHistory as any[]).filter((v: any) => venueMatches(searchTerm, v.name, v.address)),
+    [venueHistory, searchTerm]
+  );
 
-  const canPostToPm = savedScore?.venueId != null && selectedVenue?.pinballMapId != null;
+  // Everything else: TiltTrack venues by any word, and HERE places by name, biased to the photo's
+  // GPS or else the device's position (bias only — never saved). See lib/venueSearch.ts.
+  const searchAt = useMemo(() => {
+    const p = gps ?? deviceCoords;
+    return p ? { lat: p.latitude, lng: p.longitude } : null;
+  }, [gps, deviceCoords]);
+  const venueSearchState = useVenueSearch(searchTerm, searchAt);
+
+  // The save stores a link resolved on pick (unless the venue already had one, or is private), so
+  // the saved venue is linked by the time step 4 posts to Pinball Map; the server re-checks it.
+  const canPostToPm = savedScore?.venueId != null && effectivePmId != null;
 
   const { data: pmTokenData } = useQuery({
     queryKey: ['pm-token'],
@@ -524,7 +588,7 @@ export default function AddScorePage() {
         venueLat: selectedVenue?.venueLat,
         venueLng: selectedVenue?.venueLng,
         venueTimezone: selectedVenue?.timezone,
-        venuePinballMapId: selectedVenue?.pinballMapId,
+        venuePinballMapId: effectivePmId,
         photoThumbnail: thumbnail ?? undefined,
       });
     },
@@ -768,11 +832,13 @@ export default function AddScorePage() {
         setValue('venueName', first.name);
         setSelectedVenue({
           venueId: first.venueId,
+          name: first.name,
           hereId: first.hereId ?? undefined,
           address: first.address,
           venueLat: first.venueLat,
           venueLng: first.venueLng,
           pinballMapId: first.pinballMapId,
+          pmChecked: true,
           timezone: first.timezone,
         });
       }
@@ -803,11 +869,13 @@ export default function AddScorePage() {
         if (first && !now.selected && !now.search) {
           const pick: SelectedVenue = {
             venueId: first.venueId,
+            name: first.name,
             hereId: first.hereId ?? undefined,
             address: first.address,
             venueLat: first.venueLat,
             venueLng: first.venueLng,
             pinballMapId: first.pinballMapId,
+            pmChecked: true,
             timezone: first.timezone,
           };
           deviceAutoPickRef.current = pick;
@@ -827,11 +895,17 @@ export default function AddScorePage() {
     }
   }
 
-  function selectVenueCard(v: { id?: number; name: string; address?: string | null; hereId?: string | null; venueLat?: number; venueLng?: number; pinballMapId?: number | null; timezone?: string | null }) {
+  function selectVenueCard(v: {
+    id?: number; name: string; address?: string | null; hereId?: string | null; venueLat?: number; venueLng?: number;
+    pinballMapId?: number | null; timezone?: string | null; pmChecked?: boolean; isPrivate?: boolean;
+  }) {
     setValue('venueName', v.name);
     setVenueSearch(v.name);
     setSelectedVenue({
       venueId: v.id,
+      name: v.name,
+      pmChecked: v.pmChecked,
+      isPrivate: v.isPrivate,
       hereId: v.hereId ?? undefined,
       address: v.address ?? undefined,
       venueLat: v.venueLat,
@@ -964,10 +1038,11 @@ export default function AddScorePage() {
         <div className="rounded-xl border border-white/10 bg-card p-6 flex flex-col gap-4">
           <h2 className="text-xl font-black uppercase tracking-widest text-white mb-2">Where Did You Play?</h2>
           {aiError && <p className="text-xs text-yellow-400 -mt-1">{aiError}</p>}
-          {photoLocation && !photoLocation.hasGps && (
+          {/* No photo GPS — or no photo at all ("Skip AI & Enter Manually") — offer the device's position. */}
+          {!photoLocation?.hasGps && (
             <MissingLocationNotice
               info={photoLocation}
-              photoCount={photoLocation.count}
+              photoCount={photoLocation?.count ?? 0}
               platform={platform}
               state={currentLocation}
               onUseCurrentLocation={useCurrentLocation}
@@ -979,17 +1054,21 @@ export default function AddScorePage() {
             <input
               value={venueSearch}
               onChange={e => {
+                // Typing searches; it never *is* the venue. Only picking a result (or adding a venue
+                // below) sets one — a bare typed name used to be saved as a new, unplaced venue.
                 setVenueSearch(e.target.value);
-                setValue('venueName', e.target.value);
+                setSearchTerm(e.target.value);
+                setValue('venueName', '');
                 setSelectedVenue(null);
               }}
-              placeholder="Search or enter venue name..."
+              placeholder="Search venues, bars, arcades..."
+              autoComplete="off"
               className={`input ${venueSearch ? 'pr-8' : 'pl-9'}`}
             />
             {venueSearch && (
               <button
                 type="button"
-                onClick={() => { setVenueSearch(''); setValue('venueName', ''); setSelectedVenue(null); }}
+                onClick={() => { setVenueSearch(''); setSearchTerm(''); setValue('venueName', ''); setSelectedVenue(null); }}
                 className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-white transition-colors"
               >
                 <X className="w-4 h-4" />
@@ -998,12 +1077,12 @@ export default function AddScorePage() {
           </div>
 
           {/* Nearby venues from AI photo */}
-          {nearbyVenues.filter(v => !venueSearch || v.name.toLowerCase().includes(venueSearch.toLowerCase())).length > 0 && (
+          {nearbyVenues.filter(v => venueMatches(searchTerm, v.name, v.address)).length > 0 && (
             <div>
               <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">{nearbySource === 'device' ? 'Near You' : 'Nearby'}</p>
               <div className="flex flex-col gap-1.5">
                 {nearbyVenues
-                  .filter(v => !venueSearch || v.name.toLowerCase().includes(venueSearch.toLowerCase()))
+                  .filter(v => venueMatches(searchTerm, v.name, v.address))
                   .map(v => {
                     const isSelected = selectedVenue?.venueId != null
                       ? selectedVenue.venueId === v.venueId
@@ -1014,7 +1093,7 @@ export default function AddScorePage() {
                       <button
                         key={v.venueId ?? v.hereId ?? v.name}
                         type="button"
-                        onClick={() => selectVenueCard({ id: v.venueId, name: v.name, address: v.address, hereId: v.hereId, venueLat: v.venueLat, venueLng: v.venueLng, pinballMapId: v.pinballMapId, timezone: v.timezone })}
+                        onClick={() => selectVenueCard({ id: v.venueId, name: v.name, address: v.address, hereId: v.hereId, venueLat: v.venueLat, venueLng: v.venueLng, pinballMapId: v.pinballMapId, timezone: v.timezone, pmChecked: true })}
                         className={`text-left px-3 py-2.5 rounded-lg border transition-colors ${isSelected ? 'border-venue/60 bg-venue/10' : 'border-white/10 hover:border-venue/40 hover:bg-white/5'}`}
                       >
                         <div className="flex items-center gap-2">
@@ -1050,7 +1129,7 @@ export default function AddScorePage() {
                       <button
                         key={p.id}
                         type="button"
-                        onClick={() => selectVenueCard({ id: p.id, name: p.name })}
+                        onClick={() => selectVenueCard({ id: p.id, name: p.name, isPrivate: true })}
                         className={`text-left px-3 py-2.5 rounded-lg border transition-colors ${isSelected ? 'border-venue/60 bg-venue/10' : 'border-white/10 hover:border-venue/40 hover:bg-white/5'}`}
                       >
                         <div className="flex items-center gap-2">
@@ -1102,8 +1181,88 @@ export default function AddScorePage() {
             );
           })()}
 
-          {filteredVenueHistory.length === 0 && nearbyVenues.length === 0 && !venueSearch && (
-            <p className="text-sm text-muted-foreground text-center py-2">Type a venue name above to add a new one</p>
+          {/* Search results: TiltTrack venues the lists above don't already show, then HERE places.
+              A place that already is a TiltTrack venue arrives as that venue, never as a place. */}
+          {venueSearchState.active && (() => {
+            const shownIds = new Set<number>([
+              ...nearbyVenues.filter(v => venueMatches(searchTerm, v.name, v.address)).map(v => v.venueId).filter((id): id is number => id != null),
+              ...filteredVenueHistory.map((v: any) => v.id as number),
+            ]);
+            const shownHere = new Set(nearbyVenues.map(v => v.hereId).filter(Boolean));
+            const result = venueSearchState.result;
+            const ttHits = (result?.tiltTrack ?? []).filter(h => !shownIds.has(h.id));
+            const placeHits = (result?.places ?? []).filter(p => !shownHere.has(p.hereId));
+            const typedLength = searchTerm.replace(/[^\p{L}\p{N}]/gu, '').length;
+            return (
+              <>
+                {ttHits.length > 0 && (
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">On TiltTrack</p>
+                    <div className="flex flex-col gap-1.5">
+                      {ttHits.map(h => (
+                        <VenueOption
+                          key={`tt-${h.id}`}
+                          name={h.name}
+                          address={h.address}
+                          selected={selectedVenue?.venueId === h.id}
+                          icon={h.isPrivate ? 'home' : 'pin'}
+                          badges={<>{myVenueIds.has(h.id) ? <TagV /> : <TagTT />}{h.pinballMapId && <TagPM />}</>}
+                          right={formatDistance(h.distance)}
+                          onClick={() => selectVenueCard({ id: h.id, name: h.name, address: h.address, hereId: h.hereId, venueLat: h.venueLat ?? undefined, venueLng: h.venueLng ?? undefined, pinballMapId: h.pinballMapId, timezone: h.timezone, isPrivate: h.isPrivate })}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {placeHits.length > 0 && (
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">Places</p>
+                    <div className="flex flex-col gap-1.5">
+                      {placeHits.map(p => (
+                        <VenueOption
+                          key={`here-${p.hereId}`}
+                          name={p.name}
+                          address={p.address}
+                          selected={selectedVenue?.venueId == null && selectedVenue?.hereId === p.hereId}
+                          icon="pin"
+                          right={formatDistance(p.distance)}
+                          onClick={() => selectVenueCard({ name: p.name, address: p.address, hereId: p.hereId, venueLat: p.venueLat ?? undefined, venueLng: p.venueLng ?? undefined, timezone: p.timezone })}
+                        />
+                      ))}
+                    </div>
+                    {result?.anchor !== 'client' && (
+                      <p className="text-xs text-muted-foreground mt-1.5">Not the right one? Add the town, e.g. “{searchTerm.trim()} medford”.</p>
+                    )}
+                  </div>
+                )}
+                {venueSearchState.pending && !result && (
+                  <p className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Searching venues and places…</p>
+                )}
+                {venueSearchState.failed && (
+                  <p className="text-xs text-amber-400">Venue search isn't working right now — pick from the lists above, or add the venue below.</p>
+                )}
+                {result && ttHits.length === 0 && placeHits.length === 0 && shownIds.size === 0 && (
+                  <p className="text-sm text-muted-foreground">
+                    {typedLength < MIN_PLACE_SEARCH_CHARS ? 'Keep typing to search places too…' : `Nothing found for “${searchTerm.trim()}”. Try adding the town, or add it below.`}
+                  </p>
+                )}
+                {/* Last resort, offered right under the results instead of as small print below Continue. */}
+                {result && !showAddVenueForm && !selectedVenue && (
+                  <button
+                    type="button"
+                    onClick={() => { setNewVenueName(searchTerm.trim()); setShowAddVenueForm(true); }}
+                    className="text-left px-3 py-2.5 rounded-lg border border-dashed border-venue/40 hover:bg-venue/5 transition-colors"
+                  >
+                    <span className="block text-sm font-bold text-venue">Not listed? Add “{searchTerm.trim()}” with its address</span>
+                    <span className="block text-xs text-muted-foreground mt-0.5">The address puts it on the map and keeps it from being added twice.</span>
+                  </button>
+                )}
+              </>
+            );
+          })()}
+
+          {filteredVenueHistory.length === 0 && nearbyVenues.length === 0 && !searchTerm && (
+            <p className="text-sm text-muted-foreground text-center py-2">Search by name — bars, arcades, anywhere with a machine</p>
           )}
 
           <div className="flex gap-3 pt-2">
@@ -1111,31 +1270,39 @@ export default function AddScorePage() {
               className="flex-1 py-2.5 rounded-lg border border-white/10 text-sm text-muted-foreground hover:text-white transition-colors">
               Back
             </button>
-            <button type="button" onClick={() => setStep(3)}
-              className="flex-1 py-2.5 rounded-lg bg-primary text-white font-bold uppercase tracking-wider text-sm hover:opacity-90 transition-opacity">
+            {/* Continue needs a picked venue. Going on without one is its own, clearly-labelled choice
+                ("Skip — no venue") — a typed-but-unpicked name is no longer quietly saved as a venue. */}
+            <button type="button" onClick={() => setStep(3)} disabled={!selectedVenue}
+              className="flex-1 py-2.5 rounded-lg bg-primary text-white font-bold uppercase tracking-wider text-sm hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed">
               Continue
             </button>
           </div>
+          {!selectedVenue && (
+            <p className="text-xs text-muted-foreground text-center -mt-2">
+              {searchTerm.trim() ? 'Pick a venue from the list to continue — or add it, or skip.' : 'Pick a venue to continue.'}
+            </p>
+          )}
           {!showAddVenueForm ? (
             <div className="flex items-center justify-center gap-4">
               <button
                 type="button"
-                onClick={() => { setSelectedVenue(null); setValue('venueName', ''); setVenueSearch(''); setStep(3); }}
+                onClick={() => { setSelectedVenue(null); setValue('venueName', ''); setVenueSearch(''); setSearchTerm(''); setStep(3); }}
                 className="text-xs text-muted-foreground hover:text-white transition-colors text-center"
               >
                 Skip — no venue
               </button>
               <button
                 type="button"
-                onClick={() => { setNewVenueName(venueSearch); setShowAddVenueForm(true); }}
+                onClick={() => { setNewVenueName(searchTerm.trim()); setShowAddVenueForm(true); }}
                 className="text-xs text-venue hover:text-venue/80 transition-colors text-center"
               >
-                + Add custom venue
+                + Add a new venue
               </button>
             </div>
           ) : (
             <div className="rounded-lg border border-venue/30 bg-venue/5 p-4 flex flex-col gap-3">
-              <p className="text-xs font-bold uppercase tracking-widest text-venue">Add Custom Venue</p>
+              <p className="text-xs font-bold uppercase tracking-widest text-venue">Add a New Venue</p>
+              <p className="text-xs text-muted-foreground -mt-2">Only if it isn't in the search above. Name and street address, so it lands on the map.</p>
               <div>
                 <label className="label">Name</label>
                 <input
@@ -1152,7 +1319,7 @@ export default function AddScorePage() {
                   onChange={e => { setNewVenueAddress(e.target.value); setShowAddressSuggestions(true); }}
                   onFocus={() => setShowAddressSuggestions(true)}
                   onBlur={() => setTimeout(() => setShowAddressSuggestions(false), 150)}
-                  placeholder="Street, City, State"
+                  placeholder="Street address, town"
                   className="input"
                   autoComplete="off"
                 />
@@ -1325,7 +1492,7 @@ export default function AddScorePage() {
           <div>
             <label className="label">Machine</label>
 
-            {allVenueMachines.length > 0 || venueDataLoading || pmOnlyLoading ? (
+            {(allVenueMachines.length > 0 || venueDataLoading || pmOnlyLoading) && !machineFreeText ? (
               <div className="flex flex-col gap-2">
 
                 {/* AI detection context — shown when AI found a name but no exact PM match yet */}
@@ -1389,6 +1556,15 @@ export default function AddScorePage() {
                     Use "{aiDetectedMachine}" directly →
                   </button>
                 )}
+                {!venueDataLoading && !pmOnlyLoading && (
+                  <button
+                    type="button"
+                    onClick={() => { setMachineFreeText(true); setSelectedMachine(''); setMachineSearch(aiDetectedMachine); setValue('machineName', aiDetectedMachine); }}
+                    className="text-xs text-center text-muted-foreground hover:text-white/70 transition-colors py-0.5"
+                  >
+                    Not listed? Type the machine name
+                  </button>
+                )}
               </div>
             ) : (
               /* Fallback: free-text search when no PM data (e.g. custom venue with no Pinball Map link) */
@@ -1399,6 +1575,15 @@ export default function AddScorePage() {
                     <span className="text-white/80 font-medium truncate">"{aiDetectedMachine}"</span>
                     <span className="text-xs text-muted-foreground ml-auto whitespace-nowrap">prefilled below</span>
                   </div>
+                )}
+                {machineFreeText && allVenueMachines.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setMachineFreeText(false)}
+                    className="text-xs text-muted-foreground hover:text-white/70 transition-colors mb-1.5"
+                  >
+                    ← Machines at this venue
+                  </button>
                 )}
                 <input
                   value={machineSearch}
@@ -1791,5 +1976,38 @@ export default function AddScorePage() {
         .err { font-size: 0.75rem; color: #f87171; margin-top: 0.25rem; }
       `}</style>
     </div>
+  );
+}
+
+function formatDistance(m: number | null | undefined): string | undefined {
+  if (m == null) return undefined;
+  return m < 1000 ? `${m}m` : `${(m / 1609.34).toFixed(m < 16093 ? 1 : 0)} mi`;
+}
+
+/** One pickable venue row in the search results — same look as the Nearby / Your Venues rows. */
+function VenueOption({ name, address, selected, icon, badges, right, onClick }: {
+  name: string;
+  address?: string | null;
+  selected: boolean;
+  icon: 'pin' | 'home';
+  badges?: ReactNode;
+  right?: string;
+  onClick: () => void;
+}) {
+  const Icon = icon === 'home' ? Home : MapPin;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`text-left px-3 py-2.5 rounded-lg border transition-colors ${selected ? 'border-venue/60 bg-venue/10' : 'border-white/10 hover:border-venue/40 hover:bg-white/5'}`}
+    >
+      <div className="flex items-center gap-2 min-w-0">
+        <Icon className={`w-3.5 h-3.5 flex-shrink-0 ${selected ? 'text-venue' : 'text-muted-foreground'}`} />
+        <span className={`text-sm font-bold truncate ${selected ? 'text-white' : 'text-white/80'}`}>{name}</span>
+        {badges}
+        {right && <span className="text-xs text-muted-foreground ml-auto flex-shrink-0">{right}</span>}
+      </div>
+      {address && <p className="text-xs text-muted-foreground truncate mt-0.5 pl-5">{address}</p>}
+    </button>
   );
 }

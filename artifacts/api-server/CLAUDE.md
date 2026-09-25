@@ -236,6 +236,55 @@
   fresh (they're redacted per requester). In-memory, per process — a restart forgets both.
 - Tests: `npx tsx --test src/lib/nearbyLookup.test.ts`.
 
+## Venue search (`GET /api/venues/search`, `src/lib/venueSearch.ts`, added 2026-09-25)
+- The Add Score wizard's one search box. `?q=` (≥2 letters/digits) plus optional `lat`/`lng`
+  (client's photo GPS or device position, rounded to 3 decimals; never stored or logged). Returns
+  `{ tiltTrack, places, anchor }`. Signed in (`requireAppUser`), 60/min + 1500/day per user
+  (`SlidingRateLimiter`), 429 `rate_limited`.
+- **tiltTrack**: every venue row is read and matched in JS (`matchScore`: every query word must
+  start a word of the name — or of the address, with at least one in the name; apostrophes are
+  removed, so "pop"/"pops"/"Pop's" all hit "Pop's Pinball - Deep Cuts"). Ranked by match quality,
+  then distance from `lat`/`lng`. Fine at today's size (dozens of rows); move matching into SQL
+  (`pg_trgm` or a tokens column) if the table reaches thousands. **Only venues the requester may
+  see by location** (`searchableBy` = public, or own/admin private): results carry address,
+  coordinates and a distance from a client-supplied point. Others' home venues stay reachable only
+  through `/venues/exact`.
+- **places**: HERE **Autosuggest** (`autosuggestPlaces`, `place` results only, arcades/bars moved
+  ahead, `show=tz`), from 3 characters. Autosuggest beat Discover for partial input — Discover
+  returned one result for "pop". Bias: client location → the requester's most recent *public* venue
+  → Boston; distances only when the client sent a location. Places >150km from the bias are
+  dropped unless a query word names their town/street (`placeIsRelevant`) — so "pops medford"
+  works from anywhere. Cached per (normalized query, 3-decimal bias) for 10 min; empty answers
+  aren't cached.
+- **Dedupe**: a place holding a visible venue's `hereId`, or within 150m with an overlapping name
+  (`venueForPlace`), is returned once, as that venue. The second rule is load-bearing: venue 19 is
+  linked to HERE's "Deep Cuts" listing while HERE also lists "Pop's Pinball" at 21 Main St under
+  another id. A place near someone else's private venue stays a plain place (nothing revealed).
+- Cost: one HERE Autosuggest request per debounced (350ms) search of ≥3 chars that misses the cache.
+- Tests: `npx tsx --test src/lib/venueSearch.test.ts`.
+
+## Pinball Map match on pick (`GET /api/venues/pm-match`, `src/lib/pmMatch.ts`, added 2026-09-25)
+- A HERE "Places" pick in the Add Score venue step used to carry no Pinball Map id, so the machine
+  step fell back to catalog search even at a PM-listed bar (Wedgehead, Portland). Search results
+  still carry none — resolving per result per keystroke would be a PM call each. Instead the client
+  calls `pm-match` **once per pick**: `?lat=&lng=&name=` for a place (its own coordinates), or
+  `?venueId=` for a TiltTrack venue with no link (server uses the venue's coordinates; answers the
+  stored link without calling PM if it has one; a private venue gets `null`, same as no match).
+  Signed in, 30/min + 500/day per user; PM's nearby list cached per ~110m cell for 10 min.
+- **`matchPmLocation()` is the one matching rule** — `suggestVenuesNear()`'s `attachPinballMapIds`
+  uses it too. Closest PM location within 150m whose name overlaps (`pmNamesOverlap`: containment,
+  or a shared distinctive word — "pinball"/"bar"/"arcade" etc. don't count); failing that, the
+  closest within **40m** whatever its name (same building — HERE "Deep Cuts" vs PM "Pop's Pinball").
+  The old rule took the nearest within 150m regardless of name, so the coffee shop next door
+  inherited the bar's listing.
+- **Persisting on save** (`resolveScoreVenue()` in `src/lib/scoreVenue.ts`, split out of
+  `POST /api/scores`): `pmIdToPersist()` — a new venue takes the client's id; an existing venue only
+  if it has **no** link and isn't private. The `here_id` upsert is `COALESCE(venues.pinball_map_id,
+  excluded.…)` (it used to be the other way round, and the by-id backfill overwrote unconditionally).
+  The id is still client-supplied, as on the nearby path — the repair panel is how a wrong one is fixed.
+- Tests: `npx tsx --test src/lib/pmMatch.test.ts`; live + dev-DB check: `npx tsx test-score-venue-pm.ts`
+  (aborts unless DATABASE_URL is the dev branch; throwaway `zz-pm-test` venues, cleaned up).
+
 ## Photo / GPS extraction
 - Use **`exifr`** (not `exifreader`) for GPS from iPhone HEIC files: `await Exifr.gps(buffer)`.
 - Extract GPS from the **original buffer before HEIC→JPEG conversion** — conversion strips EXIF.

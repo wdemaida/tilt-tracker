@@ -73,6 +73,31 @@
   browse/substring list (`isOthersPrivateVenue`), since the venues list itself still carries every
   venue by name.
 
+## Add Score venue step: search, pick, or add (`src/lib/venueSearch.ts`, added 2026-09-25)
+- The box used to filter only the Nearby list and *your own* venues (substring), so "pop" found
+  nothing for anyone who'd never logged at Pop's — and Continue then saved the typed text as a new,
+  unplaced venue (the score POST upserts a bare `venueName`). Two real users did exactly that.
+- Now: typing searches, it never *is* the venue. `searchTerm` (what was typed) drives the lists and
+  `useVenueSearch()` → `GET /api/venues/search`; `venueSearch` is just what the box shows (the
+  picked name after a pick). Sections: Nearby, Your Venues (local, `venueMatches()` — any word,
+  punctuation-insensitive), **On TiltTrack** and **Places** (server), Private venue (exact name).
+  Search results already shown in Nearby / Your Venues are dropped client-side.
+- **Continue is disabled until a venue is picked.** "Skip — no venue" is the explicit way on
+  without one; "Not listed? Add “…” with its address" (under the results) and "+ Add a new venue"
+  open the name + address form (HERE address autocomplete, `POST /api/venues` with its duplicate 409).
+- Picking a Place sends `venueHereId` + coordinates/address/timezone through the existing score
+  POST, which upserts on `here_id` — no new create path. `searchTokens()` here must stay in step
+  with the api-server's `venueSearch.ts`.
+- **A pick with no Pinball Map link is matched on pick** (`pmLookup` → `api.venues.pmMatch`, once
+  per pick, never per result): a Place by its coordinates + name, a TiltTrack venue by id. Nearby
+  HERE places (`pmChecked`) and private venues (`isPrivate`) are skipped. `effectivePmId` (the
+  venue's own link, else the resolved one) drives the roster (`/pm-machines/:pmId`, merged into a
+  TiltTrack venue's payload when its link was only just resolved), `canPostToPm`, and the score
+  POST's `venuePinballMapId`, which links the venue on save. No match → catalog search as before.
+- A venue's machine list now has **"Not listed? Type the machine name"** (`machineFreeText`), which
+  switches to the catalog search input; before, a roster venue offered no way to enter an unlisted
+  machine unless the AI had read a name.
+
 ## Home-venue inventory and the show-publicly switch (added 2026-09-25)
 - The Edit Venue dialog is one component, `EditVenueDialog.tsx`, used by the Venues page card and
   the venue detail page header — same pencil, same permission (the row's server-computed
@@ -128,9 +153,13 @@
 - A page can't see whether the Camera app geotags photos — only whether the picked files carry GPS
   (`describePhotoLocation()` over the prepared images, plus the upload result's `latitude`, since
   the server has its own EXIF fallback). None has GPS → step 2 shows the amber notice.
-- "Use my current location" is offered only when the photo looks recent (capture time within 2h)
-  or has no time and came from the camera input (`canOfferCurrentLocation`). Old photos get "Photo
-  taken earlier? Pick the venue below." It fires `getCurrentPosition` **only on tap** and calls
+- "Use my current location" is **always offered when there's no photo GPS** — including no photo at
+  all ("Skip AI & Enter Manually", `info={null}`) — since the tap itself is the user saying "I'm
+  still here". `currentLocationOffer()` only sets prominence: a big button when the photo is recent
+  (within 2h) or of unknown age (camera input, or a picked file with EXIF stripped — screenshots,
+  messaging-app forwards); a quiet "Still there?" link when the photo's clock says it's older.
+  (Changed 2026-09-25: users with GPS-less photos typed bare venue names, one a duplicate.) Not
+  offered when the photo *had* GPS but found no venues. It fires `getCurrentPosition` **only on tap** and calls
   `POST /api/upload/nearby-venues` (JSON body, coords rounded to 4 decimals client-side), which
   shares `suggestVenuesNear()` with the photo path. It's rate-limited per user (10/min, 100/day →
   429, whose message the notice shows) and cached per ~110m cell for 10 minutes.
