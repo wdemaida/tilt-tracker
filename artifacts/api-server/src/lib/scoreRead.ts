@@ -606,8 +606,13 @@ const digitIndexes = (t: string) => [...t].flatMap((c, i) => (c === '?' ? [] : [
  *  - same sequence → the crop only moved dark windows ("88070?" → "8807?0"): its positions win.
  *  - the crop has exactly one extra digit, the rest in order ("8807?" → "8807?0") → its positions
  *    win; the extra digit is marked lowConfidence and the display flagged `alignmentWarning`.
- *  - the crop has exactly one digit fewer, the rest in order (it judged one partly lit) → its
- *    positions win, flagged `alignmentWarning`.
+ *  - the crop has exactly one digit fewer, the rest in order → its positions win (flagged) only if
+ *    it has an x exactly where the missing digit was — it judged that digit partly lit. Otherwise
+ *    pass 1 stands, flagged, with that digit marked unsure.
+ * And whatever the branch, a crop read shorter than pass 1 never replaces it: pass 1 stands,
+ * flagged, its unconfirmed digits unsure (the leading-vs-trailing dark ambiguity). A crop may
+ * relocate dark windows at equal length and may lengthen the template; it may never shorten it or
+ * drop a pass-1 digit without an x in its place.
  *  - anything else → the crop's positions, but every position where the two disagree (right-aligned)
  *    becomes "?" with a conflict offering both digits — the picker the UI already shows for photos
  *    that disagree. Also `alignmentWarning`. Never a silent replacement of a digit pass 1 read.
@@ -629,13 +634,24 @@ export function reconcileWindowRead(pass1: DisplayRead, crop: WindowRead): Displ
   if (knownDigitCount(template) < knownDigitCount(pass1.template) - 1) return pass1;
 
   // Right-aligned comparison of the positions where both reads have a digit.
-  const disagree: Array<{ i: number; a: string; b: string }> = [];
+  const disagree: Array<{ i: number; j: number; a: string; b: string }> = [];
   let agreeCount = 0;
   for (let k = 1; k <= Math.min(template.length, pass1.template.length); k++) {
     const i = template.length - k, j = pass1.template.length - k;
     const a = template[i], b = pass1.template[j];
     if (a === '?' || b === '?') continue;
-    if (a !== b) disagree.push({ i, a, b }); else agreeCount++;
+    if (a !== b) disagree.push({ i, j, a, b }); else agreeCount++;
+  }
+
+  // The governing rule: a crop may never shorten the template, or take away a digit pass 1 read
+  // without leaving an x in its place. A shorter crop read is the leading-vs-trailing dark window
+  // ambiguity ("8807??" vs a crop's "__8807" — 880,7xx or 8,807?), which only the machine can
+  // settle: keep pass 1's positions, flag it, and mark every pass-1 digit the crop didn't confirm
+  // in place as unsure, so the user sees amber cells and x's rather than a finished number.
+  if (template.length < pass1.template.length) {
+    const offset = pass1.template.length - template.length;
+    const unconfirmed = digitIndexes(pass1.template).filter(j => j < offset || template[j - offset] !== pass1.template[j]);
+    return keepPass1Flagged(pass1, unconfirmed, pass1.displayKind === 'segment' && (displayLeadsWithDark(text) || pass1.leadingPositionAmbiguous));
   }
 
   const seqCrop = knownSequence(template), seqPass1 = knownSequence(pass1.template);
@@ -651,7 +667,13 @@ export function reconcileWindowRead(pass1: DisplayRead, crop: WindowRead): Displ
     lowConfidence = [cropIdx[extraDigit(seqPass1, seqCrop)!]];
     alignmentWarning = true;
   } else if (seqPass1.length === seqCrop.length + 1 && extraDigit(seqCrop, seqPass1) != null) {
-    // The crop saw one pass-1 digit as only partly lit ("?"): its positions win, flagged.
+    // One pass-1 digit is missing from the crop. Fine only if the crop has an x exactly where that
+    // digit was (right-aligned) — it judged the digit partly lit. Otherwise the digit would simply
+    // vanish ("123456" → "12356"), so pass 1 stands, flagged, with that digit marked unsure.
+    const dropped = pass1Idx[extraDigit(seqCrop, seqPass1)!];
+    if (template[dropped + (template.length - pass1.template.length)] !== '?') {
+      return keepPass1Flagged(pass1, [dropped], pass1.leadingPositionAmbiguous);
+    }
     alignmentWarning = true;
   } else {
     if (disagree.length > agreeCount) return pass1;
@@ -676,6 +698,16 @@ export function reconcileWindowRead(pass1: DisplayRead, crop: WindowRead): Displ
     leadingPositionAmbiguous: pass1.displayKind === 'segment' && displayLeadsWithDark(text) && template.includes('?'),
     alignmentWarning,
     conflicts,
+  };
+}
+
+/** Pass 1 unchanged except flagged: `alignmentWarning`, and `unsure` added to its lowConfidence. */
+function keepPass1Flagged(pass1: DisplayRead, unsure: number[], leadingPositionAmbiguous: boolean): DisplayRead {
+  return {
+    ...pass1,
+    lowConfidence: sanitizeLowConfidence(pass1.template, [...pass1.lowConfidence, ...unsure]),
+    leadingPositionAmbiguous,
+    alignmentWarning: true,
   };
 }
 
