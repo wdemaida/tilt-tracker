@@ -16,6 +16,10 @@ export default {
         'muted-foreground': 'hsl(var(--muted-foreground) / <alpha-value>)',
         card: 'hsl(var(--card) / <alpha-value>)',
         border: 'hsl(var(--border) / <alpha-value>)',
+        // Scoped per element by podColorVars() (src/lib/podColor.ts) — not set on :root.
+        pod: 'hsl(var(--pod) / <alpha-value>)',
+        'pod-text': 'hsl(var(--pod-text) / <alpha-value>)',
+        'pod-on': 'hsl(var(--pod-on) / <alpha-value>)',
       },
       fontFamily: {
         display: ['Inter', 'sans-serif'],
