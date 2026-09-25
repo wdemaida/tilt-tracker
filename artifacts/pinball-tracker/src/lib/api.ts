@@ -177,8 +177,11 @@ export function createApi(getToken: () => Promise<string | null>) {
         request<Array<{ id: string; label: string; lat: number | null; lng: number | null }>>(
           `/venues/address-autocomplete?q=${encodeURIComponent(q)}${at ? `&lat=${at.lat}&lng=${at.lng}` : ''}`
         ),
-      scores: async (id: number, mine = false) =>
-        request<any>(mine ? `/venues/${id}/scores?mine=true` : `/venues/${id}/scores`, undefined, await tok()),
+      // `scopeQuery` comes from lib/comparisonScope.ts ('' | '?mine=true' | '?pod=<id>[&others=1]').
+      // Scope narrows `scores` only; `venue` and `totals` are the same in every scope. A pod scope
+      // 404s `pod_not_found` unless the pod is the caller's own.
+      scores: async (id: number, scopeQuery = '') =>
+        request<any>(`/venues/${id}/scores${scopeQuery}`, undefined, await tok()),
       // Rejects with a 409 (`code: 'duplicate_venue'`, plus `candidates`) when a venue of the same
       // name already exists within 250m. Re-send with `allowDuplicate: true` once the user confirms
       // it really is a different place.
