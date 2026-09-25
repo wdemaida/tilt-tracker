@@ -110,6 +110,9 @@ export default function AddScorePage() {
   const [photoNotice, setPhotoNotice] = useState('');
   const [differentGamesWarning, setDifferentGamesWarning] = useState<string | null>(null);
   const addPhotoRef = useRef<HTMLInputElement>(null);
+  // A set that went up as a server-decoded HEIC can't grow: the multi-image path refuses HEIC.
+  const addBlockedByHeic = uploadItems.some(i => i.images.some(im => im.heicFailed));
+  const canAddMore = uploadItems.length > 0 && uploadItems.length < MAX_ITEMS && !addBlockedByHeic;
   const [savedScore, setSavedScore] = useState<SavedScore | null>(null);
   const [pmEmail, setPmEmail] = useState('');
   const [pmPassword, setPmPassword] = useState('');
@@ -477,13 +480,18 @@ export default function AddScorePage() {
       return;
     }
 
-    setUploadItems(items);
-    replacePhotoPreviews(images.map(i => URL.createObjectURL(i.file)));
-    thumbnailSucceeded.current = false;
-    generateThumbnail(images[0].file).then(t => { setThumbnail(t); thumbnailSucceeded.current = true; }).catch(() => {});
+    // A fresh set's thumbnail is made up front so a manual save still has one if the read fails.
+    if (mode === 'replace') {
+      thumbnailSucceeded.current = false;
+      generateThumbnail(images[0].file).then(t => { setThumbnail(t); thumbnailSucceeded.current = true; }).catch(() => {});
+    }
 
     try {
       const result = await api.upload(images);
+      // Only a set that was actually read becomes the set: a failed add mustn't count toward the cap
+      // or be re-sent with the next add.
+      setUploadItems(items);
+      replacePhotoPreviews(images.map(i => URL.createObjectURL(i.file)));
       applyUploadResult(result, images, mode);
     } catch (err: any) {
       setAiError(err?.message ?? 'AI extraction failed — enter details manually');
@@ -503,16 +511,24 @@ export default function AddScorePage() {
       // Don't pre-select — auto-select handles exact PM matches; banner guides the rest
     }
     const read: ScoreRead | null = result.scoreRead ?? null;
-    setScoreRead(read);
-    setScoreDisagreements([]);
+    // An added photo that read nothing (empty template) says nothing about the score: keep the read
+    // the user is filling in. Replacing it would make the next add's reconcile see no "original", drop
+    // every digit they typed, and break backspace's un-fill (it compares against the original).
+    const unreadableAdd = adding && !read?.template;
+    if (!unreadableAdd) {
+      setScoreRead(read);
+      setScoreDisagreements([]);
+    }
 
     // Adding a photo re-reads the whole set; digits the user already entered must survive that.
     const prev = latestScoreRef.current;
     const prevDigits = prev.display.replace(/[^0-9]/g, '');
     const [prevRead, prevValue] = prev.template != null
-      ? [prev.read?.template ?? prev.template, prev.template]
+      ? [prev.read?.template || prev.template, prev.template]
       : [ '?'.repeat(prevDigits.length), prevDigits ]; // plain-number mode: every digit is the user's
-    if (adding && read?.template && prevValue) {
+    if (unreadableAdd) {
+      setAiError("Couldn't read the score in the added photo — kept what you had.");
+    } else if (adding && read?.template && prevValue) {
       const { template, disagreements } = reconcileUserDigits(prevRead, prevValue, read.template);
       if (hasUnknown(template) || disagreements.length > 0 || template !== read.template) {
         applyScoreTemplate(template);
@@ -1174,7 +1190,7 @@ export default function AddScorePage() {
           </div>
 
           {/* More photos of the same display — re-reads the whole set and merges the digits */}
-          {(differentGamesWarning || (uploadItems.length > 0 && uploadItems.length < MAX_ITEMS) || (aiError && uploadItems.length > 0)) && (
+          {(differentGamesWarning || canAddMore || addBlockedByHeic || (aiError && uploadItems.length > 0)) && (
             <div className="flex flex-col gap-2 -mt-1">
               {differentGamesWarning && (
                 <p className="flex items-start gap-2 text-xs rounded-lg bg-amber-500/10 text-amber-400 px-3 py-2">
@@ -1184,7 +1200,13 @@ export default function AddScorePage() {
               )}
               {aiError && uploadItems.length > 0 && <p className="text-xs text-yellow-400">{aiError}</p>}
               {photoNotice && <p className="text-xs text-amber-400">{photoNotice}</p>}
-              {uploadItems.length > 0 && uploadItems.length < MAX_ITEMS && (
+              {addBlockedByHeic && (
+                <p className="text-xs text-muted-foreground">
+                  This photo is HEIC and couldn't be converted on this device, so it can't be combined with more.
+                  Upload them together as JPEGs to add another.
+                </p>
+              )}
+              {canAddMore && (
                 <>
                   <button
                     type="button"
