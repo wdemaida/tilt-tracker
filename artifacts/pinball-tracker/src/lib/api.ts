@@ -133,6 +133,17 @@ export function createApi(getToken: () => Promise<string | null>) {
         request<any[]>(mine ? '/venues?mine=true' : '/venues', undefined, await tok()),
       machines: async (id: number) => request<any>(`/venues/${id}/machines`, undefined, await tok()),
       pmMachines: (pmId: number) => request<any>(`/venues/pm-machines/${pmId}`),
+      // The Pinball Map listing a venue-step pick is, resolved lazily on pick (never per search
+      // result): a HERE place by its own coordinates + name, or a TiltTrack venue by id (the server
+      // uses its coordinates, and answers null for a private venue). Same matching rule as the
+      // nearby suggestions. `pinballMapId: null` = no match; the machine step then stays as before.
+      pmMatch: async (q: { venueId: number } | { lat: number; lng: number; name: string }) =>
+        request<{ pinballMapId: number | null; name?: string; url?: string; machineCount?: number | null; linked?: boolean }>(
+          'venueId' in q
+            ? `/venues/pm-match?venueId=${q.venueId}`
+            : `/venues/pm-match?lat=${q.lat}&lng=${q.lng}&name=${encodeURIComponent(q.name)}`,
+          undefined, await tok(),
+        ),
       // Private venues (homes) whose name matches exactly — name only, never a location. How a
       // friend finds someone's home venue to log a score there.
       exact: async (name: string) =>

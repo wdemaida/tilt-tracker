@@ -88,6 +88,15 @@
 - Picking a Place sends `venueHereId` + coordinates/address/timezone through the existing score
   POST, which upserts on `here_id` — no new create path. `searchTokens()` here must stay in step
   with the api-server's `venueSearch.ts`.
+- **A pick with no Pinball Map link is matched on pick** (`pmLookup` → `api.venues.pmMatch`, once
+  per pick, never per result): a Place by its coordinates + name, a TiltTrack venue by id. Nearby
+  HERE places (`pmChecked`) and private venues (`isPrivate`) are skipped. `effectivePmId` (the
+  venue's own link, else the resolved one) drives the roster (`/pm-machines/:pmId`, merged into a
+  TiltTrack venue's payload when its link was only just resolved), `canPostToPm`, and the score
+  POST's `venuePinballMapId`, which links the venue on save. No match → catalog search as before.
+- A venue's machine list now has **"Not listed? Type the machine name"** (`machineFreeText`), which
+  switches to the catalog search input; before, a roster venue offered no way to enter an unlisted
+  machine unless the AI had read a name.
 
 ## Home-venue inventory and the show-publicly switch (added 2026-09-25)
 - The Edit Venue dialog is one component, `EditVenueDialog.tsx`, used by the Venues page card and
