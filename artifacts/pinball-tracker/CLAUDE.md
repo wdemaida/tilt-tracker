@@ -119,9 +119,13 @@
 - A page can't see whether the Camera app geotags photos — only whether the picked files carry GPS
   (`describePhotoLocation()` over the prepared images, plus the upload result's `latitude`, since
   the server has its own EXIF fallback). None has GPS → step 2 shows the amber notice.
-- "Use my current location" is offered only when the photo looks recent (capture time within 2h)
-  or has no time and came from the camera input (`canOfferCurrentLocation`). Old photos get "Photo
-  taken earlier? Pick the venue below." It fires `getCurrentPosition` **only on tap** and calls
+- "Use my current location" is **always offered when there's no photo GPS** — including no photo at
+  all ("Skip AI & Enter Manually", `info={null}`) — since the tap itself is the user saying "I'm
+  still here". `currentLocationOffer()` only sets prominence: a big button when the photo is recent
+  (within 2h) or of unknown age (camera input, or a picked file with EXIF stripped — screenshots,
+  messaging-app forwards); a quiet "Still there?" link when the photo's clock says it's older.
+  (Changed 2026-09-25: users with GPS-less photos typed bare venue names, one a duplicate.) Not
+  offered when the photo *had* GPS but found no venues. It fires `getCurrentPosition` **only on tap** and calls
   `POST /api/upload/nearby-venues` (JSON body, coords rounded to 4 decimals client-side), which
   shares `suggestVenuesNear()` with the photo path. It's rate-limited per user (10/min, 100/day →
   429, whose message the notice shows) and cached per ~110m cell for 10 minutes.
