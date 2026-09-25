@@ -187,6 +187,17 @@ test('linkageClearedForPrivacy: a venue that ends up private drops HERE / PM lin
   assert.deepEqual(linkageClearedForPrivacy({ isResidence: false, privacyTier: 'full' }), {});
 });
 
+test('PM submit-score gate: a private venue\'s Pinball Map link is usable only by owner/admin', () => {
+  // pinballmap.ts answers "not linked" unless pinballMapId && canSeeVenueLinkage(...).
+  const usable = (v: ReturnType<typeof venue>, id: number | undefined, admin: boolean) =>
+    v.pinballMapId != null && canSeeVenueLinkage(v, id, admin);
+  assert.equal(usable(venue(), STRANGER, false), false);
+  assert.equal(usable(venue({ privacyTier: 'city_state' }), STRANGER, false), false);
+  assert.equal(usable(venue(), OWNER, false), true);
+  assert.equal(usable(venue(), STRANGER, true), true);
+  assert.equal(usable(venue({ isResidence: false, privacyTier: 'full', ownerId: null }), STRANGER, false), true);
+});
+
 test('isPrivateTier', () => {
   assert.equal(isPrivateTier({ isResidence: true, privacyTier: 'full' }), true);
   assert.equal(isPrivateTier({ isResidence: false, privacyTier: 'hidden' }), true);

@@ -5,6 +5,7 @@ import { requireAppUser } from '../middleware/requireAuth.js';
 import { getPmUserToken, submitPmScore } from '../lib/pinballmapApi.js';
 import { getVenueRoster } from '../lib/pmRosterCache.js';
 import { parseScore } from '../lib/scoreRead.js';
+import { canSeeVenueLinkage } from '../lib/venuePrivacy.js';
 
 const router = Router();
 
@@ -49,7 +50,11 @@ router.post('/submit-score', requireAppUser, async (req, res) => {
 
   try {
     const [venue] = await db.select().from(venues).where(eq(venues.id, Number(venueId))).limit(1);
-    if (!venue?.pinballMapId) {
+    // A private venue's Pinball Map link is only its owner's (and admins') to use: the reply below
+    // echoes the matched machine's canonical name and xref id, so letting anyone probe it with
+    // machine names would read out the roster — and a roster identifies the listing, i.e. where the
+    // venue is. For everyone else it answers exactly as if the venue had no link at all.
+    if (!venue?.pinballMapId || !canSeeVenueLinkage(venue, user.id, user.role === 'admin')) {
       return res.status(422).json({ error: 'This venue is not linked to Pinball Map' });
     }
 
