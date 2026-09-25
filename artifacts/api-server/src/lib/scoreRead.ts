@@ -303,6 +303,9 @@ export function sanitizeImageDisplays(raw: unknown, size?: ImageSize): ImageRead
     .map(d => sanitizeDisplayRead(d, size))
     .filter(d => /[1-9?]/.test(d.template));
   if (displays.some(d => /[0-9]/.test(d.template))) displays = displays.filter(d => /[0-9]/.test(d.template));
+  // Remember where each display sat in the model's own (reading-order) list before sorting by player
+  // number — mergePlayerReads matches unnumbered displays across photos on this, not on sorted order.
+  displays = displays.map((d, k) => ({ ...d, position: k }));
   const seen = new Set<number>();
   displays = displays.map(d => {
     if (d.player == null) return d;
@@ -437,7 +440,8 @@ const playersCompatible = (a: number | null, b: number | null) => a == null || b
  * Displays are matched across images by, in order:
  *  1. player number (from a "1UP"/"PLAYER 1" label or the layout);
  *  2. position, when an image shows the same number of displays as the reference image (the one with
- *     the most) — the model lists them in player order, or reading order when unnumbered;
+ *     the most) — each display's place in the model's own list (`position`, kept from before the
+ *     player-number sort), which is reading order;
  *  3. the template itself, for a lone unnumbered display (a close-up of one player's display): it
  *     joins the one group it agrees with on at least two digits without contradicting any. Two
  *     equally good groups (identical scores) is ambiguity, not a match.
@@ -448,12 +452,14 @@ const playersCompatible = (a: number | null, b: number | null) => a == null || b
  * Output is numbered players ascending, then unnumbered groups in the reference image's order.
  */
 export function mergePlayerReads(images: ImageRead[]): MergedPlayerRead[] {
-  interface Group { player: number | null; members: Array<{ image: number; read: DisplayRead }> }
+  interface Group { player: number | null; position?: number; members: Array<{ image: number; read: DisplayRead }> }
   if (images.every(im => im.displays.length === 0)) return [];
 
   let ref = 0;
   images.forEach((im, i) => { if (im.displays.length > images[ref].displays.length) ref = i; });
-  const groups: Group[] = images[ref].displays.map(d => ({ player: d.player, members: [{ image: ref, read: d }] }));
+  const groups: Group[] = images[ref].displays.map((d, k) => ({
+    player: d.player, position: d.position ?? k, members: [{ image: ref, read: d }],
+  }));
   const refCount = groups.length;
 
   images.forEach((im, i) => {
@@ -469,12 +475,15 @@ export function mergePlayerReads(images: ImageRead[]): MergedPlayerRead[] {
       const g = groups.find(g => g.player === d.player && !used.has(g));
       if (g) take(j, g);
     });
-    // 2. Position, when the display counts line up with the reference image.
+    // 2. Position, when the display counts line up with the reference image. Matched on each
+    //    display's original place in the model's list — the sorted order puts numbered displays
+    //    first, so with partial numbering it no longer lines up between photos.
     if (ds.length === refCount) {
       ds.forEach((d, j) => {
         if (assigned[j]) return;
-        const g = groups[j];
-        if (!used.has(g) && playersCompatible(g.player, d.player)) take(j, g);
+        const pos = d.position ?? j;
+        const g = groups.find(g => g.position === pos && !used.has(g));
+        if (g && playersCompatible(g.player, d.player)) take(j, g);
       });
     }
     // 3. Template agreement.
