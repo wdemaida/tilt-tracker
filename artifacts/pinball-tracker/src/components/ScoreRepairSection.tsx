@@ -30,6 +30,7 @@ interface ScoreRepairStatus {
     pinballMapId: number | null;
     pmLocationUrl: string | null;
     needsAddress?: boolean;
+    linkageBlocked?: boolean;
   } | null;
   venueNameSnapshot: string | null;
   canRepairVenue: boolean;
@@ -118,6 +119,7 @@ export default function ScoreRepairSection({ scoreId, onMachineRepaired }: Props
     pmConfigured: status.pmConfigured,
     canRepair: status.canRepairVenue,
     needsAddress: !!status.venue.needsAddress,
+    linkageBlocked: !!status.venue.linkageBlocked,
   };
 
   const suggestions = status.suggestions ?? [];

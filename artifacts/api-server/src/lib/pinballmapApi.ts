@@ -112,6 +112,18 @@ export async function searchPmLocationsByName(name: string): Promise<PmLocation[
   const q = name.trim();
   if (q.length < 2) return [];
 
+  const mapped = await pmAutocomplete(q);
+  if (mapped.length > 0) return mapped;
+
+  const data = await pmFetch<{ locations?: PmLocation[] }>('/locations.json', {
+    by_location_name: q,
+    no_details: 1,
+  });
+  return data.locations ?? [];
+}
+
+// Autocomplete only, normalised to PmLocation shape (id + label; no address or coordinates).
+async function pmAutocomplete(q: string): Promise<PmLocation[]> {
   const auto = await pmFetch<Array<{ label?: string; value?: number | string; id?: number }> | { locations?: PmLocation[] }>(
     '/locations/autocomplete.json',
     { name: q },
@@ -125,14 +137,9 @@ export async function searchPmLocationsByName(name: string): Promise<PmLocation[
     const mapped = auto
       .map(a => ({ id: pmAutocompleteId(a), name: a.label ?? '', lat: 0, lon: 0 }))
       .filter(l => l.id > 0);
-    if (mapped.length > 0) return mapped;
+    return mapped;
   }
-
-  const data = await pmFetch<{ locations?: PmLocation[] }>('/locations.json', {
-    by_location_name: q,
-    no_details: 1,
-  });
-  return data.locations ?? [];
+  return [];
 }
 
 /** The numeric location id from one autocomplete entry â€” `id` when present, `value` only if numeric. */
@@ -157,7 +164,9 @@ export async function searchPmLocationsWithAddress(name: string, maxLookups = 3)
   });
   if (data.locations?.length) return data.locations;
 
-  const fallback = await searchPmLocationsByName(q);
+  // Autocomplete directly, not searchPmLocationsByName — its own fallback is the locations.json
+  // request that just came back empty, and repeating it doubled the calls for every miss.
+  const fallback = await pmAutocomplete(q);
   const full: PmLocation[] = [];
   for (const hit of fallback.slice(0, maxLookups)) {
     const loc = await getPmLocation(hit.id);

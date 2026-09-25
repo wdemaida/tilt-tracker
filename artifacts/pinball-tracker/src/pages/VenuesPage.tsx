@@ -20,13 +20,14 @@ interface Venue {
   pinballMapId: number | null;
   pmMachineCount: number | null;
   ownerId: number | null;
-  createdById: number | null;
   isResidence: boolean;
   privacyTier: 'full' | 'city_state' | 'hidden';
   scoreCount: number;
   machineCount: number;
   /** No address and not a residence — fixable from the venue page's repair panel. */
   needsAddress?: boolean;
+  /** Whether *this* viewer may repair the venue (admin / owner / creator) — decided server-side. */
+  canRepair?: boolean;
 }
 
 interface EditVenue {
@@ -93,11 +94,9 @@ export default function VenuesPage() {
     [venues]
   );
 
-  // "Needs address" is only shown to someone who can act on it — the same people the backend lets
-  // repair a venue (admin, owner, creator). Everyone else sees the card exactly as before.
-  const canFix = (v: Venue) =>
-    !!appUser && (isAdmin || v.ownerId === appUser.id || v.createdById === appUser.id);
-  const showNeedsAddress = (v: Venue) => !!v.needsAddress && canFix(v);
+  // "Needs address" is only shown to someone who can act on it — the server's `canRepair`, the same
+  // rule as the repair routes. Everyone else sees the card exactly as before.
+  const showNeedsAddress = (v: Venue) => !!v.needsAddress && !!v.canRepair;
   const needsAddressCount = (venues as Venue[]).filter(showNeedsAddress).length;
 
   const filteredVenues = (venues as Venue[])

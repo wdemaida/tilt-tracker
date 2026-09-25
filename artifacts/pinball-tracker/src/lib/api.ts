@@ -110,7 +110,7 @@ export function createApi(getToken: () => Promise<string | null>) {
         resolvePlace: async (id: number, body:
           | { source: 'pm'; pinballMapId: number }
           | { source: 'here'; hereId: string }
-          | { source: 'manual'; street: string; city: string; state?: string; postalCode?: string; country?: string; confirm?: boolean }) =>
+          | { source: 'manual'; street: string; city: string; state?: string; postalCode?: string; country?: string; confirm?: boolean; acceptImprecise?: boolean }) =>
           request<any>(`/venues/${id}/repair/place`, { method: 'POST', body: JSON.stringify(body) }, await tok()),
         pmCandidates: async (id: number, q?: string) =>
           request<any>(`/venues/${id}/repair/pm-candidates${q ? `?q=${encodeURIComponent(q)}` : ''}`, undefined, await tok()),

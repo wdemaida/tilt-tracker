@@ -10,6 +10,7 @@ process.env.DATABASE_URL ??= 'postgres://unit-test@127.0.0.1:1/never-connected';
 const {
   addressResolutionBlocker, venueNeedsAddress, pmLocationToPlace, formatPmAddress,
   buildManualAddressQuery, isPreciseGeocode, pickConfidentHereMatch, stripPlaceNamePrefix,
+  describeHolder, isPrivateVenue, linkageBlockedByPrivacy, venueListFlags, isUniqueViolation,
 } = await import('./venueAddress.js');
 const { canRepairVenue } = await import('./venueRepair.js');
 const { pmAutocompleteId } = await import('./pinballmapApi.js');
@@ -157,4 +158,66 @@ test('pmAutocompleteId: numeric id wins; a name in `value` is not an id', () => 
   assert.equal(pmAutocompleteId({ value: '23289' }), 23289);
   assert.equal(pmAutocompleteId({ value: 'Special When Lit' }), 0);
   assert.equal(pmAutocompleteId({}), 0);
+});
+
+// --- Privacy hardening (review follow-up, 2026-09-24) ---------------------------------------------
+
+test('describeHolder: a public venue holding the id is named', () => {
+  assert.deepEqual(
+    describeHolder({ id: 12, name: 'Logan Arcade', isResidence: false, privacyTier: 'full' }),
+    { linkedVenue: { id: 12, name: 'Logan Arcade' }, linkedElsewhere: true },
+  );
+});
+
+test('describeHolder: a residence or restricted tier counts as taken but is never named', () => {
+  const anon = { linkedVenue: null, linkedElsewhere: true };
+  // The review's case: PM-linked first, later marked a hidden residence.
+  assert.deepEqual(describeHolder({ id: 44, name: "Will's Basement", isResidence: true, privacyTier: 'hidden' }), anon);
+  assert.deepEqual(describeHolder({ id: 44, name: 'Home', isResidence: true, privacyTier: 'city_state' }), anon);
+  // A residence shown in full is still a home — not named next to a candidate's exact coordinates.
+  assert.deepEqual(describeHolder({ id: 44, name: 'Home', isResidence: true, privacyTier: 'full' }), anon);
+  // Flags disagreeing (tier restricted, residence flag off) is still private.
+  assert.deepEqual(describeHolder({ id: 9, name: 'X', isResidence: false, privacyTier: 'hidden' }), anon);
+  // And the output carries nothing identifying at all.
+  const out = JSON.stringify(describeHolder({ id: 44, name: "Will's Basement", isResidence: true, privacyTier: 'hidden' }));
+  assert.equal(out.includes('Basement') || out.includes('44'), false);
+});
+
+test('describeHolder: no holder', () => {
+  assert.deepEqual(describeHolder(null), { linkedVenue: null, linkedElsewhere: false });
+  assert.deepEqual(describeHolder(undefined), { linkedVenue: null, linkedElsewhere: false });
+});
+
+test('isPrivateVenue', () => {
+  assert.equal(isPrivateVenue({ isResidence: false, privacyTier: 'full' }), false);
+  assert.equal(isPrivateVenue({ isResidence: true, privacyTier: 'full' }), true);
+  assert.equal(isPrivateVenue({ isResidence: false, privacyTier: 'city_state' }), true);
+});
+
+test('linkageBlockedByPrivacy: only restricted tiers are refused HERE / Pinball Map linkage', () => {
+  assert.equal(linkageBlockedByPrivacy({ privacyTier: 'full' }), false);
+  assert.equal(linkageBlockedByPrivacy({ privacyTier: 'city_state' }), true);
+  assert.equal(linkageBlockedByPrivacy({ privacyTier: 'hidden' }), true);
+});
+
+test('venueListFlags: canRepair is computed server-side per requester', () => {
+  assert.deepEqual(venueListFlags(specialWhenLit, admin), { canRepair: true, needsAddress: true });
+  assert.deepEqual(venueListFlags(specialWhenLit, creator), { canRepair: true, needsAddress: true });
+  assert.deepEqual(venueListFlags(specialWhenLit, stranger), { canRepair: false, needsAddress: true });
+  // Signed-out viewers can repair nothing.
+  assert.deepEqual(venueListFlags(specialWhenLit, undefined), { canRepair: false, needsAddress: true });
+  // The residence: its owner may repair, but it never "needs an address".
+  assert.deepEqual(venueListFlags(basement, { id: 1, role: 'user' }), { canRepair: true, needsAddress: false });
+});
+
+test('venueListFlags output never carries createdById', () => {
+  assert.deepEqual(Object.keys(venueListFlags(specialWhenLit, admin)).sort(), ['canRepair', 'needsAddress']);
+});
+
+test('isUniqueViolation recognises 23505 directly or nested as a cause', () => {
+  assert.equal(isUniqueViolation({ code: '23505' }), true);
+  assert.equal(isUniqueViolation({ cause: { code: '23505' } }), true);
+  assert.equal(isUniqueViolation({ code: '23503' }), false);
+  assert.equal(isUniqueViolation(new Error('boom')), false);
+  assert.equal(isUniqueViolation(null), false);
 });

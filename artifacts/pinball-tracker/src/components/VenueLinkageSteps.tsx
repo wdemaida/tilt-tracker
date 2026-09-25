@@ -25,9 +25,20 @@ export interface LinkageView {
    * VenueAddressFinder) instead of "Find in HERE", which needs an address to start from.
    */
   needsAddress?: boolean;
+  /**
+   * A restricted-tier (private) venue: the server refuses HERE / Pinball Map linkage for it, since
+   * either id would publish its location. Steps 1 and 2 show why instead of offering buttons.
+   */
+  linkageBlocked?: boolean;
 }
 
 export interface LinkedVenueRef { id: number; name: string }
+
+/**
+ * Another TiltTrack venue already holds this id. `linkedVenue` names it only when it's public;
+ * a private one (a residence) is reported by `linkedElsewhere` alone.
+ */
+export interface HolderInfo { linkedVenue: LinkedVenueRef | null; linkedElsewhere: boolean }
 
 export interface PlaceSearchResult {
   query: string;
@@ -35,12 +46,11 @@ export interface PlaceSearchResult {
   nearResolved: string | null;
   pm: Array<{
     pinballMapId: number; name: string; address: string; latitude: number; longitude: number;
-    machineCount: number | null; url: string; linkedVenue: LinkedVenueRef | null;
-  }>;
+    machineCount: number | null; url: string;
+  } & HolderInfo>;
   here: Array<{
     hereId: string; name: string; address: string; latitude: number; longitude: number;
-    linkedVenue: LinkedVenueRef | null;
-  }>;
+  } & HolderInfo>;
   pmError: string | null;
   hereNote: string | null;
 }
@@ -65,7 +75,7 @@ export interface ManualPreview {
 export type PlaceChoice =
   | { source: 'pm'; pinballMapId: number }
   | { source: 'here'; hereId: string }
-  | ({ source: 'manual'; confirm: true } & ManualAddress);
+  | ({ source: 'manual'; confirm: true; acceptImprecise?: boolean } & ManualAddress);
 
 interface HereCandidate {
   name: string;
@@ -196,8 +206,11 @@ export function useVenueLinkageActions(venueId: number | null, onChanged?: () =>
       if (res.pmPreselect) parts.push('Now link it to Pinball Map below.');
       if (dupes.length) {
         parts.push(`Heads up: TiltTrack already has ${dupes.map(d => `"${d.name}" (#${d.id})`).join(', ')} at this spot — this may be a duplicate venue.`);
+      } else if (res.privateDuplicate) {
+        parts.push('Heads up: another TiltTrack venue already matches this place — this may be a duplicate.');
       }
-      setNotice({ kind: dupes.length ? 'err' : 'ok', text: parts.join(' ') });
+      const warn = dupes.length > 0 || !!res.privateDuplicate;
+      setNotice({ kind: warn ? 'err' : 'ok', text: parts.join(' ') });
       invalidate();
     },
     onError: (e: any) => setNotice({ kind: 'err', text: e.message ?? 'Could not set the address' }),
@@ -338,6 +351,18 @@ export function PmNotConfiguredWarning() {
 export default function VenueLinkageSteps({ status, actions }: { status: LinkageView; actions: LinkageActions }) {
   const hereDone = !!status.hereId;
   const pmDone = !!status.pinballMapId;
+
+  if (status.linkageBlocked) {
+    return (
+      <p className="flex items-start gap-2 text-xs rounded-lg bg-white/5 text-muted-foreground px-3 py-2">
+        <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+        <span>
+          This venue’s address is private, so it isn’t linked to HERE or Pinball Map — either link
+          would publish where it is. Machine matching against a Pinball Map roster isn’t available here.
+        </span>
+      </p>
+    );
+  }
 
   return (
     <>

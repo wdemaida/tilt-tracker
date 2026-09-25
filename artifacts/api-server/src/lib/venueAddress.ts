@@ -41,6 +41,67 @@ export function venueNeedsAddress(venue: Pick<AddressableVenue, 'address' | 'isR
   return !venue.isResidence && venue.privacyTier === 'full' && !(venue.address && venue.address.trim());
 }
 
+/** Anything with the fields that decide whether a venue's identity/location may be shown to others. */
+export interface PrivacyFlags {
+  isResidence: boolean;
+  privacyTier: 'full' | 'city_state' | 'hidden';
+}
+
+/** A residence, or any row whose tier restricts its location — the rows whose name must never be paired with a place. */
+export function isPrivateVenue(v: PrivacyFlags): boolean {
+  return v.isResidence || v.privacyTier !== 'full';
+}
+
+export interface HolderView {
+  /** The other TiltTrack venue holding this HERE/PM id — only when it's a public venue. */
+  linkedVenue: { id: number; name: string } | null;
+  /** True whenever *any* other venue holds the id, including a private one we won't name. */
+  linkedElsewhere: boolean;
+}
+
+/**
+ * How to describe "another venue already holds this HERE/Pinball Map id" next to a candidate that
+ * carries exact coordinates. A public venue is named, so the user can go and look. A residence (or
+ * any restricted tier) is not: pairing its name with the candidate's position is precisely the
+ * disclosure its privacy tier exists to prevent — e.g. an owner who linked Pinball Map and later
+ * marked the venue a hidden residence. It still counts as taken, just anonymously.
+ */
+export function describeHolder(holder: ({ id: number; name: string } & PrivacyFlags) | null | undefined): HolderView {
+  if (!holder) return { linkedVenue: null, linkedElsewhere: false };
+  if (isPrivateVenue(holder)) return { linkedVenue: null, linkedElsewhere: true };
+  return { linkedVenue: { id: holder.id, name: holder.name }, linkedElsewhere: true };
+}
+
+/**
+ * Whether HERE / Pinball Map linkage may be written onto this venue. A restricted-tier venue is
+ * refused: a Pinball Map id (and its public pmLocationUrl) or a HERE place id *is* a location, and
+ * both go out unredacted on venue payloads — linking one would publish exactly what the tier hides.
+ * A residence the owner chose to show in full has nothing hidden, so it's allowed.
+ */
+export function linkageBlockedByPrivacy(v: Pick<PrivacyFlags, 'privacyTier'>): boolean {
+  return v.privacyTier !== 'full';
+}
+
+/**
+ * Per-row flags the Venues list needs, computed server-side so the payload never has to carry
+ * `createdById` for the client to work out who may fix a venue.
+ */
+export function venueListFlags(
+  row: RepairableVenue & Pick<AddressableVenue, 'address' | 'isResidence' | 'privacyTier'>,
+  requester: RepairActor | undefined,
+): { canRepair: boolean; needsAddress: boolean } {
+  return {
+    canRepair: requester ? canRepairVenue(row, requester) : false,
+    needsAddress: venueNeedsAddress(row),
+  };
+}
+
+/** Postgres unique_violation (23505), whether postgres.js throws it directly or a wrapper nests it. */
+export function isUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: unknown; cause?: { code?: unknown } } | null;
+  return e?.code === '23505' || e?.cause?.code === '23505';
+}
+
 export interface ResolvedPlace {
   address: string;
   city: string | null;

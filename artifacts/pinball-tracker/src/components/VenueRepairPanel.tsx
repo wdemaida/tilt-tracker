@@ -22,6 +22,7 @@ interface RepairStatus {
   myScoreCount: number;
   isResidence?: boolean;
   needsAddress?: boolean;
+  linkageBlocked?: boolean;
 }
 
 // The recovery path for a venue the upload flow couldn't identify. Steps 1 and 2 are shared with the
@@ -69,6 +70,7 @@ export default function VenueRepairPanel({ venueId }: { venueId: number }) {
     pmConfigured: status.pmConfigured,
     canRepair: true,
     needsAddress: !!status.needsAddress,
+    linkageBlocked: !!status.linkageBlocked,
   };
 
   return (

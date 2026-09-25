@@ -90,6 +90,7 @@ export default function VenueAddressFinder({ status, actions }: { status: Linkag
                 extra={c.machineCount != null ? `${c.machineCount} machines` : null}
                 href={c.url}
                 linkedVenue={c.linkedVenue}
+                linkedElsewhere={c.linkedElsewhere}
                 linkedNote="already linked to"
                 disabled={busy}
                 onUse={() => setPending({ label: `${c.name} (Pinball Map #${c.pinballMapId})`, address: c.address, choice: { source: 'pm', pinballMapId: c.pinballMapId } })}
@@ -106,9 +107,10 @@ export default function VenueAddressFinder({ status, actions }: { status: Linkag
                 extra={null}
                 href={null}
                 linkedVenue={c.linkedVenue}
+                linkedElsewhere={c.linkedElsewhere}
                 linkedNote="already used by"
                 // hereId is unique across venues — the server would refuse this one with a 409.
-                disabled={busy || !!c.linkedVenue}
+                disabled={busy || c.linkedElsewhere}
                 onUse={() => setPending({ label: `${c.name} (HERE)`, address: c.address, choice: { source: 'here', hereId: c.hereId } })}
               />
             ))}
@@ -160,9 +162,12 @@ export default function VenueAddressFinder({ status, actions }: { status: Linkag
                   )}
                 </>
               }
-              confirmLabel="Save this address"
               busy={busy}
-              onConfirm={() => actions.resolvePlace.mutate({ source: 'manual', confirm: true, ...manual })}
+              // The server refuses an imprecise match unless told the user saw the warning above.
+              confirmLabel={actions.manualPreview.precise ? 'Save this address' : 'Save approximate position'}
+              onConfirm={() => actions.resolvePlace.mutate({
+                source: 'manual', confirm: true, acceptImprecise: !actions.manualPreview!.precise, ...manual,
+              })}
               onCancel={() => actions.setManualPreview(null)}
             />
           )}
@@ -187,13 +192,15 @@ function CandidateGroup({ title, note, children }: { title: string; note: string
 }
 
 function CandidateRow({
-  name, address, extra, href, linkedVenue, linkedNote, disabled, onUse,
+  name, address, extra, href, linkedVenue, linkedElsewhere, linkedNote, disabled, onUse,
 }: {
   name: string;
   address: string;
   extra: string | null;
   href: string | null;
   linkedVenue: LinkedVenueRef | null;
+  /** True for any holder, including a private venue the server won't name. */
+  linkedElsewhere: boolean;
   linkedNote: string;
   disabled: boolean;
   onUse: () => void;
@@ -212,11 +219,13 @@ function CandidateRow({
             View on Pinball Map <ExternalLink className="w-3 h-3" />
           </a>
         )}
-        {linkedVenue && (
+        {linkedVenue ? (
           <Link href={`/venues/${linkedVenue.id}`} className="block text-xs text-amber-400 hover:underline">
             {linkedNote} TiltTrack venue “{linkedVenue.name}” — this may be a duplicate
           </Link>
-        )}
+        ) : linkedElsewhere ? (
+          <span className="block text-xs text-amber-400">{linkedNote} another TiltTrack venue — this may be a duplicate</span>
+        ) : null}
       </span>
       <button onClick={onUse} disabled={disabled} className={smallBtn}>Use</button>
     </li>

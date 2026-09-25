@@ -49,8 +49,12 @@
   confirm, because once an address is set this flow no longer applies and only an admin's Edit Venue
   dialog can change it. A PM pick lands in step 2 highlighted ("The listing you picked in step 1").
   `VenueRepairPanel` auto-opens once when `needsAddress`. The Venues page shows a "Needs address"
-  badge + filter chip **only** to users who could fix it (admin / owner / `createdById`); residences
-  never get it.
+  badge + filter chip **only** when the row's server-computed `canRepair` is true (the list no longer
+  carries `createdById`); residences never get it. Candidates held by a *private* venue show
+  "another TiltTrack venue" with no name (`linkedElsewhere` without `linkedVenue`). An imprecise
+  manual geocode saves only via "Save approximate position", which sends `acceptImprecise`.
+- `LinkageView.linkageBlocked` (restricted-tier venue): steps 1–2 render an explanation instead of
+  buttons — the server refuses HERE / Pinball Map linkage for private venues.
 
 ## Duplicate venues
 - `POST /api/venues` answers **409 `duplicate_venue`** with `candidates` when a venue of the same

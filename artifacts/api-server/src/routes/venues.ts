@@ -13,7 +13,8 @@ import { redactVenue, canSeeFullVenue } from '../lib/venuePrivacy.js';
 import { canRepairVenue, buildResyncPreview, applyResync, reenrichMachines } from '../lib/venueRepair.js';
 import {
   addressResolutionBlocker, pmLocationToPlace, formatPmAddress, buildManualAddressQuery,
-  isPreciseGeocode, pickConfidentHereMatch, stripPlaceNamePrefix, venueNeedsAddress, type AddressBlocker,
+  isPreciseGeocode, pickConfidentHereMatch, stripPlaceNamePrefix, venueListFlags, describeHolder,
+  linkageBlockedByPrivacy, isUniqueViolation, type AddressBlocker, type HolderView, type PrivacyFlags,
 } from '../lib/venueAddress.js';
 import { getVenueRoster } from '../lib/pmRosterCache.js';
 import { findDuplicateVenues } from '../lib/venueDedup.js';
@@ -58,7 +59,7 @@ router.get('/', async (req, res) => {
         pinballMapId: venues.pinballMapId,
         pmMachineCount: venues.pmMachineCount,
         ownerId: venues.ownerId,
-        // Lets the Venues page show a "Needs address" badge to the one non-admin who can fix it.
+        // Read only to compute `canRepair` below — stripped before the row goes out.
         createdById: venues.createdById,
         isResidence: venues.isResidence,
         privacyTier: venues.privacyTier,
@@ -84,10 +85,12 @@ router.get('/', async (req, res) => {
     const isAdmin = requester?.role === 'admin';
     // needsAddress is computed from the unredacted row, and is always false for a residence — a
     // hidden-tier home legitimately shows no address and is not something to "fix".
-    const redacted = rows.map(r => ({
-      ...toPublicVenue(redactVenue(r, requester?.id, isAdmin)),
-      needsAddress: venueNeedsAddress(r),
-    }));
+    // `canRepair` is decided here rather than by shipping createdById to every client: who added a
+    // venue is nobody else's business, and the client only ever needed the yes/no.
+    const redacted = rows.map(r => {
+      const { createdById: _createdById, ...pub } = toPublicVenue(redactVenue(r, requester?.id, isAdmin));
+      return { ...pub, ...venueListFlags(r, requester) };
+    });
 
     res.json(redacted);
   } catch (err) {
@@ -485,6 +488,30 @@ async function confidentHereAttachment(venueId: number, venueName: string, lat: 
   return { candidates, attached: best, updates };
 }
 
+// A restricted-tier venue never gets HERE / Pinball Map linkage — see linkageBlockedByPrivacy().
+// Responds and returns true when refused.
+function refuseRestrictedLinkage(venue: { privacyTier: 'full' | 'city_state' | 'hidden' }, res: any): boolean {
+  if (!linkageBlockedByPrivacy(venue)) return false;
+  res.status(409).json({
+    error: 'This venue’s address is private, so it can’t be linked to HERE or Pinball Map — both would publish where it is',
+    code: 'venue_private',
+  });
+  return true;
+}
+
+// 409 for a HERE place another venue already holds. The holder is named only when it's a public
+// venue (describeHolder) — a residence's name must not be paired with the place being linked.
+// With no holder (a unique-index race), it's reported anonymously.
+function hereIdTaken(res: any, holder?: { id: number; name: string } & PrivacyFlags) {
+  const { linkedVenue } = describeHolder(holder);
+  return res.status(409).json({
+    error: linkedVenue ? `"${linkedVenue.name}" is already linked to that HERE place` : 'Another venue is already linked to that HERE place',
+    code: 'here_id_taken',
+    linkedVenue,
+    linkedElsewhere: true,
+  });
+}
+
 function pmFailure(res: any, err: unknown, fallback: string) {
   if (err instanceof PmApiError) {
     return res.status(502).json({ error: err.message, code: `PM_${err.kind.toUpperCase()}` });
@@ -524,6 +551,9 @@ router.get('/:id/repair', requireAppUser, async (req, res) => {
     // True when the venue has no address and the address-less resolution flow applies to it (not a
     // residence). The panel swaps step 1's "Find in HERE" button for a place search when it is.
     needsAddress: addressResolutionBlocker(venue, appUser) === null,
+    // A restricted-tier venue can't be linked to HERE / Pinball Map at all (linkageBlockedByPrivacy);
+    // the panel says so instead of offering buttons that would 409.
+    linkageBlocked: linkageBlockedByPrivacy(venue),
   });
 });
 
@@ -534,9 +564,12 @@ router.post('/:id/repair/here', requireAppUser, async (req, res) => {
   const venue = await loadRepairableVenue(req, res);
   if (!venue) return;
 
-  if (!venue.address) {
+  // Whitespace counts as no address, matching addressResolutionBlocker — otherwise a "   " address
+  // is refused by both this step and the address-less flow, and the venue is stuck again.
+  if (!venue.address?.trim()) {
     return res.status(400).json({ error: 'Add an address to this venue first — HERE needs somewhere to search from' });
   }
+  if (refuseRestrictedLinkage(venue, res)) return;
 
   const appUser = (req as any).appUser;
 
@@ -561,9 +594,15 @@ router.post('/:id/repair/here', requireAppUser, async (req, res) => {
     const { candidates, attached, updates: hereUpdates } = await confidentHereAttachment(venue.id, venue.name, lat, lng);
     Object.assign(updates, hereUpdates);
 
-    const [updated] = Object.keys(updates).length
-      ? await db.update(venues).set(updates).where(eq(venues.id, venue.id)).returning()
-      : [venue];
+    let updated = venue;
+    if (Object.keys(updates).length) {
+      try {
+        [updated] = await db.update(venues).set(updates).where(eq(venues.id, venue.id)).returning();
+      } catch (err) {
+        if (isUniqueViolation(err)) return hereIdTaken(res);
+        throw err;
+      }
+    }
 
     res.json({
       attached: attached ? { name: attached.name, hereId: attached.hereId, distance: attached.distance } : null,
@@ -581,14 +620,14 @@ router.post('/:id/repair/here/attach', requireAppUser, async (req, res) => {
   const venue = await loadRepairableVenue(req, res);
   if (!venue) return;
 
+  if (refuseRestrictedLinkage(venue, res)) return;
   const appUser = (req as any).appUser;
   const hereId = typeof req.body.hereId === 'string' ? req.body.hereId : null;
   if (!hereId) return res.status(400).json({ error: 'hereId is required' });
 
-  const [clash] = await db.select({ id: venues.id, name: venues.name }).from(venues).where(eq(venues.hereId, hereId)).limit(1);
-  if (clash && clash.id !== venue.id) {
-    return res.status(409).json({ error: `"${clash.name}" is already linked to that HERE place` });
-  }
+  const [clash] = await db.select({ id: venues.id, name: venues.name, isResidence: venues.isResidence, privacyTier: venues.privacyTier })
+    .from(venues).where(eq(venues.hereId, hereId)).limit(1);
+  if (clash && clash.id !== venue.id) return hereIdTaken(res, clash);
 
   const updates: Record<string, any> = { hereId };
   if (typeof req.body.latitude === 'number') updates.latitude = req.body.latitude;
@@ -603,7 +642,14 @@ router.post('/:id/repair/here/attach', requireAppUser, async (req, res) => {
     if (tz) updates.timezone = tz;
   }
 
-  const [updated] = await db.update(venues).set(updates).where(eq(venues.id, venue.id)).returning();
+  let updated;
+  try {
+    [updated] = await db.update(venues).set(updates).where(eq(venues.id, venue.id)).returning();
+  } catch (err) {
+    if (isUniqueViolation(err)) return hereIdTaken(res);
+    console.error('Venue HERE attach error:', err);
+    return res.status(500).json({ error: 'Failed to link that HERE place' });
+  }
   res.json(toPublicVenue(redactVenue(updated, appUser.id, appUser.role === 'admin')));
 });
 
@@ -636,21 +682,26 @@ function ensureAddressResolvable(venue: any, appUser: any, res: any): boolean {
 }
 
 /** Other venues already holding these HERE ids / Pinball Map ids, so the UI can flag likely duplicates. */
+// Each value is already passed through describeHolder(): residences / restricted tiers come back as
+// an anonymous `linkedElsewhere` with no name or id, since these sit next to exact coordinates.
 async function venuesHolding(venueId: number, hereIds: string[], pmIds: number[]) {
-  const byHere = new Map<string, { id: number; name: string }>();
-  const byPm = new Map<number, { id: number; name: string }>();
+  const byHere = new Map<string, HolderView>();
+  const byPm = new Map<number, HolderView>();
+  const cols = { id: venues.id, name: venues.name, isResidence: venues.isResidence, privacyTier: venues.privacyTier };
   if (hereIds.length) {
-    const rows = await db.select({ id: venues.id, name: venues.name, hereId: venues.hereId })
+    const rows = await db.select({ ...cols, hereId: venues.hereId })
       .from(venues).where(inArray(venues.hereId, hereIds));
-    for (const r of rows) if (r.hereId && r.id !== venueId) byHere.set(r.hereId, { id: r.id, name: r.name });
+    for (const r of rows) if (r.hereId && r.id !== venueId) byHere.set(r.hereId, describeHolder(r));
   }
   if (pmIds.length) {
-    const rows = await db.select({ id: venues.id, name: venues.name, pinballMapId: venues.pinballMapId })
+    const rows = await db.select({ ...cols, pinballMapId: venues.pinballMapId })
       .from(venues).where(inArray(venues.pinballMapId, pmIds));
-    for (const r of rows) if (r.pinballMapId && r.id !== venueId) byPm.set(r.pinballMapId, { id: r.id, name: r.name });
+    for (const r of rows) if (r.pinballMapId && r.id !== venueId) byPm.set(r.pinballMapId, describeHolder(r));
   }
   return { byHere, byPm };
 }
+
+const NOT_HELD: HolderView = { linkedVenue: null, linkedElsewhere: false };
 
 /** City-level anchors spread wider than an address — King City, OR sits ~15km from Portland's centroid. */
 const NEAR_ANCHOR_RADIUS_M = 50_000;
@@ -734,14 +785,14 @@ router.get('/:id/repair/place-search', requireAppUser, async (req, res) => {
       query: q,
       near: near || null,
       nearResolved,
-      pm: pm.map(p => ({ ...p, linkedVenue: byPm.get(p.pinballMapId) ?? null })),
+      pm: pm.map(p => ({ ...p, ...(byPm.get(p.pinballMapId) ?? NOT_HELD) })),
       here: hereHits.map(h => ({
         hereId: h.hereId,
         name: h.name,
         address: stripPlaceNamePrefix(h.address, h.name),
         latitude: h.venueLat,
         longitude: h.venueLng,
-        linkedVenue: byHere.get(h.hereId!) ?? null,
+        ...(byHere.get(h.hereId!) ?? NOT_HELD),
       })),
       pmError,
       hereNote,
@@ -801,10 +852,9 @@ router.post('/:id/repair/place', requireAppUser, async (req, res) => {
       const hereId = typeof req.body.hereId === 'string' ? req.body.hereId.trim() : '';
       if (!hereId) return res.status(400).json({ error: 'hereId is required' });
 
-      const [clash] = await db.select({ id: venues.id, name: venues.name }).from(venues).where(eq(venues.hereId, hereId)).limit(1);
-      if (clash && clash.id !== venue.id) {
-        return res.status(409).json({ error: `"${clash.name}" is already linked to that HERE place`, code: 'here_id_taken', linkedVenue: clash });
-      }
+      const [clash] = await db.select({ id: venues.id, name: venues.name, isResidence: venues.isResidence, privacyTier: venues.privacyTier })
+        .from(venues).where(eq(venues.hereId, hereId)).limit(1);
+      if (clash && clash.id !== venue.id) return hereIdTaken(res, clash);
       const place = await lookupHerePlace(hereId);
       if (!place) return res.status(422).json({ error: 'HERE could not find that place any more — search again' });
 
@@ -832,6 +882,15 @@ router.post('/:id/repair/place', requireAppUser, async (req, res) => {
         precise: isPreciseGeocode(geocoded.resultType),
       };
       if (req.body.confirm !== true) return res.json({ preview, venue: null });
+      // A city-centroid (or other coarse) match is not the venue. The UI warns on the preview; the
+      // server insists the user saw that warning rather than trusting the client to have shown it.
+      if (!preview.precise && req.body.acceptImprecise !== true) {
+        return res.status(422).json({
+          error: `HERE only matched "${built.query}" approximately (${preview.resultType ?? 'unknown'}) — check the street and number, or confirm the approximate position`,
+          code: 'imprecise_geocode',
+          preview,
+        });
+      }
 
       Object.assign(updates, {
         address: geocoded.label, city: geocoded.city, state: geocoded.state,
@@ -856,9 +915,16 @@ router.post('/:id/repair/place', requireAppUser, async (req, res) => {
     }
 
     // Guard against a concurrent resolve: only write if the row is still address-less.
-    const [updated] = await db.update(venues).set(updates)
-      .where(and(eq(venues.id, venue.id), sql`(${venues.address} IS NULL OR btrim(${venues.address}) = '')`))
-      .returning();
+    let updated;
+    try {
+      [updated] = await db.update(venues).set(updates)
+        .where(and(eq(venues.id, venue.id), sql`(${venues.address} IS NULL OR btrim(${venues.address}) = '')`))
+        .returning();
+    } catch (err) {
+      // Another venue took this hereId between our clash check and the write.
+      if (isUniqueViolation(err)) return hereIdTaken(res);
+      throw err;
+    }
     if (!updated) return res.status(409).json({ error: 'This venue was given an address in the meantime — reload the page' });
 
     // Not a block — the venue may genuinely be a second listing — but worth saying before the user
@@ -866,16 +932,25 @@ router.post('/:id/repair/place', requireAppUser, async (req, res) => {
     const nearbySameName = (await findDuplicateVenues({ name: venue.name, latitude: updated.latitude, longitude: updated.longitude }))
       .filter(d => d.id !== venue.id && d.distance != null);
     const { byPm } = await venuesHolding(venue.id, [], pmPreselect ? [pmPreselect.pinballMapId] : []);
-    const possibleDuplicates = [
-      ...nearbySameName.map(d => ({ id: d.id, name: d.name })),
-      ...[...byPm.values()].filter(v => !nearbySameName.some(d => d.id === v.id)),
-    ];
+    // Same rule as the candidates: a private venue counts, but is never named next to this position.
+    const nearbyViews = nearbySameName.length
+      ? (await db.select({ id: venues.id, name: venues.name, isResidence: venues.isResidence, privacyTier: venues.privacyTier })
+          .from(venues).where(inArray(venues.id, nearbySameName.map(d => d.id)))).map(describeHolder)
+      : [];
+    const holders = [...nearbyViews, ...byPm.values()];
+    const possibleDuplicates: Array<{ id: number; name: string }> = [];
+    for (const h of holders) {
+      if (h.linkedVenue && !possibleDuplicates.some(d => d.id === h.linkedVenue!.id)) possibleDuplicates.push(h.linkedVenue);
+    }
+    const privateDuplicate = holders.some(h => h.linkedElsewhere && !h.linkedVenue);
 
     res.json({
       venue: toPublicVenue(redactVenue(updated, appUser.id, appUser.role === 'admin')),
       attachedHere: attached ? { name: attached.name, hereId: attached.hereId, distance: attached.distance } : null,
       pmPreselect,
       possibleDuplicates,
+      /** Another venue matches too, but it's private, so it isn't named. */
+      privateDuplicate,
     });
   } catch (err) {
     console.error('Venue place resolve error:', err);
@@ -926,6 +1001,7 @@ router.post('/:id/repair/pm-link', requireAppUser, async (req, res) => {
   const venue = await loadRepairableVenue(req, res);
   if (!venue) return;
 
+  if (refuseRestrictedLinkage(venue, res)) return;
   const appUser = (req as any).appUser;
   const pinballMapId = Number(req.body.pinballMapId);
   if (!pinballMapId || Number.isNaN(pinballMapId)) {

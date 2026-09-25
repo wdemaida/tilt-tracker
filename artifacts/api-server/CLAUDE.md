@@ -33,19 +33,33 @@
   existing address — and `PATCH /api/venues/:id` is admin/owner only, so its creator had no way in.
 - `GET /:id/repair/place-search?q=&near=` searches **Pinball Map by name** (`searchPmLocationsWithAddress`)
   and **HERE anchored**: at the geocoded `near` text (50km) or, with no `near`, at each of the top 3
-  PM hits' own coordinates (2km). HERE is never searched unanchored. Candidates carry `linkedVenue`
-  when another TiltTrack venue already holds that hereId / PM id (likely duplicate).
+  PM hits' own coordinates (2km). HERE is never searched unanchored. Candidates carry
+  `linkedElsewhere` when another TiltTrack venue already holds that hereId / PM id (likely duplicate),
+  and `linkedVenue {id,name}` **only when that holder is public** — `describeHolder()` never names a
+  residence or restricted-tier venue next to a candidate's exact coordinates. The HERE-pick 409
+  (`here_id_taken`), `possibleDuplicates` (plus an anonymous `privateDuplicate` flag) follow the same rule.
 - `POST /:id/repair/place` takes `{source:'pm', pinballMapId}`, `{source:'here', hereId}` or
   `{source:'manual', street, city, state?, postalCode?, country?, confirm?}`. The server **re-reads**
   the PM listing / HERE place (Lookup endpoint) itself — the client never supplies coordinates. Manual
   without `confirm: true` returns a geocode preview (with `precise: false` for city-centroid matches)
-  and writes nothing. PM picks don't link PM — they return `pmPreselect` so step 2 offers it and the
+  and writes nothing; confirming a `precise: false` match (e.g. HERE fell back to the city centroid
+  for a misspelt street) is a 422 `imprecise_geocode` unless the body also says `acceptImprecise: true`.
+  PM picks don't link PM — they return `pmPreselect` so step 2 offers it and the
   existing `pm-link` route (verification + history seeding) still does the linking.
 - Eligibility is `addressResolutionBlocker()`: `canRepairVenue` **and** not a residence (`isResidence`
   or any non-`full` tier) **and** no address yet. Residences are excluded outright — their location is
   the owner's to disclose via Edit Venue, where the tier is chosen. The UPDATE is guarded on
   `address IS NULL` so it can never move a venue that someone placed concurrently.
 - The HERE auto-attach rule is now `pickConfidentHereMatch()`, shared by `/repair/here` and this flow.
+- **Restricted-tier venues get no HERE / Pinball Map linkage** (`linkageBlockedByPrivacy()`, 409
+  `venue_private` from `/repair/here`, `/repair/here/attach` and `/repair/pm-link`). Both ids go out
+  unredacted on venue payloads (`pinballMapId` on the list, `pmLocationUrl` and `hereId` on
+  `/venues/:id/machines`), so either would publish the location the tier hides. A residence shown in
+  `full` tier is allowed. Status payloads carry `linkageBlocked` so the UI explains instead of 409ing.
+- `GET /api/venues` no longer sends `createdById`; each row carries a server-computed `canRepair`
+  (`venueListFlags()`) for the requester, which is all the "Needs address" badge needed.
+- A `here_id` unique-index collision (a race past the clash check) is a 409 `here_id_taken`, not a
+  500 — `isUniqueViolation()` checks `code === '23505'` directly or on `.cause`.
 - Tests: `npx tsx --test src/lib/venueAddress.test.ts` (node:test, no deps; dummy DATABASE_URL, never dialled).
 
 ## Venue time zones (`venues.timezone`, added 2026-09-13)
