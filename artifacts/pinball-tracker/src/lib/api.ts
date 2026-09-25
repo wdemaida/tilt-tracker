@@ -73,7 +73,10 @@ export function createApi(getToken: () => Promise<string | null>) {
     machines: {
       list: async (mine = false) =>
         request<any[]>(mine ? '/machines?mine=true' : '/machines', undefined, await tok()),
-      get: async (name: string) => request<any>(`/machines/${encodeURIComponent(name)}`, undefined, await tok()),
+      // `scopeQuery` comes from lib/comparisonScope.ts ('' | '?mine=true' | '?pod=<id>[&others=1]').
+      // A pod scope 404s `pod_not_found` unless the pod is the caller's own.
+      get: async (name: string, scopeQuery = '') =>
+        request<any>(`/machines/${encodeURIComponent(name)}${scopeQuery}`, undefined, await tok()),
       search: (q: string) => request<any[]>(`/machines/search?q=${encodeURIComponent(q)}`),
       // Count + median of recorded scores — drives the "may be missing digits" check on AddScorePage.
       scoreStats: (name: string) =>

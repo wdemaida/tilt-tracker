@@ -13,6 +13,11 @@ import {
 } from 'recharts';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { useApi } from '../lib/useApi';
+import ComparisonScopePicker from '../components/ComparisonScopePicker';
+import PodMemberIcons from '../components/PodMemberIcons';
+import { useComparisonScope, scopeQuery, scopeKey } from '../lib/comparisonScope';
+import { usePodMembership } from '../lib/myPods';
+import { podColorTokens, podColorVars } from '../lib/podColor';
 
 // ─── constants ────────────────────────────────────────────────────────────────
 
@@ -25,6 +30,10 @@ type VisitAgg  = 'best' | 'average';
 type ViewMode  = 'aggregate' | 'chaos';
 type SortKey   = 'playedAt' | 'username' | 'type' | 'score';
 type SortDir   = 'asc' | 'desc';
+/** Server-computed per score (GET /api/machines/:name): the viewer, the selected pod's members, everyone else. */
+type Group     = 'self' | 'pod' | 'other';
+
+const GROUP_RANK: Record<Group, number> = { self: 0, pod: 1, other: 2 };
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -53,6 +62,11 @@ function clusterVisits(plays: any[]): any[][] {
     visits[visits.length - 1].push(sorted[i]);
   }
   return visits;
+}
+
+function groupOf(s: any, myUsername: string | null): Group {
+  if (s.group === 'self' || s.group === 'pod' || s.group === 'other') return s.group;
+  return myUsername && s.username === myUsername ? 'self' : 'other';
 }
 
 function rollingAvg(plays: { x: number; y: number }[], window = ROLLING_WINDOW) {
@@ -84,6 +98,15 @@ function userOrdinalData(userPlays: any[], agg: VisitAgg | 'play') {
   });
 }
 
+/** One ordinal series per username. */
+function seriesByUser(plays: any[], agg: VisitAgg | 'play') {
+  const out: Record<string, ReturnType<typeof userOrdinalData>> = {};
+  for (const u of new Set<string>(plays.map(s => s.username as string))) {
+    out[u] = userOrdinalData(plays.filter(s => s.username === u), agg);
+  }
+  return out;
+}
+
 function buildLineData(
   scores: any[],
   myUsername: string | null,
@@ -95,10 +118,13 @@ function buildLineData(
     ? scores.filter(s => selectedVenueIds.includes(s.venueId))
     : scores;
 
-  // chaos mode — one series per user
+  const userGroup: Record<string, Group> = {};
+  for (const s of filtered) userGroup[s.username] = groupOf(s, myUsername);
+
+  // chaos mode — one series per user; you first, then pod members, then everyone else
   if (viewMode === 'chaos') {
     const users = [...new Set<string>(filtered.map(s => s.username as string))];
-    const ordered = myUsername ? [myUsername, ...users.filter(u => u !== myUsername)] : users;
+    const ordered = [...users].sort((a, b) => GROUP_RANK[userGroup[a]] - GROUP_RANK[userGroup[b]]);
     const seriesMap: Record<string, { idx: number; score: number; date?: string; venue?: string }[]> = {};
     for (const u of ordered) {
       seriesMap[u] = userOrdinalData(filtered.filter(s => s.username === u), agg).map(d => ({
@@ -117,7 +143,7 @@ function buildLineData(
       }
       return entry;
     });
-    return { data, lineKeys: ordered, type: 'chaos' as const };
+    return { data, lineKeys: ordered, userGroup, hasPod: false, hasField: false, type: 'chaos' as const };
   }
 
   // venue comparison mode
@@ -141,29 +167,36 @@ function buildLineData(
       }
       return entry;
     });
-    return { data, lineKeys: venues.map(v => v.name), type: 'venue' as const };
+    return { data, lineKeys: venues.map(v => v.name), userGroup, hasPod: false, hasField: false, type: 'venue' as const };
   }
 
-  // aggregate mode — you vs field
-  const mySeries   = userOrdinalData(filtered.filter(s => s.username === myUsername), agg);
-  const otherUsers = [...new Set(filtered.filter(s => s.username !== myUsername).map(s => s.username as string))];
-  const otherMap: Record<string, ReturnType<typeof userOrdinalData>> = {};
-  for (const u of otherUsers) otherMap[u] = userOrdinalData(filtered.filter(s => s.username === u), agg);
-  const maxLen = Math.max(mySeries.length, ...otherUsers.map(u => otherMap[u].length), 0);
+  // aggregate mode — you vs the pod's median (pod scope) vs the field median (everyone else)
+  const mySeries = userOrdinalData(filtered.filter(s => userGroup[s.username] === 'self'), agg);
+  const podMap   = seriesByUser(filtered.filter(s => userGroup[s.username] === 'pod'), agg);
+  const otherMap = seriesByUser(filtered.filter(s => userGroup[s.username] === 'other'), agg);
+  const podUsers = Object.keys(podMap), otherUsers = Object.keys(otherMap);
+  const maxLen = Math.max(
+    mySeries.length, ...podUsers.map(u => podMap[u].length), ...otherUsers.map(u => otherMap[u].length), 0,
+  );
 
+  const medianAt = (map: typeof otherMap, users: string[], i: number) =>
+    statsMedian(users.map(u => map[u][i]?.score).filter(v => v != null) as number[]);
   const data = Array.from({ length: maxLen }, (_, i) => {
     const mine = mySeries[i];
-    const fieldScores = otherUsers.map(u => otherMap[u][i]?.score).filter(v => v != null) as number[];
     return {
       x:         i + 1,
       my:        mine?.score ?? null,
-      field:     statsMedian(fieldScores),
+      pod:       medianAt(podMap, podUsers, i),
+      field:     medianAt(otherMap, otherUsers, i),
       my_date:   mine?.playedAt,
       my_venue:  mine?.venueName,
       my_count:  (mine as any)?.count,
     };
   });
-  return { data, lineKeys: [] as string[], type: 'aggregate' as const };
+  return {
+    data, lineKeys: [] as string[], userGroup,
+    hasPod: podUsers.length > 0, hasField: otherUsers.length > 0, type: 'aggregate' as const,
+  };
 }
 
 // ─── scatter data builder ─────────────────────────────────────────────────────
@@ -193,26 +226,28 @@ function buildScatterData(
     return { type: 'venue' as const, perVenue };
   }
 
-  // aggregate — mine (always) + field (only rendered when "All Players" is on)
-  const myDots = sorted.filter(s => s.username === myUsername).map(s => ({
+  // aggregate — mine (always) + the pod's (pod scope) + field. Field dots render in All scope only
+  // when "All Players" is on; in pod scope whenever the server sent them ("All others" is on).
+  const dotsFor = (grp: Group) => sorted.filter(s => groupOf(s, myUsername) === grp).map(s => ({
     x: new Date(s.playedAt).getTime(), y: Number(s.score),
-    venue: s.venueName, playedAt: s.playedAt,
+    venue: s.venueName, venueTimezone: s.venueTimezone, playedAt: s.playedAt,
+    ...(grp === 'self' ? {} : { username: s.username as string }),
   }));
-  const fieldDots = sorted.filter(s => s.username !== myUsername).map(s => ({
-    x: new Date(s.playedAt).getTime(), y: Number(s.score),
-    venue: s.venueName, username: s.username, playedAt: s.playedAt,
-  }));
+  const myDots = dotsFor('self'), podDots = dotsFor('pod'), fieldDots = dotsFor('other');
   const trendLine = rollingAvg(myDots).map(p => ({ ...p, owner: 'me' as const }));
+  const podTrendLine = rollingAvg(podDots).map(p => ({ ...p, owner: 'pod' as const }));
   const fieldTrendLine = rollingAvg(fieldDots).map(p => ({ ...p, owner: 'field' as const }));
-  return { type: 'aggregate' as const, myDots, fieldDots, trendLine, fieldTrendLine };
+  return { type: 'aggregate' as const, myDots, podDots, fieldDots, trendLine, podTrendLine, fieldTrendLine };
 }
 
 // ─── tooltips ─────────────────────────────────────────────────────────────────
 
-function LineTooltip({ active, payload, label, chartMode, visitAgg, myUsername, lineType }: any) {
+function LineTooltip({ active, payload, label, chartMode, visitAgg, myUsername, lineType, podName, othersLabel }: any) {
   if (!active || !payload?.length) return null;
   const visible = payload.filter((p: any) => p.value != null);
   if (!visible.length) return null;
+  // Chaos lines are drawn back to front (you last, on top); list them front to back (you first).
+  if (lineType === 'chaos') visible.reverse();
   return (
     <div className="rounded-lg border border-white/20 bg-zinc-900/95 p-3 text-xs shadow-xl min-w-[180px]">
       <p className="font-bold text-white mb-2">
@@ -221,8 +256,8 @@ function LineTooltip({ active, payload, label, chartMode, visitAgg, myUsername, 
       {visible.map((p: any) => {
         const key     = p.dataKey as string;
         const display = lineType === 'aggregate'
-          ? (key === 'my' ? `You (${myUsername ?? 'you'})` : 'Field median')
-          : key;
+          ? (key === 'my' ? `You (${myUsername ?? 'you'})` : key === 'pod' ? `${podName} median` : `${othersLabel} median`)
+          : lineType === 'chaos' && key === myUsername ? `You (${key})` : key;
         const dateVal = p.payload[`${key}_date`];
         const venue   = p.payload[`${key}_venue`];
         const count   = p.payload[`${key}_count`];
@@ -248,7 +283,7 @@ function LineTooltip({ active, payload, label, chartMode, visitAgg, myUsername, 
   );
 }
 
-function ScatterTooltip({ active, payload }: any) {
+function ScatterTooltip({ active, payload, podName, podText, othersLabel }: any) {
   if (!active || !payload?.length) return null;
   // recharts always puts the trend-line entry first when a dot and a trend
   // point share the same x — prefer an actual dot's payload when one is present.
@@ -258,10 +293,14 @@ function ScatterTooltip({ active, payload }: any) {
   // trend line hover
   if ('trend' in d) {
     const isField = d.owner === 'field';
+    const isPod = d.owner === 'pod';
+    const who = isPod ? podName : isField ? othersLabel : 'Your';
     return (
       <div className="rounded-lg border border-white/20 bg-zinc-900/95 p-2.5 text-xs shadow-xl">
-        <p className="text-muted-foreground">{isField ? "Others'" : 'Your'} rolling avg ({ROLLING_WINDOW}-play)</p>
-        <p className={`font-bold ${isField ? 'text-field' : 'text-primary'}`}>{Number(d.trend).toLocaleString()}</p>
+        <p className="text-muted-foreground">{who} rolling avg ({ROLLING_WINDOW}-play)</p>
+        <p className={`font-bold ${isField ? 'text-field' : isPod ? '' : 'text-primary'}`} style={isPod ? { color: podText } : undefined}>
+          {Number(d.trend).toLocaleString()}
+        </p>
         <p className="text-muted-foreground">{format(new Date(d.x), 'MMM d, yyyy')}</p>
       </div>
     );
@@ -361,16 +400,35 @@ export default function MachinePage() {
   const { data: me } = useQuery({ queryKey: ['me'], queryFn: authApi.users.me, retry: false });
   const myUsername = (me as any)?.username as string | null ?? null;
 
-  const { data, isLoading } = useQuery({
-    queryKey: ['machine', decodedName],
+  // Comparison scope (All / Mine / one pod) — URL-backed, falls back to the ScopeContext toggle.
+  // Everything below the picker (top score, chart, venue difficulty, table) reads the scoped scores.
+  const cs = useComparisonScope();
+  const { scope, pod } = cs;
+  const podMembership = usePodMembership();
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['machine', decodedName, scopeKey(scope)],
     // authApi, not the static client: scores at a private venue whose owner hides them are only
     // returned to the owner, admins and their authors, which the server can't tell without a token.
-    queryFn: () => authApi.machines.get(decodedName),
+    queryFn: () => authApi.machines.get(decodedName, scopeQuery(scope)),
+    enabled: cs.ready,
+    // Keep the chart on screen while switching scope on the same machine — not across machines.
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[1] === decodedName ? prev : undefined),
   });
 
   // ── derived ─────────────────────────────────────────────────────────────────
 
   const scores = useMemo(() => (data?.scores ?? []) as any[], [data]);
+
+  const podTokens = useMemo(() => (pod ? podColorTokens(pod.color) : null), [pod]);
+  const podName = pod?.name ?? 'Pod';
+  const othersLabel = scope.kind === 'pod' ? 'Others' : 'Field';
+  // Mine has nobody to split out, so the individual-lines view collapses to the aggregate one.
+  const effectiveViewMode: ViewMode = scope.kind === 'mine' ? 'aggregate' : viewMode;
+  const scopeLabel =
+    scope.kind === 'mine' ? 'Just you'
+    : scope.kind === 'pod' ? `You + ${podName}${scope.others ? ' + everyone else' : ''}`
+    : null;
 
   const uniqueVenues = useMemo<VenueOption[]>(() => {
     return [...new Map<number, VenueOption>(
@@ -420,8 +478,8 @@ export default function MachinePage() {
   const lineResult = useMemo(() => {
     if (chartMode === 'scatter' || scores.length < 2) return null;
     const agg = chartMode === 'visit' ? visitAgg : 'play';
-    return buildLineData(scores, myUsername, selectedVenueIds, viewMode, agg);
-  }, [scores, chartMode, visitAgg, myUsername, selectedVenueIds, viewMode]);
+    return buildLineData(scores, myUsername, selectedVenueIds, effectiveViewMode, agg);
+  }, [scores, chartMode, visitAgg, myUsername, selectedVenueIds, effectiveViewMode]);
 
   const scatterResult = useMemo(() => {
     if (chartMode !== 'scatter' || scores.length < 2) return null;
@@ -430,7 +488,16 @@ export default function MachinePage() {
 
   // ── guards ──────────────────────────────────────────────────────────────────
 
-  if (isLoading) return <p className="text-muted-foreground">Loading...</p>;
+  if (!cs.ready || isLoading) return <p className="text-muted-foreground">Loading...</p>;
+  if (!data && (error as any)?.code === 'pod_not_found') {
+    // The pod list said it was ours but the server disagrees (deleted in another tab, say).
+    return (
+      <p className="text-muted-foreground">
+        That pod isn't available any more.{' '}
+        <button type="button" onClick={() => cs.setScope({ kind: 'all' })} className="text-primary hover:underline">Show all players</button>
+      </p>
+    );
+  }
   if (!data) return <p className="text-muted-foreground">Machine not found.</p>;
 
   const { machine } = data;
@@ -469,14 +536,41 @@ export default function MachinePage() {
     );
   }
 
-  // ── chaos color helpers ─────────────────────────────────────────────────────
+  // ── group colors ────────────────────────────────────────────────────────────
+  // You = username yellow, the selected pod = its own color, everyone else = field purple.
 
-  function chaosLineColor(u: string) { return u === myUsername ? 'hsl(var(--username))' : 'hsl(var(--field))'; }
+  const FIELD_COLOR = 'hsl(var(--field))';
+  function groupColor(g: Group) {
+    return g === 'self' ? 'hsl(var(--username))' : g === 'pod' ? (podTokens?.graphic ?? FIELD_COLOR) : FIELD_COLOR;
+  }
+  function chaosLineColor(u: string) { return groupColor(lineResult?.userGroup[u] ?? 'other'); }
+  // In All scope, field dots are the "All Players" toggle; in pod scope they're only present when
+  // "All others" asked the server for them; in Mine there are none.
+  const showFieldDots = scope.kind === 'all' ? effectiveViewMode === 'chaos' : true;
 
   // ── chart description ───────────────────────────────────────────────────────
 
   function chartDescription() {
     const venueNote = selectedVenueIds.length > 0 ? ' (filtered by selected venue' + (selectedVenueIds.length > 1 ? 's' : '') + ')' : '';
+    const aggNoun = visitAgg === 'best' ? 'best score' : 'average score';
+    if (scope.kind === 'mine') {
+      if (chartMode === 'scatter') return `Every one of your plays as a dot on its actual date. The dashed line is a ${ROLLING_WINDOW}-play rolling average${venueNote}.`;
+      if (chartMode === 'visit') return `Your ${aggNoun} per venue visit. Visits = groups of plays within 6 hours of each other${venueNote}.`;
+      return `Your score on each play, in order. Plays from the same visit appear as consecutive points${venueNote}.`;
+    }
+    if (scope.kind === 'pod') {
+      const others = scope.others ? ', everyone else in purple' : '';
+      if (chartMode === 'scatter') {
+        return `Every play as a dot on its actual date — yours in yellow, ${podName} in its color${others}. Dashed lines are each group's ${ROLLING_WINDOW}-play rolling average${venueNote}.`;
+      }
+      if (effectiveViewMode === 'chaos') {
+        return `${chartMode === 'visit' ? `${aggNoun.charAt(0).toUpperCase() + aggNoun.slice(1)} per visit` : 'Every play numbered chronologically'}, one line per player — yours in yellow, ${podName} in its color${others}${venueNote}.`;
+      }
+      const vs = `the ${podName} median${scope.others ? " and everyone else's median" : ''}`;
+      return chartMode === 'visit'
+        ? `Your ${aggNoun} per venue visit vs. ${vs}. Visits = groups of plays within 6 hours of each other${venueNote}.`
+        : `Your score on each play vs. ${vs}. Plays from the same visit appear as consecutive points${venueNote}.`;
+    }
     if (chartMode === 'scatter') {
       return viewMode === 'chaos'
         ? `Every individual play as a dot on its actual date — yours in yellow, everyone else's in purple. Dashed lines are each group's ${ROLLING_WINDOW}-play rolling average${venueNote}.`
@@ -513,7 +607,9 @@ export default function MachinePage() {
               {(machine.manufacturer || machine.year) && (
                 <p className="text-sm text-muted-foreground mt-0.5">{[machine.manufacturer, machine.year].filter(Boolean).join(' · ')}</p>
               )}
-              <p className="text-sm text-muted-foreground mt-1">{scores.length} scores recorded</p>
+              <p className="text-sm text-muted-foreground mt-1">
+                {scores.length} scores {scopeLabel ? <>· {scopeLabel}</> : 'recorded'}
+              </p>
             </div>
             <Link href="/add" className="flex items-center gap-2 px-4 py-2 rounded-lg border border-primary text-primary text-sm font-bold uppercase tracking-wider hover:bg-primary hover:text-white transition-colors flex-shrink-0">
               <PlusCircle className="w-4 h-4" /> Add Score
@@ -522,6 +618,17 @@ export default function MachinePage() {
         </div>
       </div>
 
+      {/* Comparison scope — applies to everything below */}
+      {cs.signedIn && (
+        <div className="flex flex-wrap items-center gap-2 mb-4">
+          <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Compare</span>
+          <ComparisonScopePicker state={cs} />
+        </div>
+      )}
+      {cs.unknownPod && (
+        <p className="text-xs text-muted-foreground mb-4">That pod isn't one of yours — showing all players.</p>
+      )}
+
       {/* Top Score */}
       {best && (
         <div className="rounded-xl border border-primary/30 bg-primary/10 p-5 flex items-center gap-4 mb-6">
@@ -529,7 +636,10 @@ export default function MachinePage() {
             <Trophy className="w-6 h-6 text-primary" />
           </div>
           <div>
-            <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Top Score</p>
+            <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+              {scope.kind === 'mine' ? 'Your Top Score' : 'Top Score'}
+              {scope.kind === 'pod' && <span className="normal-case font-normal"> · {scopeLabel}</span>}
+            </p>
             <p className="text-3xl font-black text-primary">{Number(best.score).toLocaleString()}</p>
             <p className="text-xs text-muted-foreground mt-1">
               <Link href={`/users/${best.username}`} className="text-username hover:text-username/80 transition-colors">@{best.username}</Link>
@@ -552,7 +662,7 @@ export default function MachinePage() {
             </div>
 
             {/* Venue filter */}
-            {uniqueVenues.length >= 2 && viewMode === 'aggregate' && (
+            {uniqueVenues.length >= 2 && effectiveViewMode === 'aggregate' && (
               <VenueDropdown
                 venues={uniqueVenues}
                 selectedIds={selectedVenueIds}
@@ -574,13 +684,19 @@ export default function MachinePage() {
               ))}
             </div>
 
-            {/* All Players toggle */}
-            <button
-              onClick={() => { setViewMode(v => v === 'chaos' ? 'aggregate' : 'chaos'); setSelectedVenueIds([]); }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold uppercase tracking-wider transition-colors ${viewMode === 'chaos' ? 'border-fuchsia-500 text-fuchsia-400 bg-fuchsia-500/10' : 'border-white/20 text-muted-foreground hover:text-white hover:border-white/40'}`}
-            >
-              <Users className="w-3 h-3" /> All Players
-            </button>
+            {/* Individual-lines toggle. All scope: "All Players" (unchanged). Pod scope: "Each Player"
+                — which players are in play is the scope picker's job there, so this only splits the
+                medians into one line per player; it has no effect on the scatter, so it's hidden
+                there. Mine: nobody to split, hidden. */}
+            {(scope.kind === 'all' || (scope.kind === 'pod' && chartMode !== 'scatter')) && (
+              <button
+                onClick={() => { setViewMode(v => v === 'chaos' ? 'aggregate' : 'chaos'); setSelectedVenueIds([]); }}
+                aria-pressed={viewMode === 'chaos'}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold uppercase tracking-wider transition-colors ${viewMode === 'chaos' ? 'border-fuchsia-500 text-fuchsia-400 bg-fuchsia-500/10' : 'border-white/20 text-muted-foreground hover:text-white hover:border-white/40'}`}
+              >
+                <Users className="w-3 h-3" /> {scope.kind === 'pod' ? 'Each Player' : 'All Players'}
+              </button>
+            )}
           </div>
 
           {/* Visit sub-toggle */}
@@ -605,13 +721,32 @@ export default function MachinePage() {
           )}
 
           {/* Aggregate mode legend */}
-          {viewMode === 'aggregate' && chartMode !== 'scatter' && lineResult?.type === 'aggregate' && (
-            <div className="flex items-center gap-4 mb-3 text-xs">
+          {effectiveViewMode === 'aggregate' && chartMode !== 'scatter' && lineResult?.type === 'aggregate' && (
+            <div className="flex items-center gap-4 mb-3 text-xs flex-wrap">
               {myUsername && <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 rounded bg-username" /><span className="text-muted-foreground">You ({myUsername})</span></div>}
-              <div className="flex items-center gap-1.5">
-                <svg width="16" height="6"><line x1="0" y1="3" x2="16" y2="3" stroke="hsl(var(--field))" strokeWidth="1.5" strokeDasharray="4 3" /></svg>
-                <span className="text-muted-foreground">Field median</span>
+              {pod && podTokens && lineResult.hasPod && (
+                <div className="flex items-center gap-1.5" style={podColorVars(pod.color)}>
+                  <svg width="16" height="6"><line x1="0" y1="3" x2="16" y2="3" stroke={podTokens.graphic} strokeWidth="2" strokeDasharray="4 3" /></svg>
+                  <span className="text-pod-text font-semibold truncate max-w-[10rem]">{pod.name}</span>
+                  <span className="text-muted-foreground">median</span>
+                </div>
+              )}
+              {(scope.kind === 'all' || lineResult.hasField) && (
+                <div className="flex items-center gap-1.5">
+                  <svg width="16" height="6"><line x1="0" y1="3" x2="16" y2="3" stroke="hsl(var(--field))" strokeWidth="1.5" strokeDasharray="4 3" /></svg>
+                  <span className="text-muted-foreground">{othersLabel} median</span>
+                </div>
+              )}
+            </div>
+          )}
+          {/* Pod scope, one line per player: say which color is which */}
+          {scope.kind === 'pod' && pod && chartMode !== 'scatter' && lineResult?.type === 'chaos' && (
+            <div className="flex items-center gap-4 mb-3 text-xs flex-wrap">
+              {myUsername && <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 rounded bg-username" /><span className="text-muted-foreground">You</span></div>}
+              <div className="flex items-center gap-1.5" style={podColorVars(pod.color)}>
+                <div className="w-3 h-0.5 rounded bg-pod" /><span className="text-pod-text font-semibold truncate max-w-[10rem]">{pod.name}</span>
               </div>
+              {scope.others && <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 rounded bg-field" /><span className="text-muted-foreground">Everyone else</span></div>}
             </div>
           )}
           {chartMode === 'scatter' && scatterResult?.type === 'aggregate' && myUsername && (
@@ -621,7 +756,15 @@ export default function MachinePage() {
                 <svg width="16" height="6"><line x1="0" y1="3" x2="16" y2="3" stroke="hsl(var(--username))" strokeWidth="1.5" strokeDasharray="4 3" /></svg>
                 <span className="text-muted-foreground">{ROLLING_WINDOW}-play rolling avg</span>
               </div>
-              {viewMode === 'chaos' && (
+              {pod && podTokens && scatterResult.podDots.length > 0 && (
+                <div className="flex items-center gap-1.5" style={podColorVars(pod.color)}>
+                  <div className="w-2 h-2 rounded-full bg-pod" />
+                  <svg width="16" height="6"><line x1="0" y1="3" x2="16" y2="3" stroke={podTokens.graphic} strokeWidth="1.5" strokeDasharray="4 3" /></svg>
+                  <span className="text-pod-text font-semibold truncate max-w-[10rem]">{pod.name}</span>
+                  <span className="text-muted-foreground">plays &amp; avg</span>
+                </div>
+              )}
+              {showFieldDots && (scope.kind === 'all' || scatterResult.fieldDots.length > 0) && (
                 <>
                   <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-field opacity-40" /><span className="text-muted-foreground">Others' plays</span></div>
                   <div className="flex items-center gap-1.5">
@@ -654,12 +797,19 @@ export default function MachinePage() {
                   tickFormatter={v => chartMode === 'visit' ? `V${v}` : `#${v}`} />
                 <YAxis tick={AXIS_STYLE} tickLine={false} axisLine={false} tickFormatter={formatScore} width={48} />
                 <Tooltip
-                  content={<LineTooltip chartMode={chartMode} visitAgg={visitAgg} myUsername={myUsername} lineType={lineResult.type} />}
+                  content={<LineTooltip chartMode={chartMode} visitAgg={visitAgg} myUsername={myUsername} lineType={lineResult.type} podName={podName} othersLabel={othersLabel} />}
                   cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }}
                 />
                 {lineResult.type === 'aggregate' && (
                   <>
                     <Line type="monotone" dataKey="field" stroke="hsl(var(--field))" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls={false} />
+                    {lineResult.hasPod && podTokens && (
+                      <Line type="monotone" dataKey="pod" stroke={podTokens.graphic} strokeWidth={2} strokeDasharray="5 3"
+                        // Dots, unlike the field median: pods are small, so the median is often
+                        // only a point or two, which a dot-less line wouldn't draw at all.
+                        dot={{ r: 3, strokeWidth: 0, fill: podTokens.graphic }}
+                        activeDot={{ r: 5, strokeWidth: 0, fill: podTokens.graphic }} connectNulls={false} />
+                    )}
                     {myUsername && (
                       <Line type="monotone" dataKey="my" stroke="hsl(var(--username))" strokeWidth={2.5}
                         dot={{ fill: 'hsl(var(--username))', r: 4, strokeWidth: 0 }} activeDot={{ r: 6, strokeWidth: 0 }} connectNulls={false} />
@@ -672,33 +822,40 @@ export default function MachinePage() {
                     dot={{ fill: VENUE_COLORS[i % VENUE_COLORS.length], r: 4, strokeWidth: 0 }}
                     activeDot={{ r: 6, strokeWidth: 0 }} connectNulls={false} />
                 ))}
-                {lineResult.type === 'chaos' && lineResult.lineKeys.map(u => (
-                  <Line key={u} type="monotone" dataKey={u}
-                    stroke={chaosLineColor(u)}
-                    strokeWidth={u === myUsername ? 2.5 : 1.5}
-                    strokeOpacity={u === myUsername ? 1 : 0.5}
-                    dot={{ fill: chaosLineColor(u), r: u === myUsername ? 4 : 3, strokeWidth: 0, fillOpacity: u === myUsername ? 1 : 0.6 }}
-                    activeDot={{ r: 6, strokeWidth: 0 }} connectNulls={false} />
-                ))}
+                {/* Drawn back to front: everyone else, then the pod, then you on top. */}
+                {lineResult.type === 'chaos' && [...lineResult.lineKeys].reverse().map(u => {
+                  const g = lineResult.userGroup[u] ?? 'other';
+                  return (
+                    <Line key={u} type="monotone" dataKey={u}
+                      stroke={chaosLineColor(u)}
+                      strokeWidth={g === 'self' ? 2.5 : g === 'pod' ? 2 : 1.5}
+                      strokeOpacity={g === 'self' ? 1 : g === 'pod' ? 0.85 : 0.5}
+                      dot={{ fill: chaosLineColor(u), r: g === 'self' ? 4 : 3, strokeWidth: 0, fillOpacity: g === 'other' ? 0.6 : 1 }}
+                      activeDot={{ r: 6, strokeWidth: 0 }} connectNulls={false} />
+                  );
+                })}
               </LineChart>
             ) : scatterResult ? (
               <ComposedChart margin={{ top: 4, right: 8, left: 0, bottom: 4 }}
                 data={
                   scatterResult.type === 'venue'
                     ? scatterResult.perVenue.flatMap(v => v.dots)
-                    : [...scatterResult.myDots, ...(viewMode === 'chaos' ? scatterResult.fieldDots : [])]
+                    : [...scatterResult.myDots, ...scatterResult.podDots, ...(showFieldDots ? scatterResult.fieldDots : [])]
                 }>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
                 <XAxis dataKey="x" type="number" scale="time" domain={['auto', 'auto']}
                   tick={AXIS_STYLE} tickLine={false} axisLine={false}
                   tickFormatter={v => format(new Date(v), 'MMM d')} />
                 <YAxis dataKey="y" type="number" domain={['auto', 'auto']} tick={AXIS_STYLE} tickLine={false} axisLine={false} tickFormatter={formatScore} width={48} />
-                <Tooltip content={<ScatterTooltip />} cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }} />
+                <Tooltip content={<ScatterTooltip podName={podName} podText={podTokens?.text} othersLabel="Others'" />} cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }} />
 
                 {scatterResult.type === 'aggregate' && (
                   <>
-                    {viewMode === 'chaos' && scatterResult.fieldDots.length > 0 && (
+                    {showFieldDots && scatterResult.fieldDots.length > 0 && (
                       <Scatter dataKey="y" data={scatterResult.fieldDots} name="Others" fill="hsl(var(--field))" fillOpacity={0.4} />
+                    )}
+                    {podTokens && scatterResult.podDots.length > 0 && (
+                      <Scatter dataKey="y" data={scatterResult.podDots} name={podName} fill={podTokens.graphic} fillOpacity={0.85} />
                     )}
                     {scatterResult.myDots.length > 0 && (
                       <Scatter dataKey="y" data={scatterResult.myDots} name={myUsername ?? 'You'} fill="hsl(var(--username))" />
@@ -706,8 +863,11 @@ export default function MachinePage() {
                     {scatterResult.trendLine.length >= 2 && (
                       <Line dataKey="trend" data={scatterResult.trendLine} stroke="hsl(var(--username))" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
                     )}
-                    {viewMode === 'chaos' && scatterResult.fieldTrendLine.length >= 2 && (
+                    {showFieldDots && scatterResult.fieldTrendLine.length >= 2 && (
                       <Line dataKey="trend" data={scatterResult.fieldTrendLine} stroke="hsl(var(--field))" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
+                    )}
+                    {podTokens && scatterResult.podTrendLine.length >= 2 && (
+                      <Line dataKey="trend" data={scatterResult.podTrendLine} stroke={podTokens.graphic} strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls />
                     )}
                   </>
                 )}
@@ -740,6 +900,7 @@ export default function MachinePage() {
           </h2>
           <p className="text-xs text-muted-foreground mb-4">
             Player-normalized: based on players who have played this machine at multiple venues, isolating venue difficulty from player skill.
+            {scopeLabel && <> Computed from the scores in this view ({scopeLabel.toLowerCase()}).</>}
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {venueDifficulty.map(v => {
@@ -793,9 +954,12 @@ export default function MachinePage() {
                   </div>
                 </td>
                 <td className="px-3 py-3">
-                  <Link href={`/users/${s.username}`} className="text-sm text-username hover:text-username/80 transition-colors">
-                    @{s.username}
-                  </Link>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <Link href={`/users/${s.username}`} className="text-sm text-username hover:text-username/80 transition-colors truncate">
+                      @{s.username}
+                    </Link>
+                    <PodMemberIcons pods={podMembership.get(s.username)} />
+                  </div>
                 </td>
                 <td className="px-3 py-3">
                   <span className="text-xs font-bold uppercase tracking-wider border border-white/20 rounded px-2 py-0.5 text-muted-foreground">{s.type}</span>
