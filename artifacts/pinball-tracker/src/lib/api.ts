@@ -80,6 +80,15 @@ export function createApi(getToken: () => Promise<string | null>) {
         request<Array<{ id: number; name: string; isPrivate: true }>>(
           `/venues/exact?name=${encodeURIComponent(name)}`, undefined, await tok(),
         ),
+      // Same suggestion list a photo's GPS produces, for the device's current position — the Add
+      // Score fallback when no photo had location. Lookup only: the server stores nothing. POSTed
+      // (not a query string, which lands in access logs) and rounded to 4 decimals (~11m) first —
+      // plenty to find the venue you're standing in, and no more precise than that needs.
+      nearby: async (lat: number, lng: number) =>
+        request<{ venues: any[] }>('/upload/nearby-venues', {
+          method: 'POST',
+          body: JSON.stringify({ lat: Math.round(lat * 1e4) / 1e4, lng: Math.round(lng * 1e4) / 1e4 }),
+        }, await tok()),
       addressAutocomplete: (q: string, at?: { lat: number; lng: number }) =>
         request<Array<{ id: string; label: string; lat: number | null; lng: number | null }>>(
           `/venues/address-autocomplete?q=${encodeURIComponent(q)}${at ? `&lat=${at.lat}&lng=${at.lng}` : ''}`
