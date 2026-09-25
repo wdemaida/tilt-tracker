@@ -9,9 +9,22 @@ const TOOL_NAME = 'record_score_read';
 export interface ExtractionImage {
   base64: string;
   mimeType: string;
+  /**
+   * The size the model sees this image at — after the API's own downscale (see modelViewSize in
+   * displayCrops.ts). Display boxes come back in pixels of that view and are normalized with it.
+   */
+  width?: number;
+  height?: number;
+}
+
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  ms: number;
 }
 
 export interface ExtractedScoreReads {
+  usage: TokenUsage;
   machineName: string | null;
   playedAt: string | null;
   /** One entry per input image, in input order — each lists that image's player displays. */
@@ -58,7 +71,7 @@ const scoreReadTool: Anthropic.Tool & { strict?: boolean } = {
               items: {
                 type: 'object',
                 additionalProperties: false,
-                required: ['player', 'displayKind', 'digitWindows', 'displayText', 'template', 'lowConfidence', 'possiblyTruncated', 'truncationReason', 'leadingPositionAmbiguous'],
+                required: ['player', 'displayKind', 'digitWindows', 'displayText', 'template', 'lowConfidence', 'possiblyTruncated', 'truncationReason', 'leadingPositionAmbiguous', 'bbox'],
                 properties: {
                   player: {
                     type: ['integer', 'null'],
@@ -97,6 +110,15 @@ const scoreReadTool: Anthropic.Tool & { strict?: boolean } = {
                   leadingPositionAmbiguous: {
                     type: 'boolean',
                     description: 'True when this is a segment display, its leftmost digit window(s) are dark, and the display shows signs of being caught mid-refresh — so the dark leading window could be a digit that happened to be unlit rather than a blank.',
+                  },
+                  bbox: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['x', 'y', 'w', 'h'],
+                    description: 'Where this display\'s row of digit windows is in the image, in pixels of the image as you see it (origin top-left): x,y = top-left corner, w,h = width and height. Enclose every digit window of this display, lit or dark, and nothing else. All zeros if you cannot locate it.',
+                    properties: {
+                      x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' },
+                    },
                   },
                 },
               },
@@ -148,6 +170,7 @@ export async function extractScoreReads(images: ExtractionImage[], onRawInput?: 
   });
   content.push({ type: 'text', text: PROMPT });
 
+  const started = Date.now();
   const message = await client.messages.create({
     model: MODEL,
     // Four player displays per image, up to nine images.
@@ -170,7 +193,8 @@ export async function extractScoreReads(images: ExtractionImage[], onRawInput?: 
   // input image, so downstream code can index by image.
   const reads: ImageRead[] = images.map((_, i) => {
     const raw = rawReads.find(r => r?.imageIndex === i) ?? rawReads[i] ?? {};
-    return sanitizeImageDisplays(raw?.displays);
+    const img = images[i];
+    return sanitizeImageDisplays(raw?.displays, img.width && img.height ? { width: img.width, height: img.height } : undefined);
   });
 
   const modelBest = Number(input.bestImageIndex);
@@ -179,9 +203,106 @@ export async function extractScoreReads(images: ExtractionImage[], onRawInput?: 
     : defaultBestImageIndex(reads);
 
   return {
+    usage: { inputTokens: message.usage.input_tokens, outputTokens: message.usage.output_tokens, ms: Date.now() - started },
     machineName: typeof input.machineName === 'string' && input.machineName.trim() ? input.machineName.trim() : null,
     playedAt: typeof input.playedAt === 'string' ? input.playedAt : null,
     reads,
     bestImageIndex,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Crop pass: a window-by-window re-read of each display, from a close crop (see displayCrops.ts)
+// ---------------------------------------------------------------------------
+
+const WINDOW_TOOL_NAME = 'record_window_reads';
+const WINDOW_VALUES = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'dark', 'partly_lit', ','];
+
+const windowReadTool: Anthropic.Tool & { strict?: boolean } = {
+  name: WINDOW_TOOL_NAME,
+  description: 'Record, for each cropped score display, the state of every digit window left to right.',
+  strict: true,
+  input_schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['displays'],
+    properties: {
+      displays: {
+        type: 'array',
+        description: 'Exactly one entry per crop, in the order given.',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['cropIndex', 'windowCount', 'windows'],
+          properties: {
+            cropIndex: { type: 'integer' },
+            windowCount: {
+              type: 'integer',
+              description: 'Number of physical digit windows on this display, counted before reading them.',
+            },
+            windows: {
+              type: 'array',
+              items: { type: 'string', enum: WINDOW_VALUES },
+              description: 'One entry per digit window, left to right: the digit if every one of its segments is fully lit, "partly_lit" if only some are, "dark" if none are. Put "," between windows where a comma separator is visible. Excluding commas, exactly windowCount entries.',
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
+const WINDOW_PROMPT = `Each image above is a close crop of one pinball score display from a single photo, labelled with its crop number.
+
+For each crop, read the display in the middle of it (ignore any other display cut off at the edges):
+1. Count its physical digit windows. Count what you can see: individual glass cells or boxes, the dividers between them, or unlit segment outlines. Do not estimate from the spacing of the lit digits, and do not count empty glass, bezel or frame beyond the last window as windows.
+2. Go through the windows left to right and record each one on its own: the digit when every segment of it is fully lit, "partly_lit" when only some of its segments are lit, or "dark" when it is unlit. Look at each window separately — a dark window between two lit digits is "dark", never a copy of the digit beside it. Keep each lit digit in the window it is actually in. Never guess a digit you cannot fully see.
+3. Where a comma separator is visible between two windows, put "," there.
+
+These displays are often caught mid-refresh by the camera, so dark windows anywhere — left, middle or right — are normal and must be recorded as "dark", not skipped.
+
+Call ${WINDOW_TOOL_NAME} with one entry per crop.`;
+
+export interface CropImage {
+  base64: string;
+  mimeType: string;
+  /** Shown to the model beside the crop, e.g. "player 2". */
+  label: string;
+}
+
+/**
+ * One model call reading every crop of one photo window by window. Returns one raw window read per
+ * crop (in crop order; null where the model skipped one) for reconcileWindowRead to vet. Throws on
+ * API failure — the caller falls back to the whole-photo read.
+ */
+export async function readDisplayWindows(
+  crops: CropImage[], onRawInput?: (raw: unknown) => void,
+): Promise<{ reads: Array<{ windowCount: unknown; windows: unknown } | null>; usage: TokenUsage }> {
+  const content: Anthropic.ContentBlockParam[] = [];
+  crops.forEach((c, i) => {
+    content.push({ type: 'text', text: `Crop ${i} (${c.label}):` });
+    content.push({
+      type: 'image',
+      source: { type: 'base64', media_type: c.mimeType as 'image/jpeg' | 'image/png' | 'image/webp', data: c.base64 },
+    });
+  });
+  content.push({ type: 'text', text: WINDOW_PROMPT });
+
+  const started = Date.now();
+  const message = await client.messages.create({
+    model: MODEL,
+    max_tokens: 2048,
+    temperature: 0,
+    tools: [windowReadTool],
+    tool_choice: { type: 'tool', name: WINDOW_TOOL_NAME },
+    messages: [{ role: 'user', content }],
+  });
+  const toolUse = message.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === WINDOW_TOOL_NAME);
+  onRawInput?.(toolUse?.input);
+  const list = Array.isArray((toolUse?.input as any)?.displays) ? ((toolUse!.input as any).displays as any[]) : [];
+  const reads = crops.map((_, i) => {
+    const r = list.find(x => x?.cropIndex === i) ?? list[i];
+    return r && typeof r === 'object' ? { windowCount: r.windowCount, windows: r.windows } : null;
+  });
+  return { reads, usage: { inputTokens: message.usage.input_tokens, outputTokens: message.usage.output_tokens, ms: Date.now() - started } };
 }

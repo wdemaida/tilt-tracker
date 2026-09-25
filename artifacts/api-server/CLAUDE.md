@@ -164,6 +164,32 @@
   flagged it). Without the evidence clause every short score on a wide display would warn.
 - `digitWindows` exists to make the model count physical windows before transcribing; code doesn't
   use it — the count isn't stable (Black Knight 2000's 16-character alphanumeric display came back
-  as 7 and 6 on consecutive runs), so it can't place a missing window. Known limit: the model localizes *where* a dark window sits only roughly at
-  full-photo resolution — on the Stars photo 3UP "8807__" consistently reads as "_8807_" and 4UP
-  "8807_0" as "88070_". Cropping each display for a second pass would be the fix; not built.
+  as 7 and 6 on consecutive runs), so it can't place a missing window on its own. At full-photo
+  resolution the model reads digits well but places dark windows only roughly — on the Stars photo
+  3UP "8807__" read as "_8807_" and 4UP "8807_0" as "88070_" — hence the crop pass below.
+- **Crop pass** (`src/lib/displayCrops.ts`, `readDisplayWindows()` in `anthropic.ts`). Pass 1 also
+  returns a `bbox` per display, **in pixels of the image as the model sees it** — `modelViewSize()`
+  computes that size from the API's downscale limits (1568px long edge / ~1.15MP) off the header
+  alone, and `sanitizeBBox` normalizes with it. Fractions came back as round guesses that missed
+  displays entirely. Don't re-encode the photo to that size or state the size in the prompt: both
+  measurably changed how pass 1 transcribed the displays (Stars 1UP went from "_8076_" to "80760").
+  - Runs only when `needsCropPass()`: >1 score display, or a segment display with `?` or a leading
+    dark flag. A lone complete DMD/LCD read skips it (verified on four modern-LCD photos).
+  - Each photo is decoded **once** to a raw bitmap and every crop is extracted from that (no
+    decode-in-a-loop), photos one at a time, at most `MAX_CROPS` (8) per upload. Crops are padded
+    generously — a third of the box width sideways, a full box height vertically, because boxes are
+    routinely that far off — and scaled to 1000px wide. One call per photo, photos in parallel.
+  - The crop prompt asks for one entry per **physical** window (`digit`/`dark`/`partly_lit`/`,`).
+    `reconcileWindowRead()` distrusts it — keeping pass 1 — when it counts >10 windows, differs from
+    pass 1's `digitWindows` by >1, disagrees with its own `windowCount`, has no digit, or knows 2+
+    fewer digits than pass 1 (the crop missed). Otherwise the crop's positions win (comma rule and
+    leading-dark logic as in pass 1). Pass 1 and the crop *agree* when no right-aligned position has
+    different digits, or their known digits are the same sequence (the crop only moved a dark
+    window); otherwise the crop is still used but `alignmentWarning` is set and the contested digits
+    go into `lowConfidence` — the UI shows "Digits were hard to line up".
+  - Any failure (bad box, sharp error, API error) keeps pass 1 for that photo; it never fails the
+    upload. Cost on the test photos: ~2s / ~1.7k input tokens for one display, ~3.5s / ~3.8k input
+    tokens for four (Sonnet 4.6: about $0.006 and $0.014).
+  - Known limit: a display whose window dividers aren't visible (unlit windows are just dark glass)
+    gets counted by its lit digits — Stars 1UP "8076" as 4 windows — and is rejected by the ±1
+    check, so pass 1's placement stands there.

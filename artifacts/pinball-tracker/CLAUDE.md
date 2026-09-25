@@ -130,3 +130,6 @@
 - `leadingPositionAmbiguous` surfaces as a "may be missing digits" reason
   (`LEADING_AMBIGUOUS_REASON`), non-blocking, dropped once the typed number is longer than the read.
   There are deliberately no +/- digit controls.
+- `alignmentWarning` (the server's close-up re-read disagreed with the whole-photo read) shows a
+  separate non-blocking note, "Digits were hard to line up — check each one against the machine";
+  the contested digits arrive in `lowConfidence`, so they're already amber.

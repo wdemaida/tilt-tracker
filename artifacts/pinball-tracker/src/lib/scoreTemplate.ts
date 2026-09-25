@@ -29,11 +29,19 @@ export interface ScoreRead {
   truncationReason: string | null;
   /** The leftmost window was dark on a strobing display — it may hide a leading digit. */
   leadingPositionAmbiguous?: boolean;
+  /**
+   * The close-up re-read of this display disagreed with the whole-photo read on some digit. The
+   * close-up's positions were kept; the contested digits are in `lowConfidence`.
+   */
+  alignmentWarning?: boolean;
   conflicts: ScoreConflict[];
   bestImageIndex: number;
   perImage: string[];
   plausibility: ScorePlausibility | null;
 }
+
+/** Non-blocking note for `alignmentWarning`. */
+export const ALIGNMENT_WARNING = 'Digits were hard to line up — check each one against the machine.';
 
 /** "May be missing digits" reason for `leadingPositionAmbiguous`. */
 export const LEADING_AMBIGUOUS_REASON = 'The first digit position was dark — check the machine for a leading digit.';

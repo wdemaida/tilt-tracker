@@ -7,6 +7,7 @@ import { db, venues, users } from '@workspace/db';
 import { getAuth } from '@clerk/express';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { extractScoreReads } from '../lib/anthropic.js';
+import { refineWithCrops, modelViewSize } from '../lib/displayCrops.js';
 import { mergeReads, mergePlayerReads, defaultPlayerIndex, templateToScore, checkPlausibility } from '../lib/scoreRead.js';
 import { getMachineScoreStats } from '../lib/machineScoreStats.js';
 import { fitUnderAnthropicLimit, TARGET_RAW_BYTES } from '../lib/imageCompress.js';
@@ -317,10 +318,26 @@ router.post('/', requireAuth, receivePhotos, async (req, res) => {
 
     // One model call sees every photo; the per-image reads are merged in code (scoreRead.ts), so a
     // digit dark in one shot can be read from another and disagreements surface as conflicts.
-    const extracted = await extractScoreReads(images);
+    // Each photo's model-view size (header only) turns the display boxes pass 1 reports in pixels
+    // into fractions the crop pass can cut from the full-resolution photo. A photo sharp can't read
+    // goes without one (its boxes are then read as fractions).
+    const sized: typeof images = [];
+    for (const img of images) sized.push(await modelViewSize(img).catch(() => img));
+    const extracted = await extractScoreReads(sized);
+    // Second pass: re-read each score display from a close crop, window by window, when the photo has
+    // several displays or a strobed segment read (see displayCrops.ts). Skipped for a lone complete
+    // DMD/LCD read. Any failure keeps the whole-photo read — this can never fail the upload.
+    const cropPass = await refineWithCrops(sized, extracted.reads).catch(err => {
+      console.error('Score crop pass failed:', err?.message ?? err);
+      return null;
+    });
+    for (const r of cropPass?.report ?? []) {
+      if (r.error) console.error(`Score crop pass failed for image ${r.imageIndex}:`, r.error);
+    }
+    const imageReads = cropPass?.reads ?? extracted.reads;
     // Merged per player: a 4-player backglass is four scores, and only the user knows which was
     // theirs (the wizard asks). Images with no readable display leave an empty list.
-    const players = mergePlayerReads(extracted.reads);
+    const players = mergePlayerReads(imageReads);
     const selected = players.length ? defaultPlayerIndex(players) : 0;
 
     // Deterministic "may be missing digits" check against what's already recorded on this machine.

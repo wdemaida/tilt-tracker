@@ -29,7 +29,20 @@ export interface DisplayRead {
    * comma rule can only pin down the *trailing* count — so the UI asks the user to check.
    */
   leadingPositionAmbiguous: boolean;
+  /**
+   * The crop pass (displayCrops.ts) re-read this display window by window and its digits didn't line
+   * up with the whole-photo read. Its positions were kept, the contested digits marked lowConfidence.
+   */
+  alignmentWarning?: boolean;
+  // Pass-1 details the crop pass needs; never sent to the client (mergeReads builds fresh objects).
+  displayKind?: string;
+  /** The digit-window strip, as fractions of the image (0–1). */
+  bbox?: BBox | null;
+  digitWindows?: number | null;
 }
+
+/** A region of an image as fractions of its width/height, top-left origin. */
+export interface BBox { x: number; y: number; w: number; h: number }
 
 /** Every player display the model found in one image, in player order (unnumbered ones last). */
 export interface ImageRead {
@@ -51,6 +64,8 @@ export interface MergedRead {
   possiblyTruncated: boolean;
   truncationReason: string | null;
   leadingPositionAmbiguous: boolean;
+  /** See DisplayRead.alignmentWarning — true if any photo's crop re-read disagreed. */
+  alignmentWarning: boolean;
   conflicts: ScoreConflict[];
 }
 
@@ -197,10 +212,11 @@ export function displayRefinesModel(fromDisplay: string, fromModel: string): boo
 export interface RawDisplay {
   player?: unknown; displayKind?: unknown; template?: unknown; displayText?: unknown; lowConfidence?: unknown;
   possiblyTruncated?: unknown; truncationReason?: unknown; leadingPositionAmbiguous?: unknown;
+  bbox?: unknown; digitWindows?: unknown;
 }
 
 /** Sanitizes one raw player display from the model. */
-export function sanitizeDisplayRead(raw: RawDisplay): DisplayRead {
+export function sanitizeDisplayRead(raw: RawDisplay, size?: ImageSize): DisplayRead {
   const fromModel = sanitizeWithIndexMap(raw.template);
   const fromDisplay = templateFromDisplayText(raw.displayText);
   // The literal transcription wins only when it refines the template (see displayRefinesModel): it's
@@ -226,7 +242,34 @@ export function sanitizeDisplayRead(raw: RawDisplay): DisplayRead {
     possiblyTruncated: raw.possiblyTruncated === true,
     truncationReason: raw.possiblyTruncated === true ? reason : null,
     leadingPositionAmbiguous: leadingAmbiguity(raw, template),
+    displayKind: typeof raw.displayKind === 'string' ? raw.displayKind : undefined,
+    bbox: sanitizeBBox(raw.bbox, size),
+    digitWindows: Number.isInteger(raw.digitWindows) && (raw.digitWindows as number) > 0 ? (raw.digitWindows as number) : null,
   };
+}
+
+/** Pixel size of the image the model was shown. */
+export interface ImageSize { width: number; height: number }
+
+/**
+ * A model-reported bounding box, normalized to fractions of the image and clamped to it. The model
+ * reports pixels of the image it was shown when `size` is given (it places boxes far more precisely
+ * in pixels of a stated size than in fractions — fractions came back as round guesses like 0.07,
+ * 0.63 that missed the display entirely), fractions otherwise. null when it's missing, not numeric,
+ * or too small to hold a readable display (a zero box is how the model says "don't know").
+ */
+export function sanitizeBBox(raw: unknown, size?: ImageSize): BBox | null {
+  if (!raw || typeof raw !== 'object') return null;
+  let { x, y, w, h } = raw as Record<string, unknown>;
+  if (![x, y, w, h].every(v => typeof v === 'number' && Number.isFinite(v))) return null;
+  if (size && size.width > 0 && size.height > 0) {
+    x = (x as number) / size.width; w = (w as number) / size.width;
+    y = (y as number) / size.height; h = (h as number) / size.height;
+  }
+  const x0 = Math.min(Math.max(x as number, 0), 1), y0 = Math.min(Math.max(y as number, 0), 1);
+  const x1 = Math.min(Math.max((x as number) + (w as number), 0), 1), y1 = Math.min(Math.max((y as number) + (h as number), 0), 1);
+  if (x1 - x0 < 0.02 || y1 - y0 < 0.005) return null;
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
 
 /**
@@ -249,11 +292,11 @@ function leadingAmbiguity(raw: RawDisplay, template: string): boolean {
  * all-unread displays when the image has a readable one, de-duplicates player numbers (a second
  * display claiming the same number loses it), and sorts numbered displays first, in player order.
  */
-export function sanitizeImageDisplays(raw: unknown): ImageRead {
+export function sanitizeImageDisplays(raw: unknown, size?: ImageSize): ImageRead {
   const list = Array.isArray(raw) ? raw : [];
   let displays = list
     .filter((d): d is RawDisplay => !!d && typeof d === 'object')
-    .map(sanitizeDisplayRead)
+    .map(d => sanitizeDisplayRead(d, size))
     .filter(d => /[1-9?]/.test(d.template));
   if (displays.some(d => /[0-9]/.test(d.template))) displays = displays.filter(d => /[0-9]/.test(d.template));
   const seen = new Set<number>();
@@ -313,6 +356,7 @@ export function mergeReads(reads: DisplayRead[]): MergedRead {
       possiblyTruncated: reads.some(r => r.possiblyTruncated),
       truncationReason: reads.find(r => r.truncationReason)?.truncationReason ?? null,
       leadingPositionAmbiguous: false,
+      alignmentWarning: false,
       conflicts: [],
     };
   }
@@ -357,6 +401,7 @@ export function mergeReads(reads: DisplayRead[]): MergedRead {
     possiblyTruncated: !!truncating,
     truncationReason: truncating?.truncationReason ?? null,
     leadingPositionAmbiguous: longest.some(r => r.leadingPositionAmbiguous),
+    alignmentWarning: usable.some(r => r.alignmentWarning === true),
     conflicts,
   };
 }
@@ -475,6 +520,106 @@ export function defaultBestImageIndex(reads: ImageRead[]): number {
     if (known(r) > known(reads[best])) best = i;
   });
   return best;
+}
+
+// ---------------------------------------------------------------------------
+// Crop pass — window-by-window re-read of each display (see displayCrops.ts)
+// ---------------------------------------------------------------------------
+
+/** More windows than any real score display has: the crop read counted glass or bezel as windows. */
+export const MAX_DISPLAY_WINDOWS = 10;
+
+/**
+ * Whether an image's reads are worth a crop pass: more than one score display (players' digits are
+ * small and easy to misplace), or a segment/plasma display with unread or leading-dark positions.
+ * A lone complete DMD/LCD read — the common case — skips it.
+ */
+export function needsCropPass(image: ImageRead): boolean {
+  const withBox = image.displays.filter(d => d.bbox);
+  if (withBox.length === 0) return false;
+  if (image.displays.length > 1) return true;
+  return withBox.some(d => d.displayKind === 'segment' && (d.template.includes('?') || d.leadingPositionAmbiguous));
+}
+
+/** One display's window-by-window transcription from the crop pass. */
+export interface WindowRead {
+  windowCount: unknown;
+  windows: unknown;
+}
+
+/**
+ * The window list as a transcription string ("_8076_"): a digit, "_" dark, "?" partly lit, "," a
+ * separator. null when any entry isn't one of those.
+ */
+export function windowsToText(windows: unknown): string | null {
+  if (!Array.isArray(windows)) return null;
+  let out = '';
+  for (const w of windows) {
+    if (typeof w !== 'string') return null;
+    if (/^[0-9]$/.test(w) || w === ',') out += w;
+    else if (w === '_' || w === 'dark') out += '_';
+    else if (w === '?' || w === 'partly_lit') out += '?';
+    else return null;
+  }
+  return out;
+}
+
+/** The known digits of a template, in order ("8807?0" → "88070"). */
+const knownSequence = (t: string) => t.replace(/\?/g, '');
+
+/**
+ * Folds a crop-pass window read into a whole-photo (pass 1) read. Returns pass 1 unchanged when the
+ * crop read can't be trusted:
+ *  - its list isn't a clean window transcription, has no digit at all, or knows two or more fewer
+ *    digits than pass 1 (the crop missed the display);
+ *  - it counts more than MAX_DISPLAY_WINDOWS windows, more than one window off pass 1's own count, or
+ *    disagrees with its own stated windowCount — the signature of dark glass or bezel beyond the last
+ *    window being counted as windows, which turns "7205???" into "7205??????".
+ * Otherwise the crop read's positions win (that's what it's for: placing dark windows), built through
+ * the same comma rule as pass 1. The two *agree* when no position holds different digits after
+ * right-alignment, or when their known digits are the same sequence (the crop only moved a dark
+ * window — "88070?" → "8807?0"). When they disagree, the crop read is still used but the display is
+ * flagged `alignmentWarning` and its contested digits are marked lowConfidence.
+ */
+export function reconcileWindowRead(pass1: DisplayRead, crop: WindowRead): DisplayRead {
+  const text = windowsToText(crop.windows);
+  if (text == null) return pass1;
+  const count = text.replace(/,/g, '').length;
+  if (count === 0 || count > MAX_DISPLAY_WINDOWS) return pass1;
+  if (pass1.digitWindows != null && Math.abs(count - pass1.digitWindows) > 1) return pass1;
+  if (Number.isInteger(crop.windowCount) && crop.windowCount !== count) return pass1;
+  const template = templateFromDisplayText(text);
+  if (!/[0-9]/.test(template)) return pass1;
+  // A crop that sees clearly reads at least what the whole photo did; one that lost two or more
+  // digits was cut from the wrong place (a box off by a display-height catches only the edge of the
+  // digits). One fewer is allowed — deciding a pass-1 digit was only partly lit is the crop's job.
+  if (knownDigitCount(template) < knownDigitCount(pass1.template) - 1) return pass1;
+
+  const disagree: number[] = [];
+  const agreeLow: number[] = [];
+  for (let k = 1; k <= Math.min(template.length, pass1.template.length); k++) {
+    const i = template.length - k, j = pass1.template.length - k;
+    const a = template[i], b = pass1.template[j];
+    if (a === '?' || b === '?') continue;
+    if (a !== b) disagree.push(i);
+    else if (pass1.lowConfidence.includes(j)) agreeLow.push(i);
+  }
+  const agrees = disagree.length === 0 || knownSequence(template) === knownSequence(pass1.template);
+  const lowConfidence = agrees
+    ? (disagree.length === 0 ? agreeLow : [])
+    : [...disagree, ...agreeLow];
+
+  return {
+    ...pass1,
+    template,
+    lowConfidence: sanitizeLowConfidence(template, lowConfidence),
+    status: templateStatus(template),
+    // Pass 1's "may have more digits" is answered once the crop counted more positions than it read.
+    possiblyTruncated: pass1.possiblyTruncated && template.length <= pass1.template.length,
+    truncationReason: pass1.possiblyTruncated && template.length <= pass1.template.length ? pass1.truncationReason : null,
+    leadingPositionAmbiguous: pass1.displayKind === 'segment' && displayLeadsWithDark(text) && template.includes('?'),
+    alignmentWarning: !agrees,
+  };
 }
 
 // ---------------------------------------------------------------------------

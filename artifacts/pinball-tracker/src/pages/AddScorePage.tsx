@@ -14,7 +14,7 @@ import { extractVideoFrames, isVideoFile, VideoFrameError, VIDEO_UNSUPPORTED_MES
 import { ScoreDigitInput } from '../components/ScoreDigitInput';
 import {
   type ScoreRead, type ScoreDisagreement, checkPlausibility, formatTemplate, hasUnknown, reconcileUserDigits, templateToScore,
-  unknownCount, playerLabel, matchPlayerRead, LEADING_AMBIGUOUS_REASON,
+  unknownCount, playerLabel, matchPlayerRead, LEADING_AMBIGUOUS_REASON, ALIGNMENT_WARNING,
 } from '../lib/scoreTemplate';
 
 const schema = z.object({
@@ -1380,6 +1380,12 @@ export default function AddScorePage() {
                   </ul>
                   <p className="mt-1 pl-5 text-xs text-muted-foreground">Check the machine — you can still save as-is.</p>
                 </div>
+              )}
+              {scoreRead?.alignmentWarning && (
+                <p className="mt-2 flex items-start gap-2 text-xs rounded-lg bg-amber-500/10 text-amber-400 px-3 py-2">
+                  <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                  {ALIGNMENT_WARNING}
+                </p>
               )}
               </>
             )}
