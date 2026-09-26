@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   ChallengeError, createChallenge, actOnChallenge, getChallenge, listChallenges, getRecord, venueOptions, type ListFilter,
 } from '../lib/challenges.js';
+import { logActivity, actorOf } from '../lib/activity.js';
 
 // Challenges (feature/challenges, phase 2). Rules: lib/challengeRules.ts; orchestration:
 // lib/challenges.ts. This file only maps HTTP to those and ChallengeError to a status + code.
@@ -68,17 +69,32 @@ router.get('/:id', async (req, res) => {
 // targetScore?, minPlays?, startsAt?, endsAt }. 201 with the ChallengeView.
 router.post('/', async (req, res) => {
   try {
-    res.status(201).json(await createChallenge((req as any).appUser, req.body ?? {}));
+    const view = await createChallenge((req as any).appUser, req.body ?? {});
+    const other = view.opponent;
+    await logActivity({
+      type: 'challenge.created', ...actorOf(req), subjectUserId: other?.id ?? null, targetType: 'challenge', targetId: view.id,
+      payload: { challengeType: view.type, machineName: view.machine.name, venueId: view.venue?.id ?? null, targetScore: view.targetScore, minPlays: view.minPlays, endsAt: view.endsAt },
+    });
+    res.status(201).json(view);
   } catch (err) { fail(res, err, 'Create challenge'); }
 });
 
 // POST /api/challenges/:id/accept | decline | cancel | forfeit — 200 with the updated ChallengeView.
+const EVENT = {
+  accept: 'challenge.accepted', decline: 'challenge.declined', cancel: 'challenge.cancelled', forfeit: 'challenge.forfeited',
+} as const;
+
 for (const action of ['accept', 'decline', 'cancel', 'forfeit'] as const) {
   router.post(`/:id/${action}`, async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id) || id <= 0) return res.status(404).json({ error: 'Challenge not found', code: 'challenge_not_found' });
     try {
-      res.json(await actOnChallenge(id, (req as any).appUser, action));
+      const view = await actOnChallenge(id, (req as any).appUser, action);
+      await logActivity({
+        type: EVENT[action], ...actorOf(req), targetType: 'challenge', targetId: id,
+        payload: { challengeType: view.type, machineName: view.machine.name, status: view.status },
+      });
+      res.json(view);
     } catch (err) { fail(res, err, `${action[0].toUpperCase()}${action.slice(1)} challenge`); }
   });
 }

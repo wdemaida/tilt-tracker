@@ -73,6 +73,8 @@ function describe(n: AppNotification): { text: React.ReactNode; href: string | n
         return { text: <>{name} declined your challenge: {what}</>, href, Icon: Ban };
       case 'challenge_cancelled':
         return { text: <>{name} withdrew their challenge: {what}</>, href, Icon: Ban };
+      case 'challenge_voided':
+        return { text: <>An admin voided {what} — it won’t count toward anyone’s record</>, href, Icon: Ban };
       case 'challenge_opponent_scored': {
         const score = n.payload.score;
         return {

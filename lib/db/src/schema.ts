@@ -1,4 +1,4 @@
-import { pgTable, serial, text, bigint, timestamp, real, integer, pgEnum, uniqueIndex, index, primaryKey, date, boolean, jsonb, varchar, numeric } from 'drizzle-orm/pg-core';
+import { pgTable, serial, bigserial, text, bigint, timestamp, real, integer, pgEnum, uniqueIndex, index, primaryKey, date, boolean, jsonb, varchar, numeric } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 export const scoreTypeEnum = pgEnum('score_type', ['casual', 'tournament']);
@@ -16,6 +16,11 @@ export const users = pgTable('users', {
   // The email Pinball Map returned from auth_details — PM's write endpoints need it alongside the
   // token (user_email + user_token, exact-case match). Never sent to the browser. (migrate18)
   pinballMapEmail: text('pinball_map_email'),
+  // Admin "disable account" (migrate19). Set = requireAppUser answers 403 account_disabled and the
+  // user is banned in Clerk so they can't sign in; null = active. Admins can't be disabled.
+  disabledAt: timestamp('disabled_at'),
+  disabledReason: text('disabled_reason'),
+  disabledById: integer('disabled_by_id'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
@@ -272,6 +277,12 @@ export const challenges = pgTable('challenges', {
   visibility: text('visibility').default('participants').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   resolvedAt: timestamp('resolved_at'),
+  // Admin override (migrate19): an admin voided this challenge. status is then 'cancelled', every
+  // participant's outcome/rank/result is cleared (so it drops out of records) and its score locks
+  // are released. The pre-void state is kept in the admin.challenge_voided activity event.
+  adminCancelledAt: timestamp('admin_cancelled_at'),
+  adminCancelledById: integer('admin_cancelled_by_id'),
+  adminCancelReason: text('admin_cancel_reason'),
 }, (table) => ({
   statusEndsIdx: index('challenges_status_ends_at_idx').on(table.status, table.endsAt),
   creatorIdx: index('challenges_creator_id_idx').on(table.creatorId),
@@ -306,6 +317,36 @@ export const challengeScores = pgTable('challenge_scores', {
   pk: primaryKey({ name: 'challenge_scores_pkey', columns: [table.challengeId, table.scoreId] }),
   scoreIdx: index('challenge_scores_score_id_idx').on(table.scoreId),
 }));
+
+// The admin activity log (migrate19) — append-only, one row per thing that happened, written only
+// through logActivity() in artifacts/api-server/src/lib/activity.ts (which never fails a request).
+// `actorUserId` null = the system (cron, or a webhook for a user with no profile yet).
+// `subjectUserId` is the other user an event is about (the friend-request addressee, the disabled
+// user); `targetType` + `targetId` name the object ('score', 'challenge', 'pod', 'friendship',
+// 'notification', 'venue', 'machine', 'user', 'clerk_user') — text, so a Clerk id fits. `svixId`
+// makes Clerk webhook deliveries idempotent (unique; NULLs don't collide). No secrets in `payload`.
+export const activityEvents = pgTable('activity_events', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  actorUserId: integer('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  type: text('type').notNull(),
+  subjectUserId: integer('subject_user_id').references(() => users.id, { onDelete: 'set null' }),
+  targetType: text('target_type'),
+  targetId: text('target_id'),
+  payload: jsonb('payload').$type<Record<string, unknown>>().default({}).notNull(),
+  ip: text('ip'),
+  userAgent: text('user_agent'),
+  svixId: text('svix_id').unique('activity_events_svix_id_key'),
+}, (table) => ({
+  createdIdx: index('activity_events_created_at_idx').on(table.createdAt),
+  actorIdx: index('activity_events_actor_idx').on(table.actorUserId, table.id),
+  subjectIdx: index('activity_events_subject_idx').on(table.subjectUserId, table.id),
+  typeIdx: index('activity_events_type_idx').on(table.type, table.id),
+  targetIdx: index('activity_events_target_idx').on(table.targetType, table.targetId, table.id),
+}));
+
+export type ActivityEvent = typeof activityEvents.$inferSelect;
+export type NewActivityEvent = typeof activityEvents.$inferInsert;
 
 export type Challenge = typeof challenges.$inferSelect;
 export type ChallengeParticipant = typeof challengeParticipants.$inferSelect;

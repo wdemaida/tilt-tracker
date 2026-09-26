@@ -9,6 +9,7 @@ import { pairSql } from '../lib/friendships.js';
 import { raiseNotification, settleNotifications, type Executor, type UserRefPayload } from '../lib/notify.js';
 import { isUniqueViolation } from '../lib/venueAddress.js';
 import { createRateLimiter } from '../lib/rateLimit.js';
+import { logActivity } from '../lib/activity.js';
 
 // Friends (feature/friends, phase 1). The rules live in lib/friendRules.ts; this file loads the
 // pair's single row (under a row lock), asks the rules what to do, writes it, and raises the
@@ -239,6 +240,13 @@ router.post('/requests', async (req, res) => {
       if (!isUniqueViolation(err)) throw err;
       result = await applySend(me, target);
     }
+    if (result !== 'already_friends' && result !== 'unavailable') {
+      await logActivity({
+        type: result === 'sent' ? 'friend.request_sent' : result === 'resent' ? 'friend.request_resent' : 'friend.request_accepted',
+        actorUserId: me.id, subjectUserId: target.id, targetType: 'user', targetId: target.id,
+        payload: { username: target.username, ...(result === 'accepted' ? { viaMutualRequest: true } : {}) },
+      });
+    }
     if (result === 'unavailable') {
       return res.status(403).json({ error: 'You can’t send this person a friend request.', code: 'request_unavailable' });
     }
@@ -267,6 +275,7 @@ router.post('/requests/:userId/accept', async (req, res) => {
       return true;
     });
     if (!ok) return res.status(404).json(noRequest);
+    await logActivity({ type: 'friend.request_accepted', actorUserId: me.id, subjectUserId: target.id, targetType: 'user', targetId: target.id, payload: { username: target.username } });
     res.json({ relationship: 'friends' });
   } catch (err) {
     console.error('Accept friend request error:', err);
@@ -292,6 +301,7 @@ router.post('/requests/:userId/decline', async (req, res) => {
       return true;
     });
     if (!ok) return res.status(404).json(noRequest);
+    await logActivity({ type: 'friend.request_declined', actorUserId: me.id, subjectUserId: target.id, targetType: 'user', targetId: target.id, payload: { username: target.username } });
     res.json({ relationship: 'none' });
   } catch (err) {
     console.error('Decline friend request error:', err);
@@ -322,6 +332,7 @@ router.delete('/requests/:userId', async (req, res) => {
       return true;
     });
     if (!ok) return res.status(404).json({ error: 'No pending request to that user', code: 'request_not_found' });
+    await logActivity({ type: 'friend.request_cancelled', actorUserId: me.id, subjectUserId: target.id, targetType: 'user', targetId: target.id, payload: { username: target.username } });
     res.json({ relationship: 'none' });
   } catch (err) {
     console.error('Cancel friend request error:', err);
@@ -343,6 +354,7 @@ router.delete('/:userId', async (req, res) => {
       return true;
     });
     if (!ok) return res.status(404).json({ error: 'You aren’t friends with that user', code: 'not_friends' });
+    await logActivity({ type: 'friend.removed', actorUserId: me.id, subjectUserId: target.id, targetType: 'user', targetId: target.id, payload: { username: target.username } });
     res.json({ relationship: 'none' });
   } catch (err) {
     console.error('Unfriend error:', err);

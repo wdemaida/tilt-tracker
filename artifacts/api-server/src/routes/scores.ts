@@ -15,6 +15,7 @@ import { parseScore } from '../lib/scoreRead.js';
 import { visibleScoreSql } from '../lib/venueActivity.js';
 import { onScoreCreated, scoreLockedByChallenge, SCORE_LOCKED } from '../lib/challenges.js';
 import { hasFullPhotoSql, publicScoreRow, deletePhotoBestEffort } from '../lib/photoStore.js';
+import { logActivity } from '../lib/activity.js';
 
 // Optional — resolves the caller's app user + role, without requiring auth.
 async function resolveRequester(req: any): Promise<{ id: number; role: string } | undefined> {
@@ -126,6 +127,10 @@ router.post('/', requireAppUser, async (req, res) => {
     // Challenges: records the lock if this score counts, resolves a won race on the spot, and tells
     // the opponent. Never throws — a challenge problem must not fail the upload.
     await onScoreCreated(row);
+    await logActivity({
+      type: 'score.created', actorUserId: appUser.id, targetType: 'score', targetId: row.id,
+      payload: { score: row.score, machineId: row.machineId, venueId: row.venueId, playedAt: row.playedAt, type: row.type, hasThumbnail: !!row.photoThumbnail },
+    });
     res.status(201).json(publicScoreRow(row));
   } catch (err) {
     console.error('Create score error:', err);
@@ -178,6 +183,15 @@ router.patch('/:id', requireAppUser, async (req, res) => {
   }
 
   const [updated] = await db.update(scores).set(updates).where(eq(scores.id, id)).returning();
+  const changes: Record<string, { from: unknown; to: unknown }> = {};
+  for (const k of Object.keys(updates)) {
+    const from = (existing as any)[k]; const to = (updated as any)?.[k];
+    if (String(from) !== String(to)) changes[k] = { from, to };
+  }
+  await logActivity({
+    type: 'score.edited', actorUserId: appUser.id, subjectUserId: existing.userId !== appUser.id ? existing.userId : null,
+    targetType: 'score', targetId: id, payload: { changes, byAdmin: existing.userId !== appUser.id },
+  });
   res.json(publicScoreRow(updated));
 });
 
@@ -199,6 +213,11 @@ router.delete('/:id', requireAppUser, async (req, res) => {
   // (cleanup-photo-orphans.ts), never a score pointing at a missing object. Any future code that
   // deletes scores must do the same.
   await deletePhotoBestEffort(gone?.photoKey, `delete score ${id}`);
+  await logActivity({
+    type: 'score.deleted', actorUserId: appUser.id, subjectUserId: existing.userId !== appUser.id ? existing.userId : null,
+    targetType: 'score', targetId: id,
+    payload: { score: existing.score, machineId: existing.machineId, venueId: existing.venueId, playedAt: existing.playedAt, hadFullPhoto: !!gone?.photoKey, byAdmin: existing.userId !== appUser.id },
+  });
   res.status(204).send();
 });
 
@@ -343,6 +362,10 @@ router.post('/:id/repair/machine', requireAppUser, async (req, res) => {
 
     await db.update(scores).set({ machineId: target.id }).where(eq(scores.id, id));
     const previousRetired = await retireMachineIfUnused(previousMachineId);
+    await logActivity({
+      type: 'score.repair_machine', actorUserId: appUser.id, subjectUserId: existing.userId !== appUser.id ? existing.userId : null,
+      targetType: 'score', targetId: id, payload: { fromMachineId: previousMachineId, toMachineId: target.id, toMachineName: target.name, previousRetired },
+    });
 
     res.json({ machineId: target.id, machineName: target.name, changed: true, previousRetired });
   } catch (err) {

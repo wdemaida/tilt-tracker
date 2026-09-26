@@ -1,6 +1,6 @@
 const BASE = import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : '/api';
 
-async function request<T>(path: string, init?: RequestInit, token?: string | null): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit, token?: string | null): Promise<T> {
   const headers: Record<string, string> = {};
   if (!(init?.body instanceof FormData)) headers['Content-Type'] = 'application/json';
   if (init?.headers) Object.assign(headers, init.headers);
@@ -64,7 +64,7 @@ export interface AppNotification {
   kind:
     | 'friend_request' | 'friend_accepted'
     | 'challenge_received' | 'challenge_accepted' | 'challenge_declined' | 'challenge_cancelled'
-    | 'challenge_opponent_scored' | 'challenge_ending_soon' | 'challenge_result'
+    | 'challenge_opponent_scored' | 'challenge_ending_soon' | 'challenge_result' | 'challenge_voided'
     | (string & {});
   /** Challenge kinds add challengeId, challengeType, machineName (+ score / outcome / void per kind). */
   payload: {

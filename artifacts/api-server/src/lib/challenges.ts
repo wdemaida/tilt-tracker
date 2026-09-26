@@ -14,6 +14,7 @@ import { canSeeScore, type ActivityVenue } from './venueActivity.js';
 import { isPrivateVenue } from './venueAddress.js';
 import { acceptedPairSql } from './friendships.js';
 import { raiseNotification, settleNotifications, type Executor } from './notify.js';
+import { logActivity } from './activity.js';
 import { getVenueRoster } from './pmRosterCache.js';
 import { getCatalogOrNull, getStoredCatalog, type PinballMachine } from './pinballMap.js';
 import { challengePmLimiter } from './pmGuards.js';
@@ -222,6 +223,16 @@ async function applyResolution(
       ...userPayload(c, otherOf(participants, p.userId)), outcome: p.outcome, rank: p.rank, void: r.void, abandoned: r.abandoned, reason,
     });
   }
+  await logActivity({
+    type: 'challenge.resolved', targetType: 'challenge', targetId: c.id,
+    payload: {
+      reason, abandoned: r.abandoned, challengeType: c.type, machineName: c.machine.name,
+      outcomes: r.participants.map(p => ({
+        userId: p.userId, username: participants.find(x => x.userId === p.userId)?.user.username ?? null,
+        outcome: p.outcome, rank: p.rank, resultValue: p.resultValue,
+      })),
+    },
+  }, { tx });
 }
 
 /**
@@ -239,6 +250,7 @@ export async function syncChallenge(id: number, now = new Date()): Promise<SyncR
       await tx.update(challenges).set({ status: 'expired' }).where(eq(challenges.id, c.id));
       const ps = await loadParticipants(tx, c.id);
       for (const p of ps) if (p.response === 'pending') await settleNotifications(tx, p.userId, 'challenge_received', c.id, 'read', 'challengeId');
+      await logActivity({ type: 'challenge.expired', targetType: 'challenge', targetId: c.id, payload: { challengeType: c.type, machineName: c.machine.name } }, { tx });
       out.status = 'expired';
       return out;
     }

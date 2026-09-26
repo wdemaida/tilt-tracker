@@ -17,7 +17,10 @@ import podsRouter from './routes/pods.js';
 import friendsRouter from './routes/friends.js';
 import notificationsRouter from './routes/notifications.js';
 import challengesRouter from './routes/challenges.js';
-import { requireAppUser } from './middleware/requireAuth.js';
+import { requireAppUser, rejectDisabledUser } from './middleware/requireAuth.js';
+import { clerkWebhookHandler, logClerkWebhookStatus } from './routes/clerkWebhook.js';
+import { routeActivity, PM_RULES, VENUE_RULES, MACHINE_RULES } from './lib/activityRoutes.js';
+import { logActivity } from './lib/activity.js';
 import { captureStatSnapshot } from './lib/statSnapshot.js';
 import { runChallengeSweep } from './lib/challenges.js';
 import { logPhotoStoreStatus } from './lib/photoStore.js';
@@ -35,6 +38,10 @@ app.use(cors((req, cb) => {
   const allowed = isDrizzleStudioRoute || !origin || allowedOrigins.some(o => origin.startsWith(o));
   cb(null, { origin: allowed, credentials: true });
 }));
+// Clerk webhook (Svix-signed) — BEFORE express.json(): signature verification needs the exact raw
+// bytes, and the json parser would consume and re-shape the body. No app auth; see clerkWebhook.ts.
+app.post('/api/webhooks/clerk', express.raw({ type: '*/*', limit: '1mb' }), clerkWebhookHandler);
+
 app.use(express.json({ limit: '2mb' }));
 app.use(clerkMiddleware());
 
@@ -51,6 +58,7 @@ app.post('/api/cron/stat-snapshot', async (req, res) => {
   if (req.header('x-cron-secret') !== process.env.CRON_SECRET) return void res.status(401).json({ error: 'Unauthorized' });
   try {
     const result = await captureStatSnapshot();
+    await logActivity({ type: 'system.stat_snapshot', payload: { periodDate: (result as any)?.periodDate ?? null, via: 'cron' } });
     res.json(result);
   } catch (err) {
     console.error('Cron stat snapshot error:', err);
@@ -67,7 +75,9 @@ app.post('/api/cron/challenge-sweep', async (req, res) => {
   if (!process.env.CRON_SECRET) return void res.status(500).json({ error: 'CRON_SECRET not configured' });
   if (req.header('x-cron-secret') !== process.env.CRON_SECRET) return void res.status(401).json({ error: 'Unauthorized' });
   try {
-    res.json(await runChallengeSweep());
+    const result = await runChallengeSweep();
+    await logActivity({ type: 'system.challenge_sweep', payload: { ...result } });
+    res.json(result);
   } catch (err) {
     console.error('Cron challenge sweep error:', err);
     res.status(500).json({ error: 'Failed to run challenge sweep' });
@@ -77,12 +87,13 @@ app.post('/api/cron/challenge-sweep', async (req, res) => {
 // Full-size photo routes (/:id/photo…) first; they don't overlap the scores router's paths.
 app.use('/api/scores', scorePhotosRouter);
 app.use('/api/scores', scoresRouter);
-app.use('/api/machines', machinesRouter);
+// routeActivity() logs repair / admin actions from these routers by path + status, without editing them.
+app.use('/api/machines', routeActivity(MACHINE_RULES), machinesRouter);
 app.use('/api/users', usersRouter);
-app.use('/api/upload', uploadRouter);
+app.use('/api/upload', rejectDisabledUser, uploadRouter);
 app.use('/api/stats', statsRouter);
-app.use('/api/venues', venuesRouter);
-app.use('/api/pinballmap', pinballmapRouter);
+app.use('/api/venues', routeActivity(VENUE_RULES), venuesRouter);
+app.use('/api/pinballmap', routeActivity(PM_RULES), pinballmapRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/pods', requireAppUser, podsRouter);
 app.use('/api/friends', requireAppUser, friendsRouter);
@@ -97,5 +108,6 @@ cron.schedule('0 1 * * *', () => {
 }, { timezone: 'America/New_York' });
 
 logPhotoStoreStatus();
+logClerkWebhookStatus();
 
 app.listen(PORT, () => console.log(`API server → http://localhost:${PORT}`));

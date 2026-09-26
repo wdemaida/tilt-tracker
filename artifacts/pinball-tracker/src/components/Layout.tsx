@@ -1,9 +1,13 @@
 import { useLocation } from 'wouter';
 import Header from './Header';
 import MobileTabBar, { hidesTabBar } from './MobileTabBar';
+import DisabledAccountNotice from './DisabledAccountNotice';
+import { useAppUser } from '../lib/useAppUser';
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
+  // An admin-disabled account sees one clear message instead of pages that would all 403.
+  const appUser = useAppUser();
 
   if (location === '/welcome') {
     return <div className="min-h-screen w-full bg-background relative overflow-x-clip">{children}</div>;
@@ -17,7 +21,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen flex flex-col w-full bg-background relative overflow-x-clip">
       <Header />
       <main className={`flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8 ${tabBarPadding}`}>
-        {children}
+        {appUser?.disabledAt ? <DisabledAccountNotice reason={appUser.disabledReason} /> : children}
       </main>
       <MobileTabBar />
     </div>

@@ -639,3 +639,76 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   store, presigned URL shape, orphan filter); `npx tsx test-photos.ts` — live round trip against the dev
   DB + dev bucket (upload-url → PUT → confirm → list → guest view → replace → hidden-venue 404s → delete),
   skips when R2 vars are absent, refuses anything but `tilttrack-photos-dev`.
+
+## Admin area (`routes/adminArea.ts`, `lib/adminActions.ts`, `lib/activity.ts`, migrate19, added 2026-09-26)
+- **Guard:** every `/api/admin/*` route (old and new) sits behind `router.use(requireAppUser, requireAdmin)`
+  in `routes/admin.ts`; the admin area router is mounted *inside* it (`router.use(adminAreaRouter)`).
+  `src/lib/adminAuth.test.ts` enumerates every route on that router and checks guest 401 / user 403 /
+  disabled admin 403 / no profile 403. A new admin route must be added to one of those two routers.
+- **Activity log** (`activity_events`, append-only). Write only through `logActivity()` — it never
+  throws (errors are logged), and with `{ tx }` it inserts in a SAVEPOINT so a failed log can't abort
+  the caller's transaction and a rolled-back action takes its event with it. Payloads go through
+  `sanitizePayload()` (drops token/password/secret/key/email/authorization-looking keys at any depth,
+  caps size) — still, pass only ids and facts admins already see. Types are catalogued by category in
+  `ACTIVITY_TYPES` (the admin filter reads it). `actor_user_id` null = system; `subject_user_id` = the
+  other user it's about; `target_type`/`target_id` (text) = the object. ip/user agent only for sign-in,
+  profile setup, PM connect and admin actions. The log starts at this release — nothing before it.
+- **What's instrumented:** scores (created/edited/deleted incl. by admin, repair_machine), full photos
+  (uploaded/replaced at confirm), friends (sent/resent/accepted/declined/cancelled/removed), pods
+  (created/updated/deleted/member added/removed), challenges (created/accepted/declined/cancelled/
+  forfeited in the route; resolved/expired inside `syncChallenge`, with outcomes), every
+  `raiseNotification()` → `notification.sent` (the durable record — read notifications are pruned
+  after 30 days), cron runs (`system.stat_snapshot`, `system.challenge_sweep` — the overview's "last
+  ran"), auth (webhook below + `user.first_setup` on POST /users/setup), and admin actions.
+  **Pinball Map connect/post, venue repair/place/pm-link/resync/merge and admin venue/machine
+  edits/deletes are logged by `routeActivity()`** (`lib/activityRoutes.ts`, mounted in index.ts in
+  front of those routers): it matches method + path, waits for `finish`, and logs from the status
+  code and a whitelist of body fields — so `pinballmap.ts` and `venues.ts` weren't edited. If those
+  routes are renamed, update `PM_RULES` / `VENUE_RULES`. A PM post failure is `pm.score_post_failed`
+  (any 4xx/5xx except 401/403).
+- **Clerk webhook** — `POST /api/webhooks/clerk` (`routes/clerkWebhook.ts`). No app auth; the Svix
+  signature over the raw body is the auth (`svix` package, `CLERK_WEBHOOK_SIGNING_SECRET`). Mounted
+  with `express.raw()` **before** `express.json()` in index.ts — moving it after breaks every
+  signature. `session.created` → `user.signed_in` (ip/browser/city from `latest_activity`),
+  `user.created` → `user.signed_up` (no email stored), `user.deleted` → `user.clerk_deleted` (our users
+  row is left alone); other types 200 and ignored. Idempotent: `activity_events.svix_id` is UNIQUE and
+  a retry answers 200 `{duplicate: true}`. Bad/stale signature → 400; DB failure → 500 (Svix retries);
+  no secret → 503 and one startup warning. svix 2.x `verify()` returns nothing — the body is parsed
+  after it passes.
+  **Setup (Will, once):** Clerk dashboard (production instance) → *Webhooks* → *Add Endpoint* → URL
+  `https://tilt-tracker.onrender.com/api/webhooks/clerk`, subscribe to `session.created`,
+  `user.created`, `user.deleted` → create → copy the endpoint's *Signing Secret* (`whsec_…`) → Render →
+  tilt-tracker service → Environment → add `CLERK_WEBHOOK_SIGNING_SECRET` (a Render env PUT replaces
+  all vars — use the dashboard or send the full set). Clerk's *Testing* tab sends to the registered URL
+  (prod) only; testing locally would need a tunnel (ngrok/cloudflared) plus a second endpoint on the
+  dev instance — optional. The unit tests (`src/lib/clerkWebhook.test.ts`) sign fixtures with a
+  throwaway secret instead.
+- **Clerk Backend API** (`lib/clerkAdmin.ts`, `CLERK_SECRET_KEY`): last sign-in / last active / banned
+  for the users views, batched 100 per `getUserList` call and cached 60 s per user; any failure shows
+  "unknown" rather than failing the page. Ban/unban for disable.
+- **Disable / re-enable** (`users.disabled_at/_reason/_by_id`): DB first (instant lockout —
+  `requireAppUser` answers 403 `account_disabled`; `rejectDisabledUser` covers `/api/upload`, which only
+  uses `requireAuth`), then Clerk ban (ends sessions, blocks sign-in). A Clerk failure is returned as
+  `clerkBanned: false` and the app-level disable stands; disabling again retries. Admins can't disable
+  themselves or another admin. `/api/users/me` still answers (with `disabledAt`) so the app can show
+  "Account disabled".
+- **Score deletion by an admin** (`DELETE /api/admin/scores/:id`): refused with 409
+  `score_locked_by_challenge` + `challengeIds` while any challenge locks it. Void the challenge(s)
+  first — that releases the lock. Row first, R2 object after (same rule as the user delete).
+  **Full-size photo delete** is allowed even on a locked score (display-only, not part of the "has a
+  photo" rule); **thumbnail delete** is refused on a locked score (the thumbnail is what counted).
+- **Void challenge** (`POST /api/admin/challenges/:id/void`, pending/active/resolved): status →
+  `cancelled`, `admin_cancelled_at/_by_id/admin_cancel_reason` stamped, every participant's
+  outcome/rank/result_value cleared, its `challenge_scores` rows (locks) deleted, participants get a
+  `challenge_voided` notification (pending invitations are removed). Records only count `resolved`,
+  so it leaves W/L/T, streaks and head-to-head cleanly; `syncChallenge` ignores cancelled rows, so it
+  never re-locks. The pre-void status and outcomes are in the `admin.challenge_voided` event.
+- Other actions: remove a friendship (row deleted, decline history included; a pending request's
+  unread notification removed), delete one notification, clear a user's notifications.
+- **Never** return `pinball_map_token`, `photo_key` or Clerk emails from admin routes — every select
+  is an explicit column list. The user detail shows the Clerk user id (not secret) and `hasPmToken`.
+- Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/activity.test.ts
+  src/lib/clerkWebhook.test.ts src/lib/adminAuth.test.ts`; `npx tsx test-admin.ts` (dev branch only —
+  creates `zz-admin-test-*` users/machine/scores/challenge, fakes Clerk and R2, deletes everything it
+  made including its events). Running the other `test-*.ts` scripts now also writes activity events
+  for the borrowed dev users.

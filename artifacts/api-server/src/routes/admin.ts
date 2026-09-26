@@ -8,23 +8,13 @@ import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { getCatalogStatus } from '../lib/pinballMap.js';
 import { pmClient } from '../lib/pmClient.js';
 import { captureStatSnapshot } from '../lib/statSnapshot.js';
+import { logActivity, fromReq } from '../lib/activity.js';
+import adminAreaRouter from './adminArea.js';
 
 const router = Router();
 router.use(requireAppUser, requireAdmin);
 
-// GET /api/admin/users — full user list
-router.get('/users', async (_req, res) => {
-  try {
-    const rows = await db
-      .select({ id: users.id, username: users.username, displayName: users.displayName, role: users.role, createdAt: users.createdAt, pinballMapUsername: users.pinballMapUsername })
-      .from(users)
-      .orderBy(desc(users.createdAt));
-    res.json(rows);
-  } catch (err) {
-    console.error('admin/users error:', err);
-    res.status(500).json({ error: 'Failed to fetch users' });
-  }
-});
+// GET /api/admin/users (the richer admin list) lives in adminArea.ts, mounted at the end of this file.
 
 // PATCH /api/admin/users/:id — update a user's role and/or displayName
 router.patch('/users/:id', async (req, res) => {
@@ -49,6 +39,7 @@ router.patch('/users/:id', async (req, res) => {
       .where(eq(users.id, id))
       .returning({ id: users.id, username: users.username, displayName: users.displayName, role: users.role, createdAt: users.createdAt, pinballMapUsername: users.pinballMapUsername });
     if (!updated) return void res.status(404).json({ error: 'User not found' });
+    await logActivity({ type: 'admin.user_updated', ...fromReq(req), subjectUserId: id, targetType: 'user', targetId: id, payload: { changes: updates } });
     res.json(updated);
   } catch (err: any) {
     if (err?.code === '23505') return void res.status(409).json({ error: 'Username already taken' });
@@ -380,5 +371,9 @@ router.delete('/stats/:id', async (req, res) => {
     res.status(500).json({ error: 'Failed to delete stat' });
   }
 });
+
+// The admin area (overview, users, activity, social, scores & photos, admin actions) — behind the
+// same requireAppUser + requireAdmin guard declared at the top of this router.
+router.use(adminAreaRouter);
 
 export default router;
