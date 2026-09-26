@@ -5,7 +5,8 @@ import {
   Trophy, ArrowLeft, MapPin, PlusCircle, Home,
   ChevronUp, ChevronDown, TrendingUp, Users, ChevronDown as ChevronDownSmall, X,
 } from 'lucide-react';
-import { useTapToPinTooltip } from '../lib/chartPin';
+import { useChartPin, ChartGeometryProbe, HIT_RADIUS, px } from '../lib/chartPin';
+import ChartPinOverlay from '../components/ChartPinOverlay';
 import { format, parseISO } from 'date-fns';
 import { formatScoreTime } from '../lib/scoreTime';
 import {
@@ -112,6 +113,8 @@ interface ScatterDot {
 }
 type TrendOwner = 'me' | 'pod' | 'field';
 interface TrendPoint { x: number; y: number; n: number; turn: boolean; owner: TrendOwner; play: ScatterDot }
+/** What a touch-screen tap pinned: a line-chart column (`row`), or one scatter dot (`d`). */
+interface PinData { row?: any; d?: any; owner?: TrendOwner }
 
 /**
  * A group's rolling average over its plays in date order, one point per calendar day (the average
@@ -259,14 +262,14 @@ function buildScatterData(filtered: any[], myUsername: string | null) {
 }
 
 // ─── tooltips ─────────────────────────────────────────────────────────────────
-// On touch screens a tap pins the tooltip (lib/chartPin.ts) and `onClose` is passed: the tooltip is
-// then interactive, so its @usernames can be tapped, and shows a close button. Clicks inside it must
-// not reach the chart, which would re-pin it to the point under the finger.
+// Desktop: rendered by Recharts' hover <Tooltip>. Touch screens: rendered by ChartPinOverlay when a
+// tap pins a point (lib/chartPin.ts), with `onClose` passed — the popup is then an ordinary element,
+// so its @usernames can be tapped, and shows a close button.
 
 function PinnedFrame({ onClose, className, children }: { onClose?: () => void; className: string; children: React.ReactNode }) {
   return (
     <div
-      className={`relative ${className} ${onClose ? 'pr-7' : ''}`}
+      className={`relative ${className} ${onClose ? 'pr-8' : ''}`}
       onClick={onClose ? e => e.stopPropagation() : undefined}
     >
       {onClose && (
@@ -274,7 +277,7 @@ function PinnedFrame({ onClose, className, children }: { onClose?: () => void; c
           type="button"
           aria-label="Close"
           onClick={e => { e.stopPropagation(); onClose(); }}
-          className="absolute top-1 right-1 p-1 rounded text-muted-foreground hover:text-white hover:bg-white/10"
+          className="absolute top-0.5 right-0.5 p-1.5 rounded text-muted-foreground hover:text-white hover:bg-white/10"
         >
           <X className="w-3.5 h-3.5" />
         </button>
@@ -297,9 +300,10 @@ function LineTooltip({ active, payload, label, chartMode, visitAgg, myUsername, 
       </p>
       {visible.map((p: any) => {
         const key     = p.dataKey as string;
-        const display = lineType === 'aggregate'
-          ? (key === 'my' ? `You (${myUsername ?? 'you'})` : key === 'pod' ? `${podName} median` : `${othersLabel} median`)
-          : lineType === 'chaos' && key === myUsername ? `You (${key})` : key;
+        // The player's @handle: every chaos line is one player (keyed by username); in aggregate
+        // mode only your own line is.
+        const handle  = lineType === 'chaos' ? key : key === 'my' ? myUsername : null;
+        const isYou   = lineType === 'chaos' ? key === myUsername : key === 'my';
         const dateVal = p.payload[`${key}_date`];
         const venue   = p.payload[`${key}_venue`];
         const count   = p.payload[`${key}_count`];
@@ -307,11 +311,16 @@ function LineTooltip({ active, payload, label, chartMode, visitAgg, myUsername, 
           <div key={key} className="mb-1.5 last:mb-0">
             <div className="flex items-center gap-1.5">
               <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: p.color }} />
-              {lineType === 'chaos' ? (
-                // Chaos mode draws one line per player, keyed by username.
-                <UsernameLink username={key} style={{ color: p.color }} className="font-semibold truncate max-w-[140px] hover:opacity-80">{display}</UsernameLink>
+              {handle ? (
+                <span className="font-semibold truncate max-w-[160px]">
+                  {isYou ? <span className="text-white">You (</span> : null}
+                  <UsernameLink username={handle} />
+                  {isYou ? <span className="text-white">)</span> : null}
+                </span>
               ) : (
-                <span style={{ color: p.color }} className="font-semibold truncate max-w-[140px]">{display}</span>
+                <span style={{ color: p.color }} className="font-semibold truncate max-w-[140px]">
+                  {isYou ? 'You' : key === 'pod' ? `${podName} median` : `${othersLabel} median`}
+                </span>
               )}
             </div>
             <div className="pl-3.5 font-bold text-primary">{Number(p.value).toLocaleString()}</div>
@@ -448,8 +457,6 @@ export default function MachinePage() {
   const [viewMode,  setViewMode]  = useState<ViewMode>('aggregate');
   const [scatterView, setScatterView] = useState<ScatterView>('trend');
   const [scatterScale, setScatterScale] = useState<ScatterScale>('linear');
-  // Touch screens: tap a point to pin its tooltip so the @username in it can be tapped.
-  const chartPin = useTapToPinTooltip(`${chartMode}|${visitAgg}|${viewMode}|${scatterView}|${scatterScale}`);
   const [selectedVenueIds, setSelectedVenueIds] = useState<number[]>([]);
 
   const authApi = useApi();
@@ -620,6 +627,50 @@ export default function MachinePage() {
     };
   }, [scatterResult, scatterView, scatterScale]);
 
+  // Touch screens: a tap pins a popup on the nearest point (lib/chartPin.ts), so the @username in
+  // it can be tapped. Line charts pin a whole column (every series at that play/visit), like their
+  // hover tooltip; scatter charts pin one dot.
+  const chartPin = useChartPin<PinData>((tx, ty, g) => {
+    const { plot } = g;
+    const SLACK = 16;
+    if (tx < plot.x - SLACK || tx > plot.x + plot.width + SLACK || ty < plot.y - SLACK || ty > plot.y + plot.height + SLACK) return null;
+    if (chartMode !== 'scatter' && lineResult) {
+      const keys = lineResult.type === 'chaos' ? lineResult.lineKeys : ['field', 'pod', 'my'];
+      // The nearest dot picks the column; a tap far from every dot is "empty" and closes the popup.
+      let best: { row: any; x: number; y: number; d: number } | null = null;
+      for (const row of lineResult.data) {
+        const x = px(g.x(row.x));
+        if (x == null) continue;
+        for (const k of keys) {
+          const y = row[k] == null ? null : px(g.y(row[k]));
+          if (y == null) continue;
+          const d = Math.hypot(x - tx, y - ty);
+          if (!best || d < best.d) best = { row, x, y, d };
+        }
+      }
+      return best && best.d <= HIT_RADIUS ? { kind: 'column', x: best.x, y: best.y, data: { row: best.row } } : null;
+    }
+    if (chartMode === 'scatter' && scatterAxes) {
+      const p = scatterAxes.plot;
+      // Draw order (you last, on top), so on a tie the dot drawn on top wins.
+      const series: [TrendOwner, any[]][] = scatterView === 'scores'
+        ? [['field', p.fieldDots], ['pod', podTokens ? p.podDots : []], ['me', p.myDots]]
+        : [['field', p.fieldTrend.filter(t => t.turn)], ['pod', podTokens ? p.podTrend.filter(t => t.turn) : []], ['me', p.myTrend.filter(t => t.turn)]];
+      let best: { d: any; owner: TrendOwner; x: number; y: number; dist: number } | null = null;
+      for (const [owner, pts] of series) {
+        for (const d of pts) {
+          const x = px(g.x(d.x)), y = px(g.y(d.y));
+          if (x == null || y == null) continue;
+          if (x < plot.x - 1 || x > plot.x + plot.width + 1 || y < plot.y - 1 || y > plot.y + plot.height + 1) continue;
+          const dist = Math.hypot(x - tx, y - ty);
+          if (!best || dist <= best.dist) best = { d, owner, x, y, dist };
+        }
+      }
+      return best && best.dist <= HIT_RADIUS ? { kind: 'point', x: best.x, y: best.y, data: { d: best.d, owner: best.owner } } : null;
+    }
+    return null;
+  }, [chartMode, visitAgg, viewMode, scatterView, scatterScale, lineResult, scatterAxes]);
+
   // ── guards ──────────────────────────────────────────────────────────────────
 
   if (!cs.ready || isLoading) return <p className="text-muted-foreground">Loading...</p>;
@@ -679,6 +730,21 @@ export default function MachinePage() {
     return g === 'self' ? 'hsl(var(--username))' : g === 'pod' ? (podTokens?.graphic ?? FIELD_COLOR) : FIELD_COLOR;
   }
   function chaosLineColor(u: string) { return groupColor(lineResult?.userGroup[u] ?? 'other'); }
+  function ownerColor(o: TrendOwner) { return groupColor(o === 'me' ? 'self' : o === 'pod' ? 'pod' : 'other'); }
+  // Touch screens: no hover-highlighted dot (there's no hover; the pinned popup marks the point).
+  const activeDot = <T,>(d: T) => (chartPin.touch ? false : d);
+  /** A pinned line-chart column as the `payload` its tooltip expects: one entry per drawn series. */
+  function linePayload(row: any) {
+    if (!lineResult) return [];
+    const series: [string, string][] = lineResult.type === 'chaos'
+      ? [...lineResult.lineKeys].reverse().map(u => [u, chaosLineColor(u)])
+      : [
+          ['field', FIELD_COLOR],
+          ...(lineResult.hasPod && podTokens ? [['pod', podTokens.graphic] as [string, string]] : []),
+          ...(myUsername ? [['my', 'hsl(var(--username))'] as [string, string]] : []),
+        ];
+    return series.map(([dataKey, color]) => ({ dataKey, color, value: row[dataKey], payload: row }));
+  }
 
   // ── chart description ───────────────────────────────────────────────────────
 
@@ -914,7 +980,7 @@ export default function MachinePage() {
           {/* Legends — one entry per group actually drawn. */}
           {lineResult?.type === 'aggregate' && (
             <div className="flex items-center gap-4 mb-3 text-xs flex-wrap">
-              {myUsername && <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 rounded bg-username" /><span className="text-muted-foreground">You ({myUsername})</span></div>}
+              {myUsername && <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 rounded bg-username" /><span className="text-muted-foreground">You (<UsernameLink username={myUsername} />)</span></div>}
               {circle && podTokens && lineResult.hasPod && (
                 <div className="flex items-center gap-1.5" style={podColorVars(circle.color)}>
                   <svg width="16" height="6"><line x1="0" y1="3" x2="16" y2="3" stroke={podTokens.graphic} strokeWidth="2" strokeDasharray="4 3" /></svg>
@@ -934,7 +1000,7 @@ export default function MachinePage() {
             const groups = new Set(Object.values(lineResult.userGroup));
             return (
               <div className="flex items-center gap-4 mb-3 text-xs flex-wrap">
-                {groups.has('self') && <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 rounded bg-username" /><span className="text-muted-foreground">You ({myUsername})</span></div>}
+                {groups.has('self') && myUsername && <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 rounded bg-username" /><span className="text-muted-foreground">You (<UsernameLink username={myUsername} />)</span></div>}
                 {circle && groups.has('pod') && (
                   <div className="flex items-center gap-1.5" style={podColorVars(circle.color)}>
                     <div className="w-3 h-0.5 rounded bg-pod" /><span className="text-pod-text font-semibold truncate max-w-[10rem]">{circle.name}</span>
@@ -974,18 +1040,22 @@ export default function MachinePage() {
           })()}
 
           {/* Chart */}
+          <div className="relative" {...chartPin.wrapperProps}>
           <ResponsiveContainer width="100%" height={220}>
             {chartMode !== 'scatter' && lineResult ? (
-              <LineChart data={lineResult.data} margin={{ top: 4, right: 8, left: 0, bottom: 4 }} onClick={chartPin.onChartClick}>
+              <LineChart data={lineResult.data} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
+                <ChartGeometryProbe geometry={chartPin.geometry} />
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
                 <XAxis dataKey="x" tick={AXIS_STYLE} tickLine={false} axisLine={false}
                   tickFormatter={v => chartMode === 'visit' ? `V${v}` : `#${v}`} />
                 <YAxis tick={AXIS_STYLE} tickLine={false} axisLine={false} tickFormatter={formatScore} width={48} />
-                <Tooltip
-                  {...chartPin.tooltipProps}
-                  content={<LineTooltip chartMode={chartMode} visitAgg={visitAgg} myUsername={myUsername} lineType={lineResult.type} podName={podName} othersLabel={othersLabel} onClose={chartPin.pinned ? chartPin.close : undefined} />}
-                  cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }}
-                />
+                {/* Touch screens get the tap-to-pin popup below instead (lib/chartPin.ts). */}
+                {!chartPin.touch && (
+                  <Tooltip
+                    content={<LineTooltip chartMode={chartMode} visitAgg={visitAgg} myUsername={myUsername} lineType={lineResult.type} podName={podName} othersLabel={othersLabel} />}
+                    cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }}
+                  />
+                )}
                 {lineResult.type === 'aggregate' && (
                   <>
                     <Line type="monotone" dataKey="field" stroke="hsl(var(--field))" strokeWidth={1.5} strokeDasharray="5 3" dot={false} connectNulls={false} />
@@ -994,11 +1064,11 @@ export default function MachinePage() {
                         // Dots, unlike the field median: pods are small, so the median is often
                         // only a point or two, which a dot-less line wouldn't draw at all.
                         dot={{ r: 3, strokeWidth: 0, fill: podTokens.graphic }}
-                        activeDot={{ r: 5, strokeWidth: 0, fill: podTokens.graphic }} connectNulls={false} />
+                        activeDot={activeDot({ r: 5, strokeWidth: 0, fill: podTokens.graphic })} connectNulls={false} />
                     )}
                     {myUsername && (
                       <Line type="monotone" dataKey="my" stroke="hsl(var(--username))" strokeWidth={2.5}
-                        dot={{ fill: 'hsl(var(--username))', r: 4, strokeWidth: 0 }} activeDot={{ r: 6, strokeWidth: 0 }} connectNulls={false} />
+                        dot={{ fill: 'hsl(var(--username))', r: 4, strokeWidth: 0 }} activeDot={activeDot({ r: 6, strokeWidth: 0 })} connectNulls={false} />
                     )}
                   </>
                 )}
@@ -1011,12 +1081,13 @@ export default function MachinePage() {
                       strokeWidth={g === 'self' ? 2.5 : g === 'pod' ? 2 : 1.5}
                       strokeOpacity={g === 'self' ? 1 : g === 'pod' ? 0.85 : 0.5}
                       dot={{ fill: chaosLineColor(u), r: g === 'self' ? 4 : 3, strokeWidth: 0, fillOpacity: g === 'other' ? 0.6 : 1 }}
-                      activeDot={{ r: 6, strokeWidth: 0 }} connectNulls={false} />
+                      activeDot={activeDot({ r: 6, strokeWidth: 0 })} connectNulls={false} />
                   );
                 })}
               </LineChart>
             ) : scatterResult && scatterAxes ? (
-              <ScatterChart margin={{ top: 10, right: 12, left: 0, bottom: 4 }} onClick={chartPin.onChartClick}>
+              <ScatterChart margin={{ top: 10, right: 12, left: 0, bottom: 4 }}>
+                <ChartGeometryProbe geometry={chartPin.geometry} />
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
                 <XAxis dataKey="x" type="number" scale="time" domain={scatterAxes.x} allowDataOverflow
                   ticks={scatterAxes.xTicks} interval="preserveStartEnd"
@@ -1025,7 +1096,9 @@ export default function MachinePage() {
                 <YAxis dataKey="y" type="number" scale={scatterAxes.yScale} domain={scatterAxes.yDomain} ticks={scatterAxes.yTicks}
                   allowDataOverflow={scatterAxes.yScale === 'log'}
                   tick={AXIS_STYLE} tickLine={false} axisLine={false} tickFormatter={formatScore} width={48} />
-                <Tooltip {...chartPin.tooltipProps} content={<ScatterTooltip podName={podName} podText={podTokens?.text} othersLabel={othersLabel} onClose={chartPin.pinned ? chartPin.close : undefined} />} cursor={false} />
+                {!chartPin.touch && (
+                  <Tooltip content={<ScatterTooltip podName={podName} podText={podTokens?.text} othersLabel={othersLabel} />} cursor={false} />
+                )}
                 {scatterView === 'scores' ? (
                   <>
                     {/* Drawn back to front, you on top. Full opacity for everyone: nobody is dimmed. */}
@@ -1062,6 +1135,22 @@ export default function MachinePage() {
               </LineChart>
             )}
           </ResponsiveContainer>
+          {chartPin.pin && (
+            <ChartPinOverlay
+              pin={chartPin.pin} popupRef={chartPin.popupRef} wrapperRef={chartPin.wrapperRef} geometry={chartPin.geometry}
+              color={chartPin.pin.data.owner ? ownerColor(chartPin.pin.data.owner) : undefined}
+            >
+              {chartPin.pin.data.row && lineResult ? (
+                <LineTooltip active payload={linePayload(chartPin.pin.data.row)} label={chartPin.pin.data.row.x}
+                  chartMode={chartMode} visitAgg={visitAgg} myUsername={myUsername} lineType={lineResult.type}
+                  podName={podName} othersLabel={othersLabel} onClose={chartPin.close} />
+              ) : chartPin.pin.data.d ? (
+                <ScatterTooltip active payload={[{ payload: chartPin.pin.data.d }]}
+                  podName={podName} podText={podTokens?.text} othersLabel={othersLabel} onClose={chartPin.close} />
+              ) : null}
+            </ChartPinOverlay>
+          )}
+          </div>
 
           {/* Description */}
           <p className="text-xs text-muted-foreground text-center mt-2 leading-relaxed">

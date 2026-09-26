@@ -45,7 +45,7 @@ export default function UserPage() {
         <div>
           <h1 className="text-3xl font-black uppercase tracking-widest text-white">{user.displayName}</h1>
           <p className="text-sm text-muted-foreground flex items-center gap-1.5 flex-wrap">
-            <span>@{user.username}</span>
+            <span className="text-username">@{user.username}</span>
             <PodMemberIcons pods={podMembership.get(user.username)} />
             <span>· {scores.length} scores</span>
           </p>

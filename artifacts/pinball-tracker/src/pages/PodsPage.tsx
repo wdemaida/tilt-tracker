@@ -166,7 +166,7 @@ function MemberPicker({ pod }: { pod: Pod }) {
                 >
                   <span className="min-w-0">
                     <span className="text-white/90 font-medium">{u.displayName}</span>
-                    <span className="block text-xs text-muted-foreground">@{u.username}</span>
+                    <span className="block text-xs text-username">@{u.username}</span>
                   </span>
                   {already
                     ? <span className="text-xs text-muted-foreground flex-shrink-0">In pod</span>
@@ -299,7 +299,7 @@ function PodCard({ pod }: { pod: Pod }) {
                 <li key={m.id} className="flex items-center justify-between gap-3 rounded-lg border border-pod/20 bg-pod/5 px-3 py-2">
                   <Link href={`/users/${m.username}`} className="min-w-0 group">
                     <span className="block text-sm font-bold text-pod-text group-hover:opacity-80 transition-opacity truncate">{m.displayName}</span>
-                    <span className="block text-xs text-muted-foreground truncate">@{m.username}</span>
+                    <span className="block text-xs text-username truncate">@{m.username}</span>
                   </Link>
                   <button
                     type="button"

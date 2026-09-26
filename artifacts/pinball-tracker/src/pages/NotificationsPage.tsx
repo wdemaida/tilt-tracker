@@ -17,8 +17,16 @@ import type { AppNotification } from '../lib/api';
 
 /** What one notification says and where it goes. Unknown kinds (from a newer server) still render. */
 function describe(n: AppNotification): { text: React.ReactNode; href: string | null; Icon: typeof Bell } {
-  const who = n.payload.displayName ?? n.payload.username ?? 'Someone';
-  const name = <span className="font-semibold text-white">{who}</span>;
+  // Their name plus @handle, like the Friends cards. (A plain @handle, not a UsernameLink: the whole
+  // row is already a link.)
+  const { displayName, username } = n.payload;
+  const name = displayName || username ? (
+    <>
+      {displayName && <span className="font-semibold text-white">{displayName}</span>}
+      {displayName && username && ' '}
+      {username && <span className="text-username">@{username}</span>}
+    </>
+  ) : <span className="font-semibold text-white">Someone</span>;
   switch (n.kind) {
     case 'friend_request':
       return { text: <>{name} sent you a friend request</>, href: '/friends', Icon: UserPlus };

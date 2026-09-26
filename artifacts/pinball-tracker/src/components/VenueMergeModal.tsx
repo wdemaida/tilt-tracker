@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { X, ArrowRight, AlertTriangle, Merge } from 'lucide-react';
 import { useApi } from '../lib/useApi';
+import UsernameLink from './UsernameLink';
 import type { VenueMergePreview, VenueMergeResult } from '../lib/api';
 
 interface Props {
@@ -94,7 +95,10 @@ export default function VenueMergeModal({ sourceVenueId, target, onClose, onMerg
                 </li>
                 {data.players && data.players.length > 0 && (
                   <li className="text-xs">
-                    Players affected: {data.players.map(p => `${p.username} (${p.scoreCount})`).join(', ')}
+                    Players affected:{' '}
+                    {data.players.map((p, i) => (
+                      <span key={p.username}>{i > 0 && ', '}<UsernameLink username={p.username} /> ({p.scoreCount})</span>
+                    ))}
                   </li>
                 )}
                 {data.historyRows > 0 && (

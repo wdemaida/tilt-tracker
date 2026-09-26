@@ -176,7 +176,7 @@ export default function AdminPage() {
                     onClick={() => setEditingUser(u)}
                     className="border-b border-white/5 last:border-0 hover:bg-white/5 cursor-pointer transition-colors"
                   >
-                    <td className="px-4 py-3 font-medium"><UsernameLink username={u.username} className="text-white hover:text-username" /></td>
+                    <td className="px-4 py-3 font-medium"><UsernameLink username={u.username} /></td>
                     <td className="px-4 py-3 text-muted-foreground">{u.displayName}</td>
                     <td className="px-4 py-3">
                       <span className={`px-2 py-0.5 rounded text-xs font-bold uppercase ${
