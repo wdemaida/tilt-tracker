@@ -1,10 +1,12 @@
 import { useLocation, useSearch } from 'wouter';
-import { UserCheck, Users, type LucideIcon } from 'lucide-react';
+import { Swords, UserCheck, Users, type LucideIcon } from 'lucide-react';
 import FriendsPage from './FriendsPage';
 import PodsPage from './PodsPage';
+import ChallengesPage from './ChallengesPage';
 import { useMyFriends } from '../lib/myFriends';
+import { useIncomingChallengeCount } from '../lib/challenges';
 
-// Crew — your people: Friends and Pods under one roof (and Challenges, later). Each tab is the
+// Crew — your people: Friends, Pods and Challenges under one roof. Each tab is the
 // existing page component; this page only owns the heading and the tab strip. The tab lives in the
 // URL (`/crew?tab=pods`) so notifications and scope-picker links can land on the right one — the
 // old `/friends` and `/pods` routes redirect here.
@@ -20,6 +22,7 @@ interface CrewTab {
 export const CREW_TABS: CrewTab[] = [
   { key: 'friends', label: 'Friends', Icon: UserCheck, Component: FriendsPage },
   { key: 'pods', label: 'Pods', Icon: Users, Component: PodsPage },
+  { key: 'challenges', label: 'Challenges', Icon: Swords, Component: ChallengesPage },
 ];
 
 export function crewHref(tab: string) {
@@ -32,7 +35,9 @@ export default function CrewPage() {
   const active = CREW_TABS.find(t => t.key === requested) ?? CREW_TABS[0];
   // Incoming friend requests, from the same query the Friends tab itself renders — no extra fetch.
   const { incoming } = useMyFriends();
-  const badges: Record<string, number> = { friends: incoming.length };
+  // Challenges waiting on your answer — the same pending list the Challenges tab renders.
+  const incomingChallenges = useIncomingChallengeCount();
+  const badges: Record<string, number> = { friends: incoming.length, challenges: incomingChallenges };
 
   const { Component } = active;
 
@@ -53,7 +58,7 @@ export default function CrewPage() {
               aria-selected={selected}
               aria-controls="crew-tabpanel"
               onClick={() => navigate(crewHref(key), { replace: true })}
-              className={`relative -mb-px flex items-center gap-2 px-4 py-2.5 border-b-2 text-sm font-bold uppercase tracking-wider transition-colors ${
+              className={`relative -mb-px flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 py-2.5 border-b-2 text-xs sm:text-sm font-bold uppercase tracking-wider whitespace-nowrap transition-colors ${
                 selected ? 'border-primary text-white' : 'border-transparent text-muted-foreground hover:text-white'
               }`}
             >
@@ -62,7 +67,7 @@ export default function CrewPage() {
               {badge > 0 && (
                 <span
                   className="min-w-[1.1rem] h-[1.1rem] px-1 rounded-full bg-friend text-zinc-950 text-[10px] font-black leading-[1.1rem] text-center"
-                  aria-label={`${badge} pending ${badge === 1 ? 'request' : 'requests'}`}
+                  aria-label={`${badge} waiting on you`}
                 >
                   {badge > 9 ? '9+' : badge}
                 </span>

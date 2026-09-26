@@ -1,6 +1,7 @@
 import { Trophy, BarChart2, Building2, Users } from 'lucide-react';
 import { PinballIcon } from './PinballIcon';
 import { useMyFriends } from '../lib/myFriends';
+import { useIncomingChallengeCount } from '../lib/challenges';
 
 // Shared by the desktop header, the avatar menu and the mobile tab bar, so the three can't drift.
 
@@ -16,7 +17,7 @@ export const SCORES: NavItem = { href: '/', label: 'Scores', Icon: Trophy };
 export const MACHINES: NavItem = { href: '/machines', label: 'Machines', Icon: PinballIcon };
 export const VENUES: NavItem = { href: '/venues', label: 'Venues', Icon: Building2 };
 export const STATS: NavItem = { href: '/stats', label: 'Stats', Icon: BarChart2 };
-/** Friends + Pods (+ Challenges later). Signed-in only — every tab is the viewer's private data. */
+/** Friends + Pods + Challenges. Signed-in only — every tab is the viewer's private data. */
 export const CREW: NavItem = { href: '/crew', label: 'Crew', Icon: Users };
 
 /**
@@ -25,15 +26,20 @@ export const CREW: NavItem = { href: '/crew', label: 'Crew', Icon: Users };
  */
 export function isActivePath(location: string, href: string) {
   if (href === '/') return location === '/';
+  // A challenge page belongs to Crew (it's reached from the Challenges tab).
+  if (href === CREW.href && (location === '/challenges' || location.startsWith('/challenges/'))) return true;
   return location === href || location.startsWith(`${href}/`);
 }
 
 /**
- * Pending incoming friend requests — the badge on the Crew nav entries. Reuses the friends list
- * query (`useMyFriends`), which the Crew page renders anyway; zero and never fetched when signed out.
+ * Pending incoming friend requests plus challenges waiting on your answer — the badge on the Crew
+ * nav entries. Reuses the friends list and pending-challenges queries, which the Crew page renders
+ * anyway; zero and never fetched when signed out.
  */
 export function useCrewBadgeCount() {
-  return useMyFriends().incoming.length;
+  const friends = useMyFriends().incoming.length;
+  const challenges = useIncomingChallengeCount();
+  return friends + challenges;
 }
 
 export function badgeText(n: number) {

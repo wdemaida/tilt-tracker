@@ -38,7 +38,7 @@ export default function AvatarMenu() {
   return (
     <DropdownMenu.Root modal={false}>
       <DropdownMenu.Trigger
-        aria-label={crewBadge ? `Account menu, ${crewBadge} pending friend ${crewBadge === 1 ? 'request' : 'requests'}` : 'Account menu'}
+        aria-label={crewBadge ? `Account menu, ${crewBadge} waiting on you in Crew` : 'Account menu'}
         className="relative flex items-center justify-center w-10 h-10 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-primary"
       >
         {user?.imageUrl ? (

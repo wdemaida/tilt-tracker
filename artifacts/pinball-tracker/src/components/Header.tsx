@@ -85,7 +85,7 @@ export default function Header() {
                 {href === CREW.href && crewBadge > 0 && (
                   <span
                     className="min-w-[1.1rem] h-[1.1rem] px-1 rounded-full bg-friend text-zinc-950 text-[10px] font-black leading-[1.1rem] text-center"
-                    aria-label={`${crewBadge} pending friend ${crewBadge === 1 ? 'request' : 'requests'}`}
+                    aria-label={`${crewBadge} waiting on you`}
                   >
                     {badgeText(crewBadge)}
                   </span>
