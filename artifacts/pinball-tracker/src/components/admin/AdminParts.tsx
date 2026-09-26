@@ -238,8 +238,12 @@ const TYPE_TEXT: Record<string, string> = {
   'admin.venue_deleted': 'deleted a venue',
   'admin.machine_updated': 'edited a machine',
   'admin.machine_deleted': 'deleted a machine',
+  'admin.settings_changed': 'changed a setting',
+  'admin.photo_orphans_run': 'ran the photo orphan sweep',
   'system.stat_snapshot': 'Daily stat snapshot ran',
   'system.challenge_sweep': 'Daily challenge sweep ran',
+  'system.activity_retention': 'Activity-log retention ran',
+  'system.photo_orphans': 'Weekly photo orphan sweep ran',
 };
 
 const CATEGORY_TONE: Record<string, 'muted' | 'primary' | 'danger' | 'ok' | 'warn'> = {
@@ -282,6 +286,15 @@ function detail(ev: ActivityEvent): string | null {
     case 'user.signed_in': return [p.city, p.country, p.isMobile ? 'mobile' : null].filter(Boolean).join(', ') || null;
     case 'system.challenge_sweep': return `resolved ${p.resolved ?? 0}, expired ${p.expired ?? 0}, errors ${p.errors ?? 0}`;
     case 'admin.user_updated': return p.changes ? Object.keys(p.changes).join(', ') : null;
+    case 'admin.settings_changed': {
+      if (!p.before || !p.after) return p.setting ?? null;
+      const diffs = Object.keys(p.after).filter(k => p.before[k] !== p.after[k]).map(k => `${k}: ${p.before[k]} → ${p.after[k]}`);
+      return `${p.setting ?? 'setting'}${diffs.length ? ` · ${diffs.join(', ')}` : ' (unchanged)'}`;
+    }
+    case 'system.activity_retention':
+      return `deleted ${p.total ?? 0} (high-volume ${p.deleted?.high_volume ?? 0}, standard ${p.deleted?.standard ?? 0}, admin ${p.deleted?.admin ?? 0})${p.capped ? ' · capped' : ''}${p.errors?.length ? ` · ${p.errors.length} error(s)` : ''}`;
+    case 'system.photo_orphans': case 'admin.photo_orphans_run':
+      return `${p.dryRun ? 'dry run · ' : ''}${p.orphans ?? 0} orphan(s) of ${p.listed ?? 0} objects${p.dryRun ? '' : `, deleted ${p.deleted ?? 0}`}${p.failed ? `, ${p.failed} failed` : ''}${p.capped ? ' · capped' : ''}`;
     default: return null;
   }
 }

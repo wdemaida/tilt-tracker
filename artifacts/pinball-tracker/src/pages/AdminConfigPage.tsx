@@ -1,6 +1,7 @@
 import { ShieldCheck, RotateCcw } from 'lucide-react';
 import AdminNav from '../components/AdminNav';
 import { useTheme, hslToHex, DEFAULT_COLORS, type ColorKey } from '../lib/theme';
+import { RetentionSettingsCard, PhotoOrphansCard } from '../components/admin/MaintenanceSettings';
 
 const COLOR_CONFIG: { key: ColorKey; label: string; description: string }[] = [
   { key: 'primary',  label: 'Scores',   description: 'Score numbers, buttons, and primary accents' },
@@ -93,6 +94,12 @@ export default function AdminConfigPage() {
             ))}
           </div>
         </div>
+
+        <h2 className="text-sm font-bold uppercase tracking-widest text-muted-foreground mt-2">
+          Data &amp; Storage
+        </h2>
+        <RetentionSettingsCard />
+        <PhotoOrphansCard />
       </section>
     </div>
   );

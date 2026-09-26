@@ -30,8 +30,56 @@ export interface AdminOverview {
     r2: { configured: boolean };
     clerkWebhook: { configured: boolean };
     clerkApi: { reachable: boolean };
-    cron: { statSnapshot: string | null; challengeSweep: string | null };
+    cron: {
+      statSnapshot: string | null; challengeSweep: string | null;
+      activityRetention: RetentionLastRun | null;
+      photoOrphans: PhotoOrphanSummary;
+    };
   };
+}
+
+export type RetentionTier = 'high_volume' | 'standard' | 'admin';
+
+export interface RetentionSettings { highVolumeDays: number; standardDays: number; adminDays: number }
+
+export interface RetentionLastRun {
+  at: string;
+  deleted: Record<RetentionTier, number> | null;
+  total: number;
+  capped: boolean;
+  errors: number;
+}
+
+export interface RetentionView {
+  settings: RetentionSettings;
+  defaults: RetentionSettings;
+  limits: Record<keyof RetentionSettings, { min: number; max: number; allowZero?: boolean }>;
+  isDefault: boolean;
+  updatedAt: string | null;
+  updatedBy: UserRef | null;
+  tiers: Array<{ tier: RetentionTier; days: number | null; rows: number; oldest: string | null; eligible: number }>;
+  typesByTier: Record<RetentionTier, string[]>;
+  defaultTier: RetentionTier;
+  adminPrefix: string;
+  lastRun: RetentionLastRun | null;
+}
+
+export interface PhotoOrphanSummary {
+  lastRun: {
+    at: string; trigger: 'cron' | 'admin' | 'cli'; dryRun: boolean; listed: number; orphans: number; orphanBytes: number;
+    deleted: number; failed: number; skippedReferenced: number; capped: boolean;
+  } | null;
+  lastDeleteRunAt: string | null;
+  nextDueAt: string | null;
+  dueNow: boolean;
+}
+
+export interface PhotoOrphanStatus extends PhotoOrphanSummary { configured: boolean; envMismatch: string | null }
+
+export interface PhotoOrphanRunResult {
+  dryRun: boolean; bucket: string; minAgeHours: number; listed: number; referenced: number;
+  orphans: number; orphanBytes: number; deleted: number; failed: number; skippedReferenced: number; capped: boolean;
+  sampleScoreIds: number[]; ms: number;
 }
 
 export interface AdminUserRow extends UserRef {
@@ -120,6 +168,7 @@ export function createAdminApi(getToken: () => Promise<string | null>) {
   const get = async <T,>(path: string) => request<T>(path, undefined, await tok());
   const post = async <T,>(path: string, body?: unknown) => request<T>(path, { method: 'POST', body: JSON.stringify(body ?? {}) }, await tok());
   const del = async <T,>(path: string) => request<T>(path, { method: 'DELETE' }, await tok());
+  const put = async <T,>(path: string, body: unknown) => request<T>(path, { method: 'PUT', body: JSON.stringify(body) }, await tok());
   return {
     overview: () => get<AdminOverview>('/admin/overview'),
     users: (q = '', filter = 'all') => get<{ clerkAvailable: boolean; items: AdminUserRow[] }>(`/admin/users${qs({ q, filter: filter === 'all' ? null : filter })}`),
@@ -144,6 +193,10 @@ export function createAdminApi(getToken: () => Promise<string | null>) {
     deleteScore: (id: number) => del<ActionResponse>(`/admin/scores/${id}`),
     deleteFullPhoto: (id: number) => del<ActionResponse>(`/admin/scores/${id}/photo`),
     deleteThumbnail: (id: number) => del<ActionResponse>(`/admin/scores/${id}/thumbnail`),
+    retention: () => get<RetentionView>('/admin/settings/retention'),
+    saveRetention: (s: RetentionSettings) => put<RetentionView>('/admin/settings/retention', s),
+    photoOrphans: () => get<PhotoOrphanStatus>('/admin/photo-orphans'),
+    runPhotoOrphans: (dryRun: boolean) => post<PhotoOrphanRunResult>('/admin/photo-orphans/run', { dryRun }),
   };
 }
 

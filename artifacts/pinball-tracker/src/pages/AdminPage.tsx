@@ -77,6 +77,16 @@ export default function AdminPage() {
                 note={h.cron.statSnapshot ? <>last ran <When at={h.cron.statSnapshot} /></> : 'no run recorded'} />
               <HealthRow label="Daily challenge sweep" ok={fresh(h.cron.challengeSweep)}
                 note={h.cron.challengeSweep ? <>last ran <When at={h.cron.challengeSweep} /></> : 'no run recorded yet (logged from this release on)'} />
+              <HealthRow label="Activity-log retention" ok={h.cron.activityRetention ? fresh(h.cron.activityRetention.at) && !h.cron.activityRetention.errors : null}
+                note={h.cron.activityRetention
+                  ? <>last ran <When at={h.cron.activityRetention.at} />, deleted {h.cron.activityRetention.total.toLocaleString()}{h.cron.activityRetention.capped ? ' (capped)' : ''}{h.cron.activityRetention.errors ? ` · ${h.cron.activityRetention.errors} error(s)` : ''} · <Link href="/admin/config" className="text-primary hover:underline">settings</Link></>
+                  : <>no run recorded yet — runs with the daily sweep · <Link href="/admin/config" className="text-primary hover:underline">settings</Link></>} />
+              <HealthRow label="Weekly photo orphan sweep"
+                ok={!h.r2.configured ? null : h.cron.photoOrphans.lastRun ? h.cron.photoOrphans.lastRun.failed === 0 && !(h.cron.photoOrphans.dueNow && h.cron.photoOrphans.lastDeleteRunAt && Date.now() - +new Date(h.cron.photoOrphans.lastDeleteRunAt) > 9 * 86_400_000) : null}
+                note={!h.r2.configured ? 'R2 not configured — nothing to sweep'
+                  : h.cron.photoOrphans.lastRun
+                    ? <>last run <When at={h.cron.photoOrphans.lastRun.at} /> ({h.cron.photoOrphans.lastRun.trigger}{h.cron.photoOrphans.lastRun.dryRun ? ', dry run' : ''}) · {h.cron.photoOrphans.lastRun.orphans} orphan(s){h.cron.photoOrphans.lastRun.dryRun ? '' : `, deleted ${h.cron.photoOrphans.lastRun.deleted}`}{h.cron.photoOrphans.lastRun.failed ? `, ${h.cron.photoOrphans.lastRun.failed} failed` : ''} · <Link href="/admin/config" className="text-primary hover:underline">run now</Link></>
+                    : <>no run recorded yet — runs weekly with the daily sweep · <Link href="/admin/config" className="text-primary hover:underline">run now</Link></>} />
             </ul>
           </Card>
           <p className="text-xs text-muted-foreground mt-2">
