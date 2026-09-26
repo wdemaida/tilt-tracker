@@ -124,6 +124,98 @@ export interface VenueMergeResult {
   adopted: string[];
 }
 
+// ── Challenges (lib/challenges.ts + challengeRules.ts on the api-server) ──────────────────────
+
+export type ChallengeType = 'high_score' | 'race' | 'most_improved' | 'average';
+export type ChallengeStatus = 'pending' | 'active' | 'resolved' | 'declined' | 'cancelled' | 'expired';
+export type ChallengePhase = 'pending' | 'scheduled' | 'live' | 'ended' | 'resolved' | 'declined' | 'cancelled' | 'expired';
+export type ChallengeResponse = 'pending' | 'accepted' | 'declined';
+/** `abandoned`: a race nobody beat, or an average nobody qualified for — no winner, no loser. */
+export type ChallengeOutcome = 'win' | 'loss' | 'tie' | 'forfeit' | 'no_show' | 'abandoned' | (string & {});
+
+export interface ChallengeParticipant {
+  user: PodUser;
+  isCreator: boolean;
+  response: ChallengeResponse;
+  respondedAt: string | null;
+  /** Final once resolved ('forfeit' as soon as they withdraw). */
+  outcome: ChallengeOutcome | null;
+  rank: number | null;
+  resultValue: number | null;
+  baselineScore: number | null;
+  /** Live standing, once the window has started; null before. */
+  standing: {
+    resultValue: number | null;
+    countingCount: number;
+    bestScore: number | null;
+    qualified: boolean;
+    liveRank: number | null;
+    reachedTargetAt: string | null;
+  } | null;
+  /** Detail only: the scores that count, newest upload first. */
+  scores?: Array<{ id: number; score: number; playedAt: string; createdAt: string; venueId: number | null; venueName: string | null }>;
+}
+
+export interface Challenge {
+  id: number;
+  type: ChallengeType;
+  status: ChallengeStatus;
+  phase: ChallengePhase;
+  void: boolean;
+  /** A race nobody finished / an average nobody qualified for. Older servers omit it (derive from outcomes). */
+  abandoned?: boolean;
+  matchMode: 'game' | 'exact';
+  matchGroup: string | null;
+  machine: { id: number; name: string; imageUrl: string | null };
+  venue: { id: number; name: string } | null;
+  targetScore: number | null;
+  minPlays: number | null;
+  startsAt: string | null;
+  endsAt: string;
+  createdAt: string;
+  resolvedAt: string | null;
+  creatorId: number;
+  timeLeftMs: number | null;
+  startsInMs: number | null;
+  me: { response: ChallengeResponse; outcome: ChallengeOutcome | null; canAccept: boolean; canDecline: boolean; canCancel: boolean; canForfeit: boolean };
+  opponent: PodUser | null;
+  participants: ChallengeParticipant[];
+}
+
+interface RecordCounts {
+  played: number;
+  wins: number;
+  losses: number;
+  ties: number;
+  forfeits: number;
+  noShows: number;
+  /** Newer servers only. */
+  abandoned?: number;
+}
+
+export interface ChallengeRecord extends RecordCounts {
+  user: PodUser;
+  voids: number;
+  currentStreak: number;
+  bestStreak: number;
+  /** Your own record: every opponent. Someone else's: only their record against you. */
+  headToHead: Array<RecordCounts & { opponent: PodUser }>;
+}
+
+export interface CreateChallengeBody {
+  friendId?: number;
+  friendUsername?: string;
+  type: ChallengeType;
+  machineId: number;
+  matchMode?: 'game' | 'exact';
+  venueId?: number;
+  targetScore?: number;
+  minPlays?: number;
+  /** Omit to start when they accept. */
+  startsAt?: string;
+  endsAt: string;
+}
+
 export function createApi(getToken: () => Promise<string | null>) {
   const tok = () => getToken();
 
@@ -226,6 +318,21 @@ export function createApi(getToken: () => Promise<string | null>) {
       markAllRead: async () => request<{ updated: number }>('/notifications/read-all', { method: 'POST' }, await tok()),
       // "Clear all" — deletes every notification of the caller's, read or not.
       clearAll: async () => request<{ deleted: number }>('/notifications', { method: 'DELETE' }, await tok()),
+    },
+    // Challenges — signed-in only; a challenge is visible to its participants alone (anyone else
+    // gets 404 challenge_not_found). Use through useApi(). Errors carry `.code` — see
+    // challengeErrorText() in lib/challenges.ts for the friendly copy.
+    challenges: {
+      list: async (status: 'pending' | 'active' | 'history' | 'all' = 'all') =>
+        request<Challenge[]>(`/challenges?status=${status}`, undefined, await tok()),
+      get: async (id: number) => request<Challenge>(`/challenges/${id}`, undefined, await tok()),
+      create: async (body: CreateChallengeBody) =>
+        request<Challenge>('/challenges', { method: 'POST', body: JSON.stringify(body) }, await tok()),
+      act: async (id: number, action: 'accept' | 'decline' | 'cancel' | 'forfeit') =>
+        request<Challenge>(`/challenges/${id}/${action}`, { method: 'POST' }, await tok()),
+      // No username = your own record (head-to-head vs everyone).
+      record: async (username?: string) =>
+        request<ChallengeRecord>(username ? `/challenges/record/${encodeURIComponent(username)}` : '/challenges/record', undefined, await tok()),
     },
     stats: {
       // `scope` is scopeQuery(scope) from lib/comparisonScope ('' = everyone).
