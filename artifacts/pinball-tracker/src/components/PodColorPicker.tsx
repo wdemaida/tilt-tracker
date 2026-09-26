@@ -6,8 +6,8 @@ import { useTheme } from '../lib/theme';
 /**
  * Pod color picker: the preset palette as swatches, a native color input for anything else, and a
  * hex field. `value` is always a normalized `#rrggbb` — the hex field only calls `onChange` once
- * what's typed normalizes. Warns (doesn't block) when the pick is close to any of the five fixed
- * theme colors: a pod that looks like "You" or "All other players" misreads on a chart, and one
+ * what's typed normalizes. Warns (doesn't block) when the pick is close to any of the fixed
+ * theme colors: a pod that looks like "You", "All other players" or friends misreads on a chart, and one
  * that looks like the machine-name blue (or the venue / score colors) blurs into the labels.
  */
 export default function PodColorPicker({ value, onChange, idPrefix }: {

@@ -13,6 +13,7 @@ export default {
         venue: 'hsl(var(--venue) / <alpha-value>)',
         username: 'hsl(var(--username) / <alpha-value>)',
         field: 'hsl(var(--field) / <alpha-value>)',
+        friend: 'hsl(var(--friend) / <alpha-value>)',
         'muted-foreground': 'hsl(var(--muted-foreground) / <alpha-value>)',
         card: 'hsl(var(--card) / <alpha-value>)',
         border: 'hsl(var(--border) / <alpha-value>)',

@@ -169,7 +169,7 @@ export function colorDistance(a: string, b: string): number {
 /**
  * Name of the first reserved color `hex` is too close to (normal-vision
  * ΔE < 15), else null. For the picker: "looks like the color used for machine names".
- * Pass the live theme values for all five fixed keys — see `reservedThemeColors`.
+ * Pass the live theme values for all the fixed keys — see `reservedThemeColors`.
  */
 export function nearReservedColor(hex: string, reserved: Record<string, string>): string | null {
   const c = normalizePodColor(hex);
@@ -182,15 +182,18 @@ export function nearReservedColor(hex: string, reserved: Record<string, string>)
 }
 
 /**
- * The five fixed theme keys, named for the picker's warning sentence ("…the color TiltTrack uses
+ * The fixed theme keys, named for the picker's warning sentence ("…the color TiltTrack uses
  * for {name}"), from the live theme (Admin > Config
  * can change them per browser). Chart-facing names first, so a color near both "You" and another
- * key is reported as the one it would actually be confused with on a chart.
+ * key is reported as the one it would actually be confused with on a chart. `friend` is here since
+ * feature/friends: the Friends compare view draws friends in it, so a pod that looks like it would
+ * be confusable on the same chart.
  */
-export function reservedThemeColors(colors: Record<'primary' | 'machine' | 'venue' | 'username' | 'field', string>): Record<string, string> {
+export function reservedThemeColors(colors: Record<'primary' | 'machine' | 'venue' | 'username' | 'field' | 'friend', string>): Record<string, string> {
   return {
     '“You” on charts': hslToHex(colors.username),
     '“All other players” on charts': hslToHex(colors.field),
+    'friends on charts': hslToHex(colors.friend),
     'machine names': hslToHex(colors.machine),
     'venue names': hslToHex(colors.venue),
     'scores': hslToHex(colors.primary),

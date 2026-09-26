@@ -45,6 +45,12 @@ export const DEFAULT_COLORS = {
   venue:    '84 81% 44%',
   username: '48 96% 53%',
   field:    '270 91% 65%',
+  // Friends on charts and in the friends scope (feature/friends). #8af5df, a pale aqua: the widest
+  // gap left between the five keys above AND the pod palette (src/lib/podColor.ts) — OKLab ΔE ≥ 19
+  // to every one of them (nearest: machine blue), ≥ 18 to "you" yellow under protan/deutan
+  // simulation, ≥ 33 to field purple. 14.6:1 on the dark card; podColorTokens() darkens it to
+  // #0ea486 for 3:1 on a light surface.
+  friend:   '168 84% 75%',
 } as const;
 
 export type ColorKey = keyof typeof DEFAULT_COLORS;

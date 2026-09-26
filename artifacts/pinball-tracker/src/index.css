@@ -10,6 +10,7 @@
   --venue: 84 81% 44%;
   --username: 48 96% 53%;
   --field: 270 91% 65%;
+  --friend: 168 84% 75%;
   --muted-foreground: 240 5% 50%;
   --card: 240 10% 7%;
   --border: 240 10% 14%;
@@ -41,6 +42,7 @@ body {
 .leaflet-container .text-username { color: hsl(var(--username)); }
 .leaflet-container .text-primary { color: hsl(var(--primary)); }
 .leaflet-container .text-field { color: hsl(var(--field)); }
+.leaflet-container .text-friend { color: hsl(var(--friend)); }
 
 /* Dark-theme popup shell */
 .leaflet-popup-content-wrapper {
