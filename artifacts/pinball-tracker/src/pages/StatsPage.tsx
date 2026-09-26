@@ -19,12 +19,13 @@ function parseDateOnly(s: string): Date {
   return new Date(y, m - 1, d);
 }
 
-type Group = 'self' | 'pod' | 'other';
+type Group = 'self' | 'pod' | 'friend' | 'other';
 
 // Who a scoped number is about, in words — for the subtitle, the trend modal and the play-style note.
 function whoLabel(scope: ComparisonScope, pod: PodRef | null): string {
   if (scope.kind === 'mine') return 'you';
   if (scope.kind === 'pod') return `you + ${pod?.name ?? 'your pod'}${scope.others ? ' + everyone else' : ''}`;
+  if (scope.kind === 'friends') return `you + your friends${scope.others ? ' + everyone else' : ''}`;
   return 'all players';
 }
 
@@ -46,15 +47,18 @@ function StatTrendModal({ statKey, label, scope, pod, onClose }: {
 
   const points = data?.points ?? [];
   const live = data?.source === 'live';
-  // Line color follows who the series is about: you = yellow, your pod = its color, otherwise the
-  // app's primary (the whole site, or a pod view with everyone else switched back in).
+  // Line color follows who the series is about: you = yellow, your pod = its color, you + friends =
+  // the friend color, otherwise the app's primary (the whole site, or a pod / friends view with
+  // everyone else switched back in).
   const stroke = live && scope.kind === 'mine' ? 'hsl(var(--username))'
     : live && scope.kind === 'pod' && !scope.others && pod ? podColorTokens(pod.color).graphic
+    : live && scope.kind === 'friends' && !scope.others ? 'hsl(var(--friend))'
     : 'hsl(var(--primary))';
   // Pod + everyone else is every player, so the server answers with the site-wide snapshots.
   const note = siteWide ? 'Site-wide daily snapshots — the same in every Compare view.'
     : live ? `Rebuilt from the current scores of ${whoLabel(scope, pod)}, by the day each was submitted.`
     : scope.kind === 'pod' && scope.others ? 'Your pod plus everyone else is every player, so this is the site-wide daily snapshot — the same as All.'
+    : scope.kind === 'friends' && scope.others ? 'Your friends plus everyone else is every player, so this is the site-wide daily snapshot — the same as All.'
     : 'Site-wide daily snapshots.';
 
   return (
@@ -108,9 +112,9 @@ function StatTrendModal({ statKey, label, scope, pod, onClose }: {
 }
 
 // Group colors, per the app-wide rule: you = yellow `username`, the pod = its own color (scoped by
-// podColorVars on a wrapper), everyone else = purple `field`.
-const GROUP_BG: Record<Group, string> = { self: 'bg-username', pod: 'bg-pod', other: 'bg-field' };
-const GROUP_TEXT: Record<Group, string> = { self: 'text-username', pod: 'text-pod-text', other: 'text-field' };
+// podColorVars on a wrapper), your friends = the global `friend` color, everyone else = purple `field`.
+const GROUP_BG: Record<Group, string> = { self: 'bg-username', pod: 'bg-pod', friend: 'bg-friend', other: 'bg-field' };
+const GROUP_TEXT: Record<Group, string> = { self: 'text-username', pod: 'text-pod-text', friend: 'text-friend', other: 'text-field' };
 
 /** Who a total is made of: a thin stacked bar and the per-group numbers, in group colors. */
 function GroupSplit({ parts }: { parts: { group: Group; value: number }[] }) {
@@ -173,21 +177,22 @@ export default function StatsPage() {
     placeholderData: keepPreviousData,
   });
 
-  const title = scope.kind === 'mine' ? 'My Stats' : scope.kind === 'pod' ? 'Pod Stats' : 'Site Stats';
+  const title = scope.kind === 'mine' ? 'My Stats' : scope.kind === 'pod' ? 'Pod Stats' : scope.kind === 'friends' ? 'Friends Stats' : 'Site Stats';
   const subtitle = scope.kind === 'mine' ? 'Career metrics and performance analysis.'
-    : scope.kind === 'pod' ? `Aggregate stats for ${whoLabel(scope, pod)}.`
+    : scope.kind === 'pod' || scope.kind === 'friends' ? `Aggregate stats for ${whoLabel(scope, pod)}.`
     : 'Aggregate stats across all players.';
 
   // The groups this scope can contain, in stacking order. Mine has only you.
   const groups: Group[] = scope.kind === 'mine' ? ['self']
     : scope.kind === 'pod' ? (scope.others ? ['self', 'pod', 'other'] : ['self', 'pod'])
+    : scope.kind === 'friends' ? (scope.others ? ['self', 'friend', 'other'] : ['self', 'friend'])
     : ['self', 'other'];
   const split = stats?.split as Record<Group, { plays: number; visits: number; playsThisMonth: number; visitsThisMonth: number }> | undefined;
   // Only worth drawing when at least two groups actually have plays — "you: 46, everyone else: 0" is noise.
   const showSplit = !!split && groups.filter(g => split[g].plays > 0).length >= 2;
   const splitOf = (field: 'plays' | 'visits' | 'playsThisMonth' | 'visitsThisMonth') =>
     showSplit ? <GroupSplit parts={groups.map(g => ({ group: g, value: split![g][field] }))} /> : null;
-  const groupLabel: Record<Group, string> = { self: 'You', pod: pod?.name ?? 'Pod', other: 'Everyone else' };
+  const groupLabel: Record<Group, string> = { self: 'You', pod: pod?.name ?? 'Pod', friend: 'Friends', other: 'Everyone else' };
   const podStyle = pod ? podColorVars(pod.color) : undefined;
 
   const header = (
@@ -211,7 +216,7 @@ export default function StatsPage() {
             {groups.map(g => (
               <span key={g} className="flex items-center gap-1.5 min-w-0">
                 <span className={`w-2 h-2 rounded-full flex-shrink-0 ${GROUP_BG[g]}`} />
-                <span className={`${g === 'pod' ? 'text-pod-text font-semibold truncate max-w-[10rem]' : 'text-muted-foreground'}`}>{groupLabel[g]}</span>
+                <span className={`${g === 'pod' ? 'text-pod-text font-semibold truncate max-w-[10rem]' : g === 'friend' ? 'text-friend font-semibold' : 'text-muted-foreground'}`}>{groupLabel[g]}</span>
               </span>
             ))}
           </div>
@@ -243,7 +248,7 @@ export default function StatsPage() {
   const showTrend = (key: string, label: string) => setTrend({ key, label });
   const tournamentPct = stats.totalGames ? Math.round((stats.playStyle?.tournament / stats.totalGames) * 100) : 0;
   const playsOf = scope.kind === 'mine' ? 'your recorded plays'
-    : scope.kind === 'pod' ? `recorded plays by ${whoLabel(scope, pod)}`
+    : scope.kind === 'pod' || scope.kind === 'friends' ? `recorded plays by ${whoLabel(scope, pod)}`
     : 'all recorded plays';
 
   return (

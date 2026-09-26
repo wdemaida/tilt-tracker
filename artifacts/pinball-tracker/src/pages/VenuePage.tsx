@@ -35,7 +35,7 @@ export default function VenuePage() {
   const [showMachinesModal, setShowMachinesModal] = useState(false);
   const [editVenue, setEditVenue] = useState<EditVenueTarget | null>(null);
 
-  // Compare scope (All / Mine / one pod) — URL-backed, falls back to the ScopeContext toggle, same
+  // Compare scope (All / Mine / Friends / one pod) — URL-backed, falls back to the ScopeContext toggle, same
   // as the Machine page. It decides WHO is in the score list below the picker; the header, map,
   // machine count, repair and inventory panels are facts about the venue and ignore it.
   const cs = useComparisonScope();
@@ -106,11 +106,12 @@ export default function VenuePage() {
   const { venue } = data;
   // Venue-wide (every score here you may see), the same in every scope.
   const totalScores: number = data.totals?.scores ?? scores.length;
-  const narrowed = scope.kind === 'mine' || (scope.kind === 'pod' && !scope.others);
+  const narrowed = scope.kind === 'mine' || ((scope.kind === 'pod' || scope.kind === 'friends') && !scope.others);
   const showYourBest = cs.signedIn && scope.kind !== 'mine';
 
   const whoLabel = scope.kind === 'mine' ? 'from you'
     : scope.kind === 'pod' && !scope.others ? `from you or ${pod?.name ?? 'your pod'}`
+    : scope.kind === 'friends' && !scope.others ? 'from you or your friends'
     : 'yet';
 
   function toggleSort(key: SortKey) {

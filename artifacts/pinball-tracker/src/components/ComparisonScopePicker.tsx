@@ -1,16 +1,18 @@
 import { Link } from 'wouter';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
-import { Check, ChevronDown, Plus, Users } from 'lucide-react';
+import { Check, ChevronDown, Plus, Users, UserCheck } from 'lucide-react';
 import PodChip from './PodChip';
 import { podColorVars } from '../lib/podColor';
 import type { ComparisonScopeState } from '../lib/comparisonScope';
 
 /**
- * All | Mine | <pod ▾>, plus an "All others" switch while a pod is selected.
+ * All | Mine | Friends | <pod ▾>, plus an "All others" switch while a pod or Friends is selected.
  *
  * Presentational only — hand it the state from `useComparisonScope()`, so the page that owns the
  * query and the picker read the same scope. Renders nothing when signed out (there is no "mine"
- * and no pods). With no pods, the third segment is a link to /pods instead of a menu.
+ * and no pods). With no pods, the last segment is a link to /pods instead of a menu. Friends only
+ * appears once the viewer has at least one friend (or when a Friends link was opened) — an empty
+ * "you + nobody" view isn't worth a permanent button; /friends is where you get some.
  *
  * Reusable as-is on any page whose endpoint accepts `scopeQuery(scope)`.
  */
@@ -18,8 +20,11 @@ export default function ComparisonScopePicker({ state, className = '' }: {
   state: ComparisonScopeState;
   className?: string;
 }) {
-  const { scope, setScope, pod, pods, signedIn } = state;
+  const { scope, setScope, pod, pods, friendCount, signedIn } = state;
   if (!signedIn) return null;
+  const showFriends = friendCount > 0 || scope.kind === 'friends';
+  // Both "circle" scopes share the All-others switch; it survives switching between them.
+  const others = (scope.kind === 'pod' || scope.kind === 'friends') && scope.others;
 
   const segment = (active: boolean) =>
     `px-3 py-1.5 rounded-md transition-colors ${active ? 'bg-primary text-white' : 'text-muted-foreground hover:text-white'}`;
@@ -37,6 +42,18 @@ export default function ComparisonScopePicker({ state, className = '' }: {
         <button type="button" aria-pressed={scope.kind === 'mine'} onClick={() => setScope({ kind: 'mine' })} className={segment(scope.kind === 'mine')}>
           Mine
         </button>
+        {showFriends && (
+          <button
+            type="button"
+            aria-pressed={scope.kind === 'friends'}
+            onClick={() => setScope({ kind: 'friends', others })}
+            className={`flex items-center gap-1 px-3 py-1.5 rounded-md transition-colors ${
+              scope.kind === 'friends' ? 'bg-friend text-zinc-950' : 'text-muted-foreground hover:text-white'
+            }`}
+          >
+            <UserCheck className="w-3 h-3" aria-hidden /> Friends
+          </button>
+        )}
 
         {pods.length === 0 ? (
           <Link href="/pods" className="flex items-center gap-1 px-3 py-1.5 rounded-md text-muted-foreground hover:text-white transition-colors normal-case tracking-normal font-semibold">
@@ -67,7 +84,7 @@ export default function ComparisonScopePicker({ state, className = '' }: {
                 {pods.map(p => (
                   <DropdownMenu.Item
                     key={p.id}
-                    onSelect={() => setScope({ kind: 'pod', podId: p.id, others: scope.kind === 'pod' && scope.others })}
+                    onSelect={() => setScope({ kind: 'pod', podId: p.id, others })}
                     className="flex items-center justify-between gap-3 px-2 py-1.5 rounded-lg text-xs cursor-pointer outline-none hover:bg-white/10 focus:bg-white/10"
                   >
                     <PodChip color={p.color} solid={pod?.id === p.id} className="max-w-[10rem]">
@@ -91,13 +108,13 @@ export default function ComparisonScopePicker({ state, className = '' }: {
         )}
       </div>
 
-      {scope.kind === 'pod' && (
+      {(scope.kind === 'pod' || scope.kind === 'friends') && (
         <button
           type="button"
           role="switch"
           aria-checked={scope.others}
           onClick={() => setScope({ ...scope, others: !scope.others })}
-          title="Also show every player who isn't in this pod"
+          title={scope.kind === 'pod' ? "Also show every player who isn't in this pod" : "Also show every player who isn't your friend"}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-bold uppercase tracking-wider transition-colors ${
             scope.others ? 'border-field text-field bg-field/10' : 'border-white/20 text-muted-foreground hover:text-white hover:border-white/40'
           }`}

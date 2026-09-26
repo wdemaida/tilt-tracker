@@ -44,6 +44,29 @@ export interface Pod {
   members: Array<PodUser & { addedAt: string }>;
 }
 
+/**
+ * The caller's relationship with another user, as the server computes it (friendRules.ts on the
+ * api-server). There is deliberately no "declined": a declined request just reads as `none` to the
+ * person who sent it, or `unavailable` once they've been declined 3 times.
+ */
+export type FriendRelationship = 'none' | 'outgoing' | 'incoming' | 'friends' | 'unavailable';
+
+/** `GET /api/friends` — only ever the caller's own. */
+export interface FriendsList {
+  friends: Array<{ user: PodUser; since: string }>;
+  incoming: Array<{ user: PodUser; requestedAt: string }>;
+  outgoing: Array<{ user: PodUser; requestedAt: string }>;
+}
+
+/** One inbox entry. `payload` depends on `kind`; the friend kinds carry who it's about. */
+export interface AppNotification {
+  id: number;
+  kind: 'friend_request' | 'friend_accepted' | (string & {});
+  payload: { userId?: number; username?: string; displayName?: string } & Record<string, unknown>;
+  createdAt: string;
+  readAt: string | null;
+}
+
 /** `GET /api/venues/search` — see venueSearch.ts on the api-server. */
 export interface VenueSearchResult {
   tiltTrack: Array<{
@@ -121,8 +144,8 @@ export function createApi(getToken: () => Promise<string | null>) {
     machines: {
       list: async (mine = false) =>
         request<any[]>(mine ? '/machines?mine=true' : '/machines', undefined, await tok()),
-      // `scopeQuery` comes from lib/comparisonScope.ts ('' | '?mine=true' | '?pod=<id>[&others=1]').
-      // A pod scope 404s `pod_not_found` unless the pod is the caller's own.
+      // `scopeQuery` comes from lib/comparisonScope.ts ('' | '?mine=true' | '?pod=<id>[&others=1]' |
+      // '?friends=1[&others=1]'). A pod scope 404s `pod_not_found` unless the pod is the caller's own.
       get: async (name: string, scopeQuery = '') =>
         request<any>(`/machines/${encodeURIComponent(name)}${scopeQuery}`, undefined, await tok()),
       search: (q: string) => request<any[]>(`/machines/search?q=${encodeURIComponent(q)}`),
@@ -160,6 +183,38 @@ export function createApi(getToken: () => Promise<string | null>) {
         request<Pod>(`/pods/${id}/members/${userId}`, { method: 'DELETE' }, await tok()),
       searchUsers: async (q: string) =>
         request<PodUser[]>(`/pods/user-search?q=${encodeURIComponent(q)}`, undefined, await tok()),
+    },
+    // Friends — signed-in only, always the caller's own relationships. Use through useApi().
+    // Actions are keyed by the OTHER user's id. `send` answers `result`: 'sent' | 'resent' (still
+    // pending, re-notified) | 'accepted' (they had asked you) | 'already_friends'; a 403
+    // `request_unavailable` means the decline cap — show it as unavailable, never as "declined".
+    friends: {
+      list: async () => request<FriendsList>('/friends', undefined, await tok()),
+      search: async (q: string) =>
+        request<Array<PodUser & { relationship: FriendRelationship }>>(`/friends/search?q=${encodeURIComponent(q)}`, undefined, await tok()),
+      with: async (username: string) =>
+        request<{ user: PodUser; relationship: FriendRelationship | 'self' }>(`/friends/with/${encodeURIComponent(username)}`, undefined, await tok()),
+      send: async (userId: number) =>
+        request<{ result: 'sent' | 'resent' | 'accepted' | 'already_friends'; relationship: FriendRelationship }>(
+          '/friends/requests', { method: 'POST', body: JSON.stringify({ userId }) }, await tok()),
+      accept: async (userId: number) =>
+        request<{ relationship: FriendRelationship }>(`/friends/requests/${userId}/accept`, { method: 'POST' }, await tok()),
+      decline: async (userId: number) =>
+        request<{ relationship: FriendRelationship }>(`/friends/requests/${userId}/decline`, { method: 'POST' }, await tok()),
+      cancel: async (userId: number) =>
+        request<{ relationship: FriendRelationship }>(`/friends/requests/${userId}`, { method: 'DELETE' }, await tok()),
+      remove: async (userId: number) =>
+        request<{ relationship: FriendRelationship }>(`/friends/${userId}`, { method: 'DELETE' }, await tok()),
+    },
+    // The in-app inbox — only ever the caller's own. Keyset-paged: pass `nextBefore` back as `before`.
+    notifications: {
+      list: async (before?: number, limit = 30) =>
+        request<{ items: AppNotification[]; nextBefore: number | null }>(
+          `/notifications?limit=${limit}${before ? `&before=${before}` : ''}`, undefined, await tok()),
+      unreadCount: async () => request<{ count: number }>('/notifications/unread-count', undefined, await tok()),
+      markRead: async (id: number) =>
+        request<{ id: number; readAt: string }>(`/notifications/${id}/read`, { method: 'POST' }, await tok()),
+      markAllRead: async () => request<{ updated: number }>('/notifications/read-all', { method: 'POST' }, await tok()),
     },
     stats: {
       // `scope` is scopeQuery(scope) from lib/comparisonScope ('' = everyone).

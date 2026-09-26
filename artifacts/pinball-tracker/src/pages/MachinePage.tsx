@@ -17,6 +17,7 @@ import ComparisonScopePicker from '../components/ComparisonScopePicker';
 import PodMemberIcons from '../components/PodMemberIcons';
 import { useComparisonScope, scopeQuery, scopeKey } from '../lib/comparisonScope';
 import { usePodMembership } from '../lib/myPods';
+import { useFriendColor } from '../lib/myFriends';
 import { podColorTokens, podColorVars } from '../lib/podColor';
 
 // ─── constants ────────────────────────────────────────────────────────────────
@@ -33,7 +34,12 @@ type VisitAgg  = 'best' | 'average';
 type ViewMode  = 'aggregate' | 'chaos';
 type SortKey   = 'playedAt' | 'username' | 'type' | 'score';
 type SortDir   = 'asc' | 'desc';
-/** Server-computed per score (GET /api/machines/:name): the viewer, the selected pod's members, everyone else. */
+/**
+ * Server-computed per score (GET /api/machines/:name): the viewer, the selected pod's members,
+ * everyone else. 'pod' is really "the named circle" — the selected pod, or in the Friends scope
+ * your friends: groupOf() folds the server's 'friend' tag into it, so every series, legend and
+ * tooltip below serves both, drawn in the circle's color.
+ */
 type Group     = 'self' | 'pod' | 'other';
 
 const GROUP_RANK: Record<Group, number> = { self: 0, pod: 1, other: 2 };
@@ -94,6 +100,7 @@ function clusterVisits(plays: any[]): any[][] {
 
 function groupOf(s: any, myUsername: string | null): Group {
   if (s.group === 'self' || s.group === 'pod' || s.group === 'other') return s.group;
+  if (s.group === 'friend') return 'pod';
   return myUsername && s.username === myUsername ? 'self' : 'other';
 }
 
@@ -416,7 +423,7 @@ export default function MachinePage() {
   const { data: me } = useQuery({ queryKey: ['me'], queryFn: authApi.users.me, retry: false });
   const myUsername = (me as any)?.username as string | null ?? null;
 
-  // Comparison scope (All / Mine / one pod) — URL-backed, falls back to the ScopeContext toggle.
+  // Comparison scope (All / Mine / Friends / one pod) — URL-backed, falls back to the ScopeContext toggle.
   // Everything below the picker (top score, chart, venue difficulty, table) reads the scoped scores.
   const cs = useComparisonScope();
   const { scope, pod } = cs;
@@ -436,10 +443,20 @@ export default function MachinePage() {
 
   const scores = useMemo(() => (data?.scores ?? []) as any[], [data]);
 
-  const podTokens = useMemo(() => (pod ? podColorTokens(pod.color) : null), [pod]);
-  const podName = pod?.name ?? 'Pod';
-  // Everyone outside you (and the pod): "Field" in All scope, "Everyone else" next to a pod.
-  const othersLabel = scope.kind === 'pod' ? 'Everyone else' : 'Field';
+  // The named circle the chart draws in its own color: the selected pod (its color), or your
+  // friends (the global friend color). Null in All / Mine.
+  const friendColor = useFriendColor();
+  const circle = useMemo(
+    () => pod ? { name: pod.name, color: pod.color }
+      : scope.kind === 'friends' ? { name: 'Friends', color: friendColor.hex }
+      : null,
+    [pod, scope.kind, friendColor.hex],
+  );
+  const podTokens = useMemo(() => (circle ? podColorTokens(circle.color) : null), [circle]);
+  const podName = circle?.name ?? 'Pod';
+  const circleScope = scope.kind === 'pod' || scope.kind === 'friends';
+  // Everyone outside you (and the circle): "Field" in All scope, "Everyone else" next to a circle.
+  const othersLabel = circleScope ? 'Everyone else' : 'Field';
   // Compare decides WHO is on the chart; the Median | Each Player switch only decides HOW the other
   // players are drawn in By Play / By Visit. Mine has nobody to split out, and Scatter already plots
   // every individual play, so both always use the aggregate view (the switch is hidden there).
@@ -447,6 +464,7 @@ export default function MachinePage() {
   const scopeLabel =
     scope.kind === 'mine' ? 'Just you'
     : scope.kind === 'pod' ? `You + ${podName}${scope.others ? ' + everyone else' : ''}`
+    : scope.kind === 'friends' ? `You + friends${scope.others ? ' + everyone else' : ''}`
     : null;
 
   const uniqueVenues = useMemo<VenueOption[]>(() => {
@@ -620,7 +638,8 @@ export default function MachinePage() {
   }
 
   // ── group colors ────────────────────────────────────────────────────────────
-  // You = username yellow, the selected pod = its own color, everyone else = field purple.
+  // You = username yellow, the selected pod = its own color (friends = the friend color),
+  // everyone else = field purple.
 
   const FIELD_COLOR = 'hsl(var(--field))';
   function groupColor(g: Group) {
@@ -648,8 +667,8 @@ export default function MachinePage() {
       return `Your score on each play, in order. Plays from the same visit appear as consecutive points.${venueNote}`;
     }
     // Who else Compare put on the chart, and in which color.
-    const who = scope.kind === 'pod'
-      ? `${podName} in its color${scope.others ? ', everyone else in purple' : ''}`
+    const who = scope.kind === 'pod' ? `${podName} in its color${scope.others ? ', everyone else in purple' : ''}`
+      : scope.kind === 'friends' ? `your friends in their color${scope.others ? ', everyone else in purple' : ''}`
       : 'everyone else in purple';
     if (chartMode === 'scatter') {
       return (scatterView === 'trend'
@@ -662,8 +681,8 @@ export default function MachinePage() {
         : 'Every play numbered chronologically';
       return `${what}, one line per player — yours in yellow, ${who}.${chartMode === 'visit' ? ` ${visitNote}.` : ''}${venueNote}`;
     }
-    const vs = scope.kind === 'pod'
-      ? `the ${podName} median${scope.others ? " and everyone else's median" : ''}`
+    const vs = scope.kind === 'pod' ? `the ${podName} median${scope.others ? " and everyone else's median" : ''}`
+      : scope.kind === 'friends' ? `your friends' median${scope.others ? " and everyone else's median" : ''}`
       : 'the field median (everyone else)';
     return (chartMode === 'visit'
       ? `Your ${aggNoun} per venue visit vs. ${vs}. ${visitNote}.`
@@ -710,7 +729,7 @@ export default function MachinePage() {
           <div>
             <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
               {scope.kind === 'mine' ? 'Your Top Score' : 'Top Score'}
-              {scope.kind === 'pod' && <span className="normal-case font-normal"> · {scopeLabel}</span>}
+              {circleScope && <span className="normal-case font-normal"> · {scopeLabel}</span>}
             </p>
             <p className="text-3xl font-black text-primary">{Number(best.score).toLocaleString()}</p>
             <p className="text-xs text-muted-foreground mt-1">
@@ -863,10 +882,10 @@ export default function MachinePage() {
           {lineResult?.type === 'aggregate' && (
             <div className="flex items-center gap-4 mb-3 text-xs flex-wrap">
               {myUsername && <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 rounded bg-username" /><span className="text-muted-foreground">You ({myUsername})</span></div>}
-              {pod && podTokens && lineResult.hasPod && (
-                <div className="flex items-center gap-1.5" style={podColorVars(pod.color)}>
+              {circle && podTokens && lineResult.hasPod && (
+                <div className="flex items-center gap-1.5" style={podColorVars(circle.color)}>
                   <svg width="16" height="6"><line x1="0" y1="3" x2="16" y2="3" stroke={podTokens.graphic} strokeWidth="2" strokeDasharray="4 3" /></svg>
-                  <span className="text-pod-text font-semibold truncate max-w-[10rem]">{pod.name}</span>
+                  <span className="text-pod-text font-semibold truncate max-w-[10rem]">{circle.name}</span>
                   <span className="text-muted-foreground">median</span>
                 </div>
               )}
@@ -883,9 +902,9 @@ export default function MachinePage() {
             return (
               <div className="flex items-center gap-4 mb-3 text-xs flex-wrap">
                 {groups.has('self') && <div className="flex items-center gap-1.5"><div className="w-3 h-0.5 rounded bg-username" /><span className="text-muted-foreground">You ({myUsername})</span></div>}
-                {pod && groups.has('pod') && (
-                  <div className="flex items-center gap-1.5" style={podColorVars(pod.color)}>
-                    <div className="w-3 h-0.5 rounded bg-pod" /><span className="text-pod-text font-semibold truncate max-w-[10rem]">{pod.name}</span>
+                {circle && groups.has('pod') && (
+                  <div className="flex items-center gap-1.5" style={podColorVars(circle.color)}>
+                    <div className="w-3 h-0.5 rounded bg-pod" /><span className="text-pod-text font-semibold truncate max-w-[10rem]">{circle.name}</span>
                     <span className="text-muted-foreground">(each player)</span>
                   </div>
                 )}
@@ -907,10 +926,10 @@ export default function MachinePage() {
                 {scatterResult.myDots.length > 0 && (
                   <div className="flex items-center gap-1.5">{mark('hsl(var(--username))', true)}<span className="text-muted-foreground">Your {noun}</span></div>
                 )}
-                {pod && podTokens && scatterResult.podDots.length > 0 && (
-                  <div className="flex items-center gap-1.5" style={podColorVars(pod.color)}>
+                {circle && podTokens && scatterResult.podDots.length > 0 && (
+                  <div className="flex items-center gap-1.5" style={podColorVars(circle.color)}>
                     {mark(podTokens.graphic)}
-                    <span className="text-pod-text font-semibold truncate max-w-[10rem]">{pod.name}</span>
+                    <span className="text-pod-text font-semibold truncate max-w-[10rem]">{circle.name}</span>
                     <span className="text-muted-foreground">{noun}</span>
                   </div>
                 )}

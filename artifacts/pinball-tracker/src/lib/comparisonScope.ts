@@ -2,6 +2,7 @@ import { useCallback, useMemo } from 'react';
 import { useSearchParams } from 'wouter';
 import { useScopeContext } from './ScopeContext';
 import { useMyPods, type PodRef } from './myPods';
+import { useMyFriends } from './myFriends';
 import type { Pod } from './api';
 
 /**
@@ -10,22 +11,26 @@ import type { Pod } from './api';
  *   all  — everyone (the app's long-standing default)
  *   mine — only the viewer
  *   pod  — the viewer + one of their pods; `others` adds everyone else back in
+ *   friends — the viewer + their accepted friends; `others` likewise (feature/friends)
  *
  * Source of truth, in order:
- *  1. the URL — `?scope=mine|all`, or `?pod=<id>[&others=1]` — so a view is bookmarkable;
+ *  1. the URL — `?scope=mine|all|friends` (friends takes `&others=1`), or `?pod=<id>[&others=1]` —
+ *     so a view is bookmarkable;
  *  2. otherwise the app-wide ScopeContext Mine/All toggle (the list pages' ScopeToggle), so arriving
  *     from a list page in "Mine" lands in Mine here too.
  * Picking Mine/All here writes both the URL and ScopeContext, keeping the two toggles in step.
- * Picking a pod writes only the URL — ScopeContext is a boolean and a pod can't be expressed in it,
- * so the list pages simply keep whatever Mine/All they had.
+ * Picking a pod or Friends writes only the URL — ScopeContext is a boolean and neither can be
+ * expressed in it, so the list pages simply keep whatever Mine/All they had.
  *
  * The server resolves membership from the pod id alone (the client never sends member ids) and
- * 404s pods the viewer doesn't own; see artifacts/api-server/src/lib/comparisonScope.ts.
+ * 404s pods the viewer doesn't own; see artifacts/api-server/src/lib/comparisonScope.ts. Friends
+ * likewise: the client sends only `friends=1`, and the server works out who they are.
  */
 export type ComparisonScope =
   | { kind: 'all' }
   | { kind: 'mine' }
-  | { kind: 'pod'; podId: number; others: boolean };
+  | { kind: 'pod'; podId: number; others: boolean }
+  | { kind: 'friends'; others: boolean };
 
 export const ALL_SCOPE: ComparisonScope = { kind: 'all' };
 
@@ -33,12 +38,14 @@ export const ALL_SCOPE: ComparisonScope = { kind: 'all' };
 export function scopeQuery(scope: ComparisonScope): string {
   if (scope.kind === 'mine') return '?mine=true';
   if (scope.kind === 'pod') return `?pod=${scope.podId}${scope.others ? '&others=1' : ''}`;
+  if (scope.kind === 'friends') return `?friends=1${scope.others ? '&others=1' : ''}`;
   return '';
 }
 
 /** Stable string for TanStack Query keys. */
 export function scopeKey(scope: ComparisonScope): string {
   if (scope.kind === 'pod') return `pod:${scope.podId}${scope.others ? ':others' : ''}`;
+  if (scope.kind === 'friends') return `friends${scope.others ? ':others' : ''}`;
   return scope.kind;
 }
 
@@ -52,6 +59,7 @@ function parseUrlScope(params: URLSearchParams): ComparisonScope | null {
   const s = params.get('scope');
   if (s === 'mine') return { kind: 'mine' };
   if (s === 'all') return { kind: 'all' };
+  if (s === 'friends') return { kind: 'friends', others: params.get('others') === '1' };
   return null;
 }
 
@@ -63,6 +71,8 @@ export interface ComparisonScopeState {
   pod: PodRef | null;
   /** The viewer's own pods, for the picker. */
   pods: Pod[];
+  /** How many accepted friends the viewer has — the picker only offers Friends when there are some. */
+  friendCount: number;
   signedIn: boolean;
   /**
    * False while a URL-requested scope can't be resolved yet (Clerk loading, or the pod list still
@@ -77,6 +87,7 @@ export function useComparisonScope(): ComparisonScopeState {
   const [params, setParams] = useSearchParams();
   const { mine, setMine } = useScopeContext();
   const { pods, signedIn, settled } = useMyPods();
+  const { friends } = useMyFriends();
 
   const fromUrl = useMemo(() => parseUrlScope(params), [params]);
 
@@ -108,13 +119,16 @@ export function useComparisonScope(): ComparisonScopeState {
       if (next.kind === 'pod') {
         p.set('pod', String(next.podId));
         if (next.others) p.set('others', '1');
+      } else if (next.kind === 'friends') {
+        p.set('scope', 'friends');
+        if (next.others) p.set('others', '1');
       } else {
         p.set('scope', next.kind);
       }
       return p;
     }, { replace: true });
-    if (next.kind !== 'pod') setMine(next.kind === 'mine');
+    if (next.kind === 'all' || next.kind === 'mine') setMine(next.kind === 'mine');
   }, [setParams, setMine]);
 
-  return { scope, setScope, pod, pods, signedIn, ready, unknownPod };
+  return { scope, setScope, pod, pods, friendCount: friends.length, signedIn, ready, unknownPod };
 }
