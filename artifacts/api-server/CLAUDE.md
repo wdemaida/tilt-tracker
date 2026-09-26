@@ -428,3 +428,27 @@
   - Known limit: a display whose window dividers aren't visible (unlit windows are just dark glass)
     gets counted by its lit digits — Stars 1UP "8076" as 4 windows — and is rejected by the ±1
     check, so pass 1's placement stands there.
+
+## Challenges (`challengeRules.ts`, `challenges.ts`, `routes/challenges.ts`, migrate15, added 2026-09-26)
+- **Rules are pure** (`challengeRules.ts`, unit-tested); `challenges.ts` loads rows and applies them.
+  Tables: `challenges`, `challenge_participants` (creator included, accepted at creation; groups
+  later = more rows), `challenge_scores` (the lock). Friends only, checked at creation.
+- **Every state change goes through `syncChallenge(id)`** (row-locked `FOR UPDATE`): expiry, writing
+  the lock rows, and resolution (race won / forfeit / deadline). Three triggers call it: lazy reads
+  (list, detail, record), `onScoreCreated()` in `POST /api/scores`, and the daily
+  `POST /api/cron/challenge-sweep` (`.github/workflows/challenge-sweep.yml`, same `CRON_SECRET`).
+- **What counts**: matching machine (`match_group` = OPDB group captured at creation for 'game'
+  mode, else exact id), venue if locked, a photo, `played_at` AND `created_at` inside
+  [starts_at, ends_at], and visible to every other participant (`canSeeScore`) — a score at a home
+  venue with activity hidden doesn't count. **"Has a photo" = `photo_url` OR `photo_thumbnail`**:
+  the client only ever sends the data-URL thumbnail; `photo_url` is never written.
+- **The lock**: the counting scores are recorded in `challenge_scores` every time a challenge is
+  synced (so the moment one is uploaded). PATCH / DELETE / per-score machine repair answer 409
+  `score_locked_by_challenge`, admins included; the FK has no ON DELETE, so the DB refuses too.
+  Machine retirement, admin machine/venue deletes and venue merges account for challenges.
+- `starts_at` null = starts at acceptance, stamped with the **DB clock** (same clock as
+  `scores.created_at`). `most_improved` baselines are frozen at acceptance.
+- The sweep also sends `challenge_ending_soon` once per participant (`ending_soon_notified_at`) and
+  deletes **read** notifications older than 30 days; unread ones are kept.
+- Tests: `npx tsx --test src/lib/challengeRules.test.ts`; `npx tsx test-challenges.ts` (dev branch
+  only; borrows 3 friendless users and throwaway `zz-challenge-test` machines, cleans up).
