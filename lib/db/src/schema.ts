@@ -1,4 +1,4 @@
-import { pgTable, serial, text, bigint, timestamp, real, integer, pgEnum, uniqueIndex, index, primaryKey, date, boolean, jsonb, varchar } from 'drizzle-orm/pg-core';
+import { pgTable, serial, text, bigint, timestamp, real, integer, pgEnum, uniqueIndex, index, primaryKey, date, boolean, jsonb, varchar, numeric } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 export const scoreTypeEnum = pgEnum('score_type', ['casual', 'tournament']);
@@ -220,6 +220,71 @@ export const notifications = pgTable('notifications', {
 }, (table) => ({
   userReadIdx: index('notifications_user_id_read_at_idx').on(table.userId, table.readAt),
 }));
+
+// Challenges (feature/challenges, phase 2) — two or more accepted friends agree on a machine, a type
+// and a window, then go play. The rules are pure, in src/lib/challengeRules.ts on the api-server;
+// orchestration is src/lib/challenges.ts. migrate15.ts also adds CHECKs (enum values, min_plays
+// 3–10, race needs a target, average needs min_plays) that Drizzle doesn't model here.
+// `startsAt` null = "starts when accepted" (set on acceptance). `matchGroup` is the OPDB group id
+// ("GbPde") captured at creation for match_mode 'game'; null means exact machine only.
+// `visibility` is reserved ('participants') — nothing reads it yet.
+export type ChallengeType = 'high_score' | 'race' | 'most_improved' | 'average';
+export type ChallengeStatus = 'pending' | 'active' | 'resolved' | 'declined' | 'cancelled' | 'expired';
+export type ChallengeOutcome = 'win' | 'loss' | 'tie' | 'forfeit' | 'no_show';
+export const challenges = pgTable('challenges', {
+  id: serial('id').primaryKey(),
+  creatorId: integer('creator_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  type: text('type').$type<ChallengeType>().notNull(),
+  machineId: integer('machine_id').references(() => machines.id).notNull(),
+  matchMode: text('match_mode').$type<'game' | 'exact'>().default('game').notNull(),
+  matchGroup: text('match_group'),
+  venueId: integer('venue_id').references(() => venues.id),
+  targetScore: bigint('target_score', { mode: 'number' }),
+  minPlays: integer('min_plays'),
+  startsAt: timestamp('starts_at'),
+  endsAt: timestamp('ends_at').notNull(),
+  status: text('status').$type<ChallengeStatus>().default('pending').notNull(),
+  void: boolean('void').default(false).notNull(),
+  visibility: text('visibility').default('participants').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  resolvedAt: timestamp('resolved_at'),
+}, (table) => ({
+  statusEndsIdx: index('challenges_status_ends_at_idx').on(table.status, table.endsAt),
+  creatorIdx: index('challenges_creator_id_idx').on(table.creatorId),
+}));
+
+// One row per (challenge, participant) — the creator included (accepted at creation). Groups later
+// just means more rows. `baselineScore` is frozen at acceptance for most_improved; `resultValue` and
+// `rank` are written at resolution (live standings are computed, not stored).
+export const challengeParticipants = pgTable('challenge_participants', {
+  challengeId: integer('challenge_id').references(() => challenges.id, { onDelete: 'cascade' }).notNull(),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  response: text('response').$type<'pending' | 'accepted' | 'declined'>().default('pending').notNull(),
+  outcome: text('outcome').$type<ChallengeOutcome>(),
+  baselineScore: bigint('baseline_score', { mode: 'number' }),
+  resultValue: numeric('result_value'),
+  rank: integer('rank'),
+  respondedAt: timestamp('responded_at'),
+  endingSoonNotifiedAt: timestamp('ending_soon_notified_at'),
+}, (table) => ({
+  pk: primaryKey({ name: 'challenge_participants_pkey', columns: [table.challengeId, table.userId] }),
+  userIdx: index('challenge_participants_user_id_idx').on(table.userId),
+}));
+
+// The scores that counted toward a challenge (written whenever standings are computed). A score with
+// a row here is locked: PATCH/DELETE /api/scores/:id answer 409 score_locked_by_challenge, and the
+// FK (no ON DELETE action) makes the database refuse a delete too.
+export const challengeScores = pgTable('challenge_scores', {
+  challengeId: integer('challenge_id').references(() => challenges.id, { onDelete: 'cascade' }).notNull(),
+  scoreId: integer('score_id').references(() => scores.id).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  pk: primaryKey({ name: 'challenge_scores_pkey', columns: [table.challengeId, table.scoreId] }),
+  scoreIdx: index('challenge_scores_score_id_idx').on(table.scoreId),
+}));
+
+export type Challenge = typeof challenges.$inferSelect;
+export type ChallengeParticipant = typeof challengeParticipants.$inferSelect;
 
 export type Friendship = typeof friendships.$inferSelect;
 export type Notification = typeof notifications.$inferSelect;
