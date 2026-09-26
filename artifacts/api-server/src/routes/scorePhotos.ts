@@ -3,7 +3,16 @@
 //   POST /api/scores/:id/photo/upload-url  owner only → { key, url, expiresIn } (presigned PUT, 5 min)
 //   POST /api/scores/:id/photo/confirm     owner only, { key, width?, height? } → { hasFullPhoto: true }
 //   GET  /api/scores/:id/photo             anyone who can see the score (guests included)
-//                                          → { url, width, height, expiresAt } (presigned GET, ~10 min)
+//                                          → { url, width, height, expiresAt, thumbnail, canUpload }
+//                                          url: presigned GET (~10 min), or null for a thumbnail-only
+//                                          score, which then carries its data-URL `thumbnail` (most
+//                                          lists don't ship thumbnails). canUpload: the viewer owns the
+//                                          score, R2 is on, and an upload would be accepted (not a
+//                                          replacement on a challenge-locked score). 404 when the score
+//                                          has neither photo or isn't visible to the viewer.
+//
+// Uploads work on any of the owner's scores, however old — nothing here depends on the score having
+// just been created (the viewer's "Upload the full-size photo" button relies on that).
 //
 // GET answers JSON rather than a 302: an <img src> can't carry the Clerk bearer token, and the
 // visibility check needs to know who's asking (a hidden home-venue score is visible to its owner and
@@ -14,7 +23,7 @@
 
 import { Router } from 'express';
 import { getAuth } from '@clerk/express';
-import { and, eq, isNotNull } from 'drizzle-orm';
+import { and, eq, isNotNull, or } from 'drizzle-orm';
 import { db, scores, users } from '@workspace/db';
 import { requireAppUser } from '../middleware/requireAuth.js';
 import { visibleScoreSql } from '../lib/venueActivity.js';
@@ -143,8 +152,8 @@ router.post('/:id/photo/confirm', requireAppUser, async (req, res) => {
 
 // GET /api/scores/:id/photo
 router.get('/:id/photo', async (req, res) => {
+  // A thumbnail-only score needs no R2, so "disabled" is decided per row below.
   const store = getPhotoStore();
-  if (!store) return void res.status(503).json(DISABLED);
   const id = scoreIdParam(req);
   if (id == null) return void res.status(404).json({ error: 'Photo not found' });
 
@@ -156,19 +165,39 @@ router.get('/:id/photo', async (req, res) => {
     // Same visibility rule as every score listing: a score at a home venue whose owner keeps
     // activity private is a 404 to everyone but the owner, its author and admins.
     const [row] = await db
-      .select({ photoKey: scores.photoKey, width: scores.photoWidth, height: scores.photoHeight })
+      .select({
+        userId: scores.userId,
+        photoKey: scores.photoKey,
+        width: scores.photoWidth,
+        height: scores.photoHeight,
+        thumbnail: scores.photoThumbnail,
+      })
       .from(scores)
-      .where(and(eq(scores.id, id), isNotNull(scores.photoKey), visibleScoreSql(viewer)))
+      .where(and(
+        eq(scores.id, id),
+        or(isNotNull(scores.photoKey), isNotNull(scores.photoThumbnail)),
+        visibleScoreSql(viewer),
+      ))
       .limit(1);
-    if (!row?.photoKey) return void res.status(404).json({ error: 'Photo not found' });
+    if (!row) return void res.status(404).json({ error: 'Photo not found' });
+    if (row.photoKey && !store) return void res.status(503).json(DISABLED);
 
-    const url = await store.presignGet(row.photoKey);
+    // Mirrors upload-url's rules, so the viewer never offers a button that would be refused.
+    const canUpload = !!store && !!viewer && viewer.id === row.userId
+      && (!row.photoKey || !(await scoreLockedByChallenge(id)));
+
     res.set('Cache-Control', 'private, no-store');
+    if (!row.photoKey) {
+      return void res.json({ url: null, width: null, height: null, expiresAt: null, thumbnail: row.thumbnail, canUpload });
+    }
+    const url = await store!.presignGet(row.photoKey);
     res.json({
       url,
       width: row.width,
       height: row.height,
       expiresAt: new Date(Date.now() + VIEW_URL_TTL_S * 1000).toISOString(),
+      thumbnail: null,
+      canUpload,
     });
   } catch (err: any) {
     console.error(`[photos] view for score ${id} failed:`, err?.name ?? '', err?.message ?? err);

@@ -21,7 +21,8 @@ interface ScoreCardProps {
   venueIsResidence?: boolean;
   photoUrl?: string | null;
   photoThumbnail?: string | null;
-  /** A full-size photo exists on R2: the thumbnail opens it in PhotoViewer. */
+  /** A full-size photo exists on R2: the thumbnail shows an expand badge. Either way a tap on the
+   *  thumbnail opens PhotoViewer (thumbnail-only scores open enlarged, with a note). */
   hasFullPhoto?: boolean;
   username: string;
   displayName: string;
@@ -96,24 +97,19 @@ export default function ScoreCard({ id, machineName, score, playedAt, createdAt,
             )}
           </div>
         </div>
-        {photoThumbnail && !hasFullPhoto && (
-          <img
-            src={photoThumbnail}
-            alt="Score proof"
-            className="w-14 h-14 rounded-lg object-cover flex-shrink-0"
-          />
-        )}
-        {photoThumbnail && hasFullPhoto && (
+        {photoThumbnail && (
           <button
             type="button"
             onClick={() => setViewing(true)}
-            aria-label="View full-size photo"
+            aria-label={hasFullPhoto ? 'View full-size photo' : 'View photo'}
             className="relative w-14 h-14 rounded-lg overflow-hidden flex-shrink-0 group focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
           >
             <img src={photoThumbnail} alt="Score proof" className="w-full h-full object-cover transition-transform group-hover:scale-105" />
-            <span className="absolute bottom-0.5 right-0.5 rounded bg-black/65 p-0.5" aria-hidden>
-              <Maximize2 className="w-2.5 h-2.5 text-white" />
-            </span>
+            {hasFullPhoto && (
+              <span className="absolute bottom-0.5 right-0.5 rounded bg-black/65 p-0.5" aria-hidden>
+                <Maximize2 className="w-2.5 h-2.5 text-white" />
+              </span>
+            )}
           </button>
         )}
         {viewing && (

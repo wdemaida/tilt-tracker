@@ -585,7 +585,8 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   that rule. Keys are `scores/{scoreId}/{uuid}.jpg`; the score id in the key is how confirm proves a key
   belongs to the score (`keyBelongsToScore`) and how the orphan sweep maps objects back to rows.
 - **Keys never leave the server.** Lists (`/api/scores`, `/users/:u`, `/machines/:name`,
-  `/venues/:id/scores`, challenge counting scores) expose `hasFullPhoto` only (`hasFullPhotoSql`); POST
+  `/venues/:id/scores`, challenge counting scores) expose `hasFullPhoto` only (`hasFullPhotoSql`) — plus `hasThumbnail` (`hasThumbnailSql`)
+  on the lists that don't ship the thumbnail itself (all but `/api/scores`); POST
   and PATCH `/api/scores` pass their full rows through `publicScoreRow()`. Any new route returning a full
   score row must do the same.
 - **Upload** (after the score saves — AddScorePage, see frontend CLAUDE.md): `POST /api/scores/:id/photo/upload-url`
@@ -595,10 +596,16 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   browser's word — a layout hint, clamped to 1..4096. The first photo may be attached to a
   challenge-locked score (a challenge can lock a score the moment it saves, before the background upload
   lands); *replacing* one on a locked score is 409 `score_locked_by_challenge`.
+  Nothing depends on the score being new: the viewer's owner-only "Upload the full-size photo" button
+  attaches one to any older score through the same two calls.
 - **View:** `GET /api/scores/:id/photo` — optional auth, guests included (240/10 min per user or IP).
   Loads through `visibleScoreSql(viewer)`, so a hidden home-venue score is a 404 to strangers and guests.
   Returns JSON `{ url, width, height, expiresAt }` (presigned GET, 10 min) rather than a 302: an `<img>`
   can't carry the Clerk bearer token, and the visibility check needs to know who's asking.
+  A **thumbnail-only** score answers 200 `{ url: null, thumbnail: <data URL>, … }` (works with R2 off);
+  a score with neither is 404. Every answer carries `canUpload` — viewer is the owner, R2 is on, and it
+  isn't a replacement on a challenge-locked score (the same rule as upload-url) — which is the only
+  thing the frontend uses to show its upload button.
 - **Deletion:** `DELETE /api/scores/:id` deletes the object *after* the row (`deletePhotoBestEffort`,
   using the key from `DELETE … RETURNING`), logging failures — an orphan, never a dangling row. **Any
   future code that deletes scores (or clears `photo_key`) must delete the object the same way.** Today

@@ -28,6 +28,13 @@ import { scores } from '@workspace/db';
  */
 export const hasFullPhotoSql = sql<boolean>`(${scores.photoKey} IS NOT NULL)`.mapWith(Boolean);
 
+/**
+ * `hasThumbnail` for list selects that don't carry the thumbnail itself (user/machine/venue/challenge
+ * rows): the viewer fetches it on open from GET /api/scores/:id/photo, so a thumbnail-only score can
+ * still be enlarged without every list shipping data URLs.
+ */
+export const hasThumbnailSql = sql<boolean>`(${scores.photoThumbnail} IS NOT NULL)`.mapWith(Boolean);
+
 /** Strips the private photo columns from a full score row before it's sent to a client. */
 export function publicScoreRow<T extends { photoKey?: string | null; photoBytes?: number | null }>(row: T) {
   const { photoKey, photoBytes: _bytes, ...rest } = row;

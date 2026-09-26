@@ -153,7 +153,7 @@ export interface ChallengeParticipant {
     reachedTargetAt: string | null;
   } | null;
   /** Detail only: the scores that count, newest upload first. */
-  scores?: Array<{ id: number; score: number; playedAt: string; createdAt: string; venueId: number | null; venueName: string | null; venueTimezone: string | null; hasFullPhoto?: boolean }>;
+  scores?: Array<{ id: number; score: number; playedAt: string; createdAt: string; venueId: number | null; venueName: string | null; venueTimezone: string | null; hasFullPhoto?: boolean; hasThumbnail?: boolean }>;
 }
 
 /** GET /api/challenges/venue-options — a public venue that has the challenge's machine. */
@@ -221,10 +221,14 @@ export interface CreateChallengeBody {
 
 /** A signed, short-lived link to a score's full-size photo (GET /api/scores/:id/photo). */
 export interface FullPhotoLink {
-  url: string;
+  /** Signed R2 URL, or null for a thumbnail-only score (then `thumbnail` is its data URL). */
+  url: string | null;
   width: number | null;
   height: number | null;
-  expiresAt: string;
+  expiresAt: string | null;
+  thumbnail: string | null;
+  /** The viewer owns the score and an upload would be accepted — the only gate for the upload button. */
+  canUpload: boolean;
 }
 
 export function createApi(getToken: () => Promise<string | null>) {

@@ -262,5 +262,17 @@
   z-50; hand-rolled pointer zoom (pinch/drag, wheel, click on desktop, double-tap on touch), closes via ×,
   Escape, backdrop tap or swipe down at 1×. Home `ScoreCard` thumbnails with `hasFullPhoto` open it (tiny
   expand badge); user/machine/venue/challenge rows use `FullPhotoButton` (camera icon).
+- **Thumbnail-only scores** (added 2026-09-26 — a user posted one from an old cached app and the tap
+  did nothing) open the same viewer: `GET /photo` answers `url: null` + `thumbnail`, shown unblurred and
+  capped at `THUMB_MAX_UPSCALE` (3×) its natural size, with "Thumbnail only — the full-size photo wasn't
+  saved". Every Home thumbnail is tappable (the expand badge still means a full photo). Other lists get
+  `hasThumbnail` and show `FullPhotoButton` **dimmed** for thumbnail-only rows — nothing for no photo.
+- **Adding the full photo later** (`components/FullPhotoUpload.tsx`): the viewer shows "Upload the
+  full-size photo" (thumbnail-only) or a quiet "Replace photo" **only when the response's `canUpload`
+  is true** — the server decides ownership and challenge locks; never gate it on client-side username
+  checks alone. The Home edit dialog has the same button (own scores only) for scores with no photo at
+  all. Same encode path as AddScorePage (`prepareUploadImage` → `encodeFullSizePhoto` → upload-url →
+  PUT → confirm), then `invalidatePhotoQueries()` refreshes the viewer and every score list. The
+  `['score-photo', id, userId|'guest']` key includes the viewer because `canUpload` is per viewer.
 - Uploads only work from origins in the R2 bucket's CORS list (see api-server CLAUDE.md) — a scratch vite
   on another port can view but not upload.

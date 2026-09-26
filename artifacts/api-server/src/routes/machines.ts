@@ -7,7 +7,7 @@ import { getMachineScoreStats } from '../lib/machineScoreStats.js';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { getAuth } from '@clerk/express';
 import { visibleScoreSql } from '../lib/venueActivity.js';
-import { hasFullPhotoSql } from '../lib/photoStore.js';
+import { hasFullPhotoSql, hasThumbnailSql } from '../lib/photoStore.js';
 import { machineInInventory } from '../lib/venueInventory.js';
 import {
   parseComparisonScope, resolveComparisonScope, scopeFilterSql, scoreGroupSql, scopeView, POD_NOT_FOUND,
@@ -127,6 +127,7 @@ router.get('/:name', async (req, res) => {
         venueIsResidence: venues.isResidence,
         photoUrl: scores.photoUrl,
         hasFullPhoto: hasFullPhotoSql,
+        hasThumbnail: hasThumbnailSql,
         username: users.username,
         displayName: users.displayName,
         group: scoreGroupSql(scope, requester),
