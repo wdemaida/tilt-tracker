@@ -198,7 +198,7 @@ export default function FriendsPage() {
 
   return (
     <div className="max-w-3xl">
-      <h1 className="text-4xl font-black uppercase tracking-widest text-white mb-1">Friends</h1>
+      {/* The "Crew" heading and the Friends tab title this page (CrewPage) — no h1 of its own. */}
       {/* Icon + ONE <p>: the text must be a single flex item, or each inline span becomes its own column. */}
       <div className="flex items-start gap-1.5 text-sm text-muted-foreground mb-6">
         <Lock className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" aria-hidden />

@@ -12,8 +12,7 @@ import MachinePage from './pages/MachinePage';
 import VenuesPage from './pages/VenuesPage';
 import VenuePage from './pages/VenuePage';
 import StatsPage from './pages/StatsPage';
-import PodsPage from './pages/PodsPage';
-import FriendsPage from './pages/FriendsPage';
+import CrewPage from './pages/CrewPage';
 import NotificationsPage from './pages/NotificationsPage';
 import AddScorePage from './pages/AddScorePage';
 import SetupPage from './pages/SetupPage';
@@ -113,12 +112,12 @@ export default function App() {
         <Route path="/stats">
           <AuthGate><StatsPage /></AuthGate>
         </Route>
-        <Route path="/pods">
-          <AuthGate><PodsPage /></AuthGate>
+        <Route path="/crew">
+          <AuthGate><CrewPage /></AuthGate>
         </Route>
-        <Route path="/friends">
-          <AuthGate><FriendsPage /></AuthGate>
-        </Route>
+        {/* Friends and Pods are tabs of Crew now; notifications and scope links still use these. */}
+        <Route path="/friends"><Redirect replace to="/crew?tab=friends" /></Route>
+        <Route path="/pods"><Redirect replace to="/crew?tab=pods" /></Route>
         <Route path="/notifications">
           <AuthGate><NotificationsPage /></AuthGate>
         </Route>
