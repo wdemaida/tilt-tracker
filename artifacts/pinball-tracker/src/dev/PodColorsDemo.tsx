@@ -8,9 +8,9 @@ import { LineChart, Line, Scatter, ComposedChart, XAxis, YAxis, CartesianGrid, R
 import PodChip from '../components/PodChip';
 import {
   POD_PALETTE, DARK_SURFACE, LIGHT_SURFACE, podColorTokens, podColorVars,
-  normalizePodColor, nearReservedColor, nextPodColor, contrastRatio,
+  normalizePodColor, nearReservedColor, reservedThemeColors, nextPodColor, contrastRatio,
 } from '../lib/podColor';
-import { useTheme, hslToHex } from '../lib/theme';
+import { useTheme } from '../lib/theme';
 
 const SAMPLE_PODS = [
   { name: 'Tuesday League', color: POD_PALETTE[0] },
@@ -89,7 +89,7 @@ export default function PodColorsDemo() {
   const { colors } = useTheme();
   const [input, setInput] = useState('#1e3a8a');
   const normalized = normalizePodColor(input);
-  const reserved = { 'You (username)': hslToHex(colors.username), 'All other players (field)': hslToHex(colors.field) };
+  const reserved = reservedThemeColors(colors);
   const clash = normalized ? nearReservedColor(normalized, reserved) : null;
 
   return (

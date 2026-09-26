@@ -6,12 +6,12 @@
 // (`#rrggbb`, lowercase), same palette in the same order.
 
 export const POD_PALETTE = [
-  '#60a5fa', // blue
-  '#d95926', // orange
-  '#2dd4bf', // teal
-  '#d55181', // magenta
-  '#008300', // green
-  '#e66767', // red
+  '#fe7b32', // orange
+  '#e7b6fe', // lavender
+  '#1c9870', // jade
+  '#fa0246', // crimson
+  '#8c6d08', // ochre
+  '#9d5072', // plum
 ] as const;
 
 const HEX_RE = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i;

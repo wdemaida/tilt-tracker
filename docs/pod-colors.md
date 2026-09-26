@@ -59,7 +59,8 @@ per element instead of set on `:root`.
 | `podColorTokens(hex, surface?)` | `{ base, graphic, text, tint, onGraphic }`, all opaque hex |
 | `podColorVars(hex, surface?)` | Inline style setting `--pod`, `--pod-text` and `--pod-on` |
 | `usePodColor(hex, surface?)` | Memoized `{ tokens, style }` |
-| `nearReservedColor(hex, {name: hex})` | Name of a reserved color within ΔE 15, for a picker warning ("looks like the You color") |
+| `nearReservedColor(hex, {name: hex})` | Name of a reserved color within ΔE 15, for a picker warning ("looks like the color TiltTrack uses for machine names") |
+| `reservedThemeColors(colors)` | The five fixed keys from the live theme, named for that warning — what the picker passes to `nearReservedColor` |
 | `contrastRatio`, `colorDistance` | WCAG ratio and OKLab ΔE×100 |
 | `DARK_SURFACE` / `LIGHT_SURFACE` | `#111113` (the app's `--card`) and `#ffffff` |
 
@@ -82,14 +83,48 @@ On a dark surface this lightens, so navy `#1e3a8a` renders as `#2e59d1` for grap
 for text. On a light surface it darkens, so butter `#fef08a` renders as `#a28f02` / `#746701`.
 Palette colors mostly pass through unchanged on dark.
 
-**Palette validation.** I ran the dataviz skill's validator with `--surface #111113`. Every slot
-clears CVD ΔE ≥ 8 and normal-vision ΔE ≥ 15 against `username` yellow and `field` purple, with all
-pairs checked, since those three share a chart. Adjacent slots pass the same checks, and the first
-three pass with all pairs checked. Yellow and violet are left out of the palette because they'd
-collide with "you" and "all other players". The validator's *lightness band* check fails for the
-blue and teal, but it also fails the app's own neon keys. The band is tuned for a different house
-style, so I treated it as out of scope. User-picked colors aren't validated for CVD. Instead,
-`nearReservedColor` lets the picker warn about them.
+**Palette validation (revised 2026-09-25).** The first palette only checked itself against
+`username` and `field`, and its blue `#60a5fa` turned out to sit on top of the blue `machine` labels
+(OKLab ΔE 6 — the owner spotted it on a pod called "Cape boys"). The palette is now checked against
+**all five** fixed keys at their default values — primary `#dd47eb`, machine `#3ebaf4`, venue
+`#82cb15`, username `#facc14`, field `#a655f7` — using the dataviz skill's validator math (OKLab
+ΔE×100, Machado 2009 protan/deutan simulation) on the dark card `#111113`, for both the swatch
+(`graphic`, identical to the stored hex for all six) and the lightened `text` shade.
+
+Those five keys take most of the hue wheel (yellow, lime, sky blue, violet, magenta), so the
+palette uses lightness as well as hue: vivid orange / jade / crimson, a pale lavender, and a deep
+ochre and plum. Assignment order puts the three most separated colors first.
+
+| # | Hex | Name | vs primary | vs machine | vs venue | vs username | vs field | contrast on card |
+|---|---|---|---|---|---|---|---|---|
+| 1 | `#fe7b32` | orange | 30 / 28 / 48 | 31 / 26 / 53 | 26 / **3** / 54 | 19 / 14 / 32 | 34 / 33 / 51 | 7.3 |
+| 2 | `#e7b6fe` | lavender | 23 / 19 / 22 | 19 / **4** / 37 | 32 / 23 / 72 | 27 / 25 / 59 | 25 / 25 / 25 | 11.2 |
+| 3 | `#1c9870` | jade | 38 / 17 / 49 | 20 / 19 / 36 | 20 / 19 / 26 | 31 / 23 / 42 | 33 / 22 / 47 | 5.2 |
+| 4 | `#fa0246` | crimson | 24 / 24 / 31 | 39 / 24 / 62 | 40 / 13 / 77 | 35 / 24 / 56 | 30 / 28 / 36 | 4.6 |
+| 5 | `#8c6d08` | ochre | 35 / 27 / 64 | 31 / 29 / 55 | 26 / 22 / 34 | 32 / 31 / 30 | 34 / 30 / 63 | 3.9 |
+| 6 | `#9d5072` | plum | 22 / 18 / 23 | 30 / 23 / 55 | 37 / 28 / 71 | 39 / 38 / 61 | 20 / 21 / 24 | 3.4 |
+
+Cells are normal-vision ΔE / CVD ΔE (min of protan, deutan) / CIEDE2000. Floors: normal ≥ 15 is
+the validator's hard gate, CVD ≥ 8 its target.
+
+- **vs fixed keys:** normal ΔE ≥ 18.9 everywhere (text shades ≥ 18.0; CIEDE2000 ≥ 20). CVD ≥ 13.6
+  against `username` and `field`, the two that share every pod chart. Two CVD pairs are low and
+  accepted: orange vs venue lime (3.1) and lavender vs machine blue (3.9). Neither pair meets as
+  two chart series. Venue and machine appear as label text, and those labels are never the only
+  thing identifying a pod.
+- **Between slots:** all pairs normal ΔE ≥ 15.4 and CVD ≥ 7.1. Adjacent slots have CVD ≥ 8.3, and
+  so do slots 1–3 pairwise, except orange↔jade at 7.6 (normal 29).
+- **Text shades** (`podColorTokens().text`, lightened to 4.5:1 on the chip tint) are jade `#1d9f76`,
+  crimson `#fd2b63`, ochre `#a9840a` and plum `#b6728f`. Orange and lavender pass through unchanged.
+- **Lightness band:** the validator's dark band (OKLCH L 0.48–0.67) fails orange (0.72) and
+  lavender (0.84). It also fails the app's own keys (username 0.86, machine 0.74). A search limited
+  to the band found no 6-color set that clears the normal-vision floor against the five keys (its
+  best was about 12), so the band is out of scope here, as it was for the first palette.
+- **Existing pods keep their stored color** (no migration). A pod on the old blue or teal now gets
+  the picker warning ("…uses for machine names") when its owner opens the color picker.
+
+User-picked colors aren't validated for CVD. `nearReservedColor` (normal ΔE < 15) warns against
+all five fixed keys, reading the live theme values through `reservedThemeColors`.
 
 ## Where the future global `friend` key fits
 

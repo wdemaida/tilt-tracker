@@ -67,7 +67,7 @@ async function loadOwnedPod(req: any, res: any): Promise<PodView | null> {
 }
 
 const nameError = { error: `Pod name is required (up to ${POD_NAME_MAX} characters)`, code: 'invalid_name' };
-const colorError = { error: 'Color must be a hex color like #60a5fa', code: 'invalid_color' };
+const colorError = { error: 'Color must be a hex color like #fe7b32', code: 'invalid_color' };
 const nameTaken = { error: 'You already have a pod with that name', code: 'name_taken' };
 
 // GET /api/pods — the caller's pods with member counts and members.

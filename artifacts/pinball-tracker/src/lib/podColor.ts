@@ -22,25 +22,34 @@
  * still looks like the color its owner picked.
  */
 import { useMemo, type CSSProperties } from 'react';
-import { hexToHsl } from './theme';
+import { hexToHsl, hslToHex } from './theme';
 
 // ── palette ────────────────────────────────────────────────────────────────
 
 /**
- * Default colors for new pods, in assignment order. Validated with the dataviz
- * skill's validator on the app's dark card surface (#111113), alongside the
- * reserved `username` yellow and `field` purple: every slot clears CVD ΔE ≥ 8
- * and normal-vision ΔE ≥ 15 against both, adjacent slots clear the same
- * floors, and the first three clear them all-pairs. Yellow and violet are left
- * out on purpose — they'd collide with "you" and "all other players".
+ * Default colors for new pods, in assignment order. Chosen (2026-09-25) to stay clear of ALL five
+ * fixed theme keys — primary magenta, machine sky blue, venue lime, username yellow, field violet —
+ * which between them take most of the hue wheel, so the palette leans on lightness as well as hue
+ * (a pale lavender, deep ochre and plum next to the vivid orange/jade/crimson). The old blue sat on
+ * top of the blue machine labels (OKLab ΔE 6).
+ *
+ * Checked with the dataviz skill's validator math (OKLab ΔE×100, Machado CVD) on the dark card
+ * surface (#111113), for each slot's `graphic` AND `text` token:
+ *  - vs every fixed key: normal-vision ΔE ≥ 18.9 for the swatch/graphic, ≥ 18.0 for the
+ *    lightened text shade (CIEDE2000 ≥ 20);
+ *  - vs `username` and `field` (they share every pod chart): protan/deutan ΔE ≥ 13.6;
+ *  - between slots, all pairs: normal ΔE ≥ 15.4, CVD ≥ 7.1; adjacent slots CVD ≥ 8.3.
+ * The validator's lightness band fails for orange and lavender — it fails the app's own neon keys
+ * too, and no 6-color set inside the band clears the normal-vision floor against them.
+ * Numbers per pair: docs/pod-colors.md.
  */
 export const POD_PALETTE = [
-  '#60a5fa', // blue
-  '#d95926', // orange
-  '#2dd4bf', // teal
-  '#d55181', // magenta
-  '#008300', // green
-  '#e66767', // red
+  '#fe7b32', // orange
+  '#e7b6fe', // lavender
+  '#1c9870', // jade
+  '#fa0246', // crimson
+  '#8c6d08', // ochre
+  '#9d5072', // plum
 ] as const;
 
 /** First palette color not already used by one of the user's pods; cycles once all are taken. */
@@ -159,8 +168,8 @@ export function colorDistance(a: string, b: string): number {
 
 /**
  * Name of the first reserved color `hex` is too close to (normal-vision
- * ΔE < 15), else null. For the picker: warn "looks like the 'You' color".
- * Pass the live theme values, e.g. `{ You: hslToHex(colors.username) }`.
+ * ΔE < 15), else null. For the picker: "looks like the color used for machine names".
+ * Pass the live theme values for all five fixed keys — see `reservedThemeColors`.
  */
 export function nearReservedColor(hex: string, reserved: Record<string, string>): string | null {
   const c = normalizePodColor(hex);
@@ -170,6 +179,22 @@ export function nearReservedColor(hex: string, reserved: Record<string, string>)
     if (rc && colorDistance(c, rc) < 15) return name;
   }
   return null;
+}
+
+/**
+ * The five fixed theme keys, named for the picker's warning sentence ("…the color TiltTrack uses
+ * for {name}"), from the live theme (Admin > Config
+ * can change them per browser). Chart-facing names first, so a color near both "You" and another
+ * key is reported as the one it would actually be confused with on a chart.
+ */
+export function reservedThemeColors(colors: Record<'primary' | 'machine' | 'venue' | 'username' | 'field', string>): Record<string, string> {
+  return {
+    '“You” on charts': hslToHex(colors.username),
+    '“All other players” on charts': hslToHex(colors.field),
+    'machine names': hslToHex(colors.machine),
+    'venue names': hslToHex(colors.venue),
+    'scores': hslToHex(colors.primary),
+  };
 }
 
 // ── tokens ─────────────────────────────────────────────────────────────────
