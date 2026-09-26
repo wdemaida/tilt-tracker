@@ -29,6 +29,10 @@ body {
 /* Leaflet dark map override */
 .leaflet-container {
   background: hsl(var(--background));
+  /* Leaflet's panes and controls carry z-indexes of 400-1000. Without a stacking context of their
+     own they compete with the page's fixed chrome (sticky header z-50, mobile tab bar z-40) and
+     scroll over it. Isolating the container keeps those numbers local to the map. */
+  isolation: isolate;
 }
 
 /*

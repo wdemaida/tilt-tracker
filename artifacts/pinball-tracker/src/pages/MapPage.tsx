@@ -47,7 +47,12 @@ function MapViewSync({ center, zoom }: { center: [number, number]; zoom: number 
   return null;
 }
 
-export default function MapPage() {
+/**
+ * The venues map. Rendered only as the Map view of the Venues page (`/venues?view=map`) — the old
+ * `/map` route redirects there. `embedded` drops this page's own title row, since the Venues page
+ * supplies the heading and the All/Mine toggle.
+ */
+export default function MapPage({ embedded = false }: { embedded?: boolean }) {
   const authApi = useApi();
   const appUser = useAppUser();
   const { mine } = useScopeContext();
@@ -104,13 +109,15 @@ export default function MapPage() {
 
   return (
     <div>
-      <div className="flex items-start justify-between gap-4 mb-1">
-        <h1 className="text-4xl font-black uppercase tracking-widest text-white">Map</h1>
-        <ScopeToggle />
-      </div>
+      {!embedded && (
+        <div className="flex items-start justify-between gap-4 mb-1">
+          <h1 className="text-4xl font-black uppercase tracking-widest text-white">Map</h1>
+          <ScopeToggle />
+        </div>
+      )}
       <p className="text-sm text-muted-foreground mb-1">
         {filterVenueId ? (
-          <>Showing <span className="text-venue font-bold">{locations[0]?.venueName ?? 'this venue'}</span> only · <Link href="/map" className="text-primary hover:text-primary/80 transition-colors">clear filter</Link></>
+          <>Showing <span className="text-venue font-bold">{locations[0]?.venueName ?? 'this venue'}</span> only · <Link href="/venues?view=map" className="text-primary hover:text-primary/80 transition-colors">clear filter</Link></>
         ) : (
           <>{locations.length} {locations.length === 1 ? 'location' : 'locations'} · {withGps.length} {mine ? 'your ' : ''}scores with GPS</>
         )}

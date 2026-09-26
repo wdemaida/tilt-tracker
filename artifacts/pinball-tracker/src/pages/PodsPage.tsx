@@ -344,8 +344,8 @@ export default function PodsPage() {
 
   return (
     <div className="max-w-3xl">
-      <div className="flex items-start justify-between gap-4 mb-1">
-        <h1 className="text-4xl font-black uppercase tracking-widest text-white">Pods</h1>
+      {/* The "Crew" heading and the Pods tab title this page (CrewPage) — no h1 of its own. */}
+      <div className="flex items-start justify-end gap-4 mb-1">
         {!creating && (
           <button
             type="button"

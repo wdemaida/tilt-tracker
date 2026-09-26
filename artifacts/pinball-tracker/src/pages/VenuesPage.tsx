@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
-import { Link } from 'wouter';
-import { MapPin, Trophy, ExternalLink, Pencil, Trash2, Home, AlertTriangle } from 'lucide-react';
+import { Link, useLocation, useSearch } from 'wouter';
+import { MapPin, Trophy, ExternalLink, Pencil, Trash2, Home, AlertTriangle, List, Map as MapIcon } from 'lucide-react';
 import { PinballIcon } from '../components/PinballIcon';
 import VenueMachinesModal from '../components/VenueMachinesModal';
 import EditVenueDialog, { editTargetFromVenue, type EditVenueTarget } from '../components/EditVenueDialog';
@@ -11,6 +11,7 @@ import { useAppUser } from '../lib/useAppUser';
 import { useScopeContext } from '../lib/ScopeContext';
 import { ScopeToggle } from '../components/ScopeToggle';
 import { queryClient } from '../lib/queryClient';
+import MapPage from './MapPage';
 
 // Someone else's home venue arrives trimmed to what its card needs (name, the address its privacy
 // tier allows, counts) — no ownerId, tier, coordinates or timezone. Hence the optional fields.
@@ -52,7 +53,40 @@ function parseState(address: string | null): string | null {
   return null;
 }
 
+type VenuesView = 'list' | 'map';
+
+/**
+ * List / Map switch. The view lives in the URL (`/venues?view=map`) so the map is linkable — the old
+ * `/map` route redirects here, carrying any `venueId` filter along.
+ */
+function VenuesViewToggle({ view, onChange }: { view: VenuesView; onChange: (v: VenuesView) => void }) {
+  const options = [
+    { key: 'list' as const, label: 'List', Icon: List },
+    { key: 'map' as const, label: 'Map', Icon: MapIcon },
+  ];
+  return (
+    <div role="group" aria-label="Venues view" className="inline-flex gap-0.5 p-1 rounded-lg bg-white/5 border border-white/10 mb-4">
+      {options.map(({ key, label, Icon }) => (
+        <button
+          key={key}
+          type="button"
+          aria-pressed={view === key}
+          onClick={() => onChange(key)}
+          className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-bold uppercase tracking-wider transition-colors ${
+            view === key ? 'bg-primary text-white' : 'text-muted-foreground hover:text-white'
+          }`}
+        >
+          <Icon className="w-3.5 h-3.5" aria-hidden />
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export default function VenuesPage() {
+  const [, navigate] = useLocation();
+  const view: VenuesView = new URLSearchParams(useSearch()).get('view') === 'map' ? 'map' : 'list';
   const [search, setSearch] = useState('');
   const [stateFilter, setStateFilter] = useState('');
   const [modalVenueId, setModalVenueId] = useState<number | null>(null);
@@ -94,12 +128,28 @@ export default function VenuesPage() {
     .filter(v => !stateFilter || parseState(v.address) === stateFilter)
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  return (
-    <div>
-      <div className="flex items-start justify-between gap-4 mb-1">
+  const header = (
+    <>
+      <div className="flex items-start justify-between gap-4 mb-3">
         <h1 className="text-4xl font-black uppercase tracking-widest text-white">Venues</h1>
         <ScopeToggle />
       </div>
+      <VenuesViewToggle view={view} onChange={v => navigate(v === 'map' ? '/venues?view=map' : '/venues')} />
+    </>
+  );
+
+  if (view === 'map') {
+    return (
+      <div>
+        {header}
+        <MapPage embedded />
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {header}
       <p className="text-sm text-muted-foreground mb-6">
         {filteredVenues.length} {filteredVenues.length === 1 ? 'venue' : 'venues'} {mine ? 'you\'ve visited' : 'visited across site'}
       </p>

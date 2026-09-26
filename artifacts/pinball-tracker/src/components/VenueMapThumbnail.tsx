@@ -22,7 +22,7 @@ interface VenueMapThumbnailProps {
 }
 
 // A small, non-interactive preview map used on the venue detail page — click-through takes you
-// to the full Map page filtered to this venue. When lat/lng are redacted (hidden-tier venue,
+// to the Venues page's Map view filtered to this venue. When lat/lng are redacted (hidden-tier venue,
 // viewed by anyone but the owner/admin), there's nothing to show a map of, so a house icon
 // stands in instead — non-clickable, since there's no location to navigate to.
 export default function VenueMapThumbnail({ venueId, latitude, longitude }: VenueMapThumbnailProps) {
@@ -39,8 +39,8 @@ export default function VenueMapThumbnail({ venueId, latitude, longitude }: Venu
 
   return (
     <Link
-      href={`/map?venueId=${venueId}`}
-      className="w-32 h-20 flex-shrink-0 rounded-lg overflow-hidden border border-white/10 block relative hover:border-venue/40 transition-colors"
+      href={`/venues?view=map&venueId=${venueId}`}
+      className="w-32 h-20 flex-shrink-0 rounded-lg overflow-hidden border border-white/10 block relative isolate hover:border-venue/40 transition-colors"
     >
       <MapContainer
         center={[latitude, longitude]}
