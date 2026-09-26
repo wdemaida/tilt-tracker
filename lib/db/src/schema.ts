@@ -183,6 +183,47 @@ export const podMembers = pgTable('pod_members', {
   userIdx: index('pod_members_user_id_idx').on(table.userId),
 }));
 
+// Friends (feature/friends, phase 1) — mutual, consent-based relationships between two users.
+// ONE row per unordered pair: the unique index is on (least, greatest) of the two ids, so A→B and
+// B→A can never both exist. `requester_id` is whoever sent the current request — roles flip on the
+// row when the other side later asks (see src/lib/friendRules.ts on the api-server).
+// `decline_count` is the pair's history and survives role flips; once it reaches 3 the person who
+// was declined can't ask again. Unfriending deletes the row outright. migrate14.ts also adds CHECKs
+// (status values, requester <> addressee) that Drizzle doesn't model here.
+export const friendships = pgTable('friendships', {
+  id: serial('id').primaryKey(),
+  requesterId: integer('requester_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  addresseeId: integer('addressee_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  status: text('status').$type<'pending' | 'accepted' | 'declined'>().notNull(),
+  declineCount: integer('decline_count').default(0).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  respondedAt: timestamp('responded_at'),
+}, (table) => ({
+  pairUnique: uniqueIndex('friendships_pair_idx').on(
+    sql`least(${table.requesterId}, ${table.addresseeId})`,
+    sql`greatest(${table.requesterId}, ${table.addresseeId})`,
+  ),
+  requesterIdx: index('friendships_requester_id_idx').on(table.requesterId),
+  addresseeIdx: index('friendships_addressee_id_idx').on(table.addresseeId),
+}));
+
+// The in-app inbox. Generic on purpose: `kind` names the event ('friend_request', 'friend_accepted'
+// today; challenge kinds later) and `payload` carries whatever that kind needs to render and link
+// (ids and display names at the time of the event). Only ever served to `user_id` themselves.
+export const notifications = pgTable('notifications', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  kind: text('kind').notNull(),
+  payload: jsonb('payload').$type<Record<string, unknown>>().default({}).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  readAt: timestamp('read_at'),
+}, (table) => ({
+  userReadIdx: index('notifications_user_id_read_at_idx').on(table.userId, table.readAt),
+}));
+
+export type Friendship = typeof friendships.$inferSelect;
+export type Notification = typeof notifications.$inferSelect;
+
 export type Pod = typeof pods.$inferSelect;
 export type NewPod = typeof pods.$inferInsert;
 export type PodMember = typeof podMembers.$inferSelect;
