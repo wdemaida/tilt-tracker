@@ -3,7 +3,12 @@
 // dev endpoint.
 //
 //   cd artifacts/api-server
-//   npx tsx test-score-venue-pm.ts
+//   PM_LIVE_TESTS=1 npx tsx test-score-venue-pm.ts
+//
+// Makes ~2 live Pinball Map calls per run (closest_by_lat_lon + a roster on a cold cache), so it
+// does nothing unless PM_LIVE_TESTS=1 — the standing rule: test scripts never hit PM live by
+// default. With it set, PM_MODE defaults to `live` (still subject to the dev on-disk cache and the
+// daily budget in pmClient.ts).
 //
 // 1. Live: HERE Autosuggest finds Wedgehead (Portland, OR); matchPmLocation (the rule shared with
 //    the nearby suggestions) resolves it against Pinball Map's nearby list; the roster is read
@@ -21,6 +26,11 @@ if (!host.startsWith(DEV_ENDPOINT)) {
   console.error(`ABORT: DATABASE_URL is not the dev branch (${DEV_ENDPOINT}) — refusing to run.`);
   process.exit(1);
 }
+if (process.env.PM_LIVE_TESTS !== '1') {
+  console.log('SKIPPED: this script calls Pinball Map (and HERE) live — re-run with PM_LIVE_TESTS=1 to do that deliberately.');
+  process.exit(0);
+}
+process.env.PM_MODE ??= 'live';
 
 const { db, venues, users } = await import('@workspace/db');
 const { eq, inArray, asc } = await import('drizzle-orm');

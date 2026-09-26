@@ -1,0 +1,95 @@
+{
+ "key": "GET /locations/closest_by_lat_lon.json?lat=42.41798&lon=-71.11011&max_distance=1&no_details=1&send_all_within_distance=true",
+ "status": 200,
+ "recordedAt": "2026-09-26T16:41:37.782Z",
+ "body": {
+  "locations": [
+   {
+    "id": 25761,
+    "name": "Pop's Pinball - Deep Cuts",
+    "street": "21 Main St",
+    "city": "Medford",
+    "state": "MA",
+    "zip": "02155",
+    "lat": "42.417913",
+    "lon": "-71.1101583",
+    "created_at": "2025-03-06T15:15:22.818-08:00",
+    "updated_at": "2026-09-08T15:35:11.423-07:00",
+    "location_type_id": 1,
+    "operator_id": 720,
+    "date_last_updated": "2026-09-08",
+    "is_stern_army": null,
+    "ic_active": true,
+    "machine_count": 14,
+    "place_id": "ChIJex3-RdZ344kRFJ9VO0Fy_V8",
+    "all_ages": "Yes",
+    "payment_type": null,
+    "distance": 0.005244012697007487,
+    "bearing": "215.787664861376",
+    "machine_names": [
+     "Attack From Mars (Bally, 1995)",
+     "Bad Cats (Williams, 1989)",
+     "Black Knight: Sword of Rage (Pro) (Stern, 2019)",
+     "Bram Stoker's Dracula (Williams, 1993)",
+     "Centaur II (Bally, 1983)",
+     "Creature from the Black Lagoon (Bally, 1992)",
+     "Diamond Lady (Gottlieb, 1988)",
+     "Doodle Bug (Williams, 1971)",
+     "Hokus Pokus (Bally, 1975)",
+     "The Shadow (Bally, 1994)",
+     "Swords Of Fury (Williams, 1988)",
+     "Terminator 2: Judgment Day (Williams, 1991)",
+     "Theatre of Magic (Bally, 1995)",
+     "WHO Dunnit (Bally, 1995)"
+    ],
+    "machine_ids": [
+     643,
+     731,
+     3126,
+     659,
+     1626,
+     647,
+     2349,
+     2367,
+     794,
+     681,
+     750,
+     686,
+     688,
+     704
+    ],
+    "num_machines": 14
+   },
+   {
+    "id": 30035,
+    "name": "The Great American Beer Hall",
+    "street": "142 Mystic Ave",
+    "city": "Medford",
+    "state": "MA",
+    "zip": "02155",
+    "lat": "42.4104069",
+    "lon": "-71.1046853",
+    "created_at": "2026-08-07T12:55:35.418-07:00",
+    "updated_at": "2026-08-07T12:55:35.501-07:00",
+    "location_type_id": 14,
+    "operator_id": null,
+    "date_last_updated": "2026-08-07",
+    "is_stern_army": null,
+    "ic_active": null,
+    "machine_count": 1,
+    "place_id": "ChIJB-hLQNN344kRH9p4Ox-z3io",
+    "all_ages": "At Times",
+    "payment_type": "No",
+    "distance": 0.5919157282629129,
+    "bearing": "144.385532411817",
+    "machine_names": [
+     "The Sopranos (Stern, 2005)"
+    ],
+    "machine_ids": [
+     645
+    ],
+    "num_machines": 1
+   }
+  ]
+ }
+}

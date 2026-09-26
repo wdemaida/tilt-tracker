@@ -1,0 +1,39 @@
+{
+ "key": "GET /locations/closest_by_lat_lon.json?lat=41.66778&lon=-70.12377&max_distance=1&no_details=1&send_all_within_distance=true",
+ "status": 200,
+ "recordedAt": "2026-09-26T16:41:37.459Z",
+ "body": {
+  "locations": [
+   {
+    "id": 20676,
+    "name": "Red Nun Bar & Grill",
+    "street": "673 Main St",
+    "city": "Dennis",
+    "state": "MA",
+    "zip": "02639",
+    "lat": "41.6677752",
+    "lon": "-70.1237654",
+    "created_at": "2023-07-16T18:05:28.490-07:00",
+    "updated_at": "2025-07-09T13:04:00.452-07:00",
+    "location_type_id": 14,
+    "operator_id": null,
+    "date_last_updated": "2025-07-09",
+    "is_stern_army": null,
+    "ic_active": false,
+    "machine_count": 1,
+    "place_id": "ChIJpfgY3b0--4kRGGlPTgOQldU",
+    "all_ages": "Yes",
+    "payment_type": null,
+    "distance": 0.0004078722100050583,
+    "bearing": "136.218875204029",
+    "machine_names": [
+     "The Munsters (Pro) (Stern, 2019)"
+    ],
+    "machine_ids": [
+     3099
+    ],
+    "num_machines": 1
+   }
+  ]
+ }
+}

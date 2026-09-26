@@ -32,3 +32,6 @@ Thumbs.db
 # Dev scratch: seed scripts + reference images (not part of shipped app)
 artifacts/api-server/seedData/
 context-images/
+
+# Pinball Map dev on-disk cache + live-call budget counter (pmClient.ts, non-production only)
+artifacts/api-server/.pm-cache/
