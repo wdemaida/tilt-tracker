@@ -59,6 +59,34 @@ export function pmIdAllowedFor(userKey: string, id: number): boolean {
   return allowlist.get(`${userKey}:${id}`) === true;
 }
 
+// The full records behind those ids, when the search that offered them returned full records
+// (place-search's locations.json, pm-candidates' nearby list). Picking one in the repair panel then
+// needs no second request for the same listing: `POST /repair/place {source:'pm'}` reads it from here
+// before trying the cached roster (getPmLocationCached) and only then Pinball Map. Same 30 minutes
+// and per-user scope as the allowlist. Autocomplete-only hits (no coordinates) aren't kept.
+const offeredLocations = new TtlCache<PmLocation>(PM_ALLOWLIST_TTL_MS, 20_000);
+setInterval(() => offeredLocations.sweep(), 10 * 60_000).unref();
+
+/** allowPmIds, plus the record itself for each location that carries a name and real coordinates. */
+export function rememberOfferedPmLocations(userKey: string | null | undefined, locs: Iterable<PmLocation>) {
+  if (!userKey) return;
+  const ids: number[] = [];
+  for (const loc of locs) {
+    if (!loc || !Number.isInteger(loc.id) || loc.id <= 0) continue;
+    ids.push(loc.id);
+    const lat = Number(loc.lat);
+    const lon = Number(loc.lon);
+    if (!loc.name || !Number.isFinite(lat) || !Number.isFinite(lon) || (lat === 0 && lon === 0)) continue;
+    offeredLocations.set(`${userKey}:${loc.id}`, loc);
+  }
+  allowPmIds(userKey, ids);
+}
+
+/** The record we offered this user for that id in the last 30 minutes, if any. */
+export function offeredPmLocation(userKey: string, id: number): PmLocation | undefined {
+  return offeredLocations.get(`${userKey}:${id}`);
+}
+
 // ── Shared "PM locations near a point" cache ─────────────────────────────────────────────────────
 // One entry per ~110m cell for 10 minutes, in flight or finished. A failure is remembered for two
 // minutes (negative cache) so a burst of taps during a PM outage doesn't each try again — pmClient's

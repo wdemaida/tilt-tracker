@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { db, scores, venues, machines, users, challenges } from '@workspace/db';
 import { eq, desc, count, sql, and, max, inArray } from 'drizzle-orm';
 import {
-  searchPmLocationsByName, searchPmLocationsWithAddress, getPmLocation,
+  searchPmLocationsByName, searchPmLocationsWithAddress,
   pmLocationUrl, isPmConfigured, PmApiError, type PmLocation,
 } from '../lib/pinballmapApi.js';
 import { syncVenueMachineHistory, getFormerMachines } from '../lib/venueHistory.js';
@@ -20,7 +20,7 @@ import {
   isPreciseGeocode, pickConfidentHereMatch, adoptableHereMatch, stripPlaceNamePrefix, venueListFlags, describeHolder,
   linkageBlockedByPrivacy, isUniqueViolation, type AddressBlocker, type HolderView, type PrivacyFlags,
 } from '../lib/venueAddress.js';
-import { getVenueRoster, knownBadPmId } from '../lib/pmRosterCache.js';
+import { getVenueRoster, getPmLocationCached, knownBadPmId } from '../lib/pmRosterCache.js';
 import { visibleScoreSql, canSeeVenueActivity, canManageInventory, usesOwnerInventory } from '../lib/venueActivity.js';
 import {
   getInventory, resolveCatalogMachine, addToInventory, removeFromInventory, deleteVenueInventory,
@@ -43,6 +43,7 @@ import {
 import { SlidingRateLimiter, TtlCache } from '../lib/nearbyLookup.js';
 import {
   pmLocationsNear, allowPmIds, pmIdAllowedFor, pmMachinesLimiter, repairPmLimiter, refuseIfLimited, repairSearchCache,
+  rememberOfferedPmLocations, offeredPmLocation,
 } from '../lib/pmGuards.js';
 import { matchPmLocation, PM_MATCH_RATE_WINDOWS } from '../lib/pmMatch.js';
 import { getAuth } from '@clerk/express';
@@ -1123,7 +1124,7 @@ router.get('/:id/repair/place-search', requireAppUser, async (req, res) => {
       // served from the cache
     } else if (isPmConfigured()) {
       try {
-        pmLocations = await searchPmLocationsWithAddress(q);
+        pmLocations = await searchPmLocationsWithAddress(q, getPmLocationCached);
       } catch (err) {
         if (!(err instanceof PmApiError)) throw err;
         pmError = err.message;
@@ -1176,7 +1177,8 @@ router.get('/:id/repair/place-search', requireAppUser, async (req, res) => {
     if (!cachedExternal && !pmError) {
       repairSearchCache.set(cacheKey, { pmLocations, pmError, nearResolved, hereNote, hereHits } satisfies PlaceSearchExternal);
     }
-    allowPmIds(appUser.clerkId, pm.map(p => p.pinballMapId));
+    // Keeps the records too, so picking one (POST /repair/place) needs no second Pinball Map read.
+    rememberOfferedPmLocations(appUser.clerkId, pmLocations.filter(loc => pmLocationToPlace(loc) != null));
 
     const { byHere, byPm } = await venuesHolding(venue.id, hereHits.map(h => h.hereId!), pm.map(p => p.pinballMapId));
 
@@ -1227,12 +1229,17 @@ router.post('/:id/repair/place', requireAppUser, async (req, res) => {
       if (!Number.isInteger(pinballMapId) || pinballMapId <= 0) {
         return res.status(400).json({ error: 'A numeric pinballMapId is required' });
       }
-      if (refuseIfLimited(res, repairPmLimiter.take(String(appUser.id)),
-        'Too many Pinball Map lookups — wait a few minutes and try again')) return;
-      let loc: PmLocation | null;
+      // The record place-search / pm-candidates just offered this user, else the location stored
+      // with the cached roster, and only then Pinball Map — charged to the repair limit only then.
+      const gate: { decision: ReturnType<typeof repairPmLimiter.take> | null } = { decision: null };
+      let loc: PmLocation | null = offeredPmLocation(appUser.clerkId, pinballMapId) ?? null;
       try {
-        loc = await getPmLocation(pinballMapId);
+        loc ??= await getPmLocationCached(pinballMapId, {
+          allowLive: () => (gate.decision = repairPmLimiter.take(String(appUser.id))).ok,
+        });
       } catch (err) {
+        if (gate.decision && refuseIfLimited(res, gate.decision,
+          'Too many Pinball Map lookups — wait a few minutes and try again')) return;
         return pmFailure(res, err, 'Failed to read that Pinball Map location');
       }
       if (!loc) return res.status(404).json({ error: `Pinball Map has no location with id ${pinballMapId}` });
@@ -1404,7 +1411,7 @@ router.get('/:id/repair/pm-candidates', requireAppUser, async (req, res) => {
         url: pmLocationUrl(l.id),
       }));
 
-    allowPmIds(appUser.clerkId, candidates.map(c => c.pinballMapId));
+    rememberOfferedPmLocations(appUser.clerkId, [...nearby, ...named]);
     res.json({ candidates, searchedFor: q || venue.name });
   } catch (err) {
     return pmFailure(res, err, 'Failed to search Pinball Map');
@@ -1427,12 +1434,19 @@ router.post('/:id/repair/pm-link', requireAppUser, async (req, res) => {
     'Too many Pinball Map lookups — wait a few minutes and try again')) return;
 
   try {
-    const pmLocation = await getPmLocation(pinballMapId);
-    if (!pmLocation) {
-      return res.status(404).json({ error: `Pinball Map has no location with id ${pinballMapId}` });
+    // One request: the roster read verifies the id (not_found for one PM doesn't have) and carries
+    // the listing's name. force refetches only if the cached copy is > 5 minutes old.
+    let roster;
+    try {
+      roster = await getVenueRoster(pinballMapId, { force: true });
+    } catch (err) {
+      if (err instanceof PmApiError && err.kind === 'not_found') {
+        return res.status(404).json({ error: `Pinball Map has no location with id ${pinballMapId}` });
+      }
+      throw err;
     }
-
-    const { xrefs } = await getVenueRoster(pinballMapId, { force: true });
+    const { xrefs } = roster;
+    const pmLocationName = roster.location?.name ?? offeredPmLocation(appUser.clerkId, pinballMapId)?.name ?? '';
     const [updated] = await db
       .update(venues)
       .set({ pinballMapId, pmMachineCount: xrefs.length })
@@ -1444,7 +1458,7 @@ router.post('/:id/repair/pm-link', requireAppUser, async (req, res) => {
 
     res.json({
       venue: toPublicVenue(redactVenue(updated, appUser.id, appUser.role === 'admin')),
-      pmLocation: { id: pmLocation.id, name: pmLocation.name, url: pmLocationUrl(pmLocation.id) },
+      pmLocation: { id: pinballMapId, name: pmLocationName, url: pmLocationUrl(pinballMapId) },
       machineCount: xrefs.length,
     });
   } catch (err) {

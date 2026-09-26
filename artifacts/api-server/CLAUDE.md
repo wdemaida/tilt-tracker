@@ -29,7 +29,10 @@ API.** This is a standing rule, not a guideline:
   limiter (1 req/s, burst 5, concurrency 2), in-flight de-duplication, a 10 s timeout, a circuit
   breaker honoring `Retry-After` (429 → default 15 min; 5xx/network/timeout → 2 min; rejected
   api_token → 15 min; while open it fails fast, nothing retries per request), and an identifying
-  User-Agent. Every live call logs one line: `[PM live] <method> <path> <status> <ms> (n today)`.
+  User-Agent. Every live call logs one line: `[PM live] <request key> <status> <ms> (n today)` — the
+  key is `logKey()`: method, path and sorted params (`GET /locations/10804.json?metadata_only=1` vs
+  the roster's bare `GET /locations/10804.json`), credentials dropped, `lat`/`lon` masked as `~`;
+  `sensitive` requests log method + path only.
 - **Every new call site needs a DB-backed cache with an explicit TTL** (rosters: `pm_location_cache`,
   6 h; catalog: `pm_catalog_cache`, 24 h). Page views and unauthenticated routes only read cache or
   trigger a refresh that is bounded per *key* (one per linked venue per TTL, one catalog fetch a
@@ -79,6 +82,21 @@ Implementation notes (fix/pm-etiquette, 2026-09-26):
   stay server-side (`POST /api/users/setup` strips them too). `submit-score`: 10/min per user.
 - Admin health reads the stored catalog and pmClient's counters — it never calls Pinball Map.
 - Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/pmClient.test.ts src/lib/pmCaches.test.ts src/lib/pmAccount.test.ts`.
+
+Location metadata with the roster (fix/pm-link-dedup, 2026-09-26):
+- `/locations/:id.json` is the **only** PM URL for one location. `pm_location_cache.location` (jsonb,
+  migrate20) stores that response's location fields (id, name, lat, lon, street, city, state, zip,
+  country) beside the roster; `RosterResult.location` exposes it. There is no `?metadata_only=1`
+  lookup any more — `getPmLocationCached()` (pmRosterCache.ts) reads the stored location (≤ 7 days)
+  or refreshes the roster, and `searchPmLocationsWithAddress()` takes it as its (still capped at 3)
+  autocomplete-fallback lookup.
+- Repair link flow: place-search / pm-candidates keep the full records they returned per user for 30
+  min (`rememberOfferedPmLocations` / `offeredPmLocation`, pmGuards.ts); `POST /repair/place
+  {source:'pm'}` uses that record, then the cached location, and only then goes live (charged to
+  `repairPmLimiter` only then). `pm-link` makes just `getVenueRoster(force)` — it verifies the id
+  (`not_found` → 404) and carries the name. Linking = at most 1 roster call (0 if one was fetched in
+  the last 5 min); an Add Score there within 6 h = 0. Before: 3 `/locations/:id.json` calls.
+- Tests: `npx tsx --test src/lib/pmRosterCache.test.ts` (in-memory store, counting fake fetch).
 
 ## Pinball Map account connect + score posting (fix/pm-posting, 2026-09-26)
 Verified against **Pinball Map's source**, `github.com/pinballmap/pbm @ 1b527c0` — not their docs,
