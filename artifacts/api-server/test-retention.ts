@@ -6,13 +6,18 @@
 // activity events backdated into each tier, and checks: the settings endpoints (guards, validation,
 // the admin.settings_changed event), the per-tier counts / would-delete estimate, and that a
 // retention run deletes exactly what's past each tier's limit (batched, with a tiny batch size) and
-// keeps the rest. Then the photo-orphan endpoints with a FAKE store (no bucket touched): dry run
+// keeps the rest; then the "0 = don't record" setting: logActivity skips that tier, the estimate
+// counts every row, a (test-scoped) run deletes them all, and admin.settings_changed is recorded when
+// the admin tier is switched off or back on but not while it stays off. Then the photo-orphan endpoints with a FAKE store (no bucket touched): dry run
 // deletes nothing, a real run deletes the orphan and keeps the key a score references, and the
 // weekly schedule is then "not due".
 //
 // NOTE: the retention run is the real purge — on the dev branch it also deletes any genuine dev
 // events past the default limits (the log only started 2026-09-26, so there normally are none; the
-// script prints how many non-test rows were eligible first). The app_settings rows it touches
+// script prints how many non-test rows were eligible first). The "0" runs are scoped to this script's
+// own rows (runActivityRetention's test-only `scope`), so they never wipe genuine dev events — but
+// while a tier is 0 (a few seconds), a dev api-server that re-reads the settings within its 60 s cache
+// window would skip that tier's events for up to a minute. The app_settings rows it touches
 // (activity_retention, photo_orphans_last_run) are restored to what they were. Everything else it
 // created — users, machine, score, its events and the system.activity_retention rows its runs logged —
 // is deleted at the end.
@@ -33,9 +38,11 @@ const { setAuthForTests } = await import('./src/middleware/requireAuth.js');
 const { setClerkAdminForTests } = await import('./src/lib/clerkAdmin.js');
 const { setPhotoStoreForTests } = await import('./src/lib/photoStore.js');
 const { default: adminRouter } = await import('./src/routes/admin.js');
-const { runActivityRetention, RETENTION_SETTING_KEY } = await import('./src/lib/activityRetention.js');
+const { runActivityRetention, RETENTION_SETTING_KEY, setRetentionLoaderForTests } = await import('./src/lib/activityRetention.js');
+const { logActivity } = await import('./src/lib/activity.js');
 const { PHOTO_ORPHANS_SETTING_KEY, runScheduledOrphanSweep } = await import('./src/lib/photoOrphans.js');
 const { db, users, machines, scores, activityEvents, appSettings } = await import('@workspace/db');
+const { setSetting } = await import('./src/lib/appSettings.js');
 const { and, eq, gt, inArray, or, sql, desc } = await import('drizzle-orm');
 
 const TAG = `zz-retention-test-${Date.now().toString(36)}`;
@@ -128,12 +135,14 @@ try {
   // ── settings endpoints ─────────────────────────────────────────────────────
   check('guest → 401 on GET settings', (await call(null, 'GET', '/admin/settings/retention')).status === 401);
   check('user → 403 on GET settings', (await call(clerkIds.user, 'GET', '/admin/settings/retention')).status === 403);
-  check('user → 403 on PUT settings', (await call(clerkIds.user, 'PUT', '/admin/settings/retention', { highVolumeDays: 30, standardDays: 365, adminDays: 0 })).status === 403);
+  check('user → 403 on PUT settings', (await call(clerkIds.user, 'PUT', '/admin/settings/retention', { highVolumeDays: 30, standardDays: 365, adminDays: -1 })).status === 403);
   check('user → 403 on photo-orphans run', (await call(clerkIds.user, 'POST', '/admin/photo-orphans/run', { dryRun: false })).status === 403);
 
   const g = await call(clerkIds.admin, 'GET', '/admin/settings/retention');
   check('GET settings → defaults when nothing stored', g.status === 200 && g.body.isDefault === true
-    && g.body.settings.highVolumeDays === 90 && g.body.settings.standardDays === 365 && g.body.settings.adminDays === 0, g.body);
+    && g.body.settings.highVolumeDays === 90 && g.body.settings.standardDays === 365 && g.body.settings.adminDays === -1, g.body);
+  check('GET limits: every tier -1 | 0 | 1–36500', ['highVolumeDays', 'standardDays', 'adminDays'].every(f =>
+    JSON.stringify(g.body.limits[f]) === JSON.stringify({ min: 1, max: 36500, forever: -1, off: 0 })), g.body.limits);
   const tier = (t: string) => g.body.tiers.find((x: any) => x.tier === t);
   check('tier status: high-volume eligible ≥ 9 (2 synthetic + 7 bulk)', tier('high_volume')?.eligible >= 9, g.body.tiers);
   check('tier status: standard eligible ≥ 2', tier('standard')?.eligible >= 2, g.body.tiers);
@@ -145,10 +154,10 @@ try {
   console.log(`info  non-test dev rows eligible for the purge: ${nonTestEligible}`);
 
   const bad = [
-    { highVolumeDays: 6, standardDays: 365, adminDays: 0 },
-    { highVolumeDays: 90, standardDays: 29, adminDays: 0 },
-    { highVolumeDays: 90, standardDays: 365, adminDays: 100 },
-    { highVolumeDays: '90', standardDays: 365, adminDays: 0 },
+    { highVolumeDays: -2, standardDays: 365, adminDays: -1 },
+    { highVolumeDays: 90, standardDays: 36501, adminDays: -1 },
+    { highVolumeDays: 90, standardDays: 365, adminDays: 1.5 },
+    { highVolumeDays: '90', standardDays: 365, adminDays: -1 },
     { highVolumeDays: 90, standardDays: 365 },
   ];
   for (const b of bad) {
@@ -157,7 +166,7 @@ try {
   }
   check('invalid PUTs stored nothing', (await db.select().from(appSettings).where(eq(appSettings.key, RETENTION_SETTING_KEY))).length === 0);
 
-  const put = await call(clerkIds.admin, 'PUT', '/admin/settings/retention', { highVolumeDays: 90, standardDays: 365, adminDays: 0 });
+  const put = await call(clerkIds.admin, 'PUT', '/admin/settings/retention', { highVolumeDays: 90, standardDays: 365, adminDays: -1 });
   check('PUT valid → 200, stored, updatedBy = admin', put.status === 200 && put.body.isDefault === false && put.body.updatedBy?.id === admin.id, put.body);
   const [changed] = await db.select().from(activityEvents)
     .where(and(eq(activityEvents.type, 'admin.settings_changed'), eq(activityEvents.actorUserId, admin.id))).orderBy(desc(activityEvents.id)).limit(1);
@@ -197,6 +206,53 @@ try {
   check('run 2: recent rows in other tiers still kept', a.has(ids.signedIn10) && a.has(ids.score100));
   const g3 = await call(clerkIds.admin, 'GET', '/admin/settings/retention');
   check('GET after a run shows lastRun', !!g3.body.lastRun?.at && typeof g3.body.lastRun.total === 'number', g3.body.lastRun);
+
+  // ── 0 = don't record ────────────────────────────────────────────────────────
+  // The PUT primes this process's settings cache, so logActivity here sees each change at once.
+  const tagged = sql`${activityEvents.payload}->>'zzRetentionTest' = ${TAG}`;
+  const settingsChanges = async () => (await db.select({ id: activityEvents.id }).from(activityEvents)
+    .where(and(eq(activityEvents.type, 'admin.settings_changed'), eq(activityEvents.actorUserId, admin.id)))).length;
+  const logTagged = (label: string, type: any) => logActivity({ type, actorUserId: user.id, payload: { zzRetentionTest: TAG, label } });
+  const typesAlive = async () => (await db.select({ label: sql<string>`${activityEvents.payload}->>'label'` }).from(activityEvents).where(tagged)).map(r => r.label);
+
+  const put3 = await call(clerkIds.admin, 'PUT', '/admin/settings/retention', { highVolumeDays: 90, standardDays: 0, adminDays: -1 });
+  check('PUT standardDays 0 → 200', put3.status === 200 && put3.body.settings.standardDays === 0, put3.body);
+  const std3 = put3.body.tiers.find((x: any) => x.tier === 'standard');
+  check('standard at 0: days 0 and every row counts as eligible', std3?.days === 0 && std3.rows > 0 && std3.eligible === std3.rows, std3);
+  await logTagged('offScore', 'score.created');
+  await logTagged('offFriend', 'friend.request_sent');
+  await logTagged('onSignIn', 'user.signed_in');
+  let labels = await typesAlive();
+  check('logActivity skips standard events while standard is 0, still writes high-volume',
+    !labels.includes('offScore') && !labels.includes('offFriend') && labels.includes('onSignIn'), labels);
+  const r3 = await runActivityRetention({ scope: tagged, log: false });
+  a = await alive();
+  check('run with standard 0: every standard row deleted (even the 100-day one)', !a.has(ids.score100) && r3.deleted.standard >= 1, r3);
+  check('run with standard 0: other tiers untouched', a.has(ids.signedIn10) && a.has(ids.signedUp100), [...a]);
+
+  const before0 = await settingsChanges();
+  const put4 = await call(clerkIds.admin, 'PUT', '/admin/settings/retention', { highVolumeDays: 90, standardDays: 365, adminDays: 0 });
+  check('PUT adminDays 0 → 200', put4.status === 200 && put4.body.settings.adminDays === 0, put4.body);
+  check('turning the admin tier off is itself recorded', (await settingsChanges()) === before0 + 1);
+  await logTagged('offAdmin', 'admin.user_disabled');
+  await logTagged('onScore', 'score.created');
+  labels = await typesAlive();
+  check('admin tier 0: admin events skipped, standard (back at 365) recorded', !labels.includes('offAdmin') && labels.includes('onScore'), labels);
+  await call(clerkIds.admin, 'PUT', '/admin/settings/retention', { highVolumeDays: 60, standardDays: 365, adminDays: 0 });
+  check('a change while the admin tier stays off is not recorded', (await settingsChanges()) === before0 + 1);
+  const r4 = await runActivityRetention({ scope: tagged, log: false });
+  a = await alive();
+  check('run with admin 0: remaining admin-tier rows deleted', !a.has(ids.signedUp100) && r4.deleted.admin >= 1, r4);
+  const put5 = await call(clerkIds.admin, 'PUT', '/admin/settings/retention', { highVolumeDays: 90, standardDays: 365, adminDays: -1 });
+  check('turning the admin tier back on is recorded', put5.status === 200 && (await settingsChanges()) === before0 + 2);
+
+  // Another instance (or a stale cache) picks a stored 0 up from the DB within the TTL: force a re-read.
+  await setSetting(RETENTION_SETTING_KEY, { highVolumeDays: 0, standardDays: 365, adminDays: -1 }, admin.id);
+  setRetentionLoaderForTests(null);
+  await logTagged('offSignIn', 'user.signed_in');
+  labels = await typesAlive();
+  check('a re-read of stored settings applies: high-volume 0 skips sign-ins', !labels.includes('offSignIn'), labels);
+  await call(clerkIds.admin, 'PUT', '/admin/settings/retention', { highVolumeDays: 90, standardDays: 365, adminDays: -1 });
 
   // ── photo orphans (fake store) ──────────────────────────────────────────────
   const [machine] = await db.insert(machines).values({ name: `${TAG} machine` }).returning();

@@ -125,9 +125,40 @@ export async function insertActivity(ev: ActivityInput, ex: Executor = db): Prom
   return rows[0]?.id ?? null;
 }
 
-/** Log an event. Never throws. With { tx }, runs in a savepoint of that transaction. */
-export async function logActivity(ev: ActivityInput, opts: { tx?: Executor } = {}): Promise<void> {
+// ── recording gate ───────────────────────────────────────────────────────────
+// A retention tier set to 0 ("don't record", /admin/config → Data retention) means its events are
+// never written. The check reads activityRetention.ts's in-process settings cache (60 s TTL, primed on
+// save), so it costs no DB round trip per event in the common case. Imported lazily because
+// activityRetention.ts imports this module. Any failure → record (never lose an event to the gate).
+
+type RecordGate = (type: string) => boolean | Promise<boolean>;
+let gateForTests: RecordGate | null = null;
+
+/** Tests: replace the "is this type recorded?" check (null = the real, settings-driven one). */
+export function setActivityGateForTests(gate: RecordGate | null): void {
+  gateForTests = gate;
+}
+
+/** Whether an event of this type is written under the current retention settings. Never throws. */
+export async function isActivityRecorded(type: string): Promise<boolean> {
   try {
+    if (gateForTests) return await gateForTests(type);
+    const { isTypeRecorded } = await import('./activityRetention.js');
+    return await isTypeRecorded(type);
+  } catch (err: any) {
+    console.warn(`[activity] recording check failed for ${type}, recording it:`, err?.message ?? err);
+    return true;
+  }
+}
+
+/**
+ * Log an event. Never throws. With { tx }, runs in a savepoint of that transaction. Skipped when the
+ * event's retention tier is set to 0, unless `always` (only the retention-settings PUT uses it, so
+ * the change that turns a tier off — or back on — is itself recorded).
+ */
+export async function logActivity(ev: ActivityInput, opts: { tx?: Executor; always?: boolean } = {}): Promise<void> {
+  try {
+    if (!opts.always && !(await isActivityRecorded(ev.type))) return;
     const tx = opts.tx;
     if (tx && tx !== db && typeof (tx as any).transaction === 'function') {
       await (tx as any).transaction((sp: Executor) => insertActivity(ev, sp));

@@ -174,3 +174,19 @@ test('verifyClerkWebhook returns the parsed event for a good signature', () => {
   assert.equal(evt.type, 'session.created');
   assert.equal(evt.data.user_id, 'user_x');
 });
+
+test('an event whose retention tier is set to 0 is acknowledged (200) but not recorded', async () => {
+  const asked: string[] = [];
+  const { deps, events } = memoryDeps({ shouldRecord: async type => { asked.push(type); return type !== 'user.signed_in'; } });
+  const h = createClerkWebhookHandler(deps);
+  const s = signed(sessionCreated());
+  const r = await call(h, s.raw, s.headers);
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body, { ok: true, notRecorded: 'user.signed_in' });
+  assert.equal(events.length, 0);
+  const u = signed({ type: 'user.created', data: { id: 'user_new', created_at: 1760000000000 } });
+  const r2 = await call(h, u.raw, u.headers);
+  assert.deepEqual(r2.body, { ok: true, duplicate: false });
+  assert.deepEqual(events.map(e => e.type), ['user.signed_up']);
+  assert.deepEqual(asked, ['user.signed_in', 'user.signed_up']);
+});

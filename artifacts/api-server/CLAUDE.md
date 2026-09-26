@@ -724,21 +724,46 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   `admin.*` types to **admin**.
   | Tier | Default | Types |
   |---|---|---|
-  | high_volume | 90 days (7–3650) | `user.signed_in`, `notification.sent`, `system.*` heartbeats (stat snapshot, challenge sweep, activity retention, photo orphans) |
-  | standard | 365 days (30–3650) | scores, photos, venue repairs/merges, friends, pods, challenges, Pinball Map connect/post/fail, `user.first_setup`, anything unknown |
-  | admin | forever (`0`, or 365–36500) | every `admin.*` action (incl. `admin.settings_changed`, `admin.photo_orphans_run`), `user.signed_up`, `user.clerk_deleted` |
+  | high_volume | 90 days | `user.signed_in`, `notification.sent`, `system.*` heartbeats (stat snapshot, challenge sweep, activity retention, photo orphans) |
+  | standard | 365 days | scores, photos, venue repairs/merges, friends, pods, challenges, Pinball Map connect/post/fail, `user.first_setup`, anything unknown |
+  | admin | forever (`-1`) | every `admin.*` action (incl. `admin.settings_changed`, `admin.photo_orphans_run`), `user.signed_up`, `user.clerk_deleted` |
   The purge's own record, `system.activity_retention`, is high-volume: 90 days of run history is
   plenty and the overview only needs the newest.
+- **Values — the same for every tier:** **`-1` = keep forever** (the purge skips the tier); **`0` =
+  off**: the tier's events are **not recorded at all** and any existing ones are deleted by the next
+  purge (cutoff = now); **`1`–`36500` = keep that many days**. `RETENTION_LIMITS` =
+  `{min: 1, max: 36500, forever: -1, off: 0}` per tier (the UI reads it from the GET). This never
+  shipped with other semantics (main had no retention code), so there's no stored-value migration.
+- **"Off" is enforced in `logActivity()`**: before inserting it asks `isTypeRecorded(type)`
+  (`activityRetention.ts`), which reads an in-process settings cache — 60 s TTL, concurrent misses
+  share one read, primed by the PUT so the change applies on this instance at once (another instance
+  within 60 s). No DB round trip per event in the common case. A failed read keeps the last known
+  settings (or the defaults, which record everything) for 5 s; any gate failure records the event —
+  the gate never throws into a request. `activity.ts` imports `activityRetention.ts` lazily (the
+  latter imports the former). The Clerk webhook, which uses `insertActivity()` directly, checks the
+  same gate (`shouldRecord`) and answers 200 `{notRecorded}` so Svix doesn't retry. Consequences of
+  high-volume = 0: no `system.*` heartbeats, so the overview's "last ran" rows and the Config page's
+  "last cleanup" go blank.
+- **Turning a tier off is audited:** the PUT writes `admin.settings_changed` in the same transaction,
+  *before* the save, whenever the admin tier is on either before or after the change (`logActivity(…,
+  { always: true })`). So switching admin logging off is itself recorded — until the next daily
+  cleanup purges the admin tier, that record included — and switching it back on is recorded too; a
+  change made while it's off and staying off is not.
 - **Settings** live in `app_settings` (key `activity_retention`, jsonb `{highVolumeDays, standardDays,
   adminDays}`). Defaults are in code (`DEFAULT_RETENTION`): an empty table = defaults, and a stored
-  field that's missing or out of range falls back to its default field by field (`normalizeRetention`)
-  — a bad row can never mean "delete everything". `app_settings` is generic (key text PK, value jsonb,
+  field that's missing, non-integer or out of range falls back to its default field by field
+  (`normalizeRetention`) — a malformed row can never mean "delete everything" (only a stored `0` does). `app_settings` is generic (key text PK, value jsonb,
   updated_at, updated_by_id) — the theme colours could move there later; they haven't.
 - **Admin:** `GET /api/admin/settings/retention` (settings, limits, per-tier rows / oldest event /
-  rows the next run would delete, types per tier, last run) and `PUT` (all three fields, integers, in
-  range → else 400 `invalid_settings` with per-field `errors`; logs `admin.settings_changed` with
-  `before`/`after`). UI: `/admin/config` → *Data retention*.
-- **Job:** `runActivityRetention()` from the daily challenge-sweep route. Per tier: `DELETE … USING
+  rows the next run would delete — every row for a tier at 0 —, types per tier, last run; per-tier
+  `days`: null = forever, 0 = off, N) and `PUT` (all three fields, integers, each -1 / 0 / 1–36500 →
+  else 400 `invalid_settings` with per-field `errors`; `admin.settings_changed` with `before`/`after`
+  as above). UI: `/admin/config` → *Data retention*: per tier a *Keep for / Forever / Off* select plus
+  a days input, a friendly label ("Kept forever" / "Not recorded" / "1 year" / "90 days"), an inline
+  warning when a tier is being switched off (stronger for the admin tier — the audit trail) and a
+  confirm dialog on save.
+- **Job:** `runActivityRetention()` from the daily challenge-sweep route. Tiers at -1 are skipped; a
+  tier at 0 is purged with cutoff = now. Per tier: `DELETE … USING
   (SELECT id … WHERE <tier> AND created_at < cutoff ORDER BY created_at LIMIT 5000)`, looped until a
   short batch, capped at 200 batches (1M rows) per tier per run — the rest goes next day
   (`capped: true`). Cutoffs are computed on the DB clock in UTC (`created_at` is naive UTC). A failing
@@ -753,10 +778,15 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   error): steady state ≈ 0.6×(5–10)×90 + 0.4×(5–10)×365 ≈ 1,000–2,000 rows ≈ 1–2MB per user →
   **25 users ≈ 25–50MB, 100 users ≈ 100–200MB**, reached after one year and then flat (Neon free tier:
   0.5GB). Re-check the split against the Config page's per-tier counts once there's real traffic.
+  Setting high-volume to 0 removes ~60% of the volume outright (at the cost of sign-in history and
+  the cron heartbeats).
 - Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/activityRetention.test.ts`
-  (tier map, validation, normalisation, batching loop, tier SQL); `npx tsx test-retention.ts` (dev
-  branch only — backdated synthetic events in every tier, settings guards/validation/logging, two real
-  purge runs incl. a capped one, then the admin photo-orphan endpoints against a fake store; restores
+  (tier map, -1/0/N validation, normalisation, planning, batching loop, tier SQL, the settings cache
+  and logActivity skipping a tier at 0); `npx tsx test-retention.ts` (dev branch only — backdated
+  synthetic events in every tier, settings guards/validation/logging, two real purge runs incl. a
+  capped one, then tiers at 0: skipped logging, all-rows estimate, purge runs scoped to the script's own
+  rows via the test-only `scope` option, the admin-tier on/off audit rule; then the admin photo-orphan
+  endpoints against a fake store; restores
   the `app_settings` rows it touched and deletes everything it created).
 
 ## Photo orphan sweep (`src/lib/photoOrphans.ts`, added 2026-09-26)

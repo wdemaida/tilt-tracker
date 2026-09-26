@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import { Webhook, WebhookVerificationError } from 'svix';
 import { db, users } from '@workspace/db';
 import { eq } from 'drizzle-orm';
-import { insertActivity, type ActivityInput } from '../lib/activity.js';
+import { insertActivity, isActivityRecorded, type ActivityInput } from '../lib/activity.js';
 
 // POST /api/webhooks/clerk — Clerk → Svix → here. Records every sign-in and sign-up in the activity
 // log (Clerk is the only place a sign-in is observable; the app never sees the password step).
@@ -25,6 +25,8 @@ export interface ClerkWebhookDeps {
   resolveUserId: (clerkId: string) => Promise<number | null>;
   /** Insert an event; returns null when svixId was already recorded. Throws on failure. */
   record: (ev: ActivityInput) => Promise<number | null>;
+  /** Whether this event type is recorded at all (its retention tier isn't 0). Default: always. */
+  shouldRecord?: (type: string) => Promise<boolean>;
 }
 
 type ClerkEvent = { type: string; data: Record<string, any> };
@@ -129,6 +131,8 @@ export function createClerkWebhookHandler(deps: ClerkWebhookDeps) {
     try {
       const ev = await eventFor(evt, svixId, deps.resolveUserId);
       if (!ev) return void res.json({ ok: true, ignored: evt.type });
+      // Its retention tier is set to 0 ("don't record"): acknowledge so Svix doesn't retry.
+      if (deps.shouldRecord && !(await deps.shouldRecord(ev.type))) return void res.json({ ok: true, notRecorded: ev.type });
       const id = await deps.record(ev);
       res.json({ ok: true, duplicate: id == null });
     } catch (err: any) {
@@ -147,6 +151,7 @@ export const clerkWebhookHandler = createClerkWebhookHandler({
   get secret() { return process.env.CLERK_WEBHOOK_SIGNING_SECRET || undefined; },
   resolveUserId,
   record: ev => insertActivity(ev),
+  shouldRecord: isActivityRecorded,
 });
 
 export function logClerkWebhookStatus(): void {

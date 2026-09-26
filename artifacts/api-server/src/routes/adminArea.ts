@@ -8,7 +8,7 @@ import { alias } from 'drizzle-orm/pg-core';
 import { ACTIVITY_TYPES, categoryOf, fromReq, logActivity, type ActivityCategory } from '../lib/activity.js';
 import {
   loadRetentionSettings, saveRetentionSettings, validateRetentionSettings, retentionStatus, typesInTier,
-  RETENTION_LIMITS, RETENTION_SETTING_KEY, DEFAULT_TIER, ADMIN_PREFIX,
+  isTierRecorded, primeRetentionCache, RETENTION_LIMITS, RETENTION_SETTING_KEY, DEFAULT_TIER, ADMIN_PREFIX,
 } from '../lib/activityRetention.js';
 import {
   loadOrphanRunState, runPhotoOrphanSweep, publicOrphanResult, envMismatch, orphanSweepDue, ORPHAN_RUN_INTERVAL_MS,
@@ -379,17 +379,29 @@ router.get('/settings/retention', async (_req, res) => {
   try { res.json(await retentionView()); } catch (err) { fail500(res, 'load retention settings', err); }
 });
 
-// PUT /api/admin/settings/retention {highVolumeDays, standardDays, adminDays}
+// PUT /api/admin/settings/retention {highVolumeDays, standardDays, adminDays} (each -1 | 0 | 1–36500)
+//
+// admin.settings_changed is written in the same transaction, BEFORE the save, and is recorded when
+// the admin tier is on either before or after the change (`always` bypasses logActivity's gate). So
+// turning admin logging off is itself recorded (until the next daily cleanup purges the tier), and so
+// is turning it back on; a change made while it's off and staying off isn't. The cache is primed after
+// commit, so this instance stops/starts recording immediately.
 router.put('/settings/retention', async (req, res) => {
   const v = validateRetentionSettings(req.body);
   if (!v.ok) return void res.status(400).json({ error: Object.values(v.errors)[0], code: 'invalid_settings', errors: v.errors });
   try {
     const before = (await loadRetentionSettings()).settings;
-    await saveRetentionSettings(v.value, (req as any).appUser.id);
-    await logActivity({
-      type: 'admin.settings_changed', ...fromReq(req), targetType: 'setting', targetId: RETENTION_SETTING_KEY,
-      payload: { setting: RETENTION_SETTING_KEY, before, after: v.value },
+    const after = v.value;
+    await db.transaction(async tx => {
+      if (isTierRecorded(before, 'admin') || isTierRecorded(after, 'admin')) {
+        await logActivity({
+          type: 'admin.settings_changed', ...fromReq(req), targetType: 'setting', targetId: RETENTION_SETTING_KEY,
+          payload: { setting: RETENTION_SETTING_KEY, before, after },
+        }, { tx, always: true });
+      }
+      await saveRetentionSettings(after, (req as any).appUser.id, tx);
     });
+    primeRetentionCache(after);
     res.json(await retentionView());
   } catch (err) { fail500(res, 'save retention settings', err); }
 });

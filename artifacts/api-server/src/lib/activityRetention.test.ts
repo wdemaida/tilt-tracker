@@ -2,10 +2,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { ACTIVITY_TYPES } from './activity.js';
+import { ACTIVITY_TYPES, logActivity } from './activity.js';
 import {
-  tierOf, typesInTier, unmappedCatalogTypes, TIER_BY_TYPE, DEFAULT_RETENTION, validateRetentionSettings,
-  normalizeRetention, retentionDays, planRetention, runBatches, tierSql, naiveUtcToIso,
+  tierOf, typesInTier, unmappedCatalogTypes, TIER_BY_TYPE, DEFAULT_RETENTION, RETENTION_LIMITS, validateRetentionSettings,
+  normalizeRetention, retentionDays, isTierRecorded, planRetention, runBatches, tierSql, naiveUtcToIso,
+  setRetentionLoaderForTests, primeRetentionCache, cachedRetentionSettings, isTypeRecorded, type RetentionSettings,
 } from './activityRetention.js';
 
 test('every catalogued activity type has an explicit retention tier', () => {
@@ -55,26 +56,28 @@ test('tierSql: built from the same lists (high = ANY list, admin = list or prefi
 test('validateRetentionSettings: defaults are valid', () => {
   const v = validateRetentionSettings({ ...DEFAULT_RETENTION });
   assert.ok(v.ok);
-  if (v.ok) assert.deepEqual(v.value, { highVolumeDays: 90, standardDays: 365, adminDays: 0 });
+  if (v.ok) assert.deepEqual(v.value, { highVolumeDays: 90, standardDays: 365, adminDays: -1 });
 });
 
 test('validateRetentionSettings: bounds', () => {
   const ok = (b: object) => validateRetentionSettings({ ...DEFAULT_RETENTION, ...b }).ok;
-  assert.ok(ok({ highVolumeDays: 7 }));
-  assert.ok(ok({ highVolumeDays: 3650 }));
-  assert.ok(!ok({ highVolumeDays: 6 }));
-  assert.ok(!ok({ highVolumeDays: 3651 }));
-  assert.ok(!ok({ highVolumeDays: 0 }), 'high-volume has no keep-forever');
-  assert.ok(ok({ standardDays: 30 }));
-  assert.ok(!ok({ standardDays: 29 }));
-  assert.ok(!ok({ standardDays: 3651 }));
-  assert.ok(!ok({ standardDays: 0 }));
-  assert.ok(ok({ adminDays: 0 }));
-  assert.ok(ok({ adminDays: 365 }));
-  assert.ok(ok({ adminDays: 36500 }));
-  assert.ok(!ok({ adminDays: 364 }));
-  assert.ok(!ok({ adminDays: 1 }));
-  assert.ok(!ok({ adminDays: 36501 }));
+  for (const f of ['highVolumeDays', 'standardDays', 'adminDays']) {
+    assert.ok(ok({ [f]: -1 }), `${f}: -1 = keep forever`);
+    assert.ok(ok({ [f]: 0 }), `${f}: 0 = don't record`);
+    assert.ok(ok({ [f]: 1 }), `${f}: 1 day`);
+    assert.ok(ok({ [f]: 36500 }), `${f}: max`);
+    assert.ok(!ok({ [f]: -2 }), `${f}: below -1`);
+    assert.ok(!ok({ [f]: -100 }), `${f}: very negative`);
+    assert.ok(!ok({ [f]: 36501 }), `${f}: over max`);
+    assert.ok(!ok({ [f]: 1.5 }), `${f}: fractional`);
+    const bad = validateRetentionSettings({ ...DEFAULT_RETENTION, [f]: -2 });
+    assert.ok(!bad.ok);
+    if (!bad.ok) assert.match(bad.errors[f as keyof RetentionSettings]!, /-1 \(keep forever\), 0 \(don't record\)/);
+  }
+});
+
+test('RETENTION_LIMITS describes every tier the same way (the UI reads it)', () => {
+  for (const lim of Object.values(RETENTION_LIMITS)) assert.deepEqual({ ...lim }, { min: 1, max: 36500, forever: -1, off: 0 });
 });
 
 test('validateRetentionSettings: types, missing fields, garbage', () => {
@@ -86,24 +89,108 @@ test('validateRetentionSettings: types, missing fields, garbage', () => {
   if (!missing.ok) assert.match(missing.errors.standardDays!, /required/);
   assert.ok(!validateRetentionSettings(null).ok);
   assert.ok(!validateRetentionSettings('90').ok);
-  assert.ok(!validateRetentionSettings({ highVolumeDays: NaN, standardDays: 365, adminDays: 0 }).ok);
-  assert.ok(!validateRetentionSettings({ highVolumeDays: Infinity, standardDays: 365, adminDays: 0 }).ok);
+  assert.ok(!validateRetentionSettings({ highVolumeDays: NaN, standardDays: 365, adminDays: -1 }).ok);
+  assert.ok(!validateRetentionSettings({ highVolumeDays: Infinity, standardDays: 365, adminDays: -1 }).ok);
+  assert.ok(!validateRetentionSettings({ highVolumeDays: -Infinity, standardDays: 365, adminDays: -1 }).ok);
 });
 
 test('normalizeRetention: empty = defaults; bad stored fields fall back one by one', () => {
   assert.deepEqual(normalizeRetention(undefined), DEFAULT_RETENTION);
   assert.deepEqual(normalizeRetention({}), DEFAULT_RETENTION);
-  assert.deepEqual(normalizeRetention({ highVolumeDays: 30, standardDays: 1, adminDays: 'x' }), { highVolumeDays: 30, standardDays: 365, adminDays: 0 });
+  assert.deepEqual(normalizeRetention({ highVolumeDays: 30, standardDays: -2, adminDays: 'x' }), { highVolumeDays: 30, standardDays: 365, adminDays: -1 });
+  assert.deepEqual(normalizeRetention({ highVolumeDays: 36501, standardDays: 12.5, adminDays: null }), DEFAULT_RETENTION);
+  assert.deepEqual(normalizeRetention({ highVolumeDays: '0', standardDays: '7' }), DEFAULT_RETENTION, 'strings are not numbers');
   assert.deepEqual(normalizeRetention({ highVolumeDays: 14, standardDays: 730, adminDays: 3650 }), { highVolumeDays: 14, standardDays: 730, adminDays: 3650 });
+  assert.deepEqual(normalizeRetention({ highVolumeDays: 0, standardDays: 1, adminDays: 0 }), { highVolumeDays: 0, standardDays: 1, adminDays: 0 }, '0 and 1 are valid stored values');
+  assert.deepEqual(normalizeRetention({ highVolumeDays: -1, standardDays: -1, adminDays: -1 }), { highVolumeDays: -1, standardDays: -1, adminDays: -1 });
+  assert.deepEqual(normalizeRetention('junk'), DEFAULT_RETENTION);
 });
 
-test('retentionDays / planRetention: 0 = keep forever (null), tiers in order', () => {
+test('retentionDays / planRetention: -1 = keep forever (null, skipped), 0 = delete all (cutoff now), N = days', () => {
   assert.equal(retentionDays(DEFAULT_RETENTION, 'admin'), null);
   assert.equal(retentionDays(DEFAULT_RETENTION, 'high_volume'), 90);
   assert.deepEqual(planRetention(DEFAULT_RETENTION), [
     { tier: 'high_volume', days: 90 }, { tier: 'standard', days: 365 }, { tier: 'admin', days: null },
   ]);
   assert.deepEqual(planRetention({ highVolumeDays: 7, standardDays: 30, adminDays: 365 }).map(p => p.days), [7, 30, 365]);
+  assert.deepEqual(planRetention({ highVolumeDays: 0, standardDays: -1, adminDays: 0 }).map(p => p.days), [0, null, 0]);
+  assert.deepEqual(planRetention({ highVolumeDays: -1, standardDays: 0, adminDays: 1 }).map(p => p.days), [null, 0, 1]);
+});
+
+test('isTierRecorded: only 0 turns recording off', () => {
+  const s = { highVolumeDays: 0, standardDays: -1, adminDays: 1 };
+  assert.equal(isTierRecorded(s, 'high_volume'), false);
+  assert.equal(isTierRecorded(s, 'standard'), true);
+  assert.equal(isTierRecorded(s, 'admin'), true);
+  for (const t of ['high_volume', 'standard', 'admin'] as const) assert.equal(isTierRecorded(DEFAULT_RETENTION, t), true);
+});
+
+// -- the settings cache + logActivity's gate ----------------------------------
+
+// A drizzle-executor stand-in (as in activity.test.ts): records inserted rows.
+function recordingExecutor() {
+  const inserted: any[] = [];
+  const ex: any = {
+    insert: () => ({ values: (row: any) => ({ onConflictDoNothing: () => ({ returning: async () => { inserted.push(row); return [{ id: inserted.length }]; } }) }) }),
+    transaction: async (fn: (sp: any) => Promise<unknown>) => fn(ex),
+  };
+  return { ex, inserted };
+}
+
+test('settings cache: one load per TTL window, shared by concurrent misses; prime replaces it', async () => {
+  let loads = 0;
+  setRetentionLoaderForTests(async () => { loads++; return { highVolumeDays: 30, standardDays: 0, adminDays: -1 }; });
+  try {
+    const [a, b] = await Promise.all([cachedRetentionSettings(), cachedRetentionSettings()]);
+    assert.deepEqual(a, { highVolumeDays: 30, standardDays: 0, adminDays: -1 });
+    assert.equal(a, b);
+    await cachedRetentionSettings();
+    assert.equal(loads, 1);
+    primeRetentionCache({ highVolumeDays: 7, standardDays: 7, adminDays: 7 });
+    assert.deepEqual(await cachedRetentionSettings(), { highVolumeDays: 7, standardDays: 7, adminDays: 7 });
+    assert.equal(loads, 1, 'primed, not re-read');
+  } finally {
+    setRetentionLoaderForTests(null);
+  }
+});
+
+test('settings cache: a failing read falls back to the defaults (record everything), never throws', async () => {
+  const warn = console.warn;
+  console.warn = () => {};
+  setRetentionLoaderForTests(async () => { throw new Error('db down'); });
+  try {
+    assert.deepEqual(await cachedRetentionSettings(), DEFAULT_RETENTION);
+    assert.equal(await isTypeRecorded('score.created'), true);
+  } finally {
+    console.warn = warn;
+    setRetentionLoaderForTests(null);
+  }
+});
+
+test('logActivity skips events whose tier is set to 0 (and writes the others)', async () => {
+  let loads = 0;
+  setRetentionLoaderForTests(async () => { loads++; return { highVolumeDays: 90, standardDays: 0, adminDays: -1 }; });
+  try {
+    const f = recordingExecutor();
+    await logActivity({ type: 'score.created' }, { tx: f.ex });            // standard -> off
+    await logActivity({ type: 'friend.request_sent' }, { tx: f.ex });      // standard -> off
+    await logActivity({ type: 'user.signed_in' }, { tx: f.ex });           // high-volume -> 90 days
+    await logActivity({ type: 'admin.user_disabled' }, { tx: f.ex });      // admin -> forever
+    assert.deepEqual(f.inserted.map(r => r.type), ['user.signed_in', 'admin.user_disabled']);
+    assert.equal(loads, 1, 'one settings read for four events');
+    assert.equal(await isTypeRecorded('zz.unknown'), false, 'unknown types are standard, so off too');
+
+    await logActivity({ type: 'score.created' }, { tx: f.ex, always: true });
+    assert.equal(f.inserted.at(-1).type, 'score.created', '`always` bypasses the gate');
+
+    primeRetentionCache({ highVolumeDays: 0, standardDays: 365, adminDays: 0 });
+    await logActivity({ type: 'score.created' }, { tx: f.ex });
+    await logActivity({ type: 'notification.sent' }, { tx: f.ex });
+    await logActivity({ type: 'admin.settings_changed' }, { tx: f.ex });
+    assert.deepEqual(f.inserted.slice(3).map(r => r.type), ['score.created'], 'a primed change applies at once');
+  } finally {
+    setRetentionLoaderForTests(null);
+  }
 });
 
 test('runBatches: loops until a short batch', async () => {

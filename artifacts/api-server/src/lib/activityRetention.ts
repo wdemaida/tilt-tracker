@@ -1,6 +1,6 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@workspace/db';
-import { ACTIVITY_TYPES, logActivity } from './activity.js';
+import { ACTIVITY_TYPES, logActivity, type Executor } from './activity.js';
 import { getSetting, setSetting } from './appSettings.js';
 
 // Tiered retention for the admin activity log (`activity_events`, which is otherwise append-only and
@@ -13,7 +13,13 @@ import { getSetting, setSetting } from './appSettings.js';
 //                              venue repairs, Pinball Map connect/post, profile setup) — AND any type
 //                              not listed here (the safe default for a new type)
 //   admin        — forever    every admin/moderation action plus the account-lifecycle records
-//                              (0 = never delete)       (user.signed_up, user.clerk_deleted)
+//                                                        (user.signed_up, user.clerk_deleted)
+//
+// Every tier takes the same values (Will, 2026-09-26):
+//   -1        keep forever — never purged
+//    0        off — events of the tier are NOT RECORDED (logActivity skips them, via the settings
+//             cache below) and any existing ones are deleted by the next purge run
+//   1–36500   keep that many days
 //
 // THE MAPPING LIVES IN ONE PLACE: TIER_BY_TYPE below (+ the `admin.` prefix rule for admin types
 // nobody remembered to list). Every catalogued type in ACTIVITY_TYPES must be listed explicitly —
@@ -120,33 +126,38 @@ export function unmappedCatalogTypes(): string[] {
 
 // ── settings ─────────────────────────────────────────────────────────────────
 
+/** Per tier: -1 = keep forever, 0 = don't record (and purge what exists), 1–36500 = days to keep. */
 export interface RetentionSettings {
-  /** Days to keep high-volume events. 7–3650. */
   highVolumeDays: number;
-  /** Days to keep standard events. 30–3650. */
   standardDays: number;
-  /** Days to keep admin/moderation events; 0 = keep forever, else 365–36500. */
   adminDays: number;
 }
 
-export const RETENTION_SETTING_KEY = 'activity_retention';
-export const DEFAULT_RETENTION: Readonly<RetentionSettings> = { highVolumeDays: 90, standardDays: 365, adminDays: 0 };
+/** The two special values every tier accepts besides a day count. */
+export const KEEP_FOREVER = -1;
+export const DONT_RECORD = 0;
 
+export const RETENTION_SETTING_KEY = 'activity_retention';
+export const DEFAULT_RETENTION: Readonly<RetentionSettings> = { highVolumeDays: 90, standardDays: 365, adminDays: KEEP_FOREVER };
+
+// The admin UI reads this (GET /api/admin/settings/retention → limits) to describe each field.
+const TIER_LIMIT = { min: 1, max: 36500, forever: KEEP_FOREVER, off: DONT_RECORD } as const;
 export const RETENTION_LIMITS = {
-  highVolumeDays: { min: 7, max: 3650 },
-  standardDays: { min: 30, max: 3650 },
-  adminDays: { min: 365, max: 36500, allowZero: true },
+  highVolumeDays: TIER_LIMIT,
+  standardDays: TIER_LIMIT,
+  adminDays: TIER_LIMIT,
 } as const;
 
 type FieldKey = keyof RetentionSettings;
 const FIELDS: FieldKey[] = ['highVolumeDays', 'standardDays', 'adminDays'];
+const FIELD_OF_TIER: Record<RetentionTier, FieldKey> = { high_volume: 'highVolumeDays', standard: 'standardDays', admin: 'adminDays' };
 
 function fieldError(field: FieldKey, v: unknown): string | null {
-  const lim = RETENTION_LIMITS[field] as { min: number; max: number; allowZero?: boolean };
+  const lim = RETENTION_LIMITS[field];
   if (typeof v !== 'number' || !Number.isInteger(v)) return `${field} must be a whole number of days`;
-  if (lim.allowZero && v === 0) return null;
+  if (v === lim.forever || v === lim.off) return null;
   if (v < lim.min || v > lim.max) {
-    return `${field} must be ${lim.allowZero ? '0 (keep forever) or ' : ''}between ${lim.min} and ${lim.max} days`;
+    return `${field} must be ${lim.forever} (keep forever), ${lim.off} (don't record) or between ${lim.min} and ${lim.max} days`;
   }
   return null;
 }
@@ -207,19 +218,87 @@ export async function loadRetentionSettings(): Promise<RetentionSettingsView> {
   }
 }
 
-export async function saveRetentionSettings(value: RetentionSettings, byUserId: number): Promise<void> {
-  await setSetting(RETENTION_SETTING_KEY, value, byUserId);
+export async function saveRetentionSettings(value: RetentionSettings, byUserId: number, ex?: Executor): Promise<void> {
+  await setSetting(RETENTION_SETTING_KEY, value, byUserId, ex);
 }
 
-/** Days to keep a tier's events, or null = keep forever. Pure. */
+/**
+ * Age limit for a tier's events: null = keep forever (-1, skip the tier), 0 = delete every row of the
+ * tier (cutoff = now), N = older than N days. Pure.
+ */
 export function retentionDays(settings: RetentionSettings, tier: RetentionTier): number | null {
-  const d = tier === 'high_volume' ? settings.highVolumeDays : tier === 'standard' ? settings.standardDays : settings.adminDays;
-  return d > 0 ? d : null;
+  const d = settings[FIELD_OF_TIER[tier]];
+  return d < 0 ? null : d;
 }
 
-/** What a run would do, per tier, in order. Pure — unit-tested. */
+/** Whether events of a tier are written at all (false when the tier is set to 0). Pure. */
+export function isTierRecorded(settings: RetentionSettings, tier: RetentionTier): boolean {
+  return settings[FIELD_OF_TIER[tier]] !== DONT_RECORD;
+}
+
+/** What a run would do, per tier, in order (days as retentionDays). Pure — unit-tested. */
 export function planRetention(settings: RetentionSettings): Array<{ tier: RetentionTier; days: number | null }> {
   return RETENTION_TIERS.map(tier => ({ tier, days: retentionDays(settings, tier) }));
+}
+
+// ── settings cache (for logActivity's "is this tier recorded?" check) ─────────
+//
+// logActivity() asks isTypeRecorded() before every insert, so the settings come from an in-process
+// cache: refreshed at most once per SETTINGS_CACHE_TTL_MS (concurrent misses share one read), and
+// primed by the PUT route so a change applies on this instance immediately. Another instance (there's
+// one on Render today) picks it up within the TTL. A failed read keeps the last known settings (or
+// the defaults, which record everything) for a few seconds, then retries — never throws.
+
+export const SETTINGS_CACHE_TTL_MS = 60_000;
+const SETTINGS_ERROR_TTL_MS = 5_000;
+
+type RetentionLoader = () => Promise<RetentionSettings>;
+const dbLoader: RetentionLoader = async () => normalizeRetention((await getSetting(RETENTION_SETTING_KEY))?.value);
+let loader: RetentionLoader = dbLoader;
+let cached: { settings: RetentionSettings; expires: number } | null = null;
+let inflight: Promise<RetentionSettings> | null = null;
+let generation = 0;
+
+/** Tests: replace the settings read (null = the real DB read). Also clears the cache. */
+export function setRetentionLoaderForTests(fn: RetentionLoader | null): void {
+  loader = fn ?? dbLoader;
+  cached = null;
+  inflight = null;
+  generation++;
+}
+
+/** Put freshly saved settings in the cache (the PUT route calls this after its transaction commits). */
+export function primeRetentionCache(settings: RetentionSettings): void {
+  generation++;
+  inflight = null;
+  cached = { settings: { ...settings }, expires: Date.now() + SETTINGS_CACHE_TTL_MS };
+}
+
+/** Current settings via the cache. Never throws. */
+export async function cachedRetentionSettings(): Promise<RetentionSettings> {
+  if (cached && Date.now() < cached.expires) return cached.settings;
+  if (!inflight) {
+    const gen = generation;
+    const fallback = cached?.settings ?? { ...DEFAULT_RETENTION };
+    const p: Promise<RetentionSettings> = loader().then(
+      s => {
+        if (gen === generation) cached = { settings: s, expires: Date.now() + SETTINGS_CACHE_TTL_MS };
+        return s;
+      },
+      (err: any) => {
+        console.warn('[retention] settings read failed, recording with last known settings:', err?.message ?? err);
+        if (gen === generation) cached = { settings: fallback, expires: Date.now() + SETTINGS_ERROR_TTL_MS };
+        return fallback;
+      },
+    ).finally(() => { if (inflight === p) inflight = null; });
+    inflight = p;
+  }
+  return inflight;
+}
+
+/** Whether an event of this type should be written (its tier isn't set to 0). Never throws. */
+export async function isTypeRecorded(type: string): Promise<boolean> {
+  return isTierRecorded(await cachedRetentionSettings(), tierOf(type));
 }
 
 // ── batching ─────────────────────────────────────────────────────────────────
@@ -278,11 +357,11 @@ function cutoffSql(days: number): SQL {
   return sql`((now() AT TIME ZONE 'UTC') - make_interval(days => ${days}))`;
 }
 
-async function deleteTierBatch(tier: RetentionTier, days: number, limit: number): Promise<number> {
+async function deleteTierBatch(tier: RetentionTier, days: number, limit: number, scope?: SQL): Promise<number> {
   const rows = await db.execute(sql`
     WITH doomed AS (
       SELECT id FROM activity_events
-      WHERE ${tierSql(tier)} AND created_at < ${cutoffSql(days)}
+      WHERE ${tierSql(tier)} AND created_at < ${cutoffSql(days)}${scope ? sql` AND (${scope})` : sql``}
       ORDER BY created_at
       LIMIT ${limit}
     )
@@ -303,8 +382,9 @@ export interface RetentionRunResult {
 }
 
 /**
- * Purges every tier past its age limit and logs one `system.activity_retention` event (after the
- * purge, so the record of this run isn't among what it deletes). A failing tier is recorded in
+ * Purges every tier past its age limit (a tier set to 0 loses every row; -1 is skipped) and logs one
+ * `system.activity_retention` event (after the purge, so the record of this run isn't among what it
+ * deletes — and not at all when the high-volume tier is 0). A failing tier is recorded in
  * `errors` and the others still run. `deleteBatch` is injectable for tests.
  */
 export async function runActivityRetention(opts: {
@@ -312,6 +392,9 @@ export async function runActivityRetention(opts: {
   batchSize?: number;
   maxBatches?: number;
   log?: boolean;
+  /** Tests only (test-retention.ts): an extra WHERE condition, so a "delete everything" tier can be
+   *  exercised on the dev branch without wiping its genuine events. */
+  scope?: SQL;
 } = {}): Promise<RetentionRunResult> {
   const started = Date.now();
   const settings = opts.settings ?? (await loadRetentionSettings()).settings;
@@ -321,7 +404,7 @@ export async function runActivityRetention(opts: {
   for (const { tier, days } of planRetention(settings)) {
     if (days == null) continue;
     try {
-      const r = await runBatches(limit => deleteTierBatch(tier, days, limit), opts.batchSize ?? BATCH_SIZE, opts.maxBatches ?? MAX_BATCHES);
+      const r = await runBatches(limit => deleteTierBatch(tier, days, limit, opts.scope), opts.batchSize ?? BATCH_SIZE, opts.maxBatches ?? MAX_BATCHES);
       deleted[tier] = r.deleted;
       capped ||= r.capped;
     } catch (err: any) {
@@ -340,6 +423,7 @@ export async function runActivityRetention(opts: {
 
 export interface TierStatus {
   tier: RetentionTier;
+  /** As retentionDays: null = kept forever, 0 = not recorded (all rows go next run), N = days. */
   days: number | null;
   rows: number;
   oldest: string | null;
@@ -349,7 +433,8 @@ export interface TierStatus {
 
 /** Row counts, oldest event and would-delete estimate per tier (one aggregate query). */
 export async function retentionStatus(settings: RetentionSettings): Promise<TierStatus[]> {
-  // Keep-forever tiers get a cutoff of -infinity, so nothing counts as eligible.
+  // Keep-forever tiers get a cutoff of -infinity, so nothing counts as eligible; a tier set to 0 gets
+  // cutoff = now, so every row counts.
   const cut = (tier: RetentionTier) => {
     const d = retentionDays(settings, tier);
     return d == null ? sql`'-infinity'::timestamp` : cutoffSql(d);

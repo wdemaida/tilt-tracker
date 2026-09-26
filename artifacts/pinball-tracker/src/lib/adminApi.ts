@@ -40,6 +40,7 @@ export interface AdminOverview {
 
 export type RetentionTier = 'high_volume' | 'standard' | 'admin';
 
+/** Per tier: -1 = keep forever, 0 = don't record (existing rows purged next run), 1–36500 = days. */
 export interface RetentionSettings { highVolumeDays: number; standardDays: number; adminDays: number }
 
 export interface RetentionLastRun {
@@ -53,10 +54,11 @@ export interface RetentionLastRun {
 export interface RetentionView {
   settings: RetentionSettings;
   defaults: RetentionSettings;
-  limits: Record<keyof RetentionSettings, { min: number; max: number; allowZero?: boolean }>;
+  limits: Record<keyof RetentionSettings, { min: number; max: number; forever: number; off: number }>;
   isDefault: boolean;
   updatedAt: string | null;
   updatedBy: UserRef | null;
+  /** days: null = kept forever, 0 = not recorded (every row is eligible), N = days. */
   tiers: Array<{ tier: RetentionTier; days: number | null; rows: number; oldest: string | null; eligible: number }>;
   typesByTier: Record<RetentionTier, string[]>;
   defaultTier: RetentionTier;

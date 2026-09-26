@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   sanitizePayload, buildActivityRow, categoryOf, logActivity, insertActivity, clientIp, fromReq, ACTIVITY_TYPES,
+  setActivityGateForTests, isActivityRecorded,
 } from './activity.js';
 import { eventForFinishedRequest, PM_RULES, VENUE_RULES, MACHINE_RULES } from './activityRoutes.js';
 
@@ -67,6 +68,38 @@ test('categoryOf maps every catalogued type, and unknown types to other', () => 
   assert.equal(categoryOf('something.else'), 'other');
   const all = Object.values(ACTIVITY_TYPES).flat();
   assert.equal(new Set(all).size, all.length, 'no type listed twice');
+});
+
+// The retention gate (a tier set to 0 = not recorded) reads app_settings; keep these tests DB-free.
+// activityRetention.test.ts covers the real settings-driven gate with a stubbed settings loader.
+setActivityGateForTests(() => true);
+
+test('logActivity skips a type the gate says is not recorded; `always` overrides it', async () => {
+  setActivityGateForTests(type => type !== 'score.created');
+  try {
+    const f = fakeExecutor();
+    await logActivity({ type: 'score.created' }, { tx: f.ex });
+    await logActivity({ type: 'score.deleted' }, { tx: f.ex });
+    await logActivity({ type: 'score.created' }, { tx: f.ex, always: true });
+    assert.deepEqual(f.inserted.map(r => r.type), ['score.deleted', 'score.created']);
+  } finally {
+    setActivityGateForTests(() => true);
+  }
+});
+
+test('a failing gate records the event (never loses one to the check)', async () => {
+  const warn = console.warn;
+  console.warn = () => {};
+  setActivityGateForTests(() => { throw new Error('boom'); });
+  try {
+    assert.equal(await isActivityRecorded('score.created'), true);
+    const f = fakeExecutor();
+    await logActivity({ type: 'score.created' }, { tx: f.ex });
+    assert.equal(f.inserted.length, 1);
+  } finally {
+    console.warn = warn;
+    setActivityGateForTests(() => true);
+  }
 });
 
 test('logActivity never throws, even when the insert fails', async () => {
