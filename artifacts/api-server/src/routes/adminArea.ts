@@ -5,7 +5,14 @@ import {
 } from '@workspace/db';
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql, type SQL } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
-import { ACTIVITY_TYPES, categoryOf, fromReq, type ActivityCategory } from '../lib/activity.js';
+import { ACTIVITY_TYPES, categoryOf, fromReq, logActivity, type ActivityCategory } from '../lib/activity.js';
+import {
+  loadRetentionSettings, saveRetentionSettings, validateRetentionSettings, retentionStatus, typesInTier,
+  RETENTION_LIMITS, RETENTION_SETTING_KEY, DEFAULT_TIER, ADMIN_PREFIX,
+} from '../lib/activityRetention.js';
+import {
+  loadOrphanRunState, runPhotoOrphanSweep, publicOrphanResult, envMismatch, orphanSweepDue, ORPHAN_RUN_INTERVAL_MS,
+} from '../lib/photoOrphans.js';
 import { getClerkActivity } from '../lib/clerkAdmin.js';
 import {
   disableUser, enableUser, deleteScoreAsAdmin, deleteFullPhotoAsAdmin, deleteThumbnailAsAdmin, voidChallenge,
@@ -13,7 +20,7 @@ import {
 } from '../lib/adminActions.js';
 import { getCatalogStatus } from '../lib/pinballMap.js';
 import { pmClient } from '../lib/pmClient.js';
-import { missingR2Vars } from '../lib/photoStore.js';
+import { missingR2Vars, getPhotoStore } from '../lib/photoStore.js';
 
 // The admin area — /api/admin/* (mounted inside routes/admin.ts, so every route here is behind
 // requireAppUser + requireAdmin; the unit test enumerates this router's routes and checks that).
@@ -113,9 +120,10 @@ router.get('/overview', async (_req, res) => {
     const lastRuns = await db
       .select({ type: activityEvents.type, at: sql<string>`max(${activityEvents.createdAt})` })
       .from(activityEvents)
-      .where(inArray(activityEvents.type, ['system.stat_snapshot', 'system.challenge_sweep']))
+      .where(inArray(activityEvents.type, ['system.stat_snapshot', 'system.challenge_sweep', 'system.activity_retention']))
       .groupBy(activityEvents.type);
     const [snap] = await db.select({ at: sql<string | null>`max(${statHistory.createdAt})` }).from(statHistory);
+    const [lastRetention, orphanState] = await Promise.all([lastRetentionRun(), loadOrphanRunState()]);
 
     res.json({
       counts,
@@ -128,6 +136,8 @@ router.get('/overview', async (_req, res) => {
         cron: {
           statSnapshot: lastRuns.find(r => r.type === 'system.stat_snapshot')?.at ?? snap?.at ?? null,
           challengeSweep: lastRuns.find(r => r.type === 'system.challenge_sweep')?.at ?? null,
+          activityRetention: lastRetention,
+          photoOrphans: orphanSummary(orphanState),
         },
       },
     });
@@ -314,6 +324,101 @@ router.get('/activity', async (req, res) => {
 
 router.get('/activity/types', (_req, res) => {
   res.json(ACTIVITY_TYPES);
+});
+
+// ── maintenance: activity-log retention + photo orphan sweep ─────────────────
+
+/** The newest system.activity_retention event: when it ran and what it deleted. */
+async function lastRetentionRun() {
+  const [row] = await db.select({ at: activityEvents.createdAt, payload: activityEvents.payload })
+    .from(activityEvents).where(eq(activityEvents.type, 'system.activity_retention'))
+    .orderBy(desc(activityEvents.id)).limit(1);
+  if (!row) return null;
+  const p = row.payload as Record<string, any>;
+  return { at: row.at, deleted: p.deleted ?? null, total: p.total ?? 0, capped: !!p.capped, errors: Array.isArray(p.errors) ? p.errors.length : 0 };
+}
+
+function orphanSummary(state: Awaited<ReturnType<typeof loadOrphanRunState>>) {
+  const r = state.lastRun;
+  const nextDueAt = state.lastDeleteRunAt ? new Date(+new Date(state.lastDeleteRunAt) + ORPHAN_RUN_INTERVAL_MS).toISOString() : null;
+  return {
+    lastRun: r ? {
+      at: r.at, trigger: r.trigger, dryRun: r.dryRun, listed: r.listed, orphans: r.orphans, orphanBytes: r.orphanBytes,
+      deleted: r.deleted, failed: r.failed, skippedReferenced: r.skippedReferenced, capped: r.capped,
+    } : null,
+    lastDeleteRunAt: state.lastDeleteRunAt,
+    nextDueAt,
+    dueNow: orphanSweepDue(state.lastDeleteRunAt, Date.now()),
+  };
+}
+
+async function retentionView() {
+  const view = await loadRetentionSettings();
+  const [tiers, lastRun, updatedBy] = await Promise.all([
+    retentionStatus(view.settings),
+    lastRetentionRun(),
+    view.updatedById ? db.select(userRef).from(users).where(eq(users.id, view.updatedById)).limit(1) : Promise.resolve([]),
+  ]);
+  return {
+    settings: view.settings,
+    defaults: view.defaults,
+    limits: RETENTION_LIMITS,
+    isDefault: view.isDefault,
+    updatedAt: view.updatedAt,
+    updatedBy: updatedBy[0] ?? null,
+    tiers,
+    typesByTier: { high_volume: typesInTier('high_volume'), standard: typesInTier('standard'), admin: typesInTier('admin') },
+    defaultTier: DEFAULT_TIER,
+    adminPrefix: ADMIN_PREFIX,
+    lastRun,
+  };
+}
+
+// GET /api/admin/settings/retention — settings, per-tier counts / oldest / would-delete, last run.
+router.get('/settings/retention', async (_req, res) => {
+  try { res.json(await retentionView()); } catch (err) { fail500(res, 'load retention settings', err); }
+});
+
+// PUT /api/admin/settings/retention {highVolumeDays, standardDays, adminDays}
+router.put('/settings/retention', async (req, res) => {
+  const v = validateRetentionSettings(req.body);
+  if (!v.ok) return void res.status(400).json({ error: Object.values(v.errors)[0], code: 'invalid_settings', errors: v.errors });
+  try {
+    const before = (await loadRetentionSettings()).settings;
+    await saveRetentionSettings(v.value, (req as any).appUser.id);
+    await logActivity({
+      type: 'admin.settings_changed', ...fromReq(req), targetType: 'setting', targetId: RETENTION_SETTING_KEY,
+      payload: { setting: RETENTION_SETTING_KEY, before, after: v.value },
+    });
+    res.json(await retentionView());
+  } catch (err) { fail500(res, 'save retention settings', err); }
+});
+
+// GET /api/admin/photo-orphans — whether the sweep can run here, last run, next scheduled run.
+router.get('/photo-orphans', async (_req, res) => {
+  try {
+    const store = getPhotoStore();
+    res.json({
+      configured: !!store,
+      envMismatch: store ? envMismatch(process.env.DATABASE_URL, store.bucket) : null,
+      ...orphanSummary(await loadOrphanRunState()),
+    });
+  } catch (err) { fail500(res, 'load photo orphan status', err); }
+});
+
+// POST /api/admin/photo-orphans/run {dryRun} — dry run unless dryRun === false (explicitly).
+router.post('/photo-orphans/run', async (req, res) => {
+  const dryRun = req.body?.dryRun !== false;
+  try {
+    const outcome = await runPhotoOrphanSweep({ dryRun, trigger: 'admin', actorUserId: (req as any).appUser.id });
+    if (!outcome.ran) {
+      const status = outcome.reason === 'r2_not_configured' ? 503 : 409;
+      return void res.status(status).json({ error: outcome.detail ?? 'Full-size photos (R2) are not configured', code: outcome.reason });
+    }
+    const result = publicOrphanResult(outcome.result);
+    await logActivity({ type: 'admin.photo_orphans_run', ...fromReq(req), payload: { ...result, sampleScoreIds: undefined } });
+    res.json(result);
+  } catch (err) { fail500(res, 'run photo orphan sweep', err); }
 });
 
 // ── social ───────────────────────────────────────────────────────────────────

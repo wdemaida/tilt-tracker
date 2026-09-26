@@ -2,7 +2,8 @@ name: Daily Challenges sweep
 
 # 14:00 UTC = 10am EDT / 9am EST, so "less than a day left" notices land in the daytime. The sweep
 # resolves past-deadline challenges, expires unanswered ones, sends ending-soon notices (once per
-# participant) and deletes READ notifications older than 30 days. Challenges also resolve lazily
+# participant) and deletes READ notifications older than 30 days; then daily housekeeping: activity-log
+# retention (every run) and the R2 photo orphan sweep (weekly). Challenges also resolve lazily
 # whenever they're read, so a delayed or skipped run only delays notifications. Uses the same
 # CRON_SECRET repo secret (and Render env var) as the StatHistory snapshot — nothing new to set.
 on:
@@ -16,6 +17,6 @@ jobs:
     steps:
       - name: Trigger challenge sweep
         run: |
-          curl -fsS --max-time 120 -X POST \
+          curl -fsS --max-time 300 -X POST \
             -H "x-cron-secret: ${{ secrets.CRON_SECRET }}" \
             https://tilt-tracker.onrender.com/api/cron/challenge-sweep

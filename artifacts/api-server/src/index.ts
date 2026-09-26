@@ -23,6 +23,7 @@ import { routeActivity, PM_RULES, VENUE_RULES, MACHINE_RULES } from './lib/activ
 import { logActivity } from './lib/activity.js';
 import { captureStatSnapshot } from './lib/statSnapshot.js';
 import { runChallengeSweep } from './lib/challenges.js';
+import { runDailyHousekeeping } from './lib/housekeeping.js';
 import { logPhotoStoreStatus } from './lib/photoStore.js';
 
 const app = express();
@@ -68,8 +69,9 @@ app.post('/api/cron/stat-snapshot', async (req, res) => {
 
 // POST /api/cron/challenge-sweep — the daily Challenges sweep (.github/workflows/challenge-sweep.yml):
 // resolves past-deadline challenges, expires unanswered ones, sends "ending soon" notices, and
-// deletes READ notifications older than 30 days (unread ones are kept forever). Same shared-secret
-// guard as the stat snapshot above. Reads also resolve challenges lazily, so a missed run only
+// deletes READ notifications older than 30 days (unread ones are kept forever). Then the daily
+// housekeeping (lib/housekeeping.ts): activity-log retention every day, the R2 photo orphan sweep
+// once a week. Same shared-secret guard as the stat snapshot above. Reads also resolve challenges lazily, so a missed run only
 // delays notifications — it never leaves a challenge showing the wrong state.
 app.post('/api/cron/challenge-sweep', async (req, res) => {
   if (!process.env.CRON_SECRET) return void res.status(500).json({ error: 'CRON_SECRET not configured' });
@@ -77,7 +79,9 @@ app.post('/api/cron/challenge-sweep', async (req, res) => {
   try {
     const result = await runChallengeSweep();
     await logActivity({ type: 'system.challenge_sweep', payload: { ...result } });
-    res.json(result);
+    // Never throws — each step reports its own failure.
+    const housekeeping = await runDailyHousekeeping();
+    res.json({ ...result, housekeeping });
   } catch (err) {
     console.error('Cron challenge sweep error:', err);
     res.status(500).json({ error: 'Failed to run challenge sweep' });
