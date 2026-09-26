@@ -77,6 +77,11 @@ Claude is authorized to commit and push to `main` directly — no need to ask pe
 rather than erroring. Request one at <https://pinballmap.com/api_token>. Remember that a Render env
 var PUT **replaces all env vars** — send the full set, not just the new key.
 
+**Full-size photos need `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and
+`R2_BUCKET=tilttrack-photos` on Render** (prod bucket, never the `-dev` one). Without them the feature is
+simply off — uploads and thumbnails still work. Shipping it also means running migrate17 on production
+(remove its dev-branch guard deliberately first). Details: api-server CLAUDE.md, "Full-size score photos".
+
 **Git identity must be `wdemaida` / `wdemaida@gmail.com`** — the remote is `https://wdemaida@github.com/wdemaida/tilt-tracker.git`. If Vercel deployments start failing with "not a member" errors, check `git config user.name/email` in the repo.
 
 Push uses an isolated `GH_CONFIG_DIR` (not the global `gh` login) — see the **deploy** skill (`.claude/skills/deploy/SKILL.md`) for the credential setup, production URLs/service keys, and Vercel/Render-specific gotchas.
@@ -146,5 +151,9 @@ Feature-specific gotchas live in `artifacts/pinball-tracker/CLAUDE.md` (frontend
 | `artifacts/api-server/src/lib/pmRosterCache.ts` | 6h cache of PM machine rosters — the only sanctioned way to read a roster |
 | `artifacts/pinball-tracker/src/components/VenueRepairPanel.tsx` | 3-step repair UI on the venue page (HERE → Pinball Map → re-sync) |
 | `artifacts/pinball-tracker/src/components/ScoreResyncModal.tsx` | Preview-and-confirm modal for re-syncing a venue's scores |
+| `artifacts/api-server/src/lib/photoStore.ts` | Full-size score photos on Cloudflare R2 — presign, HEAD checks, delete, orphans |
+| `artifacts/api-server/src/routes/scorePhotos.ts` | `/api/scores/:id/photo` upload-url / confirm / view |
+| `artifacts/pinball-tracker/src/lib/fullSizePhoto.ts` | Browser-side full-size encode (EXIF-free, ≤4096px) + R2 upload |
+| `artifacts/pinball-tracker/src/components/PhotoViewer.tsx` | Full-screen zoomable photo viewer |
 | `lib/db/src/schema.ts` | Drizzle schema — source of truth for DB types |
 | `artifacts/api-server/migrate*.ts` | Numbered migration scripts (run once, keep for history) |

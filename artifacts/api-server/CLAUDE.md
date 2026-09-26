@@ -537,3 +537,48 @@ Implementation notes (fix/pm-etiquette, 2026-09-26):
   deletes **read** notifications older than 30 days; unread ones are kept.
 - Tests: `npx tsx --test src/lib/challengeRules.test.ts`; `npx tsx test-challenges.ts` (dev branch
   only; borrows 3 friendless users and throwaway `zz-challenge-test` machines, cleans up).
+
+## Full-size score photos (`src/lib/photoStore.ts`, `routes/scorePhotos.ts`, migrate17, added 2026-09-26)
+- **Storage:** Cloudflare R2, private buckets — `tilttrack-photos-dev` (local/dev) and `tilttrack-photos`
+  (prod). Env: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`. **Optional:** with
+  any missing, startup logs one `[photos] Full-size photos disabled` warning, the photo routes answer 503
+  `photos_disabled`, and uploads/thumbnails work exactly as before. Never log the values.
+- **Client:** `@aws-sdk/client-s3` with `forcePathStyle` and `requestChecksumCalculation` /
+  `responseChecksumValidation: 'WHEN_REQUIRED'` — SDK >= 3.729 otherwise adds CRC32 checksum params to
+  presigned PUTs that a browser can't satisfy and R2 rejects. The PUT signs `content-type`, so R2 itself
+  refuses anything not sent as exactly `image/jpeg`.
+- **Schema:** `scores.photo_key` (+ `photo_bytes`, `photo_width`, `photo_height`). A separate column, not
+  `photo_url`: dev seed scripts put a marker in `photo_url`, and challenge rules treat
+  `photo_url OR photo_thumbnail` as "has a photo" — a full-size photo is display-only and never part of
+  that rule. Keys are `scores/{scoreId}/{uuid}.jpg`; the score id in the key is how confirm proves a key
+  belongs to the score (`keyBelongsToScore`) and how the orphan sweep maps objects back to rows.
+- **Keys never leave the server.** Lists (`/api/scores`, `/users/:u`, `/machines/:name`,
+  `/venues/:id/scores`, challenge counting scores) expose `hasFullPhoto` only (`hasFullPhotoSql`); POST
+  and PATCH `/api/scores` pass their full rows through `publicScoreRow()`. Any new route returning a full
+  score row must do the same.
+- **Upload** (after the score saves — AddScorePage, see frontend CLAUDE.md): `POST /api/scores/:id/photo/upload-url`
+  (owner only, 30/10 min) → presigned PUT, 5 min → browser PUTs to R2 → `POST .../photo/confirm {key,width,height}`
+  (owner only, 30/10 min): `HeadObject` must exist, be ≤ 12MB and `image/jpeg`; a failing object is
+  deleted. Confirm replaces any previous key (row-locked) and deletes the old object. Width/height are the
+  browser's word — a layout hint, clamped to 1..4096. The first photo may be attached to a
+  challenge-locked score (a challenge can lock a score the moment it saves, before the background upload
+  lands); *replacing* one on a locked score is 409 `score_locked_by_challenge`.
+- **View:** `GET /api/scores/:id/photo` — optional auth, guests included (240/10 min per user or IP).
+  Loads through `visibleScoreSql(viewer)`, so a hidden home-venue score is a 404 to strangers and guests.
+  Returns JSON `{ url, width, height, expiresAt }` (presigned GET, 10 min) rather than a 302: an `<img>`
+  can't carry the Clerk bearer token, and the visibility check needs to know who's asking.
+- **Deletion:** `DELETE /api/scores/:id` deletes the object *after* the row (`deletePhotoBestEffort`,
+  using the key from `DELETE … RETURNING`), logging failures — an orphan, never a dangling row. **Any
+  future code that deletes scores (or clears `photo_key`) must delete the object the same way.** Today
+  that route is the only score delete in `src/`.
+- **Orphans:** `npx tsx cleanup-photo-orphans.ts` (dry run; `--delete` to remove) lists `scores/` objects
+  no row references and older than 24h (the floor protects an upload between PUT and confirm). It refuses
+  a dev DB with the prod bucket or vice versa. No cron yet — run it by hand occasionally.
+- **Bucket CORS** is configured in the Cloudflare dashboard, not in code: dev allows
+  `https://localhost:5174` and `https://192.168.192.218:5174`, prod `https://tilttrack.vercel.app`;
+  methods PUT, GET; header Content-Type. A new dev origin/port can view photos (`<img>` needs no CORS)
+  but can't upload until it's added there.
+- Tests: `npx tsx --test src/lib/photoStore.test.ts` (keys, head checks, verifyUpload against a fake
+  store, presigned URL shape, orphan filter); `npx tsx test-photos.ts` — live round trip against the dev
+  DB + dev bucket (upload-url → PUT → confirm → list → guest view → replace → hidden-venue 404s → delete),
+  skips when R2 vars are absent, refuses anything but `tilttrack-photos-dev`.

@@ -230,3 +230,26 @@
   separate non-blocking note, "Digits were hard to line up — check each one against the machine".
   A flagged read **always opens in digit-cell mode, even when complete** — never prefilled into the
   plain number field — so its amber `lowConfidence` digits and its `conflicts` picker are visible.
+
+## Full-size photos (`src/lib/fullSizePhoto.ts`, `components/PhotoViewer.tsx`, added 2026-09-26)
+- Thumbnails are unchanged (160px data URL on the score). The full-size photo is uploaded to R2 **after**
+  the score saves, in the background (`runFullPhotoUpload` in AddScorePage); step 4 shows Saving / Saved /
+  Retry, and says nothing when there's no photo or the server has photos disabled. Tapping Done doesn't
+  cancel it.
+- Only the image behind the thumbnail is uploaded — `setBestImage()` is called exactly where
+  `generateThumbnail()` is, so the two can't diverge. **Never upload the camera original**: every photo is
+  redrawn through a canvas (drops EXIF/GPS — home-venue privacy), capped at `FULL_MAX_EDGE` 4096 (iOS
+  Safari's ~16.7MP canvas limit; 24MP iPhone photos exceed it) and encoded JPEG 0.92, stepping down if
+  over 11.5MB. Video frames are drawn at native resolution during extraction (the `<video>` is gone by save
+  time) and marked `ready`. A `heicFailed` image gets no full-size.
+- **HEIC:** `prepareUploadImage` tries the browser's native decoder (`createImageBitmap`, Safari 17+)
+  before heic2any. heic2any paints the whole decoded image into one canvas, so a 24MP+ HEIC on an iPhone
+  exceeds the canvas limit and silently becomes `heicFailed` (server decode). Note iOS usually hands
+  `accept="image/*"` inputs a JPEG anyway; raw HEIC mostly arrives from the Files picker or desktop.
+- Viewing: `api.scores.photo(id)` via `useApi()` (no token for guests) returns a signed URL for the
+  `<img>`; cached 4 min under `['score-photo', id]` (URLs last 10). `PhotoViewer` portals to `<body>` at
+  z-50; hand-rolled pointer zoom (pinch/drag, wheel, click on desktop, double-tap on touch), closes via ×,
+  Escape, backdrop tap or swipe down at 1×. Home `ScoreCard` thumbnails with `hasFullPhoto` open it (tiny
+  expand badge); user/machine/venue/challenge rows use `FullPhotoButton` (camera icon).
+- Uploads only work from origins in the R2 bucket's CORS list (see api-server CLAUDE.md) — a scratch vite
+  on another port can view but not upload.
