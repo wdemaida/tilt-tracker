@@ -13,7 +13,7 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 //   challenge_opponent_scored   → the other participant(s), when a counting score is posted
 //                                 (deduped per challenge: one unread at a time, carrying `score`)
 //   challenge_ending_soon       → each participant once, ~24h before the end (daily sweep)
-//   challenge_result            → every participant on resolution (`outcome`, `void`, `reason`)
+//   challenge_result            → every participant on resolution (`outcome`, `void`, `abandoned`, `reason`)
 // `payload` is kind-specific jsonb, and `dedupe` lets a kind say "there should only ever be one
 // unread one of me about X" — a re-sent friend request replaces the existing unread notification,
 // back at the top, instead of stacking a second one.

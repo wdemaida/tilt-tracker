@@ -299,6 +299,29 @@ try {
   check('race default target = creator best on the machine (60,000 on the Premium, game mode)', r.status === 201 && r.body?.targetScore === 60_000, r.body);
   await call(alice, 'POST', `/challenges/${r.body.id}/cancel`);
 
+  // ── race: equalling the target is not a finish; nobody finishing → abandoned ─
+  r = await post(alice, { friendId: bob.id, type: 'race', targetScore: 5000, matchMode: 'exact' });
+  const abandonedRace = r.body.id;
+  await call(bob, 'POST', `/challenges/${abandonedRace}/accept`);
+  s = await upload(alice, { score: 5000 });
+  check('race: a score exactly equal to the target counts (locked)', (await db.select().from(challengeScores)
+    .where(and(eq(challengeScores.challengeId, abandonedRace), eq(challengeScores.scoreId, s.body.id)))).length === 1);
+  r = await call(bob, 'GET', `/challenges/${abandonedRace}`);
+  check('race: equalling the target does not win — still active, not qualified', r.body?.status === 'active'
+    && standing(r.body, alice.id)?.qualified === false && standing(r.body, alice.id)?.reachedTargetAt === null, r.body);
+  const [arRow] = await db.select({ startsAt: challenges.startsAt }).from(challenges).where(eq(challenges.id, abandonedRace));
+  await setWindow(abandonedRace, arRow.startsAt, new Date(Date.now() - 500));
+  await runChallengeSweep();
+  r = await call(alice, 'GET', `/challenges/${abandonedRace}`);
+  check('race nobody beat: resolved, abandoned (not void), both abandoned — bob too, who never played', r.body?.status === 'resolved'
+    && r.body?.abandoned === true && r.body?.void === false
+    && byUser(r.body)[alice.id] === 'abandoned' && byUser(r.body)[bob.id] === 'abandoned' && r.body?.me?.outcome === 'abandoned', r.body);
+  const abandonedResult = (await inbox(bob)).filter(n => n.payload?.challengeId === abandonedRace && n.kind === 'challenge_result');
+  check('challenge_result carries outcome abandoned + abandoned: true', abandonedResult.length === 1
+    && abandonedResult[0].payload.outcome === 'abandoned' && abandonedResult[0].payload.abandoned === true && abandonedResult[0].payload.void === false, abandonedResult);
+  r = await call(alice, 'GET', `/challenges/${race}`);
+  check('a normally won race is not abandoned', r.body?.abandoned === false, r.body?.abandoned);
+
   // ── most improved ──────────────────────────────────────────────────────────
   await db.insert(scores).values([
     { userId: alice.id, machineId: PRO, score: 100_000, playedAt: new Date(Date.now() - 10 * 24 * H), createdAt: new Date(Date.now() - 10 * 24 * H) },
@@ -360,10 +383,11 @@ try {
 
   // ── records ────────────────────────────────────────────────────────────────
   r = await call(alice, 'GET', '/challenges/record');
-  // alice: forfeit-win, void no_show, hs win, race loss, mi loss, avg win, soon forfeit
+  // alice: forfeit-win, void no_show, hs win, race loss, race abandoned, mi loss, avg win, soon forfeit
   check('record totals for alice', r.status === 200 && r.body?.wins === 3 && r.body?.losses === 2 && r.body?.forfeits === 1
-    && r.body?.noShows === 1 && r.body?.voids === 1 && r.body?.played === 7, r.body);
-  check('record: head-to-head vs bob', r.body?.headToHead?.[0]?.opponent?.id === bob.id && r.body?.headToHead?.[0]?.played === 7, r.body?.headToHead);
+    && r.body?.noShows === 1 && r.body?.voids === 1 && r.body?.abandoned === 1 && r.body?.ties === 0 && r.body?.played === 8, r.body);
+  check('record: head-to-head vs bob', r.body?.headToHead?.[0]?.opponent?.id === bob.id && r.body?.headToHead?.[0]?.played === 8
+    && r.body?.headToHead?.[0]?.abandoned === 1, r.body?.headToHead);
   check('record: streaks', r.body?.currentStreak === 0 && r.body?.bestStreak === 2, r.body);
   r = await call(carol, 'GET', `/challenges/record/${encodeURIComponent(alice.username)}`);
   check("someone else's record: totals, but head-to-head only against the viewer", r.status === 200 && r.body?.wins === 3 && r.body?.headToHead?.length === 0, r.body);

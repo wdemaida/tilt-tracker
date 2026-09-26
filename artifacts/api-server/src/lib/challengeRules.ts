@@ -9,29 +9,33 @@
 //  - Types:
 //      high_score     best counting score wins, at the deadline.
 //      race           "Beat my score / First to X". Target = the number the creator picked, or the
-//                     creator's best on the matching machine at creation. The first participant with a
-//                     counting score >= target wins on the spot. Nobody by the deadline → no winner:
-//                     everyone who played gets `tie`, everyone who didn't gets `no_show`.
+//                     creator's best on the matching machine at creation. The target must be BEATEN:
+//                     the first participant with a counting score > target (strictly — equalling it is
+//                     not a finish) wins on the spot. Nobody by the deadline → the race is ABANDONED:
+//                     every participant (played or not) gets `abandoned` — no win, loss, tie or no-show.
 //      most_improved  (best counting score − baseline) / baseline, as a percent; highest wins at the
 //                     deadline. Baseline = best score on the matching machine played before the window,
 //                     frozen at acceptance. No baseline → can't take part (creation / acceptance refused).
 //      average        mean of ALL counting scores; needs >= min_plays of them to qualify. Highest
 //                     qualified average wins. Played but short of N → `loss` when someone qualified;
-//                     nobody qualified → treated like a race nobody finished (played `tie`).
+//                     nobody qualified → abandoned, like a race nobody finished.
 //  - What counts: machine matches (OPDB group for 'game' mode, exact id otherwise), venue matches if
 //    the challenge is venue-locked, the score has a photo, BOTH played_at and created_at are inside
 //    [starts_at, ends_at] (blocks backdated uploads), and every other participant may see the score
 //    (a score at a home venue whose owner hid its activity doesn't count — see venueActivity.ts).
 //  - Outcomes: win / loss / tie / forfeit (withdrew after accepting; when only one participant is
-//    left they win on the spot) / no_show (no counting score). Nobody played → the challenge is void
-//    and everyone is `no_show`.
+//    left they win on the spot) / no_show (no counting score) / abandoned (race or average nobody
+//    finished). Nobody played at all → the challenge is void and everyone is `no_show` (this wins over
+//    abandoned: a race nobody even played is void, not abandoned). Forfeits stay `forfeit` throughout.
+//  - Streaks (records): void neither extends nor breaks a win streak; every other outcome but a win,
+//    abandoned included, breaks one.
 
 export const CHALLENGE_TYPES = ['high_score', 'race', 'most_improved', 'average'] as const;
 export type ChallengeType = (typeof CHALLENGE_TYPES)[number];
 export type MatchMode = 'game' | 'exact';
 export type ChallengeStatus = 'pending' | 'active' | 'resolved' | 'declined' | 'cancelled' | 'expired';
 export type ParticipantResponse = 'pending' | 'accepted' | 'declined';
-export type Outcome = 'win' | 'loss' | 'tie' | 'forfeit' | 'no_show';
+export type Outcome = 'win' | 'loss' | 'tie' | 'forfeit' | 'no_show' | 'abandoned';
 
 export const MIN_PLAYS = { min: 3, max: 10 } as const;
 /** Longest window, start to end. */
@@ -162,7 +166,7 @@ export interface Standing {
   resultValue: number | null;
   /** Has done enough to be ranked for the win (see each type). */
   qualified: boolean;
-  /** race only: when the first counting score >= target was uploaded. */
+  /** race only: when the first counting score > target (strictly) was uploaded. */
   reachedTargetAt: Date | null;
   reachedTargetScoreId: number | null;
   /** The counting scores, best first. */
@@ -183,7 +187,8 @@ export function computeStanding(type: ChallengeType, userId: number, counting: C
       return { ...base, resultValue: best, qualified: true };
     case 'race': {
       const target = opts.targetScore ?? Infinity;
-      const hits = sorted.filter(s => s.score >= target)
+      // Strictly beaten: equalling the target is not a finish.
+      const hits = sorted.filter(s => s.score > target)
         .sort((a, b) => +a.createdAt - +b.createdAt || a.id - b.id);
       return {
         ...base, resultValue: best, qualified: hits.length > 0,
@@ -221,11 +226,14 @@ export type ResolutionReason = 'deadline' | 'race_target' | 'forfeit';
 
 export interface Resolution {
   reason: ResolutionReason;
+  /** Nobody played (everyone no_show / forfeit). */
   void: boolean;
+  /** A race / average nobody finished: every non-forfeited participant is `abandoned`. */
+  abandoned: boolean;
   participants: ResolvedParticipant[];
 }
 
-/** The race winner: earliest upload of a counting score >= target (score id breaks a same-instant tie). */
+/** The race winner: earliest upload of a counting score > target (score id breaks a same-instant tie). */
 export function raceWinner(states: ParticipantState[]): ParticipantState | null {
   const hits = states.filter(s => !s.forfeited && s.standing.reachedTargetAt);
   hits.sort((a, b) => +a.standing.reachedTargetAt! - +b.standing.reachedTargetAt!
@@ -249,7 +257,8 @@ export function resolutionTrigger(
  * 'race_target' (first to the target wins; others loss if they played, else no_show), 'deadline'
  * (per type — see the header). Ranks are competition ranks (1, 1, 3): winners first, then other
  * ranked participants by result, then those who played without qualifying, then no-shows, then
- * forfeits. Void = nobody won, lost or tied.
+ * forfeits. Void = nobody played (so nobody won, lost or tied). Abandoned = a race / average where
+ * someone played but nobody finished: every non-forfeited participant is `abandoned` (ranked: played ahead of didn't).
  */
 export function resolveChallenge(type: ChallengeType, states: ParticipantState[], reason: ResolutionReason): Resolution {
   const remaining = states.filter(s => !s.forfeited);
@@ -271,11 +280,13 @@ export function resolveChallenge(type: ChallengeType, states: ParticipantState[]
   } else {
     const qualified = remaining.filter(s => s.standing.qualified);
     const noWinnerPossible = (type === 'race' || type === 'average') && qualified.length === 0;
-    if (noWinnerPossible) {
-      // Nobody reached the target / min plays: those who played draw, the rest didn't show.
-      for (const s of remaining) {
-        decided.set(s.userId, played(s) ? { outcome: 'tie', group: 0, value: 0 } : { outcome: 'no_show', group: 3, value: 0 });
-      }
+    if (noWinnerPossible && remaining.some(played)) {
+      // Nobody beat the target / reached min plays: abandoned for everyone, played or not.
+      // Ranks as before: those who played level ahead of those who didn't (live standings use this).
+      for (const s of remaining) decided.set(s.userId, { outcome: 'abandoned', group: played(s) ? 0 : 3, value: 0 });
+    } else if (noWinnerPossible) {
+      // Nobody played at all: void, everyone didn't show.
+      for (const s of remaining) decided.set(s.userId, { outcome: 'no_show', group: 3, value: 0 });
     } else {
       const top = Math.max(...qualified.map(val), -Infinity);
       const leaders = qualified.filter(s => val(s) === top);
@@ -296,8 +307,9 @@ export function resolveChallenge(type: ChallengeType, states: ParticipantState[]
     return { userId: s.userId, outcome: me.outcome, rank, resultValue: s.standing.resultValue };
   });
   participants.sort((a, b) => a.rank - b.rank || a.userId - b.userId);
-  const isVoid = !participants.some(p => p.outcome === 'win' || p.outcome === 'loss' || p.outcome === 'tie');
-  return { reason, void: isVoid, participants };
+  const abandoned = participants.some(p => p.outcome === 'abandoned');
+  const isVoid = !abandoned && !participants.some(p => p.outcome === 'win' || p.outcome === 'loss' || p.outcome === 'tie');
+  return { reason, void: isVoid, abandoned, participants };
 }
 
 /** Live ranks if the challenge ended now (for standings); forfeits last. */
@@ -447,6 +459,7 @@ export interface HeadToHead {
   ties: number;
   forfeits: number;
   noShows: number;
+  abandoned: number;
 }
 
 export interface ChallengeRecord {
@@ -456,6 +469,8 @@ export interface ChallengeRecord {
   ties: number;
   forfeits: number;
   noShows: number;
+  /** Races / averages nobody finished. Not a win, loss, tie or no-show. */
+  abandoned: number;
   voids: number;
   currentStreak: number;
   bestStreak: number;
@@ -463,21 +478,23 @@ export interface ChallengeRecord {
 }
 
 /**
- * W/L/T/forfeit/no-show totals and win streaks from resolved challenges. A void challenge counts as
- * a no-show (that's each participant's outcome) and in `voids`, and neither extends nor breaks a
- * streak. Streaks are consecutive wins in resolved order; any other non-void outcome ends one.
+ * W/L/T/forfeit/no-show/abandoned totals and win streaks from resolved challenges. A void challenge
+ * counts as a no-show (that's each participant's outcome) and in `voids`, and neither extends nor
+ * breaks a streak. An abandoned one counts only in `abandoned` and DOES break a streak. Streaks are
+ * consecutive wins in resolved order; any other non-void outcome ends one.
  */
 export function computeRecord(entries: RecordEntry[]): ChallengeRecord {
   const rec: ChallengeRecord = {
-    played: 0, wins: 0, losses: 0, ties: 0, forfeits: 0, noShows: 0, voids: 0,
+    played: 0, wins: 0, losses: 0, ties: 0, forfeits: 0, noShows: 0, abandoned: 0, voids: 0,
     currentStreak: 0, bestStreak: 0, headToHead: [],
   };
   const h2h = new Map<number, HeadToHead>();
-  const bump = (r: { wins: number; losses: number; ties: number; forfeits: number; noShows: number }, o: Outcome) => {
+  const bump = (r: { wins: number; losses: number; ties: number; forfeits: number; noShows: number; abandoned: number }, o: Outcome) => {
     if (o === 'win') r.wins++;
     else if (o === 'loss') r.losses++;
     else if (o === 'tie') r.ties++;
     else if (o === 'forfeit') r.forfeits++;
+    else if (o === 'abandoned') r.abandoned++;
     else r.noShows++;
   };
   const ordered = [...entries].sort((a, b) => +a.resolvedAt - +b.resolvedAt || a.challengeId - b.challengeId);
@@ -487,7 +504,7 @@ export function computeRecord(entries: RecordEntry[]): ChallengeRecord {
     bump(rec, e.outcome);
     if (e.void) rec.voids++;
     for (const id of e.opponentIds) {
-      const row = h2h.get(id) ?? { opponentId: id, played: 0, wins: 0, losses: 0, ties: 0, forfeits: 0, noShows: 0 };
+      const row = h2h.get(id) ?? { opponentId: id, played: 0, wins: 0, losses: 0, ties: 0, forfeits: 0, noShows: 0, abandoned: 0 };
       row.played++;
       bump(row, e.outcome);
       h2h.set(id, row);
