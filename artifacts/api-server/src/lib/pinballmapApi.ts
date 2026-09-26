@@ -1,55 +1,21 @@
-const PM_BASE = 'https://pinballmap.com/api/v1';
+import { pmClient, PmApiError, type PmErrorKind } from './pmClient.js';
 
-// Pinball Map began requiring an api_token on *every* endpoint — including read-only GETs — on
-// 2026-07-30. It goes on the query string, not in a header (confirmed against pinballmap.com/llms.txt).
-// Request one at https://pinballmap.com/api_token; approval is manual.
-const PM_API_TOKEN = process.env.PINBALL_MAP_API_TOKEN;
-
-export type PmErrorKind = 'no_token' | 'unauthorized' | 'rate_limited' | 'http' | 'network';
-
-export class PmApiError extends Error {
-  constructor(public kind: PmErrorKind, message: string, public status?: number) {
-    super(message);
-    this.name = 'PmApiError';
-  }
-}
+// Every request below goes through pmClient (pmClient.ts): it adds the api_token (Pinball Map has
+// required one on every endpoint since 2026-07-30 — query string, per pinballmap.com/llms.txt), and
+// owns the rate limiting, de-duplication, timeout, circuit breaker and dev-mode fixtures. Nothing in
+// TiltTrack calls pinballmap.com any other way.
+export { PmApiError, type PmErrorKind };
 
 export function isPmConfigured(): boolean {
-  return !!PM_API_TOKEN;
+  return pmClient().isConfigured();
 }
 
-// Single choke point for every Pinball Map call so the token, and the distinction between "we are
-// not configured" and "the venue genuinely has no machines", exist in exactly one place. Callers
-// that want the old silent-degradation behaviour wrap this in `.catch(() => fallback)`; the repair
-// endpoints let it throw so the UI can say *why* nothing resolved instead of showing an empty list.
-async function pmFetch<T>(path: string, params: Record<string, string | number | undefined> = {}): Promise<T> {
-  if (!PM_API_TOKEN) {
-    throw new PmApiError('no_token', 'PINBALL_MAP_API_TOKEN is not set — request a key at https://pinballmap.com/api_token');
-  }
-
-  const url = new URL(`${PM_BASE}${path}`);
-  for (const [k, v] of Object.entries(params)) {
-    if (v !== undefined) url.searchParams.set(k, String(v));
-  }
-  url.searchParams.set('api_token', PM_API_TOKEN);
-
-  let res: Response;
-  try {
-    res = await fetch(url.toString(), { headers: { Accept: 'application/json' } });
-  } catch (err) {
-    throw new PmApiError('network', `Could not reach Pinball Map: ${(err as Error).message}`);
-  }
-
-  if (res.status === 401 || res.status === 403) {
-    throw new PmApiError('unauthorized', 'Pinball Map rejected the API token — check PINBALL_MAP_API_TOKEN', res.status);
-  }
-  if (res.status === 429) {
-    throw new PmApiError('rate_limited', 'Pinball Map rate limit hit — try again in a few minutes', 429);
-  }
-  if (!res.ok) {
-    throw new PmApiError('http', `Pinball Map returned ${res.status}`, res.status);
-  }
-  return res.json() as Promise<T>;
+// Throws a typed PmApiError so the distinction between "we are not configured / Pinball Map is down"
+// and "the venue genuinely has no machines" survives to the caller. Callers that want silent
+// degradation wrap this in `.catch(() => fallback)`; the repair endpoints let it throw so the UI can
+// say *why* nothing resolved instead of showing an empty list.
+function pmFetch<T>(path: string, params: Record<string, string | number | undefined> = {}): Promise<T> {
+  return pmClient().get<T>(path, params);
 }
 
 export interface PmLocation {
@@ -164,7 +130,7 @@ export async function searchPmLocationsWithAddress(name: string, maxLookups = 3)
   });
   if (data.locations?.length) return data.locations;
 
-  // Autocomplete directly, not searchPmLocationsByName � its own fallback is the locations.json
+  // Autocomplete directly, not searchPmLocationsByName — its own fallback is the locations.json
   // request that just came back empty, and repeating it doubled the calls for every miss.
   const fallback = await pmAutocomplete(q);
   const full: PmLocation[] = [];
@@ -176,7 +142,13 @@ export async function searchPmLocationsWithAddress(name: string, maxLookups = 3)
 }
 
 export async function getPmLocation(pmLocationId: number): Promise<PmLocation | null> {
-  const data = await pmFetch<PmLocation & { errors?: string }>(`/locations/${pmLocationId}.json`, { metadata_only: 1 });
+  let data: PmLocation & { errors?: string };
+  try {
+    data = await pmFetch<PmLocation & { errors?: string }>(`/locations/${pmLocationId}.json`, { metadata_only: 1 });
+  } catch (err) {
+    if (err instanceof PmApiError && err.kind === 'not_found') return null;
+    throw err;
+  }
   if (!data || (data as any).errors || !data.id) return null;
   return data;
 }
@@ -204,49 +176,68 @@ function readXrefs(locData: any): PmLocationMachineXref[] {
     .filter(Boolean) as PmLocationMachineXref[];
 }
 
+/**
+ * A location's current roster. Throws PmApiError('not_found') when the id doesn't resolve — callers
+ * (pmRosterCache) must never cache an empty roster for a location that doesn't exist.
+ */
 export async function getPmMachinesAtLocation(pmLocationId: number): Promise<PmLocationMachineXref[]> {
   const locData = await pmFetch<any>(`/locations/${pmLocationId}.json`);
+  if (!locData || locData.errors || !locData.id) {
+    throw new PmApiError('not_found', `Pinball Map has no location with id ${pmLocationId}`, 404);
+  }
+  const rawXrefs: any[] = Array.isArray(locData.location_machine_xrefs) ? locData.location_machine_xrefs : [];
   const xrefs = readXrefs(locData);
-  if (xrefs.length > 0) return xrefs;
+  // An empty list is a real answer (a listing with no machines right now) — no second call.
+  if (xrefs.length > 0 || rawXrefs.length === 0) return xrefs;
 
-  // Defensive second pass: if the show endpoint ever stops embedding machine names, fall back to the
-  // dedicated endpoint rather than silently reporting the location as having no machines.
+  // Defensive second pass, only when the show endpoint listed machines but without names: fall back
+  // to the dedicated endpoint rather than silently reporting the location as having no machines.
   const details = await pmFetch<{ machines?: PmMachine[] }>(`/locations/${pmLocationId}/machine_details.json`);
   const machines = details.machines ?? [];
   if (machines.length === 0) return [];
 
   const xrefMap = new Map<number, number>();
-  for (const x of locData?.location_machine_xrefs ?? []) {
+  for (const x of rawXrefs) {
     if (x.machine_id != null) xrefMap.set(x.machine_id, x.id);
   }
   return machines.map(m => ({ id: xrefMap.get(m.id) ?? 0, machine: m }));
 }
 
+/**
+ * Exchanges a user's Pinball Map login for their user token. null = bad credentials; anything else
+ * (rate limited, breaker open, not configured) throws, so the route doesn't call a PM outage a wrong
+ * password. `sensitive`: the request carries a password, so it is never de-duplicated, cached,
+ * recorded or logged beyond its path.
+ */
 export async function getPmUserToken(email: string, password: string): Promise<{ token: string; username: string } | null> {
   try {
-    const data = await pmFetch<{ authentication_token?: string; username?: string }>('/users/auth_details.json', {
-      login: email,
-      password,
+    const { body: data } = await pmClient().request<{ authentication_token?: string; username?: string }>({
+      path: '/users/auth_details.json',
+      params: { login: email, password },
+      sensitive: true,
     });
-    if (!data.authentication_token) return null;
+    if (!data?.authentication_token) return null;
     return { token: data.authentication_token, username: data.username ?? '' };
-  } catch {
-    return null;
+  } catch (err) {
+    if (err instanceof PmApiError && (err.kind === 'unauthorized' || err.kind === 'not_found')) return null;
+    throw err;
   }
 }
 
-export async function submitPmScore(userToken: string, locationMachineXrefId: number, score: number): Promise<boolean> {
-  if (!PM_API_TOKEN) return false;
-  try {
-    const url = new URL(`${PM_BASE}/machine_score_xrefs.json`);
-    url.searchParams.set('api_token', PM_API_TOKEN);
-    const res = await fetch(url.toString(), {
-      method: 'POST',
-      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user_token: userToken, location_machine_xref_id: locationMachineXrefId, score }),
-    });
-    return res.ok;
-  } catch {
-    return false;
-  }
+/**
+ * Posts a score to Pinball Map. Throws PmApiError on any failure — `kind === 'unauthorized'` (401/403)
+ * is the only one that means the user's token is bad; check `detail` for "api_token" to tell our own
+ * token apart.
+ *
+ * Protocol note (flagged 2026-09-26, unchanged here): this sends `user_token` in the JSON body with no
+ * `user_email`. Pinball Map's docs describe user auth as `user_email` + `user_token` query params. It
+ * has not been changed without evidence of which form their API accepts today.
+ */
+export async function submitPmScore(userToken: string, locationMachineXrefId: number, score: number): Promise<void> {
+  await pmClient().request({
+    method: 'POST',
+    path: '/machine_score_xrefs.json',
+    body: { user_token: userToken, location_machine_xref_id: locationMachineXrefId, score },
+    sensitive: true,
+  });
 }
