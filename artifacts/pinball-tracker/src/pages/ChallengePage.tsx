@@ -6,6 +6,7 @@ import { format } from 'date-fns';
 import { ArrowLeft, Check, Clock, Crown, Flag, Loader2, Lock, MapPin, Swords, Target, Timer, X } from 'lucide-react';
 import UsernameLink from '../components/UsernameLink';
 import { MachineThumb, OutcomeChip } from '../components/ChallengeParts';
+import { FullPhotoButton } from '../components/PhotoViewer';
 import { useApi } from '../lib/useApi';
 import { useAppUser } from '../lib/useAppUser';
 import { formatScoreTime, zoneAbbreviation } from '../lib/scoreTime';
@@ -172,6 +173,11 @@ function ScoreList({ c, p, isMe }: { c: Challenge; p: ChallengeParticipant; isMe
                   </p>
                 )}
               </div>
+              <FullPhotoButton
+                scoreId={s.id}
+                hasFullPhoto={s.hasFullPhoto}
+                caption={{ machineName: c.machine.name, score: s.score, playedAt: s.playedAt, venueTimezone: s.venueTimezone, username: p.user.username }}
+              />
               <Link href={`/machines/${encodeURIComponent(c.machine.name)}`} className="text-base font-black text-primary whitespace-nowrap hover:text-primary/80">
                 {formatScore(s.score)}
               </Link>

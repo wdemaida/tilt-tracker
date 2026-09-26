@@ -19,6 +19,7 @@ import ComparisonScopePicker from '../components/ComparisonScopePicker';
 import PodMemberIcons from '../components/PodMemberIcons';
 import UsernameLink from '../components/UsernameLink';
 import { ChallengeLink } from '../components/ChallengeParts';
+import { FullPhotoButton } from '../components/PhotoViewer';
 import { useComparisonScope, scopeQuery, scopeKey } from '../lib/comparisonScope';
 import { usePodMembership } from '../lib/myPods';
 import { useFriendColor } from '../lib/myFriends';
@@ -1246,7 +1247,14 @@ export default function MachinePage() {
                   <span className="text-xs font-bold uppercase tracking-wider border border-white/20 rounded px-2 py-0.5 text-muted-foreground">{s.type}</span>
                 </td>
                 <td className="px-3 py-3 text-right font-bold text-lg text-primary">
-                  {Number(s.score).toLocaleString()}
+                  <span className="inline-flex items-center justify-end gap-1.5">
+                    <FullPhotoButton
+                      scoreId={s.id}
+                      hasFullPhoto={s.hasFullPhoto}
+                      caption={{ machineName: machine.name, score: s.score, playedAt: s.playedAt, venueTimezone: s.venueTimezone, username: s.username }}
+                    />
+                    {Number(s.score).toLocaleString()}
+                  </span>
                 </td>
               </tr>
             ))}

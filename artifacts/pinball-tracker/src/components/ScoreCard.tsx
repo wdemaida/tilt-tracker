@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import { Link } from 'wouter';
-import { MapPin, Clock, Pencil, Trash2, Trophy, Home } from 'lucide-react';
+import { MapPin, Clock, Pencil, Trash2, Trophy, Home, Maximize2 } from 'lucide-react';
+import PhotoViewer from './PhotoViewer';
 import { formatScoreTime, zoneAbbreviation } from '../lib/scoreTime';
 import PodMemberIcons from './PodMemberIcons';
 import UsernameLink from './UsernameLink';
@@ -19,6 +21,8 @@ interface ScoreCardProps {
   venueIsResidence?: boolean;
   photoUrl?: string | null;
   photoThumbnail?: string | null;
+  /** A full-size photo exists on R2: the thumbnail opens it in PhotoViewer. */
+  hasFullPhoto?: boolean;
   username: string;
   displayName: string;
   isHighScore?: boolean;
@@ -30,9 +34,10 @@ interface ScoreCardProps {
   onDelete?: () => void;
 }
 
-export default function ScoreCard({ id: _id, machineName, score, playedAt, createdAt, type, venueId, venueName, venueTimezone, venueIsResidence, photoThumbnail, username, isHighScore, isCurrentUser, pods, onEdit, onDelete }: ScoreCardProps) {
+export default function ScoreCard({ id, machineName, score, playedAt, createdAt, type, venueId, venueName, venueTimezone, venueIsResidence, photoThumbnail, hasFullPhoto, username, isHighScore, isCurrentUser, pods, onEdit, onDelete }: ScoreCardProps) {
   // Only shown when the venue's clock differs from the reader's, so the usual case stays quiet.
   const zone = zoneAbbreviation(playedAt, venueTimezone);
+  const [viewing, setViewing] = useState(false);
   return (
     <div className={`rounded-xl border bg-card p-4 flex flex-col gap-3 hover:border-primary/40 transition-colors ${isCurrentUser ? 'border-username/60' : 'border-white/10'}`}>
       <div className="flex items-center justify-between">
@@ -91,11 +96,32 @@ export default function ScoreCard({ id: _id, machineName, score, playedAt, creat
             )}
           </div>
         </div>
-        {photoThumbnail && (
+        {photoThumbnail && !hasFullPhoto && (
           <img
             src={photoThumbnail}
             alt="Score proof"
             className="w-14 h-14 rounded-lg object-cover flex-shrink-0"
+          />
+        )}
+        {photoThumbnail && hasFullPhoto && (
+          <button
+            type="button"
+            onClick={() => setViewing(true)}
+            aria-label="View full-size photo"
+            className="relative w-14 h-14 rounded-lg overflow-hidden flex-shrink-0 group focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          >
+            <img src={photoThumbnail} alt="Score proof" className="w-full h-full object-cover transition-transform group-hover:scale-105" />
+            <span className="absolute bottom-0.5 right-0.5 rounded bg-black/65 p-0.5" aria-hidden>
+              <Maximize2 className="w-2.5 h-2.5 text-white" />
+            </span>
+          </button>
+        )}
+        {viewing && (
+          <PhotoViewer
+            scoreId={id}
+            thumbnail={photoThumbnail}
+            caption={{ machineName, score, playedAt, venueTimezone, username }}
+            onClose={() => setViewing(false)}
           />
         )}
       </div>

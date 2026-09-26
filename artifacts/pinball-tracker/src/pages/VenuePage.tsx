@@ -9,6 +9,7 @@ import { usePodMembership } from '../lib/myPods';
 import ComparisonScopePicker from '../components/ComparisonScopePicker';
 import PodMemberIcons from '../components/PodMemberIcons';
 import UsernameLink from '../components/UsernameLink';
+import { FullPhotoButton } from '../components/PhotoViewer';
 import VenueMapThumbnail from '../components/VenueMapThumbnail';
 import VenueMachinesModal from '../components/VenueMachinesModal';
 import VenueRepairPanel from '../components/VenueRepairPanel';
@@ -366,7 +367,14 @@ export default function VenuePage() {
                     <UserLink username={s.username} />
                   </td>
                   <td className="px-3 py-3 text-right font-bold text-lg text-primary whitespace-nowrap">
-                    {Number(s.score).toLocaleString()}
+                    <span className="inline-flex items-center justify-end gap-1.5">
+                      <FullPhotoButton
+                        scoreId={s.id}
+                        hasFullPhoto={s.hasFullPhoto}
+                        caption={{ machineName: s.machineName, score: s.score, playedAt: s.playedAt, venueTimezone: venue?.timezone, username: s.username }}
+                      />
+                      {Number(s.score).toLocaleString()}
+                    </span>
                   </td>
                 </tr>
               ))}

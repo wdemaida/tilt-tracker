@@ -10,6 +10,7 @@ import FriendButton from '../components/FriendButton';
 import ChallengeRecordCard from '../components/ChallengeRecordCard';
 import { ChallengeLink } from '../components/ChallengeParts';
 import { FRIEND_WITH_KEY } from '../lib/myFriends';
+import { FullPhotoButton } from '../components/PhotoViewer';
 
 export default function UserPage() {
   const { username } = useParams<{ username: string }>();
@@ -87,8 +88,15 @@ export default function UserPage() {
                 <Link href={`/machines/${encodeURIComponent(s.machineName)}`} className="min-w-0 line-clamp-2 break-words text-sm font-bold uppercase tracking-wider text-machine hover:text-machine/80 transition-colors">
                   {s.machineName}
                 </Link>
-                <span className="flex-shrink-0 text-xs font-bold uppercase tracking-wider text-muted-foreground border border-white/20 rounded px-1.5 py-0.5">
-                  {s.type}
+                <span className="flex-shrink-0 inline-flex items-center gap-1">
+                  <FullPhotoButton
+                    scoreId={s.id}
+                    hasFullPhoto={s.hasFullPhoto}
+                    caption={{ machineName: s.machineName, score: s.score, playedAt: s.playedAt, venueTimezone: s.venueTimezone, username: user.username }}
+                  />
+                  <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground border border-white/20 rounded px-1.5 py-0.5">
+                    {s.type}
+                  </span>
                 </span>
               </div>
               <p className="mt-1 sm:mt-0 text-2xl sm:text-3xl font-black text-primary sm:col-start-2 sm:row-start-1 sm:row-span-2 sm:self-center sm:text-right whitespace-nowrap">
