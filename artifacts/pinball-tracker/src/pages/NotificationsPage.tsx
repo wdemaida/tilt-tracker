@@ -1,8 +1,8 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useInfiniteQuery, useMutation } from '@tanstack/react-query';
 import { Link } from 'wouter';
 import { formatDistanceToNow } from 'date-fns';
-import { Bell, Loader2, UserCheck, UserPlus } from 'lucide-react';
+import { Ban, Bell, Flag, Loader2, Swords, Timer, Trophy, TrendingUp, UserCheck, UserPlus } from 'lucide-react';
 import { useApi } from '../lib/useApi';
 import { queryClient } from '../lib/queryClient';
 import { NOTIFICATIONS_KEY, UNREAD_COUNT_KEY } from '../lib/myFriends';
@@ -14,6 +14,21 @@ import type { AppNotification } from '../lib/api';
 // Opening the page marks everything read — once, after the first page has loaded, so the items
 // that were new still render highlighted for this visit (the list isn't refetched; only the bell's
 // count is).
+
+const CHALLENGE_TYPE_LABEL: Record<string, string> = {
+  high_score: 'High score',
+  race: 'Beat my score',
+  most_improved: 'Most improved',
+  average: 'Best average',
+};
+
+const RESULT_TEXT: Record<string, string> = {
+  win: 'You won',
+  loss: 'You lost',
+  tie: 'It’s a tie',
+  forfeit: 'You forfeited',
+  no_show: 'No score from you',
+};
 
 /** What one notification says and where it goes. Unknown kinds (from a newer server) still render. */
 function describe(n: AppNotification): { text: React.ReactNode; href: string | null; Icon: typeof Bell } {
@@ -36,9 +51,45 @@ function describe(n: AppNotification): { text: React.ReactNode; href: string | n
         href: n.payload.username ? `/users/${n.payload.username}` : '/friends',
         Icon: UserCheck,
       };
-    default:
-      return { text: 'You have a new notification', href: null, Icon: Bell };
   }
+
+  // Challenge kinds. The challenge page (/challenges/:id) arrives with the challenges UI.
+  if (n.kind.startsWith('challenge_')) {
+    const { challengeId, challengeType, machineName } = n.payload;
+    const href = typeof challengeId === 'number' ? `/challenges/${challengeId}` : null;
+    const what = (
+      <>
+        {challengeType ? <>{CHALLENGE_TYPE_LABEL[challengeType] ?? 'A'} challenge</> : 'A challenge'}
+        {machineName && <> on <span className="text-machine font-semibold">{machineName}</span></>}
+      </>
+    );
+    switch (n.kind) {
+      case 'challenge_received':
+        return { text: <>{name} challenged you: {what}</>, href, Icon: Swords };
+      case 'challenge_accepted':
+        return { text: <>{name} accepted your challenge: {what}</>, href, Icon: Swords };
+      case 'challenge_declined':
+        return { text: <>{name} declined your challenge: {what}</>, href, Icon: Ban };
+      case 'challenge_cancelled':
+        return { text: <>{name} withdrew their challenge: {what}</>, href, Icon: Ban };
+      case 'challenge_opponent_scored': {
+        const score = n.payload.score;
+        return {
+          text: <>{name} posted {typeof score === 'number' ? <span className="text-primary font-semibold">{score.toLocaleString()}</span> : 'a score'} in your challenge: {what}</>,
+          href, Icon: TrendingUp,
+        };
+      }
+      case 'challenge_ending_soon':
+        return { text: <>Less than a day left: {what}</>, href, Icon: Timer };
+      case 'challenge_result': {
+        const outcome = n.payload.void ? 'Nobody played, so no result' : RESULT_TEXT[String(n.payload.outcome)] ?? 'Challenge over';
+        return { text: <>{outcome}: {what}</>, href, Icon: n.payload.outcome === 'win' ? Trophy : Flag };
+      }
+      default:
+        return { text: <>{what} was updated</>, href, Icon: Swords };
+    }
+  }
+  return { text: 'You have a new notification', href: null, Icon: Bell };
 }
 
 function Row({ n }: { n: AppNotification }) {
@@ -75,6 +126,17 @@ export default function NotificationsPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: UNREAD_COUNT_KEY }),
   });
 
+  // "Clear all" deletes the whole inbox, read or not — behind an inline confirm, like removing a friend.
+  const [confirmingClear, setConfirmingClear] = useState(false);
+  const clearAll = useMutation({
+    mutationFn: api.notifications.clearAll,
+    onSuccess: () => {
+      setConfirmingClear(false);
+      queryClient.invalidateQueries({ queryKey: NOTIFICATIONS_KEY });
+      queryClient.invalidateQueries({ queryKey: UNREAD_COUNT_KEY });
+    },
+  });
+
   // Mark read on open, once per visit, after the list has arrived.
   const marked = useRef(false);
   const items = query.data?.pages.flatMap(p => p.items) ?? [];
@@ -87,7 +149,40 @@ export default function NotificationsPage() {
 
   return (
     <div className="max-w-2xl">
-      <h1 className="text-4xl font-black uppercase tracking-widest text-white mb-6">Notifications</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+        <h1 className="text-4xl font-black uppercase tracking-widest text-white">Notifications</h1>
+        {items.length > 0 && (
+          confirmingClear ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">Delete all notifications?</span>
+              <button
+                type="button"
+                disabled={clearAll.isPending}
+                onClick={() => clearAll.mutate()}
+                className="px-2.5 py-1 rounded-lg text-[11px] font-bold uppercase tracking-wider bg-red-500/80 text-white hover:bg-red-500 disabled:opacity-50 transition-colors"
+              >
+                {clearAll.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Clear all'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmingClear(false)}
+                className="px-2 py-1 text-[11px] font-bold uppercase tracking-wider text-muted-foreground hover:text-white transition-colors"
+              >
+                Keep
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setConfirmingClear(true)}
+              className="px-3 py-1.5 rounded-lg border border-white/15 text-[11px] font-bold uppercase tracking-wider text-muted-foreground hover:text-white hover:border-white/30 transition-colors"
+            >
+              Clear all
+            </button>
+          )
+        )}
+      </div>
+      {clearAll.isError && <p className="text-xs text-red-400 -mt-4 mb-4">Couldn’t clear your notifications. Try again.</p>}
 
       {query.isLoading ? (
         <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</p>
@@ -97,7 +192,7 @@ export default function NotificationsPage() {
         <div className="rounded-xl border border-dashed border-white/15 p-8 text-center">
           <Bell className="w-8 h-8 text-muted-foreground mx-auto mb-3" aria-hidden />
           <p className="text-sm text-white font-bold mb-1">Nothing yet</p>
-          <p className="text-sm text-muted-foreground">Friend requests and replies will show up here.</p>
+          <p className="text-sm text-muted-foreground">Friend requests, challenges and results will show up here.</p>
         </div>
       ) : (
         <div className="flex flex-col gap-2">

@@ -61,8 +61,17 @@ export interface FriendsList {
 /** One inbox entry. `payload` depends on `kind`; the friend kinds carry who it's about. */
 export interface AppNotification {
   id: number;
-  kind: 'friend_request' | 'friend_accepted' | (string & {});
-  payload: { userId?: number; username?: string; displayName?: string } & Record<string, unknown>;
+  kind:
+    | 'friend_request' | 'friend_accepted'
+    | 'challenge_received' | 'challenge_accepted' | 'challenge_declined' | 'challenge_cancelled'
+    | 'challenge_opponent_scored' | 'challenge_ending_soon' | 'challenge_result'
+    | (string & {});
+  /** Challenge kinds add challengeId, challengeType, machineName (+ score / outcome / void per kind). */
+  payload: {
+    userId?: number; username?: string; displayName?: string;
+    challengeId?: number; challengeType?: string; machineName?: string;
+    score?: number; outcome?: string; void?: boolean;
+  } & Record<string, unknown>;
   createdAt: string;
   readAt: string | null;
 }
@@ -215,6 +224,8 @@ export function createApi(getToken: () => Promise<string | null>) {
       markRead: async (id: number) =>
         request<{ id: number; readAt: string }>(`/notifications/${id}/read`, { method: 'POST' }, await tok()),
       markAllRead: async () => request<{ updated: number }>('/notifications/read-all', { method: 'POST' }, await tok()),
+      // "Clear all" — deletes every notification of the caller's, read or not.
+      clearAll: async () => request<{ deleted: number }>('/notifications', { method: 'DELETE' }, await tok()),
     },
     stats: {
       // `scope` is scopeQuery(scope) from lib/comparisonScope ('' = everyone).

@@ -70,6 +70,18 @@ router.post('/read-all', async (req, res) => {
   }
 });
 
+// DELETE /api/notifications — "Clear all": deletes every notification of the caller's, read or not.
+router.delete('/', async (req, res) => {
+  const me = (req as any).appUser;
+  try {
+    const deleted = await db.delete(notifications).where(eq(notifications.userId, me.id)).returning({ id: notifications.id });
+    res.json({ deleted: deleted.length });
+  } catch (err) {
+    console.error('Clear notifications error:', err);
+    res.status(500).json({ error: 'Failed to clear notifications' });
+  }
+});
+
 // POST /api/notifications/:id/read — marks one read. Idempotent; 404 unless it's the caller's.
 router.post('/:id/read', async (req, res) => {
   const me = (req as any).appUser;
