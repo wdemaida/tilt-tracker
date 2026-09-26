@@ -6,7 +6,9 @@
 // key → guest GET signs a URL whose bytes match → replace deletes the old object → hidden home-venue
 // score is a 404 to strangers and guests → a 90-day-old thumbnail-only score answers url:null + its
 // thumbnail (canUpload for the owner only) and then takes a full photo → DELETE /api/scores/:id
-// removes the object.
+// removes the object. In between, the orphan sweep (src/lib/photoOrphans.ts) runs for real against
+// one test score's prefix: a planted, never-confirmed object is deleted and the score's referenced
+// photo is kept (the 24h age floor is injected as 0 — R2 objects can't be backdated).
 //
 // Borrows two existing non-admin users (the owner and a stranger), and makes one throwaway
 // `zz-photo-test` machine and one hidden home venue owned by the owner. Everything it creates —
@@ -24,7 +26,8 @@ if (!new URL(process.env.DATABASE_URL!).hostname.startsWith(DEV_ENDPOINT)) {
   process.exit(1);
 }
 
-const { missingR2Vars, getPhotoStore, PHOTO_KEY_PREFIX } = await import('./src/lib/photoStore.js');
+const { missingR2Vars, getPhotoStore, newPhotoKey, PHOTO_KEY_PREFIX } = await import('./src/lib/photoStore.js');
+const { sweepPhotoOrphans, dbReferenceLookups } = await import('./src/lib/photoOrphans.js');
 const missing = missingR2Vars();
 if (missing.length) {
   console.log(`SKIP  R2 not configured (missing ${missing.join(', ')}) — nothing to test live.`);
@@ -209,6 +212,19 @@ try {
   everScoreIds.add(bare.id);
   const bareView = await call(owner, 'GET', `/scores/${bare.id}/photo`);
   check('a score with no photo at all → 404, even for its owner', bareView.status === 404, bareView);
+
+  // ── orphan sweep, live: plant an unconfirmed object next to a referenced one ──
+  const orphanKey = newPhotoKey(old.id);
+  const plant = await fetch(await store.presignPut(orphanKey), { method: 'PUT', headers: { 'Content-Type': 'image/jpeg' }, body: await jpeg(6) });
+  check('planted an unconfirmed object under the score prefix', plant.ok && (await store.head(orphanKey)) !== null, plant.status);
+  const oPrefix = `${PHOTO_KEY_PREFIX}${old.id}/`;
+  const dryOrphans = await sweepPhotoOrphans({ store, ...dbReferenceLookups }, { dryRun: true, prefix: oPrefix, minAgeMs: 0, sampleSize: 10 });
+  check('orphan dry run: exactly the planted key, nothing deleted', dryOrphans.orphans === 1 && dryOrphans.sample[0] === orphanKey && (await store.head(orphanKey)) !== null, dryOrphans);
+  const withFloor = await sweepPhotoOrphans({ store, ...dbReferenceLookups }, { dryRun: false, prefix: oPrefix });
+  check('with the real 24h floor a just-uploaded object is not an orphan', withFloor.orphans === 0 && (await store.head(orphanKey)) !== null, withFloor);
+  const realOrphans = await sweepPhotoOrphans({ store, ...dbReferenceLookups }, { dryRun: false, prefix: oPrefix, minAgeMs: 0 });
+  check('orphan sweep deletes the planted object', realOrphans.deleted === 1 && (await store.head(orphanKey)) === null, realOrphans);
+  check("orphan sweep keeps the score's referenced photo", (await store.head(uo.body.key)) !== null && realOrphans.listed === 2, realOrphans);
 
   // ── delete removes the object ──────────────────────────────────────────────
   const del = await call(owner, 'DELETE', `/scores/${sid}`);
