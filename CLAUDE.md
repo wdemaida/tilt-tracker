@@ -83,6 +83,43 @@ Push uses an isolated `GH_CONFIG_DIR` (not the global `gh` login) — see the **
 
 ---
 
+## Pinball Map API — standing rule
+
+Pinball Map's maintainers granted Will an API token personally. **TiltTrack must never hammer their
+API.** This is a standing rule, not a guideline:
+
+- **Every PM request goes through `pmClient`** (`artifacts/api-server/src/lib/pmClient.ts`) — no raw
+  `fetch` to pinballmap.com anywhere, and never from the browser. It holds the token, a global
+  limiter (1 req/s, burst 5, concurrency 2), in-flight de-duplication, a 10 s timeout, a circuit
+  breaker honoring `Retry-After` (429 → default 15 min; 5xx/network/timeout → 2 min; rejected
+  api_token → 15 min; while open it fails fast, nothing retries per request), and an identifying
+  User-Agent. Every live call logs one line: `[PM live] <method> <path> <status> <ms> (n today)`.
+- **Every new call site needs a DB-backed cache with an explicit TTL** (rosters: `pm_location_cache`,
+  6 h; catalog: `pm_catalog_cache`, 24 h). Page views and unauthenticated routes only read cache or
+  trigger a refresh that is bounded per *key* (one per linked venue per TTL, one catalog fetch a
+  day, de-duplicated in flight) — never per request. Failures are negatively cached, never retried
+  per request.
+- **No per-record fan-out:** never call PM inside a loop; fetch once and pass the data in (e.g.
+  `syncVenueMachineHistory(venueId, xrefs, catalog)`, `upsertMachineByName(name, { catalog })`).
+- **Every PM-touching route requires sign-in and a per-user rate limit** (`pmGuards.ts`); PM ids
+  come from our DB or from a result we just returned to that user (30-min allowlist), never
+  arbitrary input.
+- **`force: true` only for deliberate user actions**, and it only refetches if the cached copy is
+  more than 5 minutes old (`FORCE_MIN_AGE_MS`).
+- **Before adding a PM feature, estimate worst-case calls/day** and write it in the PR/commit.
+- **Development & testing:** outside production `PM_MODE` defaults to `offline` — requests are
+  answered from recorded fixtures in `artifacts/api-server/fixtures/pm/` and anything unrecorded
+  fails loudly. Use `live` only for a deliberate task and `record` to refresh fixtures
+  (`PM_MODE=record npx tsx record-pm-fixtures.ts --catalog --roster <pmId> --near <lat,lng>`).
+  Non-prod live calls go through an on-disk cache (`artifacts/api-server/.pm-cache/`, 7-day TTL,
+  gitignored) and a hard budget — 50 live calls/day per machine, 20 per process (`PM_DEV_BUDGET=<n>`
+  overrides both); past it pmClient logs `PM DEV BUDGET EXHAUSTED` and refuses. Test scripts never
+  hit PM live unless `PM_LIVE_TESTS=1`; migrations and seed scripts never call PM.
+- **Production needs no PM variables beyond `PINBALL_MAP_API_TOKEN`.** Production is detected as
+  `NODE_ENV=production` **or** `RENDER=true` (Render sets `RENDER` on every service; neither
+  render.yaml nor the start script sets `NODE_ENV`) and is always `live`, with no fixtures, disk
+  cache or budget.
+
 ## Known gotchas
 
 Feature-specific gotchas live in `artifacts/pinball-tracker/CLAUDE.md` (frontend) and `artifacts/api-server/CLAUDE.md` (backend) — both load automatically when working in those directories.
@@ -102,6 +139,8 @@ Feature-specific gotchas live in `artifacts/pinball-tracker/CLAUDE.md` (frontend
 | `artifacts/api-server/src/routes/venues.ts` | Venue list + machine detail (PM lazy cache) |
 | `artifacts/api-server/src/routes/upload.ts` | Photo upload, AI extraction, GPS, HERE lookup |
 | `artifacts/api-server/src/lib/pinballmapApi.ts` | Pinball Map API helpers |
+| `artifacts/api-server/src/lib/pmClient.ts` | The only Pinball Map transport — limiter, breaker, dedup, fixtures, dev budget |
+| `artifacts/api-server/src/lib/pmGuards.ts` | Per-user PM rate limits, pm-machines id allowlist, shared nearby cache |
 | `artifacts/api-server/src/lib/venueHistory.ts` | Diffs live PM machine list vs. last snapshot; records arrivals/departures |
 | `artifacts/api-server/src/lib/venueRepair.ts` | Venue relink + score re-sync: permissions, machine-name matching, merge apply |
 | `artifacts/api-server/src/lib/pmRosterCache.ts` | 6h cache of PM machine rosters — the only sanctioned way to read a roster |
