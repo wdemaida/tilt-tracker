@@ -11,6 +11,9 @@
 // Order matters: HEIC->JPEG conversion and canvas re-encoding both strip EXIF, so GPS/timestamp are
 // read from the *original* file before anything else touches it.
 //
+// HEIC: the browser's native decoder is tried first (Safari 17+; see nativeHeicDownscale for why
+// heic2any fails on 24MP+ photos on iPhones), then heic2any.
+//
 // Fallbacks: if HEIC conversion fails the original file is returned (`heicFailed: true`) — a single
 // photo can still go up and use the server's own (slow, memory-heavy but functional) HEIC decode; the
 // multi-photo path refuses that server-side, so the caller must reject it. If the downscale fails the
@@ -32,11 +35,32 @@ export interface PreparedImage {
   capturedAt?: string | null;
   /** True when a HEIC photo couldn't be converted and `file` is still the original HEIC. */
   heicFailed: boolean;
+  /**
+   * Where the full-size photo (fullSizePhoto.ts) comes from, if this image becomes the score's photo.
+   * Kept rather than encoded up front so only the one image the model picks is ever encoded at full
+   * size. `ready` = already a GPS-free canvas JPEG within FULL_MAX_EDGE (video frames, whose <video>
+   * is gone by the time the score saves); otherwise `blob` is a decodable original that still carries
+   * EXIF/GPS and is always re-encoded. Absent = no full-size photo (e.g. `heicFailed`).
+   */
+  full?: { blob: Blob; ready: boolean; width?: number; height?: number };
 }
 
 /** Long edge of the uploaded JPEG. Digits need to stay legible; Claude downsamples past ~1568px anyway. */
 export const UPLOAD_MAX_EDGE = 2000;
 export const UPLOAD_JPEG_QUALITY = 0.9;
+
+/**
+ * Long edge of the full-size photo kept on R2. iOS Safari refuses canvases over ~16.7MP (4096×4096),
+ * and a 24MP iPhone photo is 5712×4284 — so 4096 is both the storage cap and the canvas-safe size.
+ */
+export const FULL_MAX_EDGE = 4096;
+export const FULL_JPEG_QUALITY = 0.92;
+
+/** A size that fits within `maxEdge` on its long side, never upscaled. */
+export function fitWithin(width: number, height: number, maxEdge: number): { width: number; height: number } {
+  const scale = Math.min(1, maxEdge / Math.max(width, height));
+  return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
+}
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -76,18 +100,26 @@ async function readExif(file: Blob): Promise<{ latitude: number | null; longitud
  * Shared with the video frame extractor, which hands in a <video> element.
  */
 export async function drawToJpeg(
-  source: CanvasImageSource, width: number, height: number, maxEdge = UPLOAD_MAX_EDGE,
+  source: CanvasImageSource, width: number, height: number, maxEdge = UPLOAD_MAX_EDGE, quality = UPLOAD_JPEG_QUALITY,
 ): Promise<Blob> {
-  const scale = Math.min(1, maxEdge / Math.max(width, height));
+  const size = fitWithin(width, height, maxEdge);
   const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(width * scale));
-  canvas.height = Math.max(1, Math.round(height * scale));
+  canvas.width = size.width;
+  canvas.height = size.height;
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Canvas unavailable');
   ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
-  const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', UPLOAD_JPEG_QUALITY));
+  const blob = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+  // Free the backing store now rather than at GC — matters on iOS, which caps total canvas memory.
+  canvas.width = canvas.height = 0;
   if (!blob) throw new Error('JPEG encode failed');
   return blob;
+}
+
+async function downscaleBitmap(bitmap: ImageBitmap, blob: Blob): Promise<Blob> {
+  // Already small and already JPEG: re-encoding would only cost quality.
+  if (Math.max(bitmap.width, bitmap.height) <= UPLOAD_MAX_EDGE && blob.type === 'image/jpeg') return blob;
+  return drawToJpeg(bitmap, bitmap.width, bitmap.height);
 }
 
 async function downscale(blob: Blob): Promise<Blob | null> {
@@ -96,14 +128,36 @@ async function downscale(blob: Blob): Promise<Blob | null> {
     // stays upright after its EXIF is stripped by the re-encode.
     const bitmap = await createImageBitmap(blob);
     try {
-      // Already small and already JPEG: re-encoding would only cost quality.
-      if (Math.max(bitmap.width, bitmap.height) <= UPLOAD_MAX_EDGE && blob.type === 'image/jpeg') return blob;
-      return await drawToJpeg(bitmap, bitmap.width, bitmap.height);
+      return await downscaleBitmap(bitmap, blob);
     } finally {
       bitmap.close();
     }
   } catch {
     return null;
+  }
+}
+
+/**
+ * Decodes a HEIC with the browser's own decoder (Safari 17+ has one; Chrome/Firefox on Windows
+ * don't and throw) and downscales it — no full-resolution canvas involved. heic2any, by contrast,
+ * paints the *whole* decoded image into one canvas before encoding: a 24MP (5712×4284) or 48MP
+ * iPhone HEIC exceeds iOS Safari's ~16.7MP canvas limit, `toBlob` comes back null, and the photo
+ * falls into the `heicFailed` path (server-side decode). Trying the native decoder first avoids that
+ * wherever it exists. Null when the browser can't decode it.
+ */
+async function nativeHeicDownscale(file: Blob): Promise<Blob | null> {
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    return null;
+  }
+  try {
+    return await drawToJpeg(bitmap, bitmap.width, bitmap.height);
+  } catch {
+    return null;
+  } finally {
+    bitmap.close();
   }
 }
 
@@ -115,6 +169,11 @@ export async function prepareUploadImage(file: File): Promise<PreparedImage> {
   let working: Blob = file;
   let heicFailed = false;
   if (isHeicFile(file)) {
+    const native = await nativeHeicDownscale(file);
+    if (native) {
+      // The original HEIC is the full-size source: the same native decoder re-reads it later.
+      return { file: native, filename: `${baseName}.jpg`, ...exif, heicFailed: false, full: { blob: file, ready: false } };
+    }
     try {
       const heic2any = (await import('heic2any')).default;
       const converted = await heic2any({ blob: file, toType: 'image/jpeg', quality: UPLOAD_JPEG_QUALITY });
@@ -134,5 +193,8 @@ export async function prepareUploadImage(file: File): Promise<PreparedImage> {
     filename: isJpeg ? `${baseName}.jpg` : file.name,
     ...exif,
     heicFailed: false,
+    // Pre-downscale: the camera original, or heic2any's full-resolution JPEG. Re-encoded (and so
+    // stripped of EXIF/GPS) before it's ever uploaded — see fullSizePhoto.ts.
+    full: { blob: working, ready: false },
   };
 }

@@ -12,6 +12,7 @@ import { queryClient } from '../lib/queryClient';
 import { PinballIcon } from '../components/PinballIcon';
 import { toLocalInput, localInputToIso, naiveToLocalInput } from '../lib/datetime';
 import { prepareUploadImage, type PreparedImage } from '../lib/prepareUploadImage';
+import { encodeFullSizePhoto, uploadFullSizePhoto, type EncodedFullPhoto } from '../lib/fullSizePhoto';
 import { extractVideoFrames, isVideoFile, VideoFrameError, VIDEO_UNSUPPORTED_MESSAGE } from '../lib/videoFrames';
 import { ScoreDigitInput } from '../components/ScoreDigitInput';
 import { MissingLocationNotice, type CurrentLocationState } from '../components/MissingLocationNotice';
@@ -186,6 +187,11 @@ export default function AddScorePage() {
   const [showMachineConfirm, setShowMachineConfirm] = useState(false);
   const [pendingFormData, setPendingFormData] = useState<FormData | null>(null);
   const thumbnailSucceeded = useRef(false);
+  // The image the thumbnail was made from — also the one that becomes the full-size photo once the
+  // score saves (fullSizePhoto.ts). Set wherever generateThumbnail is called, so the two never differ.
+  const bestImageRef = useRef<PreparedImage | null>(null);
+  const fullPhotoEncoded = useRef<EncodedFullPhoto | null>(null);
+  const [fullPhoto, setFullPhoto] = useState<{ status: 'idle' | 'working' | 'saved' | 'failed'; message?: string }>({ status: 'idle' });
   const machineAutoSelected = useRef(false);
   const [, navigate] = useLocation();
   const api = useApi();
@@ -205,6 +211,32 @@ export default function AddScorePage() {
       img.onerror = reject;
       img.src = src;
     });
+  }
+
+  /** Picks the image behind the thumbnail (and so the full-size photo). */
+  function setBestImage(image: PreparedImage | null) {
+    if (bestImageRef.current !== image) fullPhotoEncoded.current = null;
+    bestImageRef.current = image;
+  }
+
+  /**
+   * After the score saves: encode the full-size photo and upload it to R2, in the background. The
+   * wizard doesn't wait — step 4 shows a status line, and the upload carries on if the user taps
+   * Done. Silent when there's nothing to upload or the server has full-size photos switched off.
+   */
+  async function runFullPhotoUpload(scoreId: number) {
+    if (!bestImageRef.current) return;
+    setFullPhoto({ status: 'working' });
+    if (!fullPhotoEncoded.current) fullPhotoEncoded.current = await encodeFullSizePhoto(bestImageRef.current);
+    const encoded = fullPhotoEncoded.current;
+    if (!encoded) return setFullPhoto({ status: 'idle' });
+    const result = await uploadFullSizePhoto(api, scoreId, encoded);
+    if (result.ok) {
+      setFullPhoto({ status: 'saved' });
+      queryClient.invalidateQueries({ queryKey: ['scores'] });
+    } else {
+      setFullPhoto(result.disabled ? { status: 'idle' } : { status: 'failed', message: result.message });
+    }
   }
 
   function generateThumbnail(file: File | Blob): Promise<string> {
@@ -599,6 +631,7 @@ export default function AddScorePage() {
       queryClient.invalidateQueries({ queryKey: ['venues'] });
       setSavedScore({ id: row.id, venueId: row.venueId, machineName: data.machineName, score: data.score });
       setStep(4);
+      void runFullPhotoUpload(row.id);
     },
     onError: (err: any) => {
       console.error('Save score failed:', err);
@@ -706,6 +739,7 @@ export default function AddScorePage() {
     // A fresh set's thumbnail is made up front so a manual save still has one if the read fails.
     if (mode === 'replace') {
       thumbnailSucceeded.current = false;
+      setBestImage(images[0]);
       generateThumbnail(images[0].file).then(t => { setThumbnail(t); thumbnailSucceeded.current = true; }).catch(() => {});
     }
 
@@ -808,6 +842,7 @@ export default function AddScorePage() {
     // Thumbnail from the photo the model found most legible (default: the first).
     const best = (reads[0] ?? result.scoreRead)?.bestImageIndex ?? 0;
     if (best > 0 && images[best]) {
+      setBestImage(images[best]);
       generateThumbnail(images[best].file).then(t => { setThumbnail(t); thumbnailSucceeded.current = true; }).catch(() => {});
     } else if (result.thumbnailBase64 && !thumbnailSucceeded.current) {
       resizeImage(result.thumbnailBase64).then(setThumbnail).catch(() => setThumbnail(result.thumbnailBase64));
@@ -1908,6 +1943,26 @@ export default function AddScorePage() {
               <p className="text-sm text-muted-foreground">{savedScore.machineName}</p>
               <p className="text-3xl font-bold text-primary">{Number(savedScore.score).toLocaleString()}</p>
             </div>
+            {fullPhoto.status === 'working' && (
+              <p className="flex items-center gap-1.5 text-xs text-muted-foreground" role="status">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" /> Saving full-size photo…
+              </p>
+            )}
+            {fullPhoto.status === 'saved' && (
+              <p className="flex items-center gap-1.5 text-xs text-green-400" role="status">
+                <CheckCircle2 className="w-3.5 h-3.5" /> Full-size photo saved
+              </p>
+            )}
+            {fullPhoto.status === 'failed' && (
+              <p className="flex items-center gap-2 text-xs text-amber-300" role="status">
+                <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+                <span>Couldn't save the full-size photo — the score and thumbnail are saved.</span>
+                <button type="button" onClick={() => void runFullPhotoUpload(savedScore.id)}
+                  className="font-bold uppercase tracking-wider text-primary hover:text-primary/80 flex-shrink-0">
+                  Retry
+                </button>
+              </p>
+            )}
           </div>
 
           {canPostToPm && (

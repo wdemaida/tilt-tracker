@@ -9,7 +9,7 @@
 // Browser decode support is the main failure mode: e.g. an iPhone HEVC .mov won't decode in Chrome
 // on Windows. That surfaces as a friendly VideoFrameError, never a broken wizard.
 
-import { drawToJpeg, type PreparedImage } from './prepareUploadImage';
+import { drawToJpeg, fitWithin, FULL_MAX_EDGE, FULL_JPEG_QUALITY, type PreparedImage } from './prepareUploadImage';
 
 export const MAX_VIDEO_SECONDS = 10;
 export const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
@@ -271,7 +271,12 @@ export async function extractVideoFrames(file: File, onProgress?: (p: FrameProgr
     for (let k = 0; k < picked.length; k++) {
       await seek(video, times[picked[k]]);
       const blob = await drawToJpeg(video, video.videoWidth, video.videoHeight);
+      // The same frame at native resolution (capped) for the full-size photo, drawn now because the
+      // <video> is gone by the time the score saves. Optional: a failure here only loses full-size.
+      const fullSize = fitWithin(video.videoWidth, video.videoHeight, FULL_MAX_EDGE);
+      const fullBlob = await drawToJpeg(video, video.videoWidth, video.videoHeight, FULL_MAX_EDGE, FULL_JPEG_QUALITY).catch(() => null);
       frames.push({
+        full: fullBlob ? { blob: fullBlob, ready: true, ...fullSize } : undefined,
         file: blob,
         filename: `${baseName}-frame-${k + 1}.jpg`,
         latitude: meta.latitude,

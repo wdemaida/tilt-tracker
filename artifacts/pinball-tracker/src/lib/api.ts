@@ -153,7 +153,7 @@ export interface ChallengeParticipant {
     reachedTargetAt: string | null;
   } | null;
   /** Detail only: the scores that count, newest upload first. */
-  scores?: Array<{ id: number; score: number; playedAt: string; createdAt: string; venueId: number | null; venueName: string | null; venueTimezone: string | null }>;
+  scores?: Array<{ id: number; score: number; playedAt: string; createdAt: string; venueId: number | null; venueName: string | null; venueTimezone: string | null; hasFullPhoto?: boolean }>;
 }
 
 /** GET /api/challenges/venue-options — a public venue that has the challenge's machine. */
@@ -219,6 +219,14 @@ export interface CreateChallengeBody {
   endsAt: string;
 }
 
+/** A signed, short-lived link to a score's full-size photo (GET /api/scores/:id/photo). */
+export interface FullPhotoLink {
+  url: string;
+  width: number | null;
+  height: number | null;
+  expiresAt: string;
+}
+
 export function createApi(getToken: () => Promise<string | null>) {
   const tok = () => getToken();
 
@@ -244,6 +252,16 @@ export function createApi(getToken: () => Promise<string | null>) {
         machine: async (id: number, body: { pmName: string; pmManufacturer?: string | null; pmYear?: number | null }) =>
           request<any>(`/scores/${id}/repair/machine`, { method: 'POST', body: JSON.stringify(body) }, await tok()),
       },
+
+      // Full-size photo on Cloudflare R2 (see src/lib/fullSizePhoto.ts). `photo` works signed out
+      // too — the server applies the same visibility rule as the score lists and signs a short-lived
+      // URL; an <img> can't carry our bearer token, which is why this isn't a redirect.
+      photo: async (id: number) =>
+        request<FullPhotoLink>(`/scores/${id}/photo`, undefined, await tok()),
+      photoUploadUrl: async (id: number) =>
+        request<{ key: string; url: string; expiresIn: number }>(`/scores/${id}/photo/upload-url`, { method: 'POST' }, await tok()),
+      photoConfirm: async (id: number, body: { key: string; width: number; height: number }) =>
+        request<{ hasFullPhoto: true }>(`/scores/${id}/photo/confirm`, { method: 'POST', body: JSON.stringify(body) }, await tok()),
     },
     machines: {
       list: async (mine = false) =>
