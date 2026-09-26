@@ -1,10 +1,13 @@
 import { useQuery } from '@tanstack/react-query';
+import { useAuth } from '@clerk/clerk-react';
 import { useParams, Link } from 'wouter';
 import { User, MapPin, Clock, Home } from 'lucide-react';
 import { formatScoreTime } from '../lib/scoreTime';
 import { useApi } from '../lib/useApi';
 import { usePodMembership } from '../lib/myPods';
 import PodMemberIcons from '../components/PodMemberIcons';
+import FriendButton from '../components/FriendButton';
+import { FRIEND_WITH_KEY } from '../lib/myFriends';
 
 export default function UserPage() {
   const { username } = useParams<{ username: string }>();
@@ -18,6 +21,15 @@ export default function UserPage() {
   // Only the viewer's own pods; empty for signed-out viewers and on your own profile. Every score on
   // this page is the profile user's, so the header is the only place the icons go.
   const podMembership = usePodMembership();
+  // The viewer's relationship with this person, for the Add friend / request status button. Signed
+  // in only; answers 'self' on your own profile, where no button shows.
+  const { isSignedIn, isLoaded } = useAuth();
+  const { data: friendship } = useQuery({
+    queryKey: [...FRIEND_WITH_KEY, username],
+    queryFn: () => api.friends.with(username),
+    enabled: isLoaded && !!isSignedIn,
+    retry: false,
+  });
 
   if (isLoading) return <p className="text-muted-foreground">Loading...</p>;
   if (!data) return <p className="text-muted-foreground">User not found.</p>;
@@ -26,7 +38,7 @@ export default function UserPage() {
 
   return (
     <div>
-      <div className="flex items-center gap-4 mb-8">
+      <div className="flex flex-wrap items-center gap-4 mb-8">
         <div className="w-14 h-14 rounded-full bg-card border border-white/10 flex items-center justify-center">
           <User className="w-7 h-7 text-muted-foreground" />
         </div>
@@ -38,6 +50,11 @@ export default function UserPage() {
             <span>· {scores.length} scores</span>
           </p>
         </div>
+        {friendship && friendship.relationship !== 'self' && (
+          <div className="sm:ml-auto">
+            <FriendButton userId={friendship.user.id} name={friendship.user.displayName} relationship={friendship.relationship} />
+          </div>
+        )}
       </div>
 
       <div className="flex flex-col gap-3">

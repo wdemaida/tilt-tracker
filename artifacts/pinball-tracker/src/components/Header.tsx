@@ -1,10 +1,11 @@
 import { Link, useLocation } from 'wouter';
-import { Trophy, Map, BarChart2, PlusCircle, Building2, ShieldCheck, Menu, X, Users } from 'lucide-react';
+import { Trophy, Map, BarChart2, PlusCircle, Building2, ShieldCheck, Menu, X, Users, UserCheck, Bell } from 'lucide-react';
 import { PinballIcon } from './PinballIcon';
 import { SignedIn, SignedOut, UserButton, useAuth } from '@clerk/clerk-react';
 import { useQuery } from '@tanstack/react-query';
 import { useApi } from '../lib/useApi';
 import { useState, useEffect, useRef } from 'react';
+import { UNREAD_COUNT_KEY } from '../lib/myFriends';
 
 const navItems = [
   { href: '/', label: 'Scores', Icon: Trophy },
@@ -13,6 +14,37 @@ const navItems = [
   { href: '/map', label: 'Map', Icon: Map },
   { href: '/stats', label: 'Stats', Icon: BarChart2 },
 ];
+
+/**
+ * The inbox bell: unread count badge, polled every 60s and on window focus. Opens /notifications
+ * (a page, not a dropdown — see NotificationsPage). Only rendered for a signed-in user with a profile;
+ * /api/notifications is the caller's own rows only.
+ */
+function NotificationBell({ active }: { active: boolean }) {
+  const api = useApi();
+  const { data } = useQuery({
+    queryKey: UNREAD_COUNT_KEY,
+    queryFn: api.notifications.unreadCount,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+    staleTime: 30_000,
+  });
+  const count = data?.count ?? 0;
+  return (
+    <Link
+      href="/notifications"
+      aria-label={count ? `Notifications, ${count} unread` : 'Notifications'}
+      className={`relative flex items-center justify-center w-10 h-10 rounded-lg transition-colors hover:text-white ${active ? 'text-primary' : 'text-muted-foreground'}`}
+    >
+      <Bell className="w-5 h-5" aria-hidden />
+      {count > 0 && (
+        <span className="absolute top-1 right-1 min-w-[1.1rem] h-[1.1rem] px-1 rounded-full bg-friend text-zinc-950 text-[10px] font-black leading-[1.1rem] text-center">
+          {count > 9 ? '9+' : count}
+        </span>
+      )}
+    </Link>
+  );
+}
 
 export default function Header() {
   const [location] = useLocation();
@@ -41,10 +73,10 @@ export default function Header() {
 
   const isAdmin = appUser?.role === 'admin';
 
-  // Pods are private to their owner, so the entry only exists for signed-in users.
+  // Pods and friends are private to their owner, so the entries only exist for signed-in users.
   const mainNavItems = [
     ...navItems,
-    ...(isSignedIn ? [{ href: '/pods', label: 'Pods', Icon: Users }] : []),
+    ...(isSignedIn ? [{ href: '/pods', label: 'Pods', Icon: Users }, { href: '/friends', label: 'Friends', Icon: UserCheck }] : []),
   ];
 
   const allNavItems = [
@@ -65,7 +97,7 @@ export default function Header() {
             </span>
           </Link>
 
-          <nav className="hidden md:flex items-center space-x-8">
+          <nav className="hidden md:flex items-center space-x-5 lg:space-x-8">
             {mainNavItems.map(({ href, label, Icon }) => (
               <Link
                 key={href}
@@ -91,8 +123,9 @@ export default function Header() {
             )}
           </nav>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5 sm:gap-3">
             <SignedIn>
+              {appUser && <NotificationBell active={location === '/notifications'} />}
               {/* Add Score hidden on mobile — accessible via hamburger menu */}
               <Link
                 href="/add"

@@ -29,10 +29,11 @@ export function useMyFriends() {
   return { ...data, signedIn: enabled, isLoading: enabled && query.isLoading };
 }
 
-/** After any friend action: the list, every profile button, the bell and the inbox may have changed. */
+/** After any friend action: the list, search results, profile buttons, the bell and the inbox may have changed. */
 export function invalidateFriendQueries() {
   queryClient.invalidateQueries({ queryKey: MY_FRIENDS_KEY });
   queryClient.invalidateQueries({ queryKey: FRIEND_WITH_KEY });
+  queryClient.invalidateQueries({ queryKey: ['friend-search'] });
   queryClient.invalidateQueries({ queryKey: ['notifications'] });
 }
 

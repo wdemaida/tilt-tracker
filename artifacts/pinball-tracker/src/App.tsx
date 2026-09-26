@@ -14,6 +14,8 @@ import VenuesPage from './pages/VenuesPage';
 import VenuePage from './pages/VenuePage';
 import StatsPage from './pages/StatsPage';
 import PodsPage from './pages/PodsPage';
+import FriendsPage from './pages/FriendsPage';
+import NotificationsPage from './pages/NotificationsPage';
 import AddScorePage from './pages/AddScorePage';
 import SetupPage from './pages/SetupPage';
 import UserPage from './pages/UserPage';
@@ -104,6 +106,12 @@ export default function App() {
         </Route>
         <Route path="/pods">
           <AuthGate><PodsPage /></AuthGate>
+        </Route>
+        <Route path="/friends">
+          <AuthGate><FriendsPage /></AuthGate>
+        </Route>
+        <Route path="/notifications">
+          <AuthGate><NotificationsPage /></AuthGate>
         </Route>
         <Route path="/add">
           <AuthGate><AddScorePage /></AuthGate>
