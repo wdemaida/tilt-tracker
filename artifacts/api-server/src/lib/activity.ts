@@ -16,7 +16,11 @@ import { db, activityEvents, type NewActivityEvent } from '@workspace/db';
 
 export type Executor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-/** Event types, grouped by category for the admin filter. Unknown types still log (category 'other'). */
+/**
+ * Event types, grouped by category for the admin filter. Unknown types still log (category 'other').
+ * Every type here also needs a retention tier in activityRetention.ts (TIER_BY_TYPE) — a unit test
+ * fails otherwise.
+ */
 export const ACTIVITY_TYPES = {
   auth: ['user.signed_up', 'user.signed_in', 'user.first_setup', 'user.clerk_deleted'],
   score: ['score.created', 'score.edited', 'score.deleted', 'score.repair_machine', 'photo.uploaded', 'photo.replaced'],
@@ -40,8 +44,9 @@ export const ACTIVITY_TYPES = {
     'admin.score_deleted', 'admin.photo_deleted', 'admin.thumbnail_deleted',
     'admin.challenge_voided', 'admin.friendship_removed', 'admin.notification_deleted', 'admin.notifications_cleared',
     'admin.venue_deleted', 'admin.machine_updated', 'admin.machine_deleted',
+    'admin.settings_changed', 'admin.photo_orphans_run',
   ],
-  system: ['system.stat_snapshot', 'system.challenge_sweep'],
+  system: ['system.stat_snapshot', 'system.challenge_sweep', 'system.activity_retention', 'system.photo_orphans'],
 } as const;
 
 export type ActivityCategory = keyof typeof ACTIVITY_TYPES;
