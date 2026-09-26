@@ -5,7 +5,8 @@
 // own users lookup runs for real.
 //
 // Creates, and deletes at the end: two "__statsscope" pods (one for helmhead, one for a non-admin
-// owner), and one hidden home venue (switch off) with two scores on it.
+// owner), and two hidden home venues (switch off): one with two scores on it, one with only a pod
+// member's score.
 //
 //   cd artifacts/api-server && npx tsx test-stats-scope.ts
 
@@ -65,11 +66,16 @@ const countFor = async (ids: number[]) => {
   const [r] = rowsOf(await db.execute(sql`SELECT count(*)::int AS n FROM scores WHERE user_id IN (${sql.join(ids.map(i => sql`${i}`), sql`, `)})`));
   return r.n as number;
 };
+const venuesFor = async (ids: number[]) => {
+  const [r] = rowsOf(await db.execute(sql`SELECT count(DISTINCT s.venue_id)::int AS n FROM scores s JOIN machines m ON m.id = s.machine_id WHERE s.user_id IN (${sql.join(ids.map(i => sql`${i}`), sql`, `)})`));
+  return r.n as number;
+};
 // Everything but the scope echo and the per-group split — what "the same numbers" means.
 const numbers = (b: any) => { const { scope: _s, split: _p, mostPlayed, ...rest } = b; return JSON.stringify({ ...rest, mostPlayed: mostPlayed.map((m: any) => [m.name, m.plays]) }); };
 const last = (r: any) => r.body?.points?.at(-1)?.value;
 
-let podId = 0, otherPodId = 0, hiddenVenueId = 0;
+let podId = 0, otherPodId = 0;
+const hiddenVenueIds: number[] = [];
 const hiddenScoreIds: number[] = [];
 try {
   console.log(`owner ${owner.username} (${owner.role}); pod = ${memberA.username} + ${memberB.username}; outsider ${outsider.username}; non-admin owner ${otherOwner.username}`);
@@ -80,11 +86,17 @@ try {
   const [{ n: everyScore }] = rowsOf(await db.execute(sql`SELECT count(*)::int AS n FROM scores s JOIN machines m ON m.id = s.machine_id`));
   if (owner.role === 'admin') check('all (admin) → every score counted', all.body.totalGames === everyScore, [all.body.totalGames, everyScore]);
   check('all → ?mine=false is the same', numbers((await get(owner, '', '?mine=false')).body) === numbers(all.body));
+  if (owner.role === 'admin') {
+    const [{ n: everyVenue }] = rowsOf(await db.execute(sql`SELECT count(DISTINCT s.venue_id)::int AS n FROM scores s JOIN machines m ON m.id = s.machine_id`));
+    check('all (admin) → venuesPlayed = distinct venues with a score', all.body.venuesPlayed === everyVenue, [all.body.venuesPlayed, everyVenue]);
+  }
+  check('all → venuesPlayed ≤ site-wide venue count', typeof all.body.venuesPlayed === 'number' && all.body.venuesPlayed <= all.body.totalVenues, [all.body.venuesPlayed, all.body.totalVenues]);
   check('all → split is self + other only', all.body.split.pod.plays === 0 && all.body.split.self.plays + all.body.split.other.plays === all.body.totalGames, all.body.split);
 
   const mine = await get(owner, '', '?mine=true');
   check('mine → only the owner', mine.status === 200 && mine.body.scope?.kind === 'mine' && mine.body.totalGames === await countFor([owner.id]), mine.body.totalGames);
   check('mine → equals the self split in all', mine.body.totalGames === all.body.split.self.plays && mine.body.totalVisits === all.body.split.self.visits);
+  check('mine → venuesPlayed = your distinct venues', mine.body.venuesPlayed === await venuesFor([owner.id]), mine.body.venuesPlayed);
   check('mine → site-wide facts unchanged', mine.body.totalVenues === all.body.totalVenues && mine.body.totalMachinesInSystem === all.body.totalMachinesInSystem);
 
   // ── pods ──
@@ -101,6 +113,7 @@ try {
     pod.body.split.self.plays === mine.body.totalGames
     && pod.body.split.pod.plays === await countFor([memberA.user_id, memberB.user_id])
     && pod.body.split.other.plays === 0, pod.body.split);
+  check('pod → venuesPlayed = distinct venues of you + members', pod.body.venuesPlayed === await venuesFor([owner.id, memberA.user_id, memberB.user_id]), pod.body.venuesPlayed);
   check('pod → visits = self + pod visits', pod.body.totalVisits === pod.body.split.self.visits + pod.body.split.pod.visits);
   check('pod → mostPlayed has no other plays', pod.body.mostPlayed.every((m: any) => m.byGroup.other === 0 && m.byGroup.self + m.byGroup.pod === m.plays));
   check('pod → site-wide facts unchanged', pod.body.totalVenues === all.body.totalVenues && pod.body.totalMachinesInSystem === all.body.totalMachinesInSystem);
@@ -121,6 +134,14 @@ try {
   const hMine = await get(owner, '/history/total_plays', '?days=365&mine=true');
   check('history mine → live, ends at your total', hMine.body?.source === 'live' && last(hMine) === mine.body.totalGames, [hMine.body?.source, last(hMine), mine.body.totalGames]);
   const hPod = await get(owner, '/history/total_plays', `?days=365&pod=${podId}`);
+  const hPodOthers = await get(owner, '/history/total_plays', `?days=90&pod=${podId}&others=1`);
+  check('history pod+others → snapshots, same series as all',
+    hPodOthers.status === 200 && hPodOthers.body.source === 'snapshot' && JSON.stringify(hPodOthers.body.points) === JSON.stringify(hAll.body.points),
+    [hPodOthers.body?.source, hPodOthers.body?.points?.length, hAll.body?.points?.length]);
+  check('history pod+others → still echoes the pod scope', hPodOthers.body?.scope?.kind === 'pod' && hPodOthers.body.scope.others === true, hPodOthers.body?.scope);
+  const hPodOthersMachines = await get(owner, '/history/machines_with_score', `?days=90&pod=${podId}&others=1`);
+  const hAllMachines = await get(owner, '/history/machines_with_score', '?days=90');
+  check('history pod+others machines → snapshots too', hPodOthersMachines.body?.source === 'snapshot' && JSON.stringify(hPodOthersMachines.body.points) === JSON.stringify(hAllMachines.body.points));
   check('history pod → live, ends at the pod total', hPod.body?.source === 'live' && last(hPod) === pod.body.totalGames, [last(hPod), pod.body.totalGames]);
   const hPodVisits = await get(owner, '/history/total_visits', `?days=365&pod=${podId}`);
   check('history pod visits → ends at the pod visits', last(hPodVisits) === pod.body.totalVisits, [last(hPodVisits), pod.body.totalVisits]);
@@ -168,15 +189,20 @@ try {
   const outsiderBefore = (await get({ clerk_id: outsider.clerk_id }, '', '')).body.totalGames;
   const memberMineBefore = (await get({ clerk_id: memberA.clerk_id }, '', '?mine=true')).body.totalGames;
 
-  [{ id: hiddenVenueId }] = await db.insert(venues).values({
-    name: '__statsscope hidden home', isResidence: true, privacyTier: 'hidden', showMachinesAndScores: false, ownerId: memberA.user_id,
-  } as any).returning({ id: venues.id });
+  // Home 1: memberA and otherOwner both log there. Home 2: only memberA does.
+  const memberVenuesBefore = (await get({ clerk_id: memberA.clerk_id }, '', '?mine=true')).body.venuesPlayed;
   const [{ id: anyMachine }] = rowsOf(await db.execute(sql`SELECT machine_id AS id FROM scores LIMIT 1`));
-  for (const u of [memberA, otherOwner]) {
-    const [{ id }] = await db.insert(scores).values({
-      userId: u.user_id, machineId: anyMachine, score: 123456789, playedAt: new Date(), venueId: hiddenVenueId, venueName: '__statsscope hidden home',
-    } as any).returning({ id: scores.id });
-    hiddenScoreIds.push(id);
+  for (const [name, loggers] of [['__statsscope hidden home', [memberA, otherOwner]], ['__statsscope hidden home 2', [memberA]]] as const) {
+    const [{ id: venueId }] = await db.insert(venues).values({
+      name, isResidence: true, privacyTier: 'hidden', showMachinesAndScores: false, ownerId: memberA.user_id,
+    } as any).returning({ id: venues.id });
+    hiddenVenueIds.push(venueId);
+    for (const u of loggers) {
+      const [{ id }] = await db.insert(scores).values({
+        userId: u.user_id, machineId: anyMachine, score: 123456789, playedAt: new Date(), venueId, venueName: name,
+      } as any).returning({ id: scores.id });
+      hiddenScoreIds.push(id);
+    }
   }
 
   for (const q of scopesFor) {
@@ -184,18 +210,25 @@ try {
     check(`hidden venue, non-admin pod owner ${q || '(all)'} → only their own new score counted`,
       r.status === 200 && r.body.totalGames === before[q].totalGames + 1, [before[q].totalGames, r.body?.totalGames]);
   }
+  for (const q of scopesFor) {
+    const r = await get(asOther, '', q);
+    check(`hidden venues, non-admin pod owner ${q || '(all)'} → venuesPlayed +1 (the home they logged at; not the member-only one)`,
+      r.body?.venuesPlayed === before[q].venuesPlayed + 1, [before[q].venuesPlayed, r.body?.venuesPlayed]);
+    check(`hidden venues ${q || '(all)'} → the member-only home's name never appears`, !r.text.includes('__statsscope hidden home 2'));
+  }
+  check('hidden venues → their owner counts both', (await get({ clerk_id: memberA.clerk_id }, '', '?mine=true')).body.venuesPlayed === memberVenuesBefore + 2);
   const podAfter = (await get(asOther, '', `?pod=${otherPodId}`)).body;
   check("hidden venue → member's hidden score not in the pod split", podAfter.split.pod.plays === before[`?pod=${otherPodId}`].split.pod.plays, podAfter.split);
   const trendAfter = last(await get(asOther, '/history/total_plays', `?days=365&pod=${otherPodId}`));
   check('hidden venue → live pod trend counts only their own', trendAfter === trendBefore + 1, [trendBefore, trendAfter]);
-  check('hidden venue → its author still counts their own', (await get({ clerk_id: memberA.clerk_id }, '', '?mine=true')).body.totalGames === memberMineBefore + 1);
+  check('hidden venue → its author still counts their own', (await get({ clerk_id: memberA.clerk_id }, '', '?mine=true')).body.totalGames === memberMineBefore + 2);
   const outsiderAll = (await get({ clerk_id: outsider.clerk_id }, '', '')).body.totalGames;
   check('hidden venue → unrelated user counts neither', outsiderAll === outsiderBefore, [outsiderBefore, outsiderAll]);
   if (owner.role === 'admin') console.log('note: helmhead is an admin — admins see hidden scores by design, so the hidden checks use a non-admin pod owner');
 
 } finally {
   if (hiddenScoreIds.length) await db.delete(scores).where(inArray(scores.id, hiddenScoreIds));
-  if (hiddenVenueId) await db.delete(venues).where(eq(venues.id, hiddenVenueId));
+  if (hiddenVenueIds.length) await db.delete(venues).where(inArray(venues.id, hiddenVenueIds));
   const created = await db.select({ id: pods.id }).from(pods).where(like(pods.name, '\\_\\_statsscope%'));
   if (created.length) await db.delete(pods).where(inArray(pods.id, created.map(p => p.id)));
   const leftover = await db.select({ id: pods.id }).from(pods).where(like(pods.name, '\\_\\_statsscope%'));

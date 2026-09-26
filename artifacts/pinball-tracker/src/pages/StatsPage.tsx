@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import {
-  Trophy, Repeat, CalendarDays, CalendarClock, MapPin, UploadCloud, Building2, Boxes, TrendingUp, X,
+  Trophy, Repeat, CalendarDays, CalendarClock, MapPin, MapPinned, UploadCloud, Building2, Boxes, TrendingUp, X,
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { PinballIcon } from '../components/PinballIcon';
@@ -51,8 +51,10 @@ function StatTrendModal({ statKey, label, scope, pod, onClose }: {
   const stroke = live && scope.kind === 'mine' ? 'hsl(var(--username))'
     : live && scope.kind === 'pod' && !scope.others && pod ? podColorTokens(pod.color).graphic
     : 'hsl(var(--primary))';
+  // Pod + everyone else is every player, so the server answers with the site-wide snapshots.
   const note = siteWide ? 'Site-wide daily snapshots — the same in every Compare view.'
     : live ? `Rebuilt from the current scores of ${whoLabel(scope, pod)}, by the day each was submitted.`
+    : scope.kind === 'pod' && scope.others ? 'Your pod plus everyone else is every player, so this is the site-wide daily snapshot — the same as All.'
     : 'Site-wide daily snapshots.';
 
   return (
@@ -249,7 +251,7 @@ export default function StatsPage() {
       {header}
 
       <h2 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-3">Totals</h2>
-      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
         <StatCard icon={PinballIcon} label="Plays" value={stats.totalGames.toLocaleString()} statKey="total_plays" onShowTrend={showTrend}>
           {splitOf('plays')}
         </StatCard>
@@ -257,6 +259,9 @@ export default function StatsPage() {
           {splitOf('visits')}
         </StatCard>
         <StatCard icon={Trophy} label="Machines w/ Score" value={(stats.uniqueMachines ?? 0).toLocaleString()} statKey="machines_with_score" onShowTrend={showTrend} />
+        {/* Distinct venues with a score in this scope. No group split (a venue can count for several
+            groups) and no trend (there's no venues-played stat in stat_history). */}
+        <StatCard icon={MapPinned} label="Venues Played" value={(stats.venuesPlayed ?? 0).toLocaleString()} />
       </div>
 
       <h2 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-3">Monthly / Rates</h2>

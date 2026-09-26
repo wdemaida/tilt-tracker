@@ -34,6 +34,7 @@ async function loadScopedScores(scope: ResolvedScope, viewer: Viewer) {
       type: scores.type,
       machineName: machines.name,
       venueName: scores.venueName,
+      venueId: scores.venueId,
       userId: scores.userId,
       playedAt: scores.playedAt,
       createdAt: scores.createdAt,
@@ -68,6 +69,11 @@ router.get('/', requireAppUser, async (req, res) => {
       m.byGroup[s.group]++;
     }
     const uniqueMachines = Object.keys(machineCounts).length;
+    // Distinct venues with at least one in-scope score. Counted off the same privacy-filtered rows,
+    // so a hidden home venue only counts for someone who can see a score there (its owner, an
+    // admin, or a player counting their own score) — never because a pod member played there.
+    // Not split by group: one venue can count for several groups, like uniqueMachines.
+    const venuesPlayed = new Set(allScores.map(s => s.venueId).filter(id => id != null)).size;
     const mostPlayed = Object.entries(machineCounts)
       .sort((a, b) => b[1].plays - a[1].plays)
       .slice(0, 5)
@@ -106,6 +112,7 @@ router.get('/', requireAppUser, async (req, res) => {
       allTimeHigh: { score: best.score, machineName: best.machineName, venueName: best.venueName },
       mostPlayed,
       uniqueMachines,
+      venuesPlayed,
       playStyle: { casual: casualCount, tournament: tournamentCount },
       playHabits: {
         avgPlaysPerVisit,
@@ -125,10 +132,11 @@ router.get('/', requireAppUser, async (req, res) => {
 // GET /api/stats/history/:key?days=90[&scope params] — daily series for one stat, for the trend
 // chart modal. Takes the same scope params as GET /api/stats, and 404s a pod you don't own the
 // same way whatever the key.
-//  - All, or a site-wide key (total_venues, total_machines): the stat_history snapshots, which are
-//    only ever captured site-wide (see captureStatSnapshot). `source: 'snapshot'`.
-//  - Mine / pod, for a key that only counts scores: rebuilt live from the scope's visible scores
-//    (computeLiveTrend). `source: 'live'`. Per-pod history is never stored.
+//  - All, pod + everyone else, or a site-wide key (total_venues, total_machines): the stat_history
+//    snapshots, which are only ever captured site-wide (see captureStatSnapshot). `source:
+//    'snapshot'`. Pod + everyone else is every player, so it gets the same series as All.
+//  - Mine / pod only, for a key that only counts scores: rebuilt live from the scope's visible
+//    scores (computeLiveTrend). `source: 'live'`. Per-pod history is never stored.
 router.get('/history/:key', requireAppUser, async (req, res) => {
   const appUser = (req as any).appUser;
   const days = Math.min(Number(req.query.days) || 90, 365);
@@ -139,7 +147,8 @@ router.get('/history/:key', requireAppUser, async (req, res) => {
     const [stat] = await db.select().from(stats).where(eq(stats.key, req.params.key)).limit(1);
     if (!stat) return void res.status(404).json({ error: 'Unknown stat key' });
 
-    if (scope.kind !== 'all' && isLiveTrendKey(stat.key)) {
+    const everyone = scope.kind === 'all' || (scope.kind === 'pod' && scope.others);
+    if (!everyone && isLiveTrendKey(stat.key)) {
       const scoped = await loadScopedScores(scope, appUser);
       const points = computeLiveTrend(stat.key, scoped, days);
       return void res.json({ label: stat.label, description: stat.description, source: 'live', scope: scopeView(scope), points });
