@@ -199,11 +199,14 @@ export default function FriendsPage() {
   return (
     <div className="max-w-3xl">
       <h1 className="text-4xl font-black uppercase tracking-widest text-white mb-1">Friends</h1>
-      <p className="flex items-start gap-1.5 text-sm text-muted-foreground mb-6">
+      {/* Icon + ONE <p>: the text must be a single flex item, or each inline span becomes its own column. */}
+      <div className="flex items-start gap-1.5 text-sm text-muted-foreground mb-6">
         <Lock className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" aria-hidden />
-        Friends is mutual — they have to accept. Only you can see your friends and requests. Compare
-        against them with <span className="text-friend font-semibold">Friends</span> on any machine, venue or stats page.
-      </p>
+        <p className="min-w-0 flex-1">
+          Only you can see your <span className="text-friend font-semibold">Friends</span> and requests. Compare
+          yourself against your <span className="text-friend font-semibold">Friends</span> on any Machine, or on the Stats page.
+        </p>
+      </div>
 
       <FriendSearch />
 

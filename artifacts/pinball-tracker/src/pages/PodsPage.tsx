@@ -357,10 +357,12 @@ export default function PodsPage() {
           </button>
         )}
       </div>
-      <p className="flex items-start gap-1.5 text-sm text-muted-foreground mb-6">
+      <div className="flex items-start gap-1.5 text-sm text-muted-foreground mb-6">
         <Lock className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" aria-hidden />
-        Groups of players to compare your scores against. Only you can see your pods — the people in them aren’t notified.
-      </p>
+        <p className="min-w-0 flex-1">
+          Groups of players to compare your scores against. Only you can see your pods — the people in them aren’t notified.
+        </p>
+      </div>
 
       {creating && (
         <section className="rounded-xl border border-white/10 bg-card p-4 mb-6">
