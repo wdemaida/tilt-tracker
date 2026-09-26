@@ -2,6 +2,7 @@ import { Link } from 'wouter';
 import { MapPin, Clock, Pencil, Trash2, Trophy, Home } from 'lucide-react';
 import { formatScoreTime, zoneAbbreviation } from '../lib/scoreTime';
 import PodMemberIcons from './PodMemberIcons';
+import UsernameLink from './UsernameLink';
 import type { PodRef } from '../lib/myPods';
 
 interface ScoreCardProps {
@@ -101,9 +102,7 @@ export default function ScoreCard({ id: _id, machineName, score, playedAt, creat
 
       <div className="pt-1 border-t border-white/10 flex items-center justify-between gap-2">
         <span className="inline-flex items-center gap-1.5 min-w-0">
-          <Link href={`/users/${username}`} title={`@${username}`} className="text-xs text-username hover:text-username/80 transition-colors truncate">
-            @{username}
-          </Link>
+          <UsernameLink username={username} className="text-xs text-username hover:text-username/80 truncate" />
           <PodMemberIcons pods={pods} />
         </span>
         {createdAt && (

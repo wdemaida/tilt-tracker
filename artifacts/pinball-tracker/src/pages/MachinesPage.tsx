@@ -9,6 +9,7 @@ import { useAppUser } from '../lib/useAppUser';
 import { useScopeContext } from '../lib/ScopeContext';
 import { ScopeToggle } from '../components/ScopeToggle';
 import { PinballIcon } from '../components/PinballIcon';
+import UsernameLink from '../components/UsernameLink';
 import { queryClient } from '../lib/queryClient';
 import { format } from 'date-fns';
 
@@ -251,13 +252,7 @@ export default function MachinesPage() {
                       {m.bestScore != null ? Number(m.bestScore).toLocaleString() : '—'}
                     </p>
                     {m.topScorerUsername && (
-                      <Link
-                        href={`/users/${m.topScorerUsername}`}
-                        onClick={e => e.stopPropagation()}
-                        className="text-xs text-username hover:text-username/80 transition-colors"
-                      >
-                        @{m.topScorerUsername}
-                      </Link>
+                      <UsernameLink username={m.topScorerUsername} className="text-xs text-username hover:text-username/80" />
                     )}
                   </td>
 

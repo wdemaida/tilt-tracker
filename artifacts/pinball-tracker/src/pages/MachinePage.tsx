@@ -3,8 +3,9 @@ import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'wouter';
 import {
   Trophy, ArrowLeft, MapPin, PlusCircle, Home,
-  ChevronUp, ChevronDown, TrendingUp, Users, ChevronDown as ChevronDownSmall,
+  ChevronUp, ChevronDown, TrendingUp, Users, ChevronDown as ChevronDownSmall, X,
 } from 'lucide-react';
+import { useTapToPinTooltip } from '../lib/chartPin';
 import { format, parseISO } from 'date-fns';
 import { formatScoreTime } from '../lib/scoreTime';
 import {
@@ -15,6 +16,7 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { useApi } from '../lib/useApi';
 import ComparisonScopePicker from '../components/ComparisonScopePicker';
 import PodMemberIcons from '../components/PodMemberIcons';
+import UsernameLink from '../components/UsernameLink';
 import { useComparisonScope, scopeQuery, scopeKey } from '../lib/comparisonScope';
 import { usePodMembership } from '../lib/myPods';
 import { useFriendColor } from '../lib/myFriends';
@@ -257,15 +259,39 @@ function buildScatterData(filtered: any[], myUsername: string | null) {
 }
 
 // ─── tooltips ─────────────────────────────────────────────────────────────────
+// On touch screens a tap pins the tooltip (lib/chartPin.ts) and `onClose` is passed: the tooltip is
+// then interactive, so its @usernames can be tapped, and shows a close button. Clicks inside it must
+// not reach the chart, which would re-pin it to the point under the finger.
 
-function LineTooltip({ active, payload, label, chartMode, visitAgg, myUsername, lineType, podName, othersLabel }: any) {
+function PinnedFrame({ onClose, className, children }: { onClose?: () => void; className: string; children: React.ReactNode }) {
+  return (
+    <div
+      className={`relative ${className} ${onClose ? 'pr-7' : ''}`}
+      onClick={onClose ? e => e.stopPropagation() : undefined}
+    >
+      {onClose && (
+        <button
+          type="button"
+          aria-label="Close"
+          onClick={e => { e.stopPropagation(); onClose(); }}
+          className="absolute top-1 right-1 p-1 rounded text-muted-foreground hover:text-white hover:bg-white/10"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
+      )}
+      {children}
+    </div>
+  );
+}
+
+function LineTooltip({ active, payload, label, chartMode, visitAgg, myUsername, lineType, podName, othersLabel, onClose }: any) {
   if (!active || !payload?.length) return null;
   const visible = payload.filter((p: any) => p.value != null);
   if (!visible.length) return null;
   // Chaos lines are drawn back to front (you last, on top); list them front to back (you first).
   if (lineType === 'chaos') visible.reverse();
   return (
-    <div className="rounded-lg border border-white/20 bg-zinc-900/95 p-3 text-xs shadow-xl min-w-[180px]">
+    <PinnedFrame onClose={onClose} className="rounded-lg border border-white/20 bg-zinc-900/95 p-3 text-xs shadow-xl min-w-[180px]">
       <p className="font-bold text-white mb-2">
         {chartMode === 'visit' ? `Visit ${label}` : `Play #${label}`}
       </p>
@@ -281,7 +307,12 @@ function LineTooltip({ active, payload, label, chartMode, visitAgg, myUsername, 
           <div key={key} className="mb-1.5 last:mb-0">
             <div className="flex items-center gap-1.5">
               <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: p.color }} />
-              <span style={{ color: p.color }} className="font-semibold truncate max-w-[140px]">{display}</span>
+              {lineType === 'chaos' ? (
+                // Chaos mode draws one line per player, keyed by username.
+                <UsernameLink username={key} style={{ color: p.color }} className="font-semibold truncate max-w-[140px] hover:opacity-80">{display}</UsernameLink>
+              ) : (
+                <span style={{ color: p.color }} className="font-semibold truncate max-w-[140px]">{display}</span>
+              )}
             </div>
             <div className="pl-3.5 font-bold text-primary">{Number(p.value).toLocaleString()}</div>
             {dateVal && (
@@ -295,11 +326,11 @@ function LineTooltip({ active, payload, label, chartMode, visitAgg, myUsername, 
           </div>
         );
       })}
-    </div>
+    </PinnedFrame>
   );
 }
 
-function ScatterTooltip({ active, payload, podName, podText, othersLabel }: any) {
+function ScatterTooltip({ active, payload, podName, podText, othersLabel, onClose }: any) {
   if (!active || !payload?.length) return null;
   const entry = payload[0];
   const d = entry?.payload;
@@ -310,7 +341,7 @@ function ScatterTooltip({ active, payload, podName, podText, othersLabel }: any)
     const who = owner === 'pod' ? `${podName}` : owner === 'field' ? othersLabel : 'Your';
     const play: ScatterDot = d.play;
     return (
-      <div className="rounded-lg border border-white/20 bg-zinc-900/95 p-2.5 text-xs shadow-xl max-w-[220px]">
+      <PinnedFrame onClose={onClose} className="rounded-lg border border-white/20 bg-zinc-900/95 p-2.5 text-xs shadow-xl max-w-[220px]">
         <p className="text-muted-foreground">
           {who} {d.n < ROLLING_WINDOW ? `avg of first ${d.n} play${d.n === 1 ? '' : 's'}` : `${ROLLING_WINDOW}-play avg`}
         </p>
@@ -320,19 +351,19 @@ function ScatterTooltip({ active, payload, podName, podText, othersLabel }: any)
         <p className="text-muted-foreground">{format(new Date(d.x), 'MMM d, yyyy')}</p>
         <div className="mt-1.5 pt-1.5 border-t border-white/10">
           <p className="text-muted-foreground">Latest play: <span className="text-white font-semibold">{Number(play.y).toLocaleString()}</span></p>
-          {play.username && <p className="text-username">@{play.username}</p>}
+          {play.username && <p><UsernameLink username={play.username} /></p>}
           {play.venue && <p className="text-venue">{play.venue}</p>}
         </div>
-      </div>
+      </PinnedFrame>
     );
   }
   return (
-    <div className="rounded-lg border border-white/20 bg-zinc-900/95 p-2.5 text-xs shadow-xl">
+    <PinnedFrame onClose={onClose} className="rounded-lg border border-white/20 bg-zinc-900/95 p-2.5 text-xs shadow-xl">
       <p className="font-bold text-primary">{Number(d.y).toLocaleString()}</p>
       {d.playedAt && <p className="text-muted-foreground">{formatScoreTime(d.playedAt, d.venueTimezone, 'MMM d, yyyy · h:mm a')}</p>}
       {d.venue    && <p className="text-venue">{d.venue}</p>}
-      {d.username && <p className="text-username">@{d.username}</p>}
-    </div>
+      {d.username && <p><UsernameLink username={d.username} /></p>}
+    </PinnedFrame>
   );
 }
 
@@ -417,6 +448,8 @@ export default function MachinePage() {
   const [viewMode,  setViewMode]  = useState<ViewMode>('aggregate');
   const [scatterView, setScatterView] = useState<ScatterView>('trend');
   const [scatterScale, setScatterScale] = useState<ScatterScale>('linear');
+  // Touch screens: tap a point to pin its tooltip so the @username in it can be tapped.
+  const chartPin = useTapToPinTooltip(`${chartMode}|${visitAgg}|${viewMode}|${scatterView}|${scatterScale}`);
   const [selectedVenueIds, setSelectedVenueIds] = useState<number[]>([]);
 
   const authApi = useApi();
@@ -733,7 +766,7 @@ export default function MachinePage() {
             </p>
             <p className="text-3xl font-black text-primary">{Number(best.score).toLocaleString()}</p>
             <p className="text-xs text-muted-foreground mt-1">
-              <Link href={`/users/${best.username}`} className="text-username hover:text-username/80 transition-colors">@{best.username}</Link>
+              <UsernameLink username={best.username} />
               {' · '}{formatScoreTime(best.playedAt, best.venueTimezone, 'MMM d, yyyy')}
               {best.venueName && <> · <span className="text-venue">{best.venueName}</span></>}
             </p>
@@ -943,13 +976,14 @@ export default function MachinePage() {
           {/* Chart */}
           <ResponsiveContainer width="100%" height={220}>
             {chartMode !== 'scatter' && lineResult ? (
-              <LineChart data={lineResult.data} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
+              <LineChart data={lineResult.data} margin={{ top: 4, right: 8, left: 0, bottom: 4 }} onClick={chartPin.onChartClick}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
                 <XAxis dataKey="x" tick={AXIS_STYLE} tickLine={false} axisLine={false}
                   tickFormatter={v => chartMode === 'visit' ? `V${v}` : `#${v}`} />
                 <YAxis tick={AXIS_STYLE} tickLine={false} axisLine={false} tickFormatter={formatScore} width={48} />
                 <Tooltip
-                  content={<LineTooltip chartMode={chartMode} visitAgg={visitAgg} myUsername={myUsername} lineType={lineResult.type} podName={podName} othersLabel={othersLabel} />}
+                  {...chartPin.tooltipProps}
+                  content={<LineTooltip chartMode={chartMode} visitAgg={visitAgg} myUsername={myUsername} lineType={lineResult.type} podName={podName} othersLabel={othersLabel} onClose={chartPin.pinned ? chartPin.close : undefined} />}
                   cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }}
                 />
                 {lineResult.type === 'aggregate' && (
@@ -982,7 +1016,7 @@ export default function MachinePage() {
                 })}
               </LineChart>
             ) : scatterResult && scatterAxes ? (
-              <ScatterChart margin={{ top: 10, right: 12, left: 0, bottom: 4 }}>
+              <ScatterChart margin={{ top: 10, right: 12, left: 0, bottom: 4 }} onClick={chartPin.onChartClick}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
                 <XAxis dataKey="x" type="number" scale="time" domain={scatterAxes.x} allowDataOverflow
                   ticks={scatterAxes.xTicks} interval="preserveStartEnd"
@@ -991,7 +1025,7 @@ export default function MachinePage() {
                 <YAxis dataKey="y" type="number" scale={scatterAxes.yScale} domain={scatterAxes.yDomain} ticks={scatterAxes.yTicks}
                   allowDataOverflow={scatterAxes.yScale === 'log'}
                   tick={AXIS_STYLE} tickLine={false} axisLine={false} tickFormatter={formatScore} width={48} />
-                <Tooltip content={<ScatterTooltip podName={podName} podText={podTokens?.text} othersLabel={othersLabel} />} cursor={false} />
+                <Tooltip {...chartPin.tooltipProps} content={<ScatterTooltip podName={podName} podText={podTokens?.text} othersLabel={othersLabel} onClose={chartPin.pinned ? chartPin.close : undefined} />} cursor={false} />
                 {scatterView === 'scores' ? (
                   <>
                     {/* Drawn back to front, you on top. Full opacity for everyone: nobody is dimmed. */}
@@ -1109,9 +1143,7 @@ export default function MachinePage() {
                 </td>
                 <td className="px-3 py-3">
                   <div className="flex items-center gap-1.5 min-w-0">
-                    <Link href={`/users/${s.username}`} className="text-sm text-username hover:text-username/80 transition-colors truncate">
-                      @{s.username}
-                    </Link>
+                    <UsernameLink username={s.username} className="text-sm text-username hover:text-username/80 truncate" />
                     <PodMemberIcons pods={podMembership.get(s.username)} />
                   </div>
                 </td>

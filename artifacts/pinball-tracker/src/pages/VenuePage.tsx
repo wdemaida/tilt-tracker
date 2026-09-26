@@ -8,6 +8,7 @@ import { useComparisonScope, scopeQuery, scopeKey } from '../lib/comparisonScope
 import { usePodMembership } from '../lib/myPods';
 import ComparisonScopePicker from '../components/ComparisonScopePicker';
 import PodMemberIcons from '../components/PodMemberIcons';
+import UsernameLink from '../components/UsernameLink';
 import VenueMapThumbnail from '../components/VenueMapThumbnail';
 import VenueMachinesModal from '../components/VenueMachinesModal';
 import VenueRepairPanel from '../components/VenueRepairPanel';
@@ -157,9 +158,7 @@ export default function VenuePage() {
   function UserLink({ username, small = false }: { username: string; small?: boolean }) {
     return (
       <span className="inline-flex items-center gap-1.5 min-w-0">
-        <Link href={`/users/${username}`} title={`@${username}`} className={`${small ? 'text-xs' : 'text-sm'} text-username hover:text-username/80 transition-colors truncate`}>
-          @{username}
-        </Link>
+        <UsernameLink username={username} className={`${small ? 'text-xs' : 'text-sm'} text-username hover:text-username/80 truncate`} />
         <PodMemberIcons pods={podMembership.get(username)} />
       </span>
     );
