@@ -76,6 +76,12 @@ export const scores = pgTable('scores', {
   longitude: real('longitude'),
   photoUrl: text('photo_url'),
   photoThumbnail: text('photo_thumbnail'),
+  // Full-size photo on Cloudflare R2 (migrate17). The key is private — never sent to clients;
+  // lists expose `hasFullPhoto`, and GET /api/scores/:id/photo signs a short-lived URL.
+  photoKey: text('photo_key'),
+  photoBytes: integer('photo_bytes'),
+  photoWidth: integer('photo_width'),
+  photoHeight: integer('photo_height'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
