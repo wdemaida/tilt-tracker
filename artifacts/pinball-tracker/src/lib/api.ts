@@ -481,15 +481,20 @@ export function createApi(getToken: () => Promise<string | null>) {
     pinballmap: {
       getToken: async () =>
         request<{ hasToken: boolean; pmUsername: string | null }>('/pinballmap/token', undefined, await tok()),
-      auth: async (email: string, password: string) =>
-        // The Pinball Map user token stays on the server; only the username comes back.
+      // `login` is the Pinball Map username OR email. The PM user token (and the email PM returns)
+      // stay on the server; only the username comes back.
+      auth: async (login: string, password: string) =>
         request<{ username: string }>(
           '/pinballmap/auth',
-          { method: 'POST', body: JSON.stringify({ email, password }) },
+          { method: 'POST', body: JSON.stringify({ login, password }) },
           await tok()
         ),
-      submitScore: async (body: { venueId: number; machineName: string; score: number; userToken?: string }) =>
-        request('/pinballmap/submit-score', { method: 'POST', body: JSON.stringify(body) }, await tok()),
+      // Posts with the stored connection. A 401 with code `pm_reconnect_required` means the user
+      // must connect (again) before posting.
+      submitScore: async (body: { venueId: number; machineName: string; score: number }) =>
+        request<{ success: true; machineName: string; xrefId: number; pmUsername: string | null }>(
+          '/pinballmap/submit-score', { method: 'POST', body: JSON.stringify(body) }, await tok()
+        ),
     },
     admin: {
       users: async () => request<any[]>('/admin/users', undefined, await tok()),

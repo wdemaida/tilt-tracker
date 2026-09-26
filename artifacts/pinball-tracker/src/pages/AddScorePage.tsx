@@ -176,7 +176,7 @@ export default function AddScorePage() {
   const addBlockedByHeic = uploadItems.some(i => i.images.some(im => im.heicFailed));
   const canAddMore = uploadItems.length > 0 && uploadItems.length < MAX_ITEMS && !addBlockedByHeic;
   const [savedScore, setSavedScore] = useState<SavedScore | null>(null);
-  const [pmEmail, setPmEmail] = useState('');
+  const [pmLogin, setPmLogin] = useState('');
   const [pmPassword, setPmPassword] = useState('');
   const [pmSubmitting, setPmSubmitting] = useState(false);
   const [pmResult, setPmResult] = useState<'success' | 'error' | null>(null);
@@ -1026,22 +1026,33 @@ export default function AddScorePage() {
 
   const handlePmSubmit = async () => {
     if (!savedScore) return;
-    if (!pmUseStored && (!pmEmail || !pmPassword)) return;
+    if (!pmUseStored && (!pmLogin || !pmPassword)) return;
     setPmSubmitting(true);
     setPmResult(null);
     setPmError('');
     try {
-      if (!pmUseStored) await api.pinballmap.auth(pmEmail, pmPassword);
-      await api.pinballmap.submitScore({
+      if (!pmUseStored) {
+        const { username } = await api.pinballmap.auth(pmLogin, pmPassword);
+        // Connected — remember it, so a post that fails next doesn't cost another sign-in call.
+        queryClient.setQueryData(['pm-token'], { hasToken: true, pmUsername: username });
+        setPmForceForm(false);
+        setPmPassword('');
+      }
+      const res = await api.pinballmap.submitScore({
         venueId: savedScore.venueId!,
         machineName: savedScore.machineName,
         score: savedScore.score,
       });
+      // The server only answers success when Pinball Map returned the created score.
+      if (res?.success !== true) throw new Error("Pinball Map didn't confirm the score was posted");
       setPmResult('success');
     } catch (err: any) {
-      if (err?.code === 'PM_TOKEN_EXPIRED') {
+      if (err?.code === 'pm_reconnect_required') {
+        // The stored connection is gone (expired, or made before an update) — show the connect form.
+        queryClient.setQueryData(['pm-token'], { hasToken: false, pmUsername: null });
         setPmForceForm(true);
-        setPmError('Session expired — please re-enter your Pinball Map credentials');
+        setPmLoginExpanded(true);
+        setPmError(err?.message || 'Reconnect your Pinball Map account to post');
       } else {
         setPmResult('error');
         setPmError(err?.message ?? 'Submission failed');
@@ -2046,7 +2057,9 @@ export default function AddScorePage() {
               {pmResult === 'success' ? (
                 <div className="flex items-center gap-2 text-green-400">
                   <CheckCircle2 className="w-4 h-4" />
-                  <span className="text-sm font-medium">Score posted to Pinball Map!</span>
+                  <span className="text-sm font-medium" role="status">
+                    Posted to Pinball Map{pmTokenData?.pmUsername ? ` as @${pmTokenData.pmUsername}` : ''}
+                  </span>
                 </div>
               ) : pmUseStored ? (
                 <>
@@ -2059,7 +2072,7 @@ export default function AddScorePage() {
                       className="flex-1 py-2.5 rounded-lg bg-violet-600 text-white font-bold uppercase tracking-wider text-sm hover:opacity-90 transition-opacity disabled:opacity-50">
                       {pmSubmitting ? 'Posting...' : 'Post Score'}
                     </button>
-                    <button onClick={() => setPmForceForm(true)} className="text-xs text-muted-foreground hover:text-white transition-colors">
+                    <button onClick={() => { setPmForceForm(true); setPmLoginExpanded(true); setPmError(''); }} className="text-xs text-muted-foreground hover:text-white transition-colors">
                       Use different account
                     </button>
                   </div>
@@ -2070,18 +2083,25 @@ export default function AddScorePage() {
                   className="flex items-center gap-1.5 text-sm text-violet-400 hover:text-violet-300 transition-colors self-start"
                 >
                   <ChevronDown className="w-4 h-4" />
-                  Log in to post score
+                  Connect Pinball Map to post score
                 </button>
               ) : (
                 <>
                   <div className="flex flex-col gap-2">
-                    <input type="email" placeholder="Pinball Map email" value={pmEmail} onChange={e => setPmEmail(e.target.value)} className="input" />
-                    <input type="password" placeholder="Pinball Map password" value={pmPassword} onChange={e => setPmPassword(e.target.value)} className="input" />
+                    <input type="text" autoComplete="username" autoCapitalize="none" spellCheck={false}
+                      placeholder="Pinball Map username or email" aria-label="Pinball Map username or email"
+                      value={pmLogin} onChange={e => setPmLogin(e.target.value)} className="input" />
+                    <input type="password" autoComplete="current-password"
+                      placeholder="Pinball Map password" aria-label="Pinball Map password"
+                      value={pmPassword} onChange={e => setPmPassword(e.target.value)} className="input" />
+                    <p className="text-xs text-muted-foreground">
+                      Your password goes to Pinball Map once to connect; TiltTrack keeps only the sign-in token.
+                    </p>
                   </div>
-                  {(pmResult === 'error' || pmError) && <p className="text-xs text-red-400">{pmError}</p>}
-                  <button onClick={handlePmSubmit} disabled={pmSubmitting || !pmEmail || !pmPassword}
+                  {(pmResult === 'error' || pmError) && <p className="text-xs text-red-400" role="alert">{pmError}</p>}
+                  <button onClick={handlePmSubmit} disabled={pmSubmitting || !pmLogin || !pmPassword}
                     className="py-2.5 rounded-lg bg-violet-600 text-white font-bold uppercase tracking-wider text-sm hover:opacity-90 transition-opacity disabled:opacity-50">
-                    {pmSubmitting ? 'Posting...' : 'Post Score'}
+                    {pmSubmitting ? 'Posting...' : 'Connect & Post Score'}
                   </button>
                 </>
               )}
