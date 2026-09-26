@@ -221,13 +221,13 @@ export const notifications = pgTable('notifications', {
   userReadIdx: index('notifications_user_id_read_at_idx').on(table.userId, table.readAt),
 }));
 
-// Challenges (feature/challenges, phase 2) — two or more accepted friends agree on a machine, a type
+// Challenges (feature/challenges, phase 2) â€” two or more accepted friends agree on a machine, a type
 // and a window, then go play. The rules are pure, in src/lib/challengeRules.ts on the api-server;
 // orchestration is src/lib/challenges.ts. migrate15.ts also adds CHECKs (enum values, min_plays
-// 3–10, race needs a target, average needs min_plays) that Drizzle doesn't model here.
+// 3â€“10, race needs a target, average needs min_plays) that Drizzle doesn't model here.
 // `startsAt` null = "starts when accepted" (set on acceptance). `matchGroup` is the OPDB group id
 // ("GbPde") captured at creation for match_mode 'game'; null means exact machine only.
-// `visibility` is reserved ('participants') — nothing reads it yet.
+// `visibility` is reserved ('participants') â€” nothing reads it yet.
 export type ChallengeType = 'high_score' | 'race' | 'most_improved' | 'average';
 export type ChallengeStatus = 'pending' | 'active' | 'resolved' | 'declined' | 'cancelled' | 'expired';
 export type ChallengeOutcome = 'win' | 'loss' | 'tie' | 'forfeit' | 'no_show';
@@ -253,7 +253,7 @@ export const challenges = pgTable('challenges', {
   creatorIdx: index('challenges_creator_id_idx').on(table.creatorId),
 }));
 
-// One row per (challenge, participant) — the creator included (accepted at creation). Groups later
+// One row per (challenge, participant) â€” the creator included (accepted at creation). Groups later
 // just means more rows. `baselineScore` is frozen at acceptance for most_improved; `resultValue` and
 // `rank` are written at resolution (live standings are computed, not stored).
 export const challengeParticipants = pgTable('challenge_participants', {
