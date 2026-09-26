@@ -14,6 +14,8 @@ import VenuePage from './pages/VenuePage';
 import StatsPage from './pages/StatsPage';
 import CrewPage from './pages/CrewPage';
 import NotificationsPage from './pages/NotificationsPage';
+import NewChallengePage from './pages/NewChallengePage';
+import ChallengePage from './pages/ChallengePage';
 import AddScorePage from './pages/AddScorePage';
 import SetupPage from './pages/SetupPage';
 import UserPage from './pages/UserPage';
@@ -118,6 +120,14 @@ export default function App() {
         {/* Friends and Pods are tabs of Crew now; notifications and scope links still use these. */}
         <Route path="/friends"><Redirect replace to="/crew?tab=friends" /></Route>
         <Route path="/pods"><Redirect replace to="/crew?tab=pods" /></Route>
+        {/* Challenges live under Crew; /challenges itself is the Crew tab. */}
+        <Route path="/challenges"><Redirect replace to="/crew?tab=challenges" /></Route>
+        <Route path="/challenges/new">
+          <AuthGate><NewChallengePage /></AuthGate>
+        </Route>
+        <Route path="/challenges/:id">
+          <AuthGate><ChallengePage /></AuthGate>
+        </Route>
         <Route path="/notifications">
           <AuthGate><NotificationsPage /></AuthGate>
         </Route>

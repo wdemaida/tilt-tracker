@@ -28,6 +28,7 @@ const RESULT_TEXT: Record<string, string> = {
   tie: 'It’s a tie',
   forfeit: 'You forfeited',
   no_show: 'No score from you',
+  abandoned: 'Abandoned',
 };
 
 /** What one notification says and where it goes. Unknown kinds (from a newer server) still render. */
@@ -53,7 +54,7 @@ function describe(n: AppNotification): { text: React.ReactNode; href: string | n
       };
   }
 
-  // Challenge kinds. The challenge page (/challenges/:id) arrives with the challenges UI.
+  // Challenge kinds — each links to the challenge page (/challenges/:id).
   if (n.kind.startsWith('challenge_')) {
     const { challengeId, challengeType, machineName } = n.payload;
     const href = typeof challengeId === 'number' ? `/challenges/${challengeId}` : null;
