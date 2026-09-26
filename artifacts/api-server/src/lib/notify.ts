@@ -3,15 +3,27 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 
 // The notifications inbox — writing side (feature/friends, phase 1). Reading is routes/notifications.ts.
 //
-// Kinds today: 'friend_request' (to the addressee, on send and on every re-send) and
-// 'friend_accepted' (to the requester). Challenge kinds come later and reuse raiseNotification():
+// Kinds: 'friend_request' (to the addressee, on send and on every re-send) and 'friend_accepted'
+// (to the requester), plus the challenge kinds (feature/challenges, phase 2 — raised from
+// lib/challenges.ts and routes/challenges.ts; every payload carries `challengeId`, `challengeType`,
+// `machineName` and the other person's userId/username/displayName):
+//   challenge_received          → the invitee, on create
+//   challenge_accepted/declined → the creator
+//   challenge_cancelled         → the invitee (the creator withdrew before acceptance)
+//   challenge_opponent_scored   → the other participant(s), when a counting score is posted
+//                                 (deduped per challenge: one unread at a time, carrying `score`)
+//   challenge_ending_soon       → each participant once, ~24h before the end (daily sweep)
+//   challenge_result            → every participant on resolution (`outcome`, `void`, `reason`)
 // `payload` is kind-specific jsonb, and `dedupe` lets a kind say "there should only ever be one
 // unread one of me about X" — a re-sent friend request replaces the existing unread notification,
 // back at the top, instead of stacking a second one.
 
 export type Executor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-export type NotificationKind = 'friend_request' | 'friend_accepted';
+export type NotificationKind =
+  | 'friend_request' | 'friend_accepted'
+  | 'challenge_received' | 'challenge_accepted' | 'challenge_declined' | 'challenge_cancelled'
+  | 'challenge_opponent_scored' | 'challenge_ending_soon' | 'challenge_result';
 
 /** Who a friend notification is about, as it was at the time — enough to render and link it. */
 export interface UserRefPayload { userId: number; username: string; displayName: string }
@@ -43,7 +55,8 @@ export async function raiseNotification(
 }
 
 /**
- * Settle `userId`'s unread notifications of `kind` about `aboutUserId` (payload.userId).
+ * Settle `userId`'s unread notifications of `kind` about `aboutUserId` (payload.userId — or, with
+ * key 'challengeId', about that challenge: `aboutUserId` is then the challenge id).
  * 'read' when they've acted on it (accepted/declined — it's handled, not wrong), 'delete' when it
  * no longer happened (the requester cancelled — the bell shouldn't point at a request that's gone).
  */
@@ -53,12 +66,13 @@ export async function settleNotifications(
   kind: NotificationKind,
   aboutUserId: number,
   mode: 'read' | 'delete',
+  key: 'userId' | 'challengeId' = 'userId',
 ): Promise<void> {
   const where = and(
     eq(notifications.userId, userId),
     eq(notifications.kind, kind),
     isNull(notifications.readAt),
-    sql`${notifications.payload} ->> 'userId' = ${String(aboutUserId)}`,
+    sql`${notifications.payload} ->> ${key} = ${String(aboutUserId)}`,
   );
   if (mode === 'delete') await ex.delete(notifications).where(where);
   else await ex.update(notifications).set({ readAt: new Date() }).where(where);

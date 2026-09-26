@@ -22,3 +22,8 @@ export function friendIdsSql(viewerId: number): SQL {
     WHERE f.status = 'accepted' AND (f.requester_id = ${viewerId} OR f.addressee_id = ${viewerId})
   )`;
 }
+
+/** "a and b are accepted friends right now" — the consent a challenge needs (checked at creation). */
+export function acceptedPairSql(a: number, b: number): SQL {
+  return sql`${pairSql(a, b)} AND ${friendships.status} = 'accepted'`;
+}

@@ -15,8 +15,10 @@ import adminRouter from './routes/admin.js';
 import podsRouter from './routes/pods.js';
 import friendsRouter from './routes/friends.js';
 import notificationsRouter from './routes/notifications.js';
+import challengesRouter from './routes/challenges.js';
 import { requireAppUser } from './middleware/requireAuth.js';
 import { captureStatSnapshot } from './lib/statSnapshot.js';
+import { runChallengeSweep } from './lib/challenges.js';
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -54,6 +56,22 @@ app.post('/api/cron/stat-snapshot', async (req, res) => {
   }
 });
 
+// POST /api/cron/challenge-sweep — the daily Challenges sweep (.github/workflows/challenge-sweep.yml):
+// resolves past-deadline challenges, expires unanswered ones, sends "ending soon" notices, and
+// deletes READ notifications older than 30 days (unread ones are kept forever). Same shared-secret
+// guard as the stat snapshot above. Reads also resolve challenges lazily, so a missed run only
+// delays notifications — it never leaves a challenge showing the wrong state.
+app.post('/api/cron/challenge-sweep', async (req, res) => {
+  if (!process.env.CRON_SECRET) return void res.status(500).json({ error: 'CRON_SECRET not configured' });
+  if (req.header('x-cron-secret') !== process.env.CRON_SECRET) return void res.status(401).json({ error: 'Unauthorized' });
+  try {
+    res.json(await runChallengeSweep());
+  } catch (err) {
+    console.error('Cron challenge sweep error:', err);
+    res.status(500).json({ error: 'Failed to run challenge sweep' });
+  }
+});
+
 app.use('/api/scores', scoresRouter);
 app.use('/api/machines', machinesRouter);
 app.use('/api/users', usersRouter);
@@ -65,6 +83,7 @@ app.use('/api/admin', adminRouter);
 app.use('/api/pods', requireAppUser, podsRouter);
 app.use('/api/friends', requireAppUser, friendsRouter);
 app.use('/api/notifications', requireAppUser, notificationsRouter);
+app.use('/api/challenges', requireAppUser, challengesRouter);
 
 // Backup in-process trigger for the same snapshot — fires if the dyno happens to already be warm
 // at 1am America/New_York. The GitHub Actions workflow calling /api/cron/stat-snapshot above is the
