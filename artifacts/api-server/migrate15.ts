@@ -8,14 +8,17 @@
 //     ('pending' | 'active' | 'resolved' | 'declined' | 'cancelled' | 'expired'), void, visibility
 //     (reserved, 'participants'), created_at, resolved_at.
 //  2. challenge_participants — (challenge_id, user_id) PK. response ('pending' | 'accepted' |
-//     'declined'), outcome ('win' | 'loss' | 'tie' | 'forfeit' | 'no_show'), baseline_score
+//     'declined'), outcome ('win' | 'loss' | 'tie' | 'forfeit' | 'no_show' | 'abandoned' — a race /
+//     average nobody finished; CHECK constraint challenge_participants_outcome_check), baseline_score
 //     (most_improved, frozen at acceptance), result_value, rank, responded_at,
 //     ending_soon_notified_at (the daily sweep's "24h left" notice is sent once per participant).
 //  3. challenge_scores — (challenge_id, score_id) PK: the scores that counted. The score edit and
 //     delete routes refuse any score with a row here; score_id has no ON DELETE action, so the
 //     database refuses too.
 //
-// Purely additive (new tables only) and idempotent (IF NOT EXISTS throughout) — safe to re-run.
+// Purely additive (new tables only) and idempotent (IF NOT EXISTS throughout) — safe to re-run. The
+// outcome CHECK is dropped and re-added by name on every run, so a dev DB created before 'abandoned'
+// existed (2026-09-26) is upgraded in place.
 //
 //   cd artifacts/api-server && npx tsx migrate15.ts
 
@@ -66,7 +69,7 @@ await sql`
     challenge_id integer NOT NULL REFERENCES challenges(id) ON DELETE CASCADE,
     user_id integer NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     response text NOT NULL DEFAULT 'pending' CHECK (response IN ('pending', 'accepted', 'declined')),
-    outcome text CHECK (outcome IS NULL OR outcome IN ('win', 'loss', 'tie', 'forfeit', 'no_show')),
+    outcome text,
     baseline_score bigint,
     result_value numeric,
     rank integer,
@@ -74,6 +77,14 @@ await sql`
     ending_soon_notified_at timestamp,
     CONSTRAINT challenge_participants_pkey PRIMARY KEY (challenge_id, user_id)
   )`;
+// The outcome CHECK lives outside CREATE TABLE so re-running upgrades it. The name is Postgres's own
+// default for the inline CHECK the first version of this script created, so that one is replaced too.
+await sql.begin(async tx => {
+  await tx`ALTER TABLE challenge_participants DROP CONSTRAINT IF EXISTS challenge_participants_outcome_check`;
+  await tx`
+    ALTER TABLE challenge_participants ADD CONSTRAINT challenge_participants_outcome_check
+      CHECK (outcome IS NULL OR outcome IN ('win', 'loss', 'tie', 'forfeit', 'no_show', 'abandoned'))`;
+});
 await sql`CREATE INDEX IF NOT EXISTS challenge_participants_user_id_idx ON challenge_participants (user_id)`;
 
 await sql`

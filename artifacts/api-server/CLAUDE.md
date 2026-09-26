@@ -446,6 +446,14 @@
   synced (so the moment one is uploaded). PATCH / DELETE / per-score machine repair answer 409
   `score_locked_by_challenge`, admins included; the FK has no ON DELETE, so the DB refuses too.
   Machine retirement, admin machine/venue deletes and venue merges account for challenges.
+- **Race = strictly beat the target** (`> target`; equalling it is not a finish). **Nobody finishing**
+  (race: nobody beat the target; average: nobody reached `min_plays`) = **abandoned**: every
+  non-forfeited participant's `outcome` is `'abandoned'`, played or not, and ChallengeView has
+  `abandoned: true` (derived from the participant rows, no column; `void` stays false). Nobody
+  playing at all is still `void` (everyone `no_show`) for every type, race included. The record
+  (and each head-to-head row) counts `abandoned` on its own, not as W/L/T/no-show; abandoned
+  **breaks** a win streak, void doesn't. `challenge_result` notifications carry `abandoned` too.
+  The outcome CHECK is named `challenge_participants_outcome_check`; migrate15 drops and re-adds it.
 - `starts_at` null = starts at acceptance, stamped with the **DB clock** (same clock as
   `scores.created_at`). `most_improved` baselines are frozen at acceptance.
 - The sweep also sends `challenge_ending_soon` once per participant (`ending_soon_notified_at`) and

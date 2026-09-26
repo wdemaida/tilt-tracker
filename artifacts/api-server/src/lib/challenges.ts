@@ -206,7 +206,7 @@ async function applyResolution(
   await tx.update(challenges).set({ status: 'resolved', void: r.void, resolvedAt: now }).where(eq(challenges.id, c.id));
   for (const p of r.participants) {
     await raiseNotification(tx, p.userId, 'challenge_result', {
-      ...userPayload(c, otherOf(participants, p.userId)), outcome: p.outcome, rank: p.rank, void: r.void, reason,
+      ...userPayload(c, otherOf(participants, p.userId)), outcome: p.outcome, rank: p.rank, void: r.void, abandoned: r.abandoned, reason,
     });
   }
 }
@@ -412,7 +412,13 @@ export interface ChallengeView {
   type: Challenge['type'];
   status: Challenge['status'];
   phase: ReturnType<typeof phaseOf>;
+  /** Resolved with nobody playing (everyone no_show). */
   void: boolean;
+  /**
+   * Resolved race / average that nobody finished: every non-forfeited participant's outcome is
+   * 'abandoned'. Derived from the participant rows (no column); never true together with `void`.
+   */
+  abandoned: boolean;
   matchMode: Challenge['matchMode'];
   matchGroup: string | null;
   machine: { id: number; name: string; imageUrl: string | null };
@@ -440,7 +446,9 @@ function buildView(c: ChallengeRow, participants: ParticipantRow[], candidates: 
   const me = participants.find(p => p.userId === viewerId)!;
   const phase = phaseOf(c, now);
   return {
-    id: c.id, type: c.type, status: c.status, phase, void: c.void, matchMode: c.matchMode, matchGroup: c.matchGroup,
+    id: c.id, type: c.type, status: c.status, phase, void: c.void,
+    abandoned: c.status === 'resolved' && participants.some(p => p.outcome === 'abandoned'),
+    matchMode: c.matchMode, matchGroup: c.matchGroup,
     machine: { id: c.machine.id, name: c.machine.name, imageUrl: c.machine.imageUrl },
     venue: c.venue, targetScore: c.targetScore, minPlays: c.minPlays,
     startsAt: c.startsAt, endsAt: c.endsAt, createdAt: c.createdAt, resolvedAt: c.resolvedAt, creatorId: c.creatorId,

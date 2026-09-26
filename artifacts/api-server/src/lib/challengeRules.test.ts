@@ -149,10 +149,11 @@ test('high_score standing = best score', () => {
   assert.equal(none.resultValue, null);
 });
 
-test('race standing: qualified only at >= target; reachedTargetAt is the earliest upload that hit it', () => {
+test('race standing: qualified only when the target is beaten (> target); reachedTargetAt is the earliest upload that beat it', () => {
   const late = sc({ userId: A, score: 2000, createdAt: at(5) });
-  const early = sc({ userId: A, score: 1000, createdAt: at(2) });
-  const s = computeStanding('race', A, [sc({ userId: A, score: 999, createdAt: at(1) }), late, early], { targetScore: 1000 });
+  const early = sc({ userId: A, score: 1001, createdAt: at(2) });
+  const equal = sc({ userId: A, score: 1000, createdAt: at(1) });
+  const s = computeStanding('race', A, [sc({ userId: A, score: 999, createdAt: at(1) }), equal, late, early], { targetScore: 1000 });
   assert.ok(s.qualified);
   assert.equal(+s.reachedTargetAt!, +at(2));
   assert.equal(s.reachedTargetScoreId, early.id);
@@ -160,6 +161,16 @@ test('race standing: qualified only at >= target; reachedTargetAt is the earlies
   const short = computeStanding('race', A, [sc({ userId: A, score: 999 })], { targetScore: 1000 });
   assert.equal(short.qualified, false);
   assert.equal(short.reachedTargetAt, null);
+});
+
+test('race standing: exactly equalling the target is not a finish', () => {
+  const eq = computeStanding('race', A, [sc({ userId: A, score: 1000 }), sc({ userId: A, score: 1000 })], { targetScore: 1000 });
+  assert.equal(eq.qualified, false);
+  assert.equal(eq.reachedTargetAt, null);
+  assert.equal(eq.reachedTargetScoreId, null);
+  assert.equal(eq.resultValue, 1000, 'still shows as their best');
+  const beat = computeStanding('race', A, [sc({ userId: A, score: 1001 })], { targetScore: 1000 });
+  assert.ok(beat.qualified);
 });
 
 test('most_improved standing = % over baseline; no baseline = not qualified', () => {
@@ -199,6 +210,7 @@ test('high_score: best wins, other loses', () => {
   assert.deepEqual(outcomes(r), { [A]: 'win', [B]: 'loss' });
   assert.deepEqual(ranks(r), { [A]: 1, [B]: 2 });
   assert.equal(r.void, false);
+  assert.equal(r.abandoned, false);
 });
 
 test('high_score: equal bests tie, both rank 1', () => {
@@ -220,6 +232,7 @@ test('both no-show: void, both no_show', () => {
     const r = resolveChallenge(type, [state(type, A, []), state(type, B, [])], 'deadline');
     assert.deepEqual(outcomes(r), { [A]: 'no_show', [B]: 'no_show' }, type);
     assert.equal(r.void, true, type);
+    assert.equal(r.abandoned, false, `${type}: nobody played at all is void, not abandoned`);
   }
 });
 
@@ -264,15 +277,38 @@ test('race: winner by target while the other never played → other no_show', ()
   assert.deepEqual(outcomes(r), { [A]: 'win', [B]: 'no_show' });
 });
 
-test('race: nobody reached the target by the deadline → played tie, others no_show, not void', () => {
+test('race: nobody beat the target by the deadline → abandoned for everyone (played or not), not void', () => {
   const states = [state('race', A, [900], { target: 1000 }), state('race', B, [], { target: 1000 })];
   assert.equal(resolutionTrigger('race', at(72), at(10), states), null, 'no winner yet, before the deadline');
   assert.equal(resolutionTrigger('race', at(72), at(73), states), 'deadline');
   const r = resolveChallenge('race', states, 'deadline');
-  assert.deepEqual(outcomes(r), { [A]: 'tie', [B]: 'no_show' });
+  assert.deepEqual(outcomes(r), { [A]: 'abandoned', [B]: 'abandoned' });
+  assert.deepEqual(ranks(r), { [A]: 1, [B]: 2 }, 'played ranks ahead of did not');
   assert.equal(r.void, false);
+  assert.equal(r.abandoned, true);
   const both = resolveChallenge('race', [state('race', A, [900], { target: 1000 }), state('race', B, [10], { target: 1000 })], 'deadline');
-  assert.deepEqual(outcomes(both), { [A]: 'tie', [B]: 'tie' });
+  assert.deepEqual(outcomes(both), { [A]: 'abandoned', [B]: 'abandoned' });
+  assert.equal(both.abandoned, true);
+});
+
+test('race: equalling the target never finishes it — no win on the spot, abandoned at the deadline', () => {
+  const states = [state('race', A, [1000], { target: 1000, createdAt: [2] }), state('race', B, [1000], { target: 1000, createdAt: [3] })];
+  assert.equal(raceWinner(states), null);
+  assert.equal(resolutionTrigger('race', at(72), at(10), states), null, 'a tie-at-target does not end the race');
+  const r = resolveChallenge('race', states, 'deadline');
+  assert.deepEqual(outcomes(r), { [A]: 'abandoned', [B]: 'abandoned' });
+  assert.equal(r.abandoned, true);
+  // One point more does.
+  const beat = [state('race', A, [1000], { target: 1000, createdAt: [2] }), state('race', B, [1001], { target: 1000, createdAt: [3] })];
+  assert.equal(raceWinner(beat)!.userId, B);
+  assert.deepEqual(outcomes(resolveChallenge('race', beat, 'race_target')), { [A]: 'loss', [B]: 'win' });
+});
+
+test('race abandoned: a forfeiter stays forfeit', () => {
+  const states = [state('race', A, [900], { target: 1000 }), state('race', B, [], { target: 1000 }), state('race', C, [950], { target: 1000, forfeited: true })];
+  const r = resolveChallenge('race', states, 'deadline');
+  assert.deepEqual(outcomes(r), { [A]: 'abandoned', [B]: 'abandoned', [C]: 'forfeit' });
+  assert.equal(r.abandoned, true);
 });
 
 test('most_improved: highest % wins even with the lower raw score', () => {
@@ -293,10 +329,13 @@ test('average: highest qualified average wins; played but short of N loses when 
   assert.deepEqual(ranks(r), { [B]: 1, [A]: 2, [C]: 3 });
 });
 
-test('average: nobody reached N → like a race nobody finished (played tie)', () => {
+test('average: nobody reached N → abandoned, like a race nobody finished', () => {
   const r = resolveChallenge('average', [state('average', A, [1000, 1000], { minPlays: 3 }), state('average', B, [5], { minPlays: 3 })], 'deadline');
-  assert.deepEqual(outcomes(r), { [A]: 'tie', [B]: 'tie' });
+  assert.deepEqual(outcomes(r), { [A]: 'abandoned', [B]: 'abandoned' });
   assert.equal(r.void, false);
+  assert.equal(r.abandoned, true);
+  const oneSided = resolveChallenge('average', [state('average', A, [1000, 1000], { minPlays: 3 }), state('average', B, [], { minPlays: 3 })], 'deadline');
+  assert.deepEqual(outcomes(oneSided), { [A]: 'abandoned', [B]: 'abandoned' }, 'the one who never played is abandoned too');
 });
 
 test('average: equal qualified averages tie', () => {
@@ -444,10 +483,40 @@ test('computeRecord: totals, streaks, head-to-head; void counts as no-show and l
   assert.equal(rec.bestStreak, 3, 'wins 1, 2, (void), 4');
   assert.equal(rec.currentStreak, 1);
   const vsB = rec.headToHead.find(h => h.opponentId === B)!;
-  assert.deepEqual(vsB, { opponentId: B, played: 7, wins: 4, losses: 0, ties: 1, forfeits: 1, noShows: 1 });
+  assert.equal(rec.abandoned, 0);
+  assert.deepEqual(vsB, { opponentId: B, played: 7, wins: 4, losses: 0, ties: 1, forfeits: 1, noShows: 1, abandoned: 0 });
   const vsC = rec.headToHead.find(h => h.opponentId === C)!;
-  assert.deepEqual(vsC, { opponentId: C, played: 4, wins: 2, losses: 1, ties: 0, forfeits: 0, noShows: 1 });
+  assert.deepEqual(vsC, { opponentId: C, played: 4, wins: 2, losses: 1, ties: 0, forfeits: 0, noShows: 1, abandoned: 0 });
   assert.equal(rec.headToHead[0].opponentId, B, 'most-played opponent first');
+});
+
+test('computeRecord: abandoned is its own count (not W/L/T/no-show) and breaks a streak; void does not', () => {
+  const e = (id: number, day: number, outcome: any, opp: number, isVoid = false) =>
+    ({ challengeId: id, resolvedAt: new Date(+T0 + day * DAY), void: isVoid, outcome, opponentIds: [opp] });
+  const rec = computeRecord([
+    e(1, 1, 'win', B),
+    e(2, 2, 'win', B),
+    e(3, 3, 'no_show', B, true),   // void: run continues
+    e(4, 4, 'win', C),             // run = 3
+    e(5, 5, 'abandoned', B),       // breaks it
+    e(6, 6, 'win', B),
+    e(7, 7, 'abandoned', C),       // breaks again
+  ]);
+  assert.equal(rec.played, 7);
+  assert.equal(rec.wins, 4);
+  assert.equal(rec.losses, 0);
+  assert.equal(rec.ties, 0);
+  assert.equal(rec.noShows, 1, 'only the void one');
+  assert.equal(rec.abandoned, 2);
+  assert.equal(rec.voids, 1);
+  assert.equal(rec.bestStreak, 3, 'wins 1, 2, (void), 4');
+  assert.equal(rec.currentStreak, 0, 'abandoned ended the last run');
+  const vsB = rec.headToHead.find(h => h.opponentId === B)!;
+  assert.deepEqual(vsB, { opponentId: B, played: 5, wins: 3, losses: 0, ties: 0, forfeits: 0, noShows: 1, abandoned: 1 });
+  const vsC = rec.headToHead.find(h => h.opponentId === C)!;
+  assert.deepEqual(vsC, { opponentId: C, played: 2, wins: 1, losses: 0, ties: 0, forfeits: 0, noShows: 0, abandoned: 1 });
+  const voidLast = computeRecord([e(1, 1, 'win', B), e(2, 2, 'no_show', B, true)]);
+  assert.equal(voidLast.currentStreak, 1, 'a trailing void leaves the run alone');
 });
 
 test('computeRecord: order is by resolution time, not input order; empty record is zeros', () => {

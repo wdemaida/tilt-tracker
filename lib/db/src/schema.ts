@@ -230,7 +230,8 @@ export const notifications = pgTable('notifications', {
 // `visibility` is reserved ('participants') — nothing reads it yet.
 export type ChallengeType = 'high_score' | 'race' | 'most_improved' | 'average';
 export type ChallengeStatus = 'pending' | 'active' | 'resolved' | 'declined' | 'cancelled' | 'expired';
-export type ChallengeOutcome = 'win' | 'loss' | 'tie' | 'forfeit' | 'no_show';
+// 'abandoned' = a race / average nobody finished (not a win, loss, tie or no-show; breaks a win streak).
+export type ChallengeOutcome = 'win' | 'loss' | 'tie' | 'forfeit' | 'no_show' | 'abandoned';
 export const challenges = pgTable('challenges', {
   id: serial('id').primaryKey(),
   creatorId: integer('creator_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
