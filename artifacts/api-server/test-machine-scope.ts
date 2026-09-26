@@ -1,12 +1,13 @@
 // End-to-end check of the machine page's comparison scope (GET /api/machines/:name ?mine / ?pod /
-// &others) against the Neon DEV branch.
+// ?friends / &others) against the Neon DEV branch.
 //
 // Mounts the real machines router on a throwaway express app. A stub stands in for clerkMiddleware:
 // it sets `req.auth` from an `x-test-clerk` header, so the route's own getAuth → users lookup runs
 // for real without Clerk session tokens.
 //
 // Creates, and deletes at the end: two "__scopetest" pods (one for the owner, one for someone else),
-// and one hidden home venue with a single score on it belonging to a pod member.
+// one hidden home venue with a single score on it belonging to a pod member, and a few temporary
+// friendships (only ones it inserted — seeded friendships are left alone).
 //
 //   cd artifacts/api-server && npx tsx test-machine-scope.ts
 
@@ -21,7 +22,7 @@ if (!new URL(process.env.DATABASE_URL!).hostname.startsWith(DEV_ENDPOINT)) {
 
 const { default: express } = await import('express');
 const { default: machinesRouter } = await import('./src/routes/machines.js');
-const { db, users, pods, podMembers, scores, venues, machines } = await import('@workspace/db');
+const { db, users, pods, podMembers, scores, venues, machines, friendships } = await import('@workspace/db');
 const { eq, like, sql, inArray } = await import('drizzle-orm');
 
 // The owner: helmhead if present (the dev DB's real account), else the first user with scores.
@@ -73,8 +74,14 @@ function check(label: string, ok: boolean, detail?: unknown) {
 const usersOf = (rows: any[]) => new Set(rows.map(r => r.username));
 const groupsOf = (rows: any[], g: string) => new Set(rows.filter(r => r.group === g).map(r => r.username));
 const same = (a: Set<string>, b: string[]) => a.size === b.length && b.every(x => a.has(x));
+const rowsOf = (r: any) => ((r as any).rows ?? r) as any[];
+const friendUsernamesOf = async (id: number) => new Set(rowsOf(await db.execute(sql`
+  SELECT u.username FROM friendships f
+  JOIN users u ON u.id = CASE WHEN f.requester_id = ${id} THEN f.addressee_id ELSE f.requester_id END
+  WHERE f.status = 'accepted' AND (f.requester_id = ${id} OR f.addressee_id = ${id})`)).map((r: any) => r.username as string));
 
 let podId = 0, otherPodId = 0, hiddenVenueId = 0, hiddenScoreId = 0;
+const createdFriendshipIds: number[] = [];
 try {
   console.log(`machine "${machineName}", owner ${owner.username}, pod = ${memberA.username} + ${memberB.username}`);
 
@@ -156,13 +163,55 @@ try {
   check('the member themselves still sees it', hasHidden(await get({ clerk_id: memberA.clerk_id })));
   check('signed out → hidden', !hasHidden(await get(null)));
 
-  // All/Mine unchanged by the pods' existence (hidden score excluded for comparison)
+
+  // ── friends (feature/friends) ──
+  // Temporarily befriend memberA + memberB (accepted) and leave the owner a PENDING request from the
+  // outsider, which must not count. A pair that already has a row (a seeded friendship) is left
+  // alone — the expected friend set is read back from the DB, so seeded friends are just part of it.
+  let pendingCreated = false;
+  for (const [a, b, status] of [[owner.id, memberA.user_id, 'accepted'], [owner.id, memberB.user_id, 'accepted'], [outsider.user_id, owner.id, 'pending']] as const) {
+    const ins = await db.insert(friendships).values({ requesterId: a, addresseeId: b, status, respondedAt: status === 'accepted' ? new Date() : null })
+      .onConflictDoNothing().returning({ id: friendships.id });
+    createdFriendshipIds.push(...ins.map(r => r.id));
+    if (status === 'pending' && ins.length) pendingCreated = true;
+  }
+  const friendNames = await friendUsernamesOf(owner.id);
+  const everyone = await get(owner);
+  const onList = usersOf(everyone.body.scores);
+  const expectedFriends = [...friendNames].filter(u => onList.has(u));
+  const fr = await get(owner, '?friends=1');
+  check('friends → 200', fr.status === 200, fr);
+  check('friends → echoes { kind: friends, others: false } only', JSON.stringify(fr.body?.scope) === JSON.stringify({ kind: 'friends', others: false }), fr.body?.scope);
+  check('friends → only owner + accepted friends', same(usersOf(fr.body.scores), [owner.username, ...expectedFriends]), [...usersOf(fr.body.scores)]);
+  check('friends → self group is the owner', same(groupsOf(fr.body.scores, 'self'), [owner.username]));
+  check('friends → friend group is the friends', same(groupsOf(fr.body.scores, 'friend'), expectedFriends), [...groupsOf(fr.body.scores, 'friend')]);
+  check('friends → no other rows', groupsOf(fr.body.scores, 'other').size === 0);
+  if (pendingCreated && !friendNames.has(outsider.username)) {
+    check('friends → a pending request does not count', !usersOf(fr.body.scores).has(outsider.username));
+  }
+  check('friends → no user ids in the payload', !fr.text.includes('"userId"'));
+  const frOthers = await get(owner, '?friends=1&others=1');
+  check('friends+others → same rows as all', frOthers.body.scores.length === everyone.body.scores.length, [frOthers.body.scores.length, everyone.body.scores.length]);
+  check('friends+others → tags self/friend/other',
+    frOthers.body.scores.every((s: any) => s.group === (s.username === owner.username ? 'self' : friendNames.has(s.username) ? 'friend' : 'other')));
+  check('friends+others → scope.others = true', frOthers.body.scope?.others === true);
+  const frAnon = await get(null, '?friends=1');
+  check('friends signed out → degrades to all', frAnon.status === 200 && frAnon.body?.scope?.kind === 'all');
+  // otherOwner (non-admin) befriends memberA: being someone's friend reveals nothing their switch hides.
+  const insOther = await db.insert(friendships).values({ requesterId: otherOwner.user_id, addresseeId: memberA.user_id, status: 'accepted' })
+    .onConflictDoNothing().returning({ id: friendships.id });
+  createdFriendshipIds.push(...insOther.map(r => r.id));
+  check("non-admin, friends → friend's hidden-venue score hidden", !hasHidden(await get({ clerk_id: otherOwner.clerk_id }, '?friends=1')));
+  check("non-admin, friends+others → hidden", !hasHidden(await get({ clerk_id: otherOwner.clerk_id }, '?friends=1&others=1')));
+
+  // All/Mine unchanged by the pods' (and friendships') existence (hidden score excluded for comparison)
   const allAfter = await get(owner);
   const strip = (r: any) => JSON.stringify(r.body.scores.filter((s: any) => s.id !== hiddenScoreId));
   check('all unchanged after creating pods', strip(allAfter) === JSON.stringify(allBefore.body.scores));
   const mineAfter = await get(owner, '?mine=true');
   check('mine unchanged after creating pods', JSON.stringify(mineAfter.body.scores) === JSON.stringify(mine.body.scores));
 } finally {
+  if (createdFriendshipIds.length) await db.delete(friendships).where(inArray(friendships.id, createdFriendshipIds));
   if (hiddenScoreId) await db.delete(scores).where(eq(scores.id, hiddenScoreId));
   if (hiddenVenueId) await db.delete(venues).where(eq(venues.id, hiddenVenueId));
   const created = await db.select({ id: pods.id }).from(pods).where(like(pods.name, '\\_\\_scopetest%'));

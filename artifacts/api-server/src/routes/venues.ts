@@ -530,7 +530,8 @@ router.get('/:id/machines', async (req, res) => {
 
 // GET /api/venues/:id/scores — all individual score entries at a venue.
 // Comparison scope (lib/comparisonScope.ts): ?mine=true → only the caller's; ?pod=<id>[&others=1] →
-// the caller + that pod's members (+ everyone else). Each row carries `group` ('self'|'pod'|'other').
+// the caller + that pod's members (+ everyone else); ?friends=1[&others=1] → the caller + their
+// accepted friends (+ everyone else). Each row carries `group` ('self'|'pod'|'friend'|'other').
 // Scope narrows the score LIST only. The venue itself — address, map, machine count, and the
 // `totals` block (every score here the requester may see) — is a fact about the venue and is the
 // same in every scope.

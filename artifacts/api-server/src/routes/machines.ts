@@ -98,7 +98,8 @@ router.get('/score-stats', async (req, res) => {
 
 // GET /api/machines/:name — detail with all scores. Comparison scope (lib/comparisonScope.ts):
 // ?mine=true → only the caller's; ?pod=<id>[&others=1] → the caller + that pod's members (+ everyone
-// else). Each row carries `group` ('self' | 'pod' | 'other') so the chart can split its series.
+// else); ?friends=1[&others=1] → the caller + their accepted friends (+ everyone else). Each row
+// carries `group` ('self' | 'pod' | 'friend' | 'other') so the chart can split its series.
 router.get('/:name', async (req, res) => {
   const name = decodeURIComponent(req.params.name);
   try {

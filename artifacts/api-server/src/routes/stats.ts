@@ -5,7 +5,7 @@ import { visibleScoreSql, type Viewer } from '../lib/venueActivity.js';
 import { requireAppUser } from '../middleware/requireAuth.js';
 import { computeVisits, computeCurrentMonthCounts, computeLiveTrend, isLiveTrendKey } from '../lib/statsCalc.js';
 import {
-  parseComparisonScope, resolveComparisonScope, scopeFilterSql, scoreGroupSql, scopeView, POD_NOT_FOUND,
+  parseComparisonScope, resolveComparisonScope, scopeFilterSql, scoreGroupSql, scopeView, scopeIsEveryone, POD_NOT_FOUND,
   type ResolvedScope, type ScoreGroup,
 } from '../lib/comparisonScope.js';
 
@@ -19,14 +19,14 @@ function daySpan(msList: number[]): number {
   return Math.max((Math.max(...msList) - Math.min(...msList)) / MS_PER_DAY, 1);
 }
 
-const GROUPS: ScoreGroup[] = ['self', 'pod', 'other'];
+const GROUPS: ScoreGroup[] = ['self', 'pod', 'friend', 'other'];
 
 // Every score the Stats page aggregates under a scope. The scope filter and the privacy filter are
 // both on this one query, which is the only score read either endpoint below makes — so no
 // aggregate can see a score outside the scope, or one the viewer couldn't see anywhere else (a
 // private venue's, with its owner's "Show my machines/scores publicly" off — the all-time high
 // names its machine and venue). Your own scores are always yours; being in someone's pod reveals
-// nothing extra.
+// nothing extra — and neither does being someone's friend.
 async function loadScopedScores(scope: ResolvedScope, viewer: Viewer) {
   return db
     .select({
@@ -47,7 +47,8 @@ async function loadScopedScores(scope: ResolvedScope, viewer: Viewer) {
 
 // GET /api/stats — aggregates over the comparison scope (see lib/comparisonScope.ts):
 //   ?mine=true → just you · (nothing) or ?mine=false → everyone · ?pod=<id> → you + that pod's
-//   members · ?pod=<id>&others=1 → everyone, with the per-group split. A pod you don't own → 404.
+//   members · ?pod=<id>&others=1 → everyone, with the per-group split · ?friends=1[&others=1] → you +
+//   your friends (+ everyone else), the same way. A pod you don't own → 404.
 router.get('/', requireAppUser, async (req, res) => {
   const appUser = (req as any).appUser;
 
@@ -64,7 +65,7 @@ router.get('/', requireAppUser, async (req, res) => {
 
     const machineCounts: Record<string, { plays: number; byGroup: Record<ScoreGroup, number> }> = {};
     for (const s of allScores) {
-      const m = (machineCounts[s.machineName] ??= { plays: 0, byGroup: { self: 0, pod: 0, other: 0 } });
+      const m = (machineCounts[s.machineName] ??= { plays: 0, byGroup: { self: 0, pod: 0, friend: 0, other: 0 } });
       m.plays++;
       m.byGroup[s.group]++;
     }
@@ -89,7 +90,7 @@ router.get('/', requireAppUser, async (req, res) => {
     // these reset at the start of each month rather than averaging over all-time history.
     const thisMonth = computeCurrentMonthCounts(allScores);
 
-    // The same additive counts per group (you / the pod's members / everyone else), so the page can
+    // The same additive counts per group (you / the pod's members or your friends / everyone else), so the page can
     // show who a total is made of. Visits cluster per player, so they split cleanly by group;
     // distinct-machine counts overlap between groups and are deliberately not split.
     const split = Object.fromEntries(GROUPS.map(g => {
@@ -134,8 +135,8 @@ router.get('/', requireAppUser, async (req, res) => {
 // same way whatever the key.
 //  - All, pod + everyone else, or a site-wide key (total_venues, total_machines): the stat_history
 //    snapshots, which are only ever captured site-wide (see captureStatSnapshot). `source:
-//    'snapshot'`. Pod + everyone else is every player, so it gets the same series as All.
-//  - Mine / pod only, for a key that only counts scores: rebuilt live from the scope's visible
+//    'snapshot'`. Pod (or friends) + everyone else is every player, so it gets the same series as All.
+//  - Mine / pod only / friends only, for a key that only counts scores: rebuilt live from the scope's visible
 //    scores (computeLiveTrend). `source: 'live'`. Per-pod history is never stored.
 router.get('/history/:key', requireAppUser, async (req, res) => {
   const appUser = (req as any).appUser;
@@ -147,7 +148,7 @@ router.get('/history/:key', requireAppUser, async (req, res) => {
     const [stat] = await db.select().from(stats).where(eq(stats.key, req.params.key)).limit(1);
     if (!stat) return void res.status(404).json({ error: 'Unknown stat key' });
 
-    const everyone = scope.kind === 'all' || (scope.kind === 'pod' && scope.others);
+    const everyone = scopeIsEveryone(scope);
     if (!everyone && isLiveTrendKey(stat.key)) {
       const scoped = await loadScopedScores(scope, appUser);
       const points = computeLiveTrend(stat.key, scoped, days);
