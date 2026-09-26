@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '@clerk/clerk-react';
 import { useParams, Link } from 'wouter';
 import { User, MapPin, Clock, Home } from 'lucide-react';
-import { formatScoreTime } from '../lib/scoreTime';
+import { formatScoreTime, zoneAbbreviation } from '../lib/scoreTime';
 import { useApi } from '../lib/useApi';
 import { usePodMembership } from '../lib/myPods';
 import PodMemberIcons from '../components/PodMemberIcons';
@@ -58,9 +58,12 @@ export default function UserPage() {
       </div>
 
       <div className="flex flex-col gap-3">
-        {scores.map((s: any) => (
-          <div key={s.id} className="flex items-center gap-4 rounded-xl border border-white/10 bg-card p-4">
-            <div className="w-12 h-12 rounded-lg overflow-hidden flex-shrink-0 border border-white/10 bg-white/5">
+        {scores.map((s: any) => {
+          // Only shown when the venue's clock differs from the reader's, as on ScoreCard.
+          const zone = zoneAbbreviation(s.playedAt, s.venueTimezone);
+          return (
+          <div key={s.id} className="flex items-start gap-3 sm:gap-4 rounded-xl border border-white/10 bg-card p-4 hover:border-primary/40 transition-colors">
+            <div className="w-14 h-14 rounded-lg overflow-hidden flex-shrink-0 border border-white/10 bg-white/5">
               {s.machineImageUrl ? (
                 <img src={s.machineImageUrl} alt={s.machineName} className="w-full h-full object-cover" />
               ) : (
@@ -69,23 +72,44 @@ export default function UserPage() {
                 </div>
               )}
             </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-0.5">
-                <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground border border-white/10 rounded px-1.5 py-0.5">
-                  {s.type}
-                </span>
-                <Link href={`/machines/${encodeURIComponent(s.machineName)}`} className="text-sm font-bold uppercase tracking-wider text-machine hover:text-machine/80 transition-colors truncate">
+            {/* Phone: name + badge, score, then meta, stacked. sm+: the score moves to a right-hand
+                column spanning both text rows. Explicit placement puts the meta back in column 1. */}
+            <div className="flex-1 min-w-0 grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto] sm:gap-x-4">
+              <div className="flex items-start justify-between sm:justify-start gap-2 min-w-0">
+                <Link href={`/machines/${encodeURIComponent(s.machineName)}`} className="min-w-0 line-clamp-2 break-words text-sm font-bold uppercase tracking-wider text-machine hover:text-machine/80 transition-colors">
                   {s.machineName}
                 </Link>
+                <span className="flex-shrink-0 text-xs font-bold uppercase tracking-wider text-muted-foreground border border-white/20 rounded px-1.5 py-0.5">
+                  {s.type}
+                </span>
               </div>
-              <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{formatScoreTime(s.playedAt, s.venueTimezone, 'MMM d, yyyy · h:mm a')}</span>
-                {s.venueName && <span className="flex items-center gap-1"><MapPin className="w-3 h-3" />{s.venueName}{s.venueIsResidence && <Home className="w-3 h-3" />}</span>}
+              <p className="mt-1 sm:mt-0 text-2xl sm:text-3xl font-black text-primary sm:col-start-2 sm:row-start-1 sm:row-span-2 sm:self-center sm:text-right whitespace-nowrap">
+                {Number(s.score).toLocaleString()}
+              </p>
+              <div className="mt-1.5 flex flex-col gap-1 text-xs text-muted-foreground min-w-0">
+                <div className="flex items-center gap-1">
+                  <Clock className="w-3 h-3 flex-shrink-0" />
+                  <span>{formatScoreTime(s.playedAt, s.venueTimezone, 'MMM d, yyyy · h:mm a')}</span>
+                  {zone && <span className="text-muted-foreground/60">{zone}</span>}
+                </div>
+                {s.venueName && (
+                  <div className="flex items-center gap-1 text-venue min-w-0">
+                    <MapPin className="w-3 h-3 flex-shrink-0" />
+                    {s.venueId != null ? (
+                      <Link href={`/venues/${s.venueId}`} className="truncate hover:text-venue/80 transition-colors">
+                        {s.venueName}
+                      </Link>
+                    ) : (
+                      <span className="truncate">{s.venueName}</span>
+                    )}
+                    {s.venueIsResidence && <Home className="w-3 h-3 flex-shrink-0" />}
+                  </div>
+                )}
               </div>
             </div>
-            <p className="text-xl font-black text-primary flex-shrink-0">{Number(s.score).toLocaleString()}</p>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
