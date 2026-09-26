@@ -5,6 +5,7 @@ import cron from 'node-cron';
 import { clerkMiddleware } from '@clerk/express';
 
 import scoresRouter from './routes/scores.js';
+import scorePhotosRouter from './routes/scorePhotos.js';
 import machinesRouter from './routes/machines.js';
 import usersRouter from './routes/users.js';
 import uploadRouter from './routes/upload.js';
@@ -19,6 +20,7 @@ import challengesRouter from './routes/challenges.js';
 import { requireAppUser } from './middleware/requireAuth.js';
 import { captureStatSnapshot } from './lib/statSnapshot.js';
 import { runChallengeSweep } from './lib/challenges.js';
+import { logPhotoStoreStatus } from './lib/photoStore.js';
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -72,6 +74,8 @@ app.post('/api/cron/challenge-sweep', async (req, res) => {
   }
 });
 
+// Full-size photo routes (/:id/photo…) first; they don't overlap the scores router's paths.
+app.use('/api/scores', scorePhotosRouter);
 app.use('/api/scores', scoresRouter);
 app.use('/api/machines', machinesRouter);
 app.use('/api/users', usersRouter);
@@ -91,5 +95,7 @@ app.use('/api/challenges', requireAppUser, challengesRouter);
 cron.schedule('0 1 * * *', () => {
   captureStatSnapshot().catch(err => console.error('Stat snapshot job failed:', err));
 }, { timezone: 'America/New_York' });
+
+logPhotoStoreStatus();
 
 app.listen(PORT, () => console.log(`API server → http://localhost:${PORT}`));

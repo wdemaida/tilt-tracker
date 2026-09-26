@@ -4,6 +4,7 @@ import { eq, desc, sql, and } from 'drizzle-orm';
 import { getAuth } from '@clerk/express';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { visibleScoreSql } from '../lib/venueActivity.js';
+import { hasFullPhotoSql } from '../lib/photoStore.js';
 
 const router = Router();
 
@@ -71,6 +72,7 @@ router.get('/:username', async (req, res) => {
         venueTimezone: sql<string | null>`CASE WHEN ${venues.privacyTier} = 'hidden' THEN NULL ELSE ${venues.timezone} END`,
         venueIsResidence: venues.isResidence,
         photoUrl: scores.photoUrl,
+        hasFullPhoto: hasFullPhotoSql,
         machineName: machines.name,
         machineImageUrl: machines.imageUrl,
       })

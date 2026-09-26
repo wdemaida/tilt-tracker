@@ -14,6 +14,7 @@ import { getAuth } from '@clerk/express';
 import { parseScore } from '../lib/scoreRead.js';
 import { visibleScoreSql } from '../lib/venueActivity.js';
 import { onScoreCreated, scoreLockedByChallenge, SCORE_LOCKED } from '../lib/challenges.js';
+import { hasFullPhotoSql, publicScoreRow, deletePhotoBestEffort } from '../lib/photoStore.js';
 
 // Optional — resolves the caller's app user + role, without requiring auth.
 async function resolveRequester(req: any): Promise<{ id: number; role: string } | undefined> {
@@ -46,6 +47,7 @@ router.get('/', async (req, res) => {
         longitude: scores.longitude,
         photoUrl: scores.photoUrl,
         photoThumbnail: scores.photoThumbnail,
+        hasFullPhoto: hasFullPhotoSql,
         machineId: scores.machineId,
         machineName: machines.name,
         machineImageUrl: machines.imageUrl,
@@ -124,7 +126,7 @@ router.post('/', requireAppUser, async (req, res) => {
     // Challenges: records the lock if this score counts, resolves a won race on the spot, and tells
     // the opponent. Never throws — a challenge problem must not fail the upload.
     await onScoreCreated(row);
-    res.status(201).json(row);
+    res.status(201).json(publicScoreRow(row));
   } catch (err) {
     console.error('Create score error:', err);
     res.status(500).json({ error: 'Failed to create score' });
@@ -176,7 +178,7 @@ router.patch('/:id', requireAppUser, async (req, res) => {
   }
 
   const [updated] = await db.update(scores).set(updates).where(eq(scores.id, id)).returning();
-  res.json(updated);
+  res.json(publicScoreRow(updated));
 });
 
 // DELETE /api/scores/:id — owner or admin
@@ -191,7 +193,12 @@ router.delete('/:id', requireAppUser, async (req, res) => {
   }
   if (await scoreLockedByChallenge(id)) return res.status(409).json(SCORE_LOCKED);
 
-  await db.delete(scores).where(eq(scores.id, id));
+  // RETURNING the key (not `existing`'s) so a photo confirmed a moment ago isn't missed.
+  const [gone] = await db.delete(scores).where(eq(scores.id, id)).returning({ photoKey: scores.photoKey });
+  // The full-size photo goes after the row: a failed R2 delete leaves an orphan for the sweep
+  // (cleanup-photo-orphans.ts), never a score pointing at a missing object. Any future code that
+  // deletes scores must do the same.
+  await deletePhotoBestEffort(gone?.photoKey, `delete score ${id}`);
   res.status(204).send();
 });
 
