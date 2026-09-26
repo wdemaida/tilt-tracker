@@ -4,13 +4,14 @@ import { Link } from 'wouter';
 import { formatDistanceToNow } from 'date-fns';
 import { Loader2, Lock, RotateCw, UserCheck, UserMinus, Users } from 'lucide-react';
 import FriendButton from '../components/FriendButton';
+import { ChallengeLink } from '../components/ChallengeParts';
 import { useApi } from '../lib/useApi';
 import { useMyFriends, invalidateFriendQueries } from '../lib/myFriends';
 import type { PodUser } from '../lib/api';
 
 // Friends — mutual: you ask, they accept. Your list and your requests are only ever yours. Friends
 // show up in the Friends compare view on the machine, venue and stats pages (in the friend color),
-// and are who you'll be able to challenge.
+// and are who you can challenge (the Challenge button on each friend row).
 
 function errorText(e: unknown, fallback: string): string {
   return (e as any)?.message ?? fallback;
@@ -176,15 +177,18 @@ function FriendRow({ user, since }: { user: PodUser; since: string }) {
           </button>
         </div>
       ) : (
-        <button
-          type="button"
-          onClick={() => setConfirming(true)}
-          aria-label={`Remove ${user.displayName} from your friends`}
-          title="Remove friend"
-          className="p-1.5 rounded text-muted-foreground hover:text-red-400 hover:bg-red-400/10 transition-colors flex-shrink-0"
-        >
-          <UserMinus className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-1 flex-shrink-0 ml-auto">
+          <ChallengeLink friend={user.username} size="sm" />
+          <button
+            type="button"
+            onClick={() => setConfirming(true)}
+            aria-label={`Remove ${user.displayName} from your friends`}
+            title="Remove friend"
+            className="p-1.5 rounded text-muted-foreground hover:text-red-400 hover:bg-red-400/10 transition-colors flex-shrink-0"
+          >
+            <UserMinus className="w-4 h-4" />
+          </button>
+        </div>
       )}
       {error && <p className="basis-full text-[11px] text-red-400">{error}</p>}
     </div>

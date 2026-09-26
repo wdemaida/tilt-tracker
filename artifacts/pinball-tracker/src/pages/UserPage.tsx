@@ -7,6 +7,8 @@ import { useApi } from '../lib/useApi';
 import { usePodMembership } from '../lib/myPods';
 import PodMemberIcons from '../components/PodMemberIcons';
 import FriendButton from '../components/FriendButton';
+import ChallengeRecordCard from '../components/ChallengeRecordCard';
+import { ChallengeLink } from '../components/ChallengeParts';
 import { FRIEND_WITH_KEY } from '../lib/myFriends';
 
 export default function UserPage() {
@@ -51,11 +53,17 @@ export default function UserPage() {
           </p>
         </div>
         {friendship && friendship.relationship !== 'self' && (
-          <div className="sm:ml-auto">
+          <div className="sm:ml-auto flex flex-wrap items-center gap-2">
             <FriendButton userId={friendship.user.id} name={friendship.user.displayName} relationship={friendship.relationship} />
+            {friendship.relationship === 'friends' && <ChallengeLink friend={friendship.user.username} />}
           </div>
         )}
       </div>
+
+      {/* Signed-in only; hidden until they've finished a challenge. */}
+      {isSignedIn && friendship && (
+        <ChallengeRecordCard username={user.username} self={friendship.relationship === 'self'} />
+      )}
 
       <div className="flex flex-col gap-3">
         {scores.map((s: any) => {

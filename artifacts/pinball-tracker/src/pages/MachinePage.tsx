@@ -18,6 +18,7 @@ import { useApi } from '../lib/useApi';
 import ComparisonScopePicker from '../components/ComparisonScopePicker';
 import PodMemberIcons from '../components/PodMemberIcons';
 import UsernameLink from '../components/UsernameLink';
+import { ChallengeLink } from '../components/ChallengeParts';
 import { useComparisonScope, scopeQuery, scopeKey } from '../lib/comparisonScope';
 import { usePodMembership } from '../lib/myPods';
 import { useFriendColor } from '../lib/myFriends';
@@ -812,6 +813,10 @@ export default function MachinePage() {
               <p className="text-sm text-muted-foreground mt-1">
                 {scores.length} scores {scopeLabel ? <>· {scopeLabel}</> : 'recorded'}
               </p>
+              {/* Quiet on purpose: a text link, not a second button beside Add Score. */}
+              {myUsername && (
+                <ChallengeLink machineId={machine.id} label="Challenge a friend" size="sm" className="mt-2 border-transparent px-0 hover:bg-transparent hover:text-friend/80" />
+              )}
             </div>
             <Link href="/add" className="flex items-center gap-2 px-4 py-2 rounded-lg border border-primary text-primary text-sm font-bold uppercase tracking-wider hover:bg-primary hover:text-white transition-colors flex-shrink-0">
               <PlusCircle className="w-4 h-4" /> Add Score
