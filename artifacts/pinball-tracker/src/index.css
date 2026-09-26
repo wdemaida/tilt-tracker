@@ -75,3 +75,11 @@ body {
   color: hsl(var(--foreground)) !important;
   background: transparent !important;
 }
+
+/* Recharts makes each chart surface focusable (tabindex=0, keyboard navigation). Clicking a chart
+ * to pin a popup (lib/chartPin.ts) focuses it, and the browser then rings the whole chart; keep the
+ * ring for keyboard focus only. */
+.recharts-surface:focus:not(:focus-visible),
+.recharts-wrapper:focus:not(:focus-visible) {
+  outline: none;
+}

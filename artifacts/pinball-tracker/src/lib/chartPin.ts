@@ -1,23 +1,26 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { MouseEvent as ReactMouseEvent, MutableRefObject } from 'react';
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, MutableRefObject } from 'react';
 import { usePlotArea, useXAxisScale, useYAxisScale } from 'recharts';
 
-// Tap-to-pin chart popups on touch screens.
+// Click/tap-to-pin chart popups, for mouse and touch alike.
 //
 // Recharts tooltips follow the pointer and are `pointer-events: none`, so an @username inside one
-// can't be tapped. On a touch-primary device we therefore don't use Recharts' Tooltip at all: a tap
-// on the chart is hit-tested here, against point positions read from the chart's own scales, and the
-// popup is an ordinary absolutely-positioned element we render and control. It stays until × is
-// tapped, another point is tapped (it moves there) or empty chart area is tapped (it closes).
+// can't be clicked or tapped. So a click on the chart (a mouse click or a finger tap: one onClick,
+// whatever the pointer) is hit-tested here, against point positions read from the chart's own
+// scales, and the popup is an ordinary absolutely-positioned element we render and control. It stays
+// until × is clicked, another point is clicked (it moves there), empty chart area is clicked, Escape
+// is pressed, or the chart's mode/data changes (it closes).
 //
 // Why not Recharts' `trigger="click"` (the first attempt): for item charts (scatter) it pins only
 // when the tap lands on the SVG dot itself, and those dots are 7–8px across — a fingertip on a real
 // phone lands a few px off, so nothing opened. Emulated taps hit exact centers, so it looked fine.
-// Here a tap snaps to the nearest point within HIT_RADIUS, and all of the tap handling is one plain
-// React onClick on a `cursor: pointer` div (which iOS Safari reliably dispatches clicks to), with no
-// dependence on Recharts' hover/click state machine.
+// Here a click snaps to the nearest point within HIT_RADIUS, and all of the handling is one plain
+// React onClick on the chart wrapper (on touch screens a `cursor: pointer` div, which iOS Safari
+// reliably dispatches clicks to), with no dependence on Recharts' hover/click state machine.
 //
-// Desktop (a hovering pointer) is untouched: plain Recharts hover tooltips.
+// Hover: with a hovering pointer (a mouse), Recharts' lightweight hover tooltip still shows while
+// nothing is pinned (`hover`); the cursor turns to a pointer over a point a click would pin. Touch
+// screens have no hover, so they get no Recharts tooltip at all.
 
 const TOUCH_QUERY = '(hover: none), (pointer: coarse)';
 /** How far (px) from a point a tap may land and still pick it. */
@@ -87,20 +90,47 @@ export function useChartPin<T>(
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { setPin(null); }, deps);
 
-  const onWrapperClick = (e: ReactMouseEvent<HTMLDivElement>) => {
-    // Taps inside the popup (its text, padding) leave it alone; its link and × handle themselves.
-    if (popupRef.current?.contains(e.target as Node)) return;
+  // Escape closes a pinned popup.
+  const pinned = pin != null;
+  useEffect(() => {
+    if (!pinned) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPin(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [pinned]);
+
+  /** The pin a click at viewport (clientX, clientY) would make, or null for empty chart area. */
+  const pinAt = (clientX: number, clientY: number): Pin<T> | null => {
     const el = wrapperRef.current;
     const g = geometry.current;
-    if (!el || !g) return;
+    if (!el || !g) return null;
     const r = el.getBoundingClientRect();
-    setPin(hitTest(e.clientX - r.left, e.clientY - r.top, g));
+    return hitTest(clientX - r.left, clientY - r.top, g);
   };
 
+  const onWrapperClick = (e: ReactMouseEvent<HTMLDivElement>) => {
+    // Clicks inside the popup (its text, padding) leave it alone; its link and × handle themselves.
+    if (popupRef.current?.contains(e.target as Node)) return;
+    if (!wrapperRef.current || !geometry.current) return;
+    setPin(pinAt(e.clientX, e.clientY));
+  };
+
+  // Mouse only: a pointer cursor over a point a click would pin. Set on the element directly, so
+  // moving the mouse doesn't re-render the chart.
+  const onWrapperPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const el = wrapperRef.current;
+    if (!el || e.pointerType !== 'mouse') return;
+    const overPopup = popupRef.current?.contains(e.target as Node);
+    el.style.cursor = !overPopup && pinAt(e.clientX, e.clientY) ? 'pointer' : '';
+  };
+  const onWrapperPointerLeave = () => { if (wrapperRef.current && !touch) wrapperRef.current.style.cursor = ''; };
+
   return {
-    /** True on touch-primary screens: render Recharts' `<Tooltip>` only when this is false. */
+    /** True on touch-primary screens (no hover). */
     touch,
-    pin: touch ? pin : null,
+    /** Render Recharts' hover `<Tooltip>` (and hover-highlighted dots) only when this is true. */
+    hover: !touch && !pin,
+    pin,
     close: () => setPin(null),
     geometry,
     wrapperRef,
@@ -108,7 +138,6 @@ export function useChartPin<T>(
     /** Spread onto the `relative` div wrapping the chart. */
     wrapperProps: touch
       ? { ref: wrapperRef, onClick: onWrapperClick, style: { cursor: 'pointer', WebkitTapHighlightColor: 'transparent' } as const }
-      : { ref: wrapperRef },
+      : { ref: wrapperRef, onClick: onWrapperClick, onPointerMove: onWrapperPointerMove, onPointerLeave: onWrapperPointerLeave },
   };
 }
-

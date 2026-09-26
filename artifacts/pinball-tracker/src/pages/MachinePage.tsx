@@ -262,9 +262,9 @@ function buildScatterData(filtered: any[], myUsername: string | null) {
 }
 
 // ─── tooltips ─────────────────────────────────────────────────────────────────
-// Desktop: rendered by Recharts' hover <Tooltip>. Touch screens: rendered by ChartPinOverlay when a
-// tap pins a point (lib/chartPin.ts), with `onClose` passed — the popup is then an ordinary element,
-// so its @usernames can be tapped, and shows a close button.
+// Mouse hover: rendered by Recharts' hover <Tooltip>. A click or tap on a point: rendered by
+// ChartPinOverlay (lib/chartPin.ts), with `onClose` passed — the popup is then an ordinary element,
+// so its @usernames can be clicked/tapped, and shows a close button.
 
 function PinnedFrame({ onClose, className, children }: { onClose?: () => void; className: string; children: React.ReactNode }) {
   return (
@@ -627,8 +627,8 @@ export default function MachinePage() {
     };
   }, [scatterResult, scatterView, scatterScale]);
 
-  // Touch screens: a tap pins a popup on the nearest point (lib/chartPin.ts), so the @username in
-  // it can be tapped. Line charts pin a whole column (every series at that play/visit), like their
+  // A click (mouse) or tap (touch) pins a popup on the nearest point (lib/chartPin.ts), so the
+  // @username in it can be clicked. Line charts pin a whole column (every series at that play/visit), like their
   // hover tooltip; scatter charts pin one dot.
   const chartPin = useChartPin<PinData>((tx, ty, g) => {
     const { plot } = g;
@@ -731,8 +731,9 @@ export default function MachinePage() {
   }
   function chaosLineColor(u: string) { return groupColor(lineResult?.userGroup[u] ?? 'other'); }
   function ownerColor(o: TrendOwner) { return groupColor(o === 'me' ? 'self' : o === 'pod' ? 'pod' : 'other'); }
-  // Touch screens: no hover-highlighted dot (there's no hover; the pinned popup marks the point).
-  const activeDot = <T,>(d: T) => (chartPin.touch ? false : d);
+  // No hover-highlighted dot on touch screens (there's no hover) or while a popup is pinned (the
+  // pinned popup marks its point).
+  const activeDot = <T,>(d: T) => (chartPin.hover ? d : false);
   /** A pinned line-chart column as the `payload` its tooltip expects: one entry per drawn series. */
   function linePayload(row: any) {
     if (!lineResult) return [];
@@ -1049,8 +1050,8 @@ export default function MachinePage() {
                 <XAxis dataKey="x" tick={AXIS_STYLE} tickLine={false} axisLine={false}
                   tickFormatter={v => chartMode === 'visit' ? `V${v}` : `#${v}`} />
                 <YAxis tick={AXIS_STYLE} tickLine={false} axisLine={false} tickFormatter={formatScore} width={48} />
-                {/* Touch screens get the tap-to-pin popup below instead (lib/chartPin.ts). */}
-                {!chartPin.touch && (
+                {/* Mouse hover only, and not while pinned: the click/tap-to-pin popup is below (lib/chartPin.ts). */}
+                {chartPin.hover && (
                   <Tooltip
                     content={<LineTooltip chartMode={chartMode} visitAgg={visitAgg} myUsername={myUsername} lineType={lineResult.type} podName={podName} othersLabel={othersLabel} />}
                     cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }}
@@ -1096,7 +1097,7 @@ export default function MachinePage() {
                 <YAxis dataKey="y" type="number" scale={scatterAxes.yScale} domain={scatterAxes.yDomain} ticks={scatterAxes.yTicks}
                   allowDataOverflow={scatterAxes.yScale === 'log'}
                   tick={AXIS_STYLE} tickLine={false} axisLine={false} tickFormatter={formatScore} width={48} />
-                {!chartPin.touch && (
+                {chartPin.hover && (
                   <Tooltip content={<ScatterTooltip podName={podName} podText={podTokens?.text} othersLabel={othersLabel} />} cursor={false} />
                 )}
                 {scatterView === 'scores' ? (
