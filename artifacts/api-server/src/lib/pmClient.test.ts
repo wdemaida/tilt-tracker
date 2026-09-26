@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  createPmClient, PmApiError, parseRetryAfter, requestKey, fixtureFileName, resolvePmMode, isProductionEnv,
+  createPmClient, PmApiError, parseRetryAfter, requestKey, logKey, fixtureFileName, resolvePmMode, isProductionEnv,
   PM_USER_AGENT, type PmClientOptions,
 } from './pmClient.js';
 
@@ -45,7 +45,7 @@ function harness(extra: Partial<PmClientOptions> = {}) {
   };
 }
 
-test('adds the token on the query string, an identifying User-Agent, and never logs the query', async () => {
+test('adds the token on the query string, an identifying User-Agent, and never logs the token', async () => {
   const h = harness();
   await h.client.get('/locations/1.json', { metadata_only: 1 });
   assert.equal(h.calls.length, 1);
@@ -55,8 +55,35 @@ test('adds the token on the query string, an identifying User-Agent, and never l
   assert.equal((h.calls[0].init.headers as Record<string, string>)['User-Agent'], PM_USER_AGENT);
   assert.ok(h.calls[0].init.signal, 'every request carries a timeout signal');
   assert.equal(h.logs.length, 1);
-  assert.match(h.logs[0], /^\[PM live\] GET \/locations\/1\.json 200 \d+ms \(1 today\)$/);
+  assert.match(h.logs[0], /^\[PM live\] GET \/locations\/1\.json\?metadata_only=1 200 \d+ms \(1 today\)$/);
   assert.ok(!h.logs.join('\n').includes('SECRET'), 'token never logged');
+});
+
+test('log line: roster vs metadata requests are distinguishable; credentials dropped, coordinates masked', async () => {
+  const h = harness();
+  await h.client.get('/locations/10804.json');
+  await h.client.get('/locations/10804.json', { metadata_only: 1 });
+  await h.client.get('/locations/closest_by_lat_lon.json', { lat: 42.123, lon: -71.456, max_distance: 1, api_token: 'X-PARAM-TOKEN' });
+  assert.match(h.logs[0], /^\[PM live\] GET \/locations\/10804\.json 200 /);
+  assert.match(h.logs[1], /^\[PM live\] GET \/locations\/10804\.json\?metadata_only=1 200 /);
+  assert.match(h.logs[2], /^\[PM live\] GET \/locations\/closest_by_lat_lon\.json\?lat=~&lon=~&max_distance=1 200 /);
+  const all = h.logs.join('\n');
+  for (const secret of ['SECRET', 'X-PARAM-TOKEN', '42.123', '71.456']) assert.ok(!all.includes(secret), `${secret} never logged`);
+});
+
+test('log line: sensitive requests log the path only; credential params are dropped even if not flagged', async () => {
+  const h = harness();
+  h.respond(() => json({ user: { username: 'u', email: 'e@x', authentication_token: 't' } }));
+  await h.client.request({ path: '/users/auth_details.json', params: { login: 'me@example.com', password: 'hunter2' }, sensitive: true });
+  await h.client.request({ method: 'POST', path: '/machine_score_xrefs.json', body: { user_email: 'me@example.com', user_token: 'UT', score: '1' }, sensitive: true });
+  assert.match(h.logs[0], /^\[PM live\] GET \/users\/auth_details\.json 200 /);
+  assert.match(h.logs[1], /^\[PM live\] POST \/machine_score_xrefs\.json 200 /);
+  assert.equal(
+    logKey({ path: '/x.json', params: { user_email: 'a@b', user_token: 't', password: 'p', login: 'l', email: 'e', q: 'ok' } }),
+    'GET /x.json?q=ok',
+  );
+  const all = h.logs.join('\n');
+  for (const secret of ['me@example.com', 'hunter2', 'UT', 'SECRET']) assert.ok(!all.includes(secret), `${secret} never logged`);
 });
 
 test('token bucket: a burst of 5 goes straight through, then 1 per second', async () => {

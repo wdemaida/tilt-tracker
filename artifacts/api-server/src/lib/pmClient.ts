@@ -11,8 +11,9 @@
 //  - a circuit breaker: a 429 opens it for Retry-After (default 15 min), a 5xx / network error /
 //    timeout for 2 min, a rejected api_token for 15 min. While open, calls fail fast with a
 //    PmApiError — nothing retries per request;
-//  - an identifying User-Agent, a daily call counter and one log line per live call (endpoint path
-//    only — never the query string, which carries the token and, for auth, the user's credentials).
+//  - an identifying User-Agent, a daily call counter and one log line per live call: the request key
+//    (method, path, sorted params — see `logKey`) minus every credential and with coordinates masked;
+//    a `sensitive` request logs its path only.
 //
 // Outside production there is more (see `PM_MODE` below): by default nothing goes to Pinball Map at
 // all — requests are answered from recorded fixtures in `fixtures/pm/`, and anything unrecorded
@@ -147,6 +148,28 @@ export function requestKey(req: PmRequest): string {
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   const qs = params.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
   return `${req.method ?? 'GET'} ${req.path}${qs ? `?${qs}` : ''}`;
+}
+
+// Never logged, not even their names' values: our api_token, and the user credentials the account
+// endpoints carry (those are `sensitive` and log path-only anyway — this is belt and braces).
+const LOG_DROP_PARAMS = new Set(['api_token', 'user_token', 'user_email', 'password', 'login', 'email', 'authentication_token']);
+// Logged as `lat=~`: a point near a user (photo GPS, device position) — routes promise not to log it.
+const LOG_MASK_PARAMS = new Set(['lat', 'lon', 'lng']);
+
+/**
+ * What the `[PM live]` line shows for a request: `GET /locations/10804.json` vs
+ * `GET /locations/10804.json?metadata_only=1` must be distinguishable in production logs. Credentials
+ * are dropped, coordinates masked; a `sensitive` request (auth, score post) is method + path only.
+ */
+export function logKey(req: PmRequest): string {
+  const method = req.method ?? 'GET';
+  if (req.sensitive) return `${method} ${req.path}`;
+  const params = Object.fromEntries(
+    Object.entries(req.params ?? {})
+      .filter(([k]) => !LOG_DROP_PARAMS.has(k.toLowerCase()))
+      .map(([k, v]) => [k, LOG_MASK_PARAMS.has(k.toLowerCase()) && v !== undefined ? '~' : v]),
+  );
+  return requestKey({ method, path: req.path, params });
 }
 
 /**
@@ -416,8 +439,9 @@ export function createPmClient(opts: PmClientOptions = {}): PmClient {
     } finally {
       releaseSlot();
       const n = countLiveCall();
-      // Path only: the query string holds the api_token (and, for auth, the user's credentials).
-      log(`[PM live] ${req.method ?? 'GET'} ${req.path} ${status || 'ERR'} ${now() - started}ms (${n} today)`);
+      // logKey, not the URL: the real query string holds the api_token (and, for auth, the user's
+      // credentials). Sensitive requests log the path only.
+      log(`[PM live] ${logKey(req)} ${status || 'ERR'} ${now() - started}ms (${n} today)`);
     }
   }
 
