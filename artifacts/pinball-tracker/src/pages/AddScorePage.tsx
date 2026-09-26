@@ -2,7 +2,7 @@ import { useState, useRef, useMemo, useEffect, type ReactNode } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
-import { Camera, Loader2, CheckCircle2, ExternalLink, MapPin, Search, X, ChevronDown, AlertTriangle, Home } from 'lucide-react';
+import { Camera, Loader2, CheckCircle2, ExternalLink, MapPin, Search, X, ChevronDown, ChevronLeft, AlertTriangle, Home } from 'lucide-react';
 import { useLocation } from 'wouter';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { useApi } from '../lib/useApi';
@@ -195,6 +195,62 @@ export default function AddScorePage() {
   const machineAutoSelected = useRef(false);
   const [, navigate] = useLocation();
   const api = useApi();
+
+  // Wizard steps in browser history, so the phone's back gesture steps back through the wizard
+  // instead of leaving /add and throwing away the photos, the read and the picked venue. Each
+  // forward move to step 2 or 3 pushes an entry (same URL) tagged with its step and how many
+  // wizard entries deep it is; popping one just shows that step again, with all state intact.
+  // Saving (step 4) unwinds those entries, so back from the success screen leaves /add exactly as
+  // it did before — it can never land on the form again and save a duplicate.
+  const stepRef = useRef(step);
+  const prevStepRef = useRef(step);
+  const fromPopRef = useRef(false); // this step change came from a popstate, not from the app
+  useEffect(() => {
+    // Remounted on an entry an earlier visit tagged (back/forward from another page): the form is
+    // fresh, so the tag no longer describes it.
+    const st = window.history.state;
+    if (st && typeof st === 'object' && 'addScoreStep' in st) {
+      const { addScoreStep: _s, addScoreDepth: _d, ...rest } = st;
+      window.history.replaceState(rest, '');
+    }
+    const onPop = (e: PopStateEvent) => {
+      // Includes the pop fired by the post-save unwind below.
+      if (stepRef.current === 4) return;
+      const target = (e.state?.addScoreStep ?? 1) as Step;
+      if (target < stepRef.current) {
+        fromPopRef.current = true;
+        setStep(target);
+      } else {
+        // Forward, or an entry left over from an earlier pass: keep showing the current step, and
+        // re-tag the entry so the history keeps matching what's on screen.
+        window.history.replaceState({ ...(e.state ?? {}), addScoreStep: stepRef.current }, '');
+      }
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+  useEffect(() => {
+    const prev = prevStepRef.current;
+    prevStepRef.current = step;
+    stepRef.current = step;
+    if (step === prev) return;
+    // A tap near the bottom of a long step shouldn't leave the next one scrolled halfway down.
+    window.scrollTo(0, 0);
+    if (fromPopRef.current) { fromPopRef.current = false; return; }
+    const st = window.history.state ?? {};
+    const depth: number = typeof st.addScoreDepth === 'number' ? st.addScoreDepth : 0;
+    if (step === 4) {
+      if (depth > 0) window.history.go(-depth);
+      return;
+    }
+    if (step > prev) window.history.pushState({ ...st, addScoreStep: step, addScoreDepth: depth + 1 }, '');
+  }, [step]);
+  /** The visible Back: pops the wizard's own history entry when there is one, so the two stay in step. */
+  function goBack() {
+    if (step <= 1 || step === 4) return;
+    if (window.history.state?.addScoreStep === step) window.history.back();
+    else setStep((step - 1) as Step);
+  }
   const fileRef = useRef<HTMLInputElement>(null);
 
   function resizeImage(src: string, maxPx = 160): Promise<string> {
@@ -930,6 +986,14 @@ export default function AddScorePage() {
     }
   }
 
+  /**
+   * A tap on a venue option picks it *and* moves on to the details step — the tap fully determines
+   * the venue, so making the user scroll down to Continue was a wasted step. A mis-tap is one Back
+   * (or back gesture) away, and step 2 still shows the pick highlighted. Everything the pick sets
+   * off (pm-match, the venue's roster) is a query keyed on `selectedVenue` at the top of the
+   * component, so it keeps loading across the step change; step 3's machine picker shows its
+   * loading state until the roster lands, and Save waits for an in-flight match (see `pmMatchLoading`).
+   */
   function selectVenueCard(v: {
     id?: number; name: string; address?: string | null; hereId?: string | null; venueLat?: number; venueLng?: number;
     pinballMapId?: number | null; timezone?: string | null; pmChecked?: boolean; isPrivate?: boolean;
@@ -948,6 +1012,7 @@ export default function AddScorePage() {
       pinballMapId: v.pinballMapId ?? undefined,
       timezone: v.timezone,
     });
+    setStep(3);
   }
 
   function selectMachine(name: string, manufacturer?: string, year?: number) {
@@ -1071,7 +1136,8 @@ export default function AddScorePage() {
       {/* Step 2: Venue */}
       {step === 2 && (
         <div className="rounded-xl border border-white/10 bg-card p-6 flex flex-col gap-4">
-          <h2 className="text-xl font-black uppercase tracking-widest text-white mb-2">Where Did You Play?</h2>
+          <BackLink onClick={goBack} label="Photo" />
+          <h2 className="text-xl font-black uppercase tracking-widest text-white mb-2 -mt-2">Where Did You Play?</h2>
           {aiError && <p className="text-xs text-yellow-400 -mt-1">{aiError}</p>}
           {/* No photo GPS — or no photo at all ("Skip AI & Enter Manually") — offer the device's position. */}
           {!photoLocation?.hasGps && (
@@ -1301,12 +1367,14 @@ export default function AddScorePage() {
           )}
 
           <div className="flex gap-3 pt-2">
-            <button type="button" onClick={() => setStep(1)}
+            <button type="button" onClick={goBack}
               className="flex-1 py-2.5 rounded-lg border border-white/10 text-sm text-muted-foreground hover:text-white transition-colors">
               Back
             </button>
             {/* Continue needs a picked venue. Going on without one is its own, clearly-labelled choice
-                ("Skip — no venue") — a typed-but-unpicked name is no longer quietly saved as a venue. */}
+                ("Skip — no venue") — a typed-but-unpicked name is no longer quietly saved as a venue.
+                Tapping a venue option advances by itself; Continue is for coming back to step 2 with a
+                venue still picked (e.g. after Back) and wanting to keep it. */}
             <button type="button" onClick={() => setStep(3)} disabled={!selectedVenue}
               className="flex-1 py-2.5 rounded-lg bg-primary text-white font-bold uppercase tracking-wider text-sm hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed">
               Continue
@@ -1514,7 +1582,8 @@ export default function AddScorePage() {
             </div>
           )}
           <div>
-            <h2 className="text-xl font-black uppercase tracking-widest text-white">Score Details</h2>
+            <BackLink onClick={goBack} label={selectedVenue ? 'Change venue' : 'Venue'} />
+            <h2 className="text-xl font-black uppercase tracking-widest text-white mt-2">Score Details</h2>
             {venueName && (
               <div className="flex items-center gap-1.5 mt-1">
                 <MapPin className="w-3 h-3 text-venue flex-shrink-0" />
@@ -1894,13 +1963,15 @@ export default function AddScorePage() {
             </p>
           )}
           <div className="flex gap-3 pt-2">
-            <button type="button" onClick={() => setStep(2)}
+            <button type="button" onClick={goBack}
               className="flex-1 py-2.5 rounded-lg border border-white/10 text-sm text-muted-foreground hover:text-white transition-colors">
               Back
             </button>
-            <button type="submit" disabled={isSubmitting || createScore.isPending || needsPlayerChoice || (scoreTemplate != null && unknownCount(scoreTemplate) > 0)}
+            {/* A venue tap now lands here before its Pinball Map match has answered; saving mid-match
+                would drop venuePinballMapId (the link the score POST stores on the venue). */}
+            <button type="submit" disabled={isSubmitting || createScore.isPending || pmMatchLoading || needsPlayerChoice || (scoreTemplate != null && unknownCount(scoreTemplate) > 0)}
               className="flex-1 py-2.5 rounded-lg bg-primary text-white font-bold uppercase tracking-wider text-sm hover:opacity-90 transition-opacity disabled:opacity-50">
-              {createScore.isPending ? 'Saving...' : 'Save Score'}
+              {createScore.isPending ? 'Saving...' : pmMatchLoading ? 'Checking venue…' : 'Save Score'}
             </button>
           </div>
         </form>
@@ -2040,6 +2111,20 @@ function formatDistance(m: number | null | undefined): string | undefined {
 }
 
 /** One pickable venue row in the search results — same look as the Nearby / Your Venues rows. */
+/** The wizard's top-of-step Back — visible without scrolling past a long step to the bottom row. */
+function BackLink({ onClick, label }: { onClick: () => void; label: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="self-start inline-flex items-center gap-1 -ml-1 py-1 pr-2 text-xs font-bold uppercase tracking-wider text-muted-foreground hover:text-white transition-colors"
+    >
+      <ChevronLeft className="w-4 h-4" />
+      {label}
+    </button>
+  );
+}
+
 function VenueOption({ name, address, selected, icon, badges, right, onClick }: {
   name: string;
   address?: string | null;

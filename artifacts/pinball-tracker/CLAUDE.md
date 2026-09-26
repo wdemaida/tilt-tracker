@@ -94,6 +94,17 @@
   venue's own link, else the resolved one) drives the roster (`/pm-machines/:pmId`, merged into a
   TiltTrack venue's payload when its link was only just resolved), `canPostToPm`, and the score
   POST's `venuePinballMapId`, which links the venue on save. No match → catalog search as before.
+- **Tapping a venue option picks it and advances to step 3** (`selectVenueCard` → `setStep(3)`);
+  Continue remains for returning to step 2 with a pick kept. The pm-match / roster queries live at
+  the top of the component keyed on `selectedVenue`, so they keep loading across the step change —
+  step 3's picker shows the loading state, and Save is held ("Checking venue…") while
+  `pmMatchLoading`, so `venuePinballMapId` isn't dropped. Add-a-venue and the duplicate prompt keep
+  their own explicit buttons.
+- **Wizard steps are in browser history** (steps 2–3 push a same-URL entry tagged `addScoreStep` /
+  `addScoreDepth`), so the phone back gesture steps back instead of leaving /add. The visible Back
+  (`goBack`, top and bottom of steps 2–3) pops that entry rather than calling `setStep` directly —
+  keep it that way or history and screen drift apart. Reaching step 4 unwinds the entries with
+  `history.go(-depth)`, so back from the success screen can't reopen the form and double-save.
 - A venue's machine list now has **"Not listed? Type the machine name"** (`machineFreeText`), which
   switches to the catalog search input; before, a roster venue offered no way to enter an unlisted
   machine unless the AI had read a name.
