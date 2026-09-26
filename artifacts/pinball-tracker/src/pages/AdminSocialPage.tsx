@@ -5,7 +5,7 @@ import { useAdminApi } from '../lib/adminApi';
 import { AdminShell, Card, Segmented, LoadMore, ErrorNote } from '../components/admin/AdminParts';
 import { AdminChallengeRow, AdminFriendshipRow, AdminNotificationRow } from '../components/admin/AdminRows';
 
-// /admin/social — friendships & requests (with decline counts), challenges in every state, and the
+// /admin/crew — friendships & requests (with decline counts), challenges in every state, and the
 // notifications inbox across all users. ?tab= picks the section so the overview tiles can deep-link.
 
 type Tab = 'friendships' | 'challenges' | 'notifications';
@@ -106,7 +106,7 @@ export default function AdminSocialPage() {
   return (
     <AdminShell>
       <div className="mb-5">
-        <Segmented<Tab> value={tab} onChange={t => navigate(`/admin/social?tab=${t}`, { replace: true })}
+        <Segmented<Tab> value={tab} onChange={t => navigate(`/admin/crew?tab=${t}`, { replace: true })}
           options={[{ value: 'friendships', label: 'Friendships' }, { value: 'challenges', label: 'Challenges' }, { value: 'notifications', label: 'Notifications' }]} />
       </div>
       {tab === 'friendships' && <Friendships />}

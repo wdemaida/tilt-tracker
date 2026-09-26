@@ -160,7 +160,7 @@ export default function App() {
         <Route path="/admin/activity">
           <AdminGate><AdminActivityPage /></AdminGate>
         </Route>
-        <Route path="/admin/social">
+        <Route path="/admin/crew">
           <AdminGate><AdminSocialPage /></AdminGate>
         </Route>
         <Route path="/admin/scores">

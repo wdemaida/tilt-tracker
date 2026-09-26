@@ -7,7 +7,7 @@ import UsernameLink from '../UsernameLink';
 import PhotoViewer from '../PhotoViewer';
 import { ConfirmDialog, Pill, When, AdminUserLink } from './AdminParts';
 
-// Rows shared by the admin user page and the Social / Scores tabs, each with its own admin actions.
+// Rows shared by the admin user page and the Crew / Scores tabs, each with its own admin actions.
 // Every action confirms first and refreshes all admin queries afterwards.
 
 function useRefreshAdmin() {
@@ -72,7 +72,7 @@ export function AdminScoreRow({ s, showUser = true }: { s: AdminScore; showUser?
           title="Delete score" confirmLabel="Delete score"
           body={<>
             <p>Permanently delete <b>{s.score.toLocaleString()}</b> on {s.machine.name} by @{s.user.username}{s.hasFullPhoto ? ', including its full-size photo in R2' : ''}. This can’t be undone.</p>
-            {locked && <>{lockNote}<p>The server will refuse while a challenge holds it. Void the challenge first (Social → Challenges) — that releases the lock and removes the challenge from both players’ records.</p></>}
+            {locked && <>{lockNote}<p>The server will refuse while a challenge holds it. Void the challenge first (Crew → Challenges) — that releases the lock and removes the challenge from both players’ records.</p></>}
           </>}
           onConfirm={async () => { await admin.deleteScore(s.id); await refresh(); }}
           onClose={() => setConfirm(null)}

@@ -44,15 +44,15 @@ export default function AdminPage() {
               sub={data.activeUsers.clerk7d != null ? `Clerk last active · ${n(data.activeUsers.app7d)} did something` : 'from app activity'} />
             <StatTile label="Active · 30 days" value={n(data.activeUsers.clerk30d ?? data.activeUsers.app30d)}
               sub={data.activeUsers.clerk30d != null ? `Clerk last active · ${n(data.activeUsers.app30d)} did something` : 'from app activity'} />
-            <StatTile label="Friendships" value={n(c.friendships)} sub={`${n(c.pending_requests)} pending · ${n(c.pods)} pods`} href="/admin/social" />
+            <StatTile label="Friendships" value={n(c.friendships)} sub={`${n(c.pending_requests)} pending · ${n(c.pods)} pods`} href="/admin/crew" />
           </div>
 
           <SectionTitle>Play</SectionTitle>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <StatTile label="Scores today" value={n(c.scores_today)} sub={`${n(c.scores_7d)} this week · ${n(c.scores)} total`} href="/admin/scores" />
             <StatTile label="Photos" value={n(c.full_photos)} sub={`full-size · ${n(c.thumbnails)} thumbnails`} href="/admin/scores" />
-            <StatTile label="Challenges" value={n(c.active_challenges)} sub={`active · ${n(c.pending_challenges)} pending`} href="/admin/social?tab=challenges" />
-            <StatTile label="Notifications today" value={n(c.notifications_today)} sub={`${n(c.notifications_unread)} unread overall`} href="/admin/social?tab=notifications" />
+            <StatTile label="Challenges" value={n(c.active_challenges)} sub={`active · ${n(c.pending_challenges)} pending`} href="/admin/crew?tab=challenges" />
+            <StatTile label="Notifications today" value={n(c.notifications_today)} sub={`${n(c.notifications_unread)} unread overall`} href="/admin/crew?tab=notifications" />
           </div>
 
           <SectionTitle>System</SectionTitle>

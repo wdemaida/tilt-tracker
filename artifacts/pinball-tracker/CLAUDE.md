@@ -279,7 +279,7 @@
 
 ## Admin area (`src/pages/Admin*.tsx`, `components/admin/`, `lib/adminApi.ts`, added 2026-09-26)
 - Routes: `/admin` (Overview), `/admin/users`, `/admin/users/:id`, `/admin/activity` (`?userId=`,
-  `?category=`, `?type=`), `/admin/social` (`?tab=friendships|challenges|notifications`),
+  `?category=`, `?type=`), `/admin/crew` (`?tab=friendships|challenges|notifications`),
   `/admin/scores` (`?userId=`), plus the existing Health / Stats / Config. `AdminNav` scrolls sideways
   on phones rather than wrapping.
 - `AdminGate` renders nothing until `/api/users/me` says admin, so admin pages never fire requests

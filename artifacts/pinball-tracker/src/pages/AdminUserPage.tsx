@@ -189,7 +189,7 @@ export default function AdminUserPage() {
                   </ul>
                 </Card>
               )}
-              <p className="text-xs text-muted-foreground mt-2">Remove a friendship from Social → Friendships.</p>
+              <p className="text-xs text-muted-foreground mt-2">Remove a friendship from Crew → Friendships.</p>
             </div>
             <div>
               <SectionTitle>Pods</SectionTitle>
