@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { db, machines, scores, users, venues } from '@workspace/db';
+import { db, machines, scores, users, venues, challenges } from '@workspace/db';
 import { eq, desc, max, count, isNotNull, sql, and } from 'drizzle-orm';
 import { searchMachines } from '../lib/pinballMap.js';
 import { upsertMachineByName } from '../lib/machineUpsert.js';
@@ -184,6 +184,10 @@ router.delete('/:id', requireAppUser, requireAdmin, async (req, res) => {
   }
   if (await machineInInventory(id)) {
     return res.status(409).json({ error: 'Cannot delete — a home venue lists this machine in its inventory' });
+  }
+  const [{ challengeRefs }] = await db.select({ challengeRefs: count() }).from(challenges).where(eq(challenges.machineId, id));
+  if (challengeRefs > 0) {
+    return res.status(409).json({ error: 'Cannot delete — a challenge is played on this machine' });
   }
 
   await db.delete(machines).where(eq(machines.id, id));

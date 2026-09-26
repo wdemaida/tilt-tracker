@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { db, scores, venues, machines, users } from '@workspace/db';
+import { db, scores, venues, machines, users, challenges } from '@workspace/db';
 import { eq, desc, count, sql, and, max, inArray } from 'drizzle-orm';
 import {
   findNearestPmLocations, searchPmLocationsByName, searchPmLocationsWithAddress, getPmLocation,
@@ -696,6 +696,10 @@ router.delete('/:id', requireAppUser, requireAdmin, async (req, res) => {
   const [{ total }] = await db.select({ total: count() }).from(scores).where(eq(scores.venueId, id));
   if (total > 0) {
     return res.status(409).json({ error: `Cannot delete — ${total} score${total === 1 ? '' : 's'} are logged at this venue` });
+  }
+  const [{ challengeRefs }] = await db.select({ challengeRefs: count() }).from(challenges).where(eq(challenges.venueId, id));
+  if (challengeRefs > 0) {
+    return res.status(409).json({ error: 'Cannot delete — a challenge is locked to this venue' });
   }
 
   await deleteVenueInventory(id);

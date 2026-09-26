@@ -1,4 +1,4 @@
-import { db, venues, scores, users, venueMachineHistory, venueInventory, type Venue } from '@workspace/db';
+import { db, venues, scores, users, venueMachineHistory, venueInventory, challenges, type Venue } from '@workspace/db';
 import { eq, count, inArray, sql } from 'drizzle-orm';
 import type { RepairActor } from './venueRepair.js';
 import { isPrivateTier } from './venuePrivacy.js';
@@ -12,6 +12,7 @@ import { isPrivateTier } from './venuePrivacy.js';
 //   scores.venue_id (+ the denormalized scores.venue_name snapshot) — repointed, snapshot renamed.
 //   venue_machine_history.venue_id — unique per (venue, machine): merged per machine, see below.
 //   venue_inventory.venue_id       — unique per (venue, machine): merged per machine, see below.
+//   challenges.venue_id            — a challenge's venue lock (feature/challenges): repointed.
 // venues.owner_id / created_by_id live on the venue row itself and go with the deleted source; the
 // target keeps its own. pm_location_cache is keyed by Pinball Map id, not venue id.
 
@@ -301,6 +302,9 @@ export async function applyVenueMerge(
       .set({ venueId: target.id })
       .where(eq(venueInventory.venueId, source.id))
       .returning({ id: venueInventory.id });
+
+    // 3b. Challenges locked to the source are locked to the target from now on (same place).
+    await tx.update(challenges).set({ venueId: target.id }).where(eq(challenges.venueId, source.id));
 
     // 4. The source goes; then the target takes what it lacked. Deleting first frees the source's
     //    HERE id, which is unique across venues.

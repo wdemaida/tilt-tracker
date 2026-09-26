@@ -12,6 +12,7 @@ import { redactScoreLocation, redactVenue, canSeeVenueLinkage } from '../lib/ven
 import { getAuth } from '@clerk/express';
 import { parseScore } from '../lib/scoreRead.js';
 import { visibleScoreSql } from '../lib/venueActivity.js';
+import { onScoreCreated, scoreLockedByChallenge, SCORE_LOCKED } from '../lib/challenges.js';
 
 // Optional — resolves the caller's app user + role, without requiring auth.
 async function resolveRequester(req: any): Promise<{ id: number; role: string } | undefined> {
@@ -119,6 +120,9 @@ router.post('/', requireAppUser, async (req, res) => {
       photoUrl: photoUrl ?? null,
       photoThumbnail: photoThumbnail ?? null,
     }).returning();
+    // Challenges: records the lock if this score counts, resolves a won race on the spot, and tells
+    // the opponent. Never throws — a challenge problem must not fail the upload.
+    await onScoreCreated(row);
     res.status(201).json(row);
   } catch (err) {
     console.error('Create score error:', err);
@@ -139,6 +143,8 @@ router.patch('/:id', requireAppUser, async (req, res) => {
   if (existing.userId !== appUser.id && appUser.role !== 'admin') {
     return res.status(403).json({ error: 'Forbidden' });
   }
+  // A score that counted toward a challenge is frozen — for admins too (lib/challenges.ts).
+  if (await scoreLockedByChallenge(id)) return res.status(409).json(SCORE_LOCKED);
 
   const updates: Record<string, any> = {};
   if (score !== undefined) {
@@ -182,6 +188,7 @@ router.delete('/:id', requireAppUser, async (req, res) => {
   if (existing.userId !== appUser.id && appUser.role !== 'admin') {
     return res.status(403).json({ error: 'Forbidden' });
   }
+  if (await scoreLockedByChallenge(id)) return res.status(409).json(SCORE_LOCKED);
 
   await db.delete(scores).where(eq(scores.id, id));
   res.status(204).send();
@@ -310,6 +317,7 @@ router.post('/:id/repair/machine', requireAppUser, async (req, res) => {
   if (existing.userId !== appUser.id && appUser.role !== 'admin') {
     return res.status(403).json({ error: 'You can only repair your own scores' });
   }
+  if (await scoreLockedByChallenge(id)) return res.status(409).json(SCORE_LOCKED);
 
   try {
     const target = await upsertMachineByName(pmName, {
