@@ -120,7 +120,15 @@ export function pmAutocompleteId(entry: { value?: number | string; id?: number }
 // locations.json carries all of that in one request (autocomplete returns only a label), so it goes
 // first; autocomplete is the fallback for the prefix matches locations.json can miss, and those
 // hits are resolved one by one only up to a small cap to stay clear of per-record fan-out.
-export async function searchPmLocationsWithAddress(name: string, maxLookups = 3): Promise<PmLocation[]> {
+//
+// `lookup` resolves one id to a full record. Callers pass `getPmLocationCached` (pmRosterCache.ts),
+// which reads the cached `/locations/:id.json` row before going live — this module can't import the
+// cache itself (the cache imports it).
+export async function searchPmLocationsWithAddress(
+  name: string,
+  lookup: (pmLocationId: number) => Promise<PmLocation | null>,
+  maxLookups = 3,
+): Promise<PmLocation[]> {
   const q = name.trim();
   if (q.length < 2) return [];
 
@@ -135,22 +143,33 @@ export async function searchPmLocationsWithAddress(name: string, maxLookups = 3)
   const fallback = await pmAutocomplete(q);
   const full: PmLocation[] = [];
   for (const hit of fallback.slice(0, maxLookups)) {
-    const loc = await getPmLocation(hit.id);
+    const loc = await lookup(hit.id);
     if (loc) full.push(loc);
   }
   return full;
 }
 
-export async function getPmLocation(pmLocationId: number): Promise<PmLocation | null> {
-  let data: PmLocation & { errors?: string };
-  try {
-    data = await pmFetch<PmLocation & { errors?: string }>(`/locations/${pmLocationId}.json`, { metadata_only: 1 });
-  } catch (err) {
-    if (err instanceof PmApiError && err.kind === 'not_found') return null;
-    throw err;
-  }
-  if (!data || (data as any).errors || !data.id) return null;
-  return data;
+// There is deliberately no `?metadata_only=1` lookup any more. It was a second URL for the same
+// location (three requests for one venue link: place pick, pm-link check, roster), and uncached.
+// A location's name/address now come from the full `/locations/:id.json` response the roster is read
+// from, stored alongside it in pm_location_cache — see getPmLocationCached() in pmRosterCache.ts.
+
+/** The location fields of a `/locations/:id.json` body — the subset stored with the cached roster. */
+export function pickPmLocation(body: any): PmLocation | null {
+  if (!body || typeof body !== 'object' || !body.id) return null;
+  const str = (v: unknown) => (typeof v === 'string' ? v : v == null ? null : String(v));
+  return {
+    id: Number(body.id),
+    name: typeof body.name === 'string' ? body.name : '',
+    lat: body.lat,
+    lon: body.lon,
+    street: str(body.street),
+    city: str(body.city),
+    state: str(body.state),
+    zip: str(body.zip),
+    country: str(body.country),
+    ...(typeof body.num_machines === 'number' ? { num_machines: body.num_machines } : {}),
+  };
 }
 
 // Reads name/manufacturer/year straight off the location show endpoint's embedded LMX list. Pinball
@@ -181,10 +200,26 @@ function readXrefs(locData: any): PmLocationMachineXref[] {
  * (pmRosterCache) must never cache an empty roster for a location that doesn't exist.
  */
 export async function getPmMachinesAtLocation(pmLocationId: number): Promise<PmLocationMachineXref[]> {
+  return (await getPmLocationWithMachines(pmLocationId)).xrefs;
+}
+
+/**
+ * One `/locations/:id.json` request → the roster plus the location's own fields (name, address,
+ * coordinates). Throws PmApiError('not_found') when the id doesn't resolve, like
+ * getPmMachinesAtLocation. Only pmRosterCache should call this.
+ */
+export async function getPmLocationWithMachines(
+  pmLocationId: number,
+): Promise<{ location: PmLocation; xrefs: PmLocationMachineXref[] }> {
   const locData = await pmFetch<any>(`/locations/${pmLocationId}.json`);
-  if (!locData || locData.errors || !locData.id) {
+  const location = locData && !locData.errors ? pickPmLocation(locData) : null;
+  if (!location) {
     throw new PmApiError('not_found', `Pinball Map has no location with id ${pmLocationId}`, 404);
   }
+  return { location, xrefs: await readRoster(pmLocationId, locData) };
+}
+
+async function readRoster(pmLocationId: number, locData: any): Promise<PmLocationMachineXref[]> {
   const rawXrefs: any[] = Array.isArray(locData.location_machine_xrefs) ? locData.location_machine_xrefs : [];
   const xrefs = readXrefs(locData);
   // An empty list is a real answer (a listing with no machines right now) — no second call.

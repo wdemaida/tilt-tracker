@@ -134,6 +134,9 @@ export type NewScore = typeof scores.$inferInsert;
 export const pmLocationCache = pgTable('pm_location_cache', {
   pmLocationId: integer('pm_location_id').primaryKey(),
   machines: jsonb('machines').notNull(),
+  // Location fields (id, name, lat, lon, street, city, state, zip, country) from the same
+  // /locations/:id.json response as the roster (migrate20). Null on rows cached before it existed.
+  location: jsonb('location'),
   fetchedAt: timestamp('fetched_at').defaultNow().notNull(),
 });
 
