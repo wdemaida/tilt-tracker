@@ -23,13 +23,15 @@ export const pmMachinesLimiter = new SlidingRateLimiter([
 ]);
 /** Venue / score repair routes that can reach Pinball Map. Counted only on a cache miss. */
 export const repairPmLimiter = new SlidingRateLimiter([{ ms: 60 * 60_000, max: 20 }]);
+/** POST /api/challenges with a venue lock — the roster check. Counted only when it would go live. */
+export const challengePmLimiter = new SlidingRateLimiter([{ ms: 60 * 60_000, max: 20 }]);
 /** POST /api/pinballmap/auth — keyed `u:<userId>` and `ip:<ip>`, both must have room. */
 export const pmAuthLimiter = new SlidingRateLimiter([{ ms: 15 * 60_000, max: 5 }]);
 /** POST /api/pinballmap/submit-score. PM's own limit is 80 per 2 min per IP — for all of us. */
 export const pmSubmitLimiter = new SlidingRateLimiter([{ ms: 60_000, max: 10 }]);
 
 setInterval(() => {
-  pmMachinesLimiter.sweep(); repairPmLimiter.sweep(); pmAuthLimiter.sweep(); pmSubmitLimiter.sweep();
+  pmMachinesLimiter.sweep(); repairPmLimiter.sweep(); challengePmLimiter.sweep(); pmAuthLimiter.sweep(); pmSubmitLimiter.sweep();
 }, 10 * 60_000).unref();
 
 /** Sends the standard 429 for a refused decision. Returns true when it did. */

@@ -15,7 +15,8 @@ import { isPrivateVenue } from './venueAddress.js';
 import { acceptedPairSql } from './friendships.js';
 import { raiseNotification, settleNotifications, type Executor } from './notify.js';
 import { getVenueRoster } from './pmRosterCache.js';
-import { getAllMachines } from './pinballMap.js';
+import { getCatalogOrNull, getStoredCatalog, type PinballMachine } from './pinballMap.js';
+import { challengePmLimiter } from './pmGuards.js';
 import type { PmLocationMachineXref } from './pinballmapApi.js';
 
 // Challenges — database orchestration (feature/challenges, phase 2). The rules are pure, in
@@ -625,14 +626,16 @@ async function targetMachines(rule: MatchRule): Promise<Array<{ id: number; name
     : eq(machines.id, rule.machineId));
 }
 
-/** Pinball Map's catalog (PM machine id → opdb_id), for game-mode matches TiltTrack has no row for. */
-async function pmCatalogOpdb(rule: MatchRule): Promise<Map<number, string | null> | undefined> {
+/**
+ * Pinball Map's catalog (PM machine id → opdb_id), for game-mode matches TiltTrack has no row for.
+ * `stored`: only the copy already in pm_catalog_cache, at any age — never a Pinball Map call (the
+ * venue-options read path). Otherwise the normal 24h DB-backed accessor, which refreshes at most
+ * once a day. Either way a missing catalog means undefined, and matching falls back to exact names.
+ */
+async function pmCatalogOpdb(rule: MatchRule, { stored = false }: { stored?: boolean } = {}): Promise<Map<number, string | null> | undefined> {
   if (!rule.matchGroup) return undefined;
-  try {
-    return new Map((await getAllMachines()).map(m => [m.id, m.opdb_id]));
-  } catch {
-    return undefined; // name matching still works without it
-  }
+  const all: PinballMachine[] | null = stored ? await getStoredCatalog() : await getCatalogOrNull();
+  return all ? new Map(all.map(m => [m.id, m.opdb_id])) : undefined;
 }
 
 export type VenueMachineSource = 'pinball_map' | 'history' | 'scores';
@@ -640,13 +643,14 @@ export type VenueMachineSource = 'pinball_map' | 'history' | 'scores';
 /** Which source (if any) shows the venue has the rule's machine. See the block comment above. */
 export async function venueMachineSource(
   venue: { id: number; pinballMapId: number | null }, rule: MatchRule,
+  { allowLive }: { allowLive?: () => boolean } = {},
 ): Promise<VenueMachineSource | null> {
   const targets = await targetMachines(rule);
   const targetIds = targets.map(t => t.id);
 
   if (venue.pinballMapId) {
     try {
-      const { xrefs } = await getVenueRoster(venue.pinballMapId);
+      const { xrefs } = await getVenueRoster(venue.pinballMapId, { allowLive });
       if (rosterHasMachine(xrefs, targets.map(t => t.name), rule.matchGroup, await pmCatalogOpdb(rule))) return 'pinball_map';
     } catch (err) {
       console.error('Challenge venue check: Pinball Map roster unavailable, using TiltTrack data:', err);
@@ -668,9 +672,10 @@ export interface VenueOption { id: number; name: string; city: string | null; st
 
 /**
  * GET /api/challenges/venue-options?machineId=&matchMode= — the public venues a challenge on this
- * machine can be locked to. Same sources as venueMachineSource, but it reads the cached Pinball Map
- * rosters as they are (any age) instead of fetching one per venue; POST /api/challenges re-checks
- * the chosen venue against a fresh-enough roster.
+ * machine can be locked to. Same sources as venueMachineSource, but it makes ZERO Pinball Map calls:
+ * it reads the cached rosters as they are (any age) and the stored catalog (any age; without one,
+ * exact-name matching only) instead of fetching. POST /api/challenges re-checks the chosen venue
+ * against a fresh-enough roster.
  */
 export async function venueOptions(query: Record<string, unknown>): Promise<VenueOption[]> {
   const machineId = Number(query.machineId);
@@ -690,7 +695,7 @@ export async function venueOptions(query: Record<string, unknown>): Promise<Venu
     .innerJoin(pmLocationCache, eq(pmLocationCache.pmLocationId, venues.pinballMapId))
     .where(isPublic);
   if (cached.length) {
-    const catalog = await pmCatalogOpdb(rule);
+    const catalog = await pmCatalogOpdb(rule, { stored: true });
     const names = targets.map(t => t.name);
     for (const c of cached) if (rosterHasMachine(c.roster as PmLocationMachineXref[], names, rule.matchGroup, catalog)) ids.add(c.id);
   }
@@ -734,7 +739,9 @@ export async function createChallenge(me: AppUser, body: Record<string, unknown>
     if (!venue) throw new ChallengeError(404, 'venue_not_found', 'Venue not found');
     // A venue lock names the venue to the other participant, so it must be a public one.
     if (isPrivateVenue(venue)) throw new ChallengeError(400, 'venue_private', 'A challenge can only be locked to a public venue');
-    if (!(await venueMachineSource(venue, rule))) {
+    // A cache miss here is one roster fetch per venue per 6h (de-duplicated in flight), charged to a
+    // per-user limit; past it the check uses TiltTrack's own data instead of calling Pinball Map.
+    if (!(await venueMachineSource(venue, rule, { allowLive: () => challengePmLimiter.take(String(me.id)).ok }))) {
       throw new ChallengeError(400, 'machine_not_at_venue', 'That venue doesn’t have this machine right now');
     }
   }

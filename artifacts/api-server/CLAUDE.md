@@ -512,7 +512,11 @@ Implementation notes (fix/pm-etiquette, 2026-09-26):
   a score on the machine there. Match mode applies: 'game' = any model in the OPDB group; roster
   entries match TiltTrack machines by name, plus PM's catalog `opdb_id` in game mode
   (`rosterHasMachine`, pure). The create form's picker uses `GET /api/challenges/venue-options`
-  (same sources, but reads cached rosters at any age instead of fetching one per venue).
+  (same sources, but makes **zero** Pinball Map calls: cached rosters at any age and the stored
+  catalog via `getStoredCatalog()` — without a stored catalog, exact-name matching only). At create
+  time the roster read is the normal `getVenueRoster` path with `allowLive` charged to
+  `challengePmLimiter` (20 live checks/hour/user; refused → TiltTrack data), and the catalog comes
+  from `getCatalogOrNull()` (24 h DB cache). Worst case: one roster fetch per locked PM venue per 6 h.
 - **The lock**: the counting scores are recorded in `challenge_scores` every time a challenge is
   synced (so the moment one is uploaded). PATCH / DELETE / per-score machine repair answer 409
   `score_locked_by_challenge`, admins included; the FK has no ON DELETE, so the DB refuses too.

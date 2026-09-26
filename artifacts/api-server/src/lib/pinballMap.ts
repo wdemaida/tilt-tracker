@@ -167,6 +167,23 @@ export function createCatalog({
       if (!inflight) inflight = load().finally(() => { inflight = null; });
       return inflight;
     },
+    /**
+     * Whatever copy we already hold — memory, else the stored row — at any age, or null. Never
+     * fetches from Pinball Map and never throws: for read paths that must make zero PM calls.
+     */
+    async peek(): Promise<PinballMachine[] | null> {
+      if (mem) return mem.data;
+      try {
+        const row = await store.read();
+        if (row?.data?.length && row.fetchedAt) {
+          mem = { data: row.data, fetchedAt: row.fetchedAt.getTime() };
+          return mem.data;
+        }
+      } catch (err) {
+        console.error('Catalog read failed:', (err as Error)?.message ?? err);
+      }
+      return null;
+    },
     /** Read-only view for the admin health page — never triggers a refresh. */
     async status(): Promise<CatalogStatus> {
       const row = await store.read();
@@ -195,6 +212,11 @@ export async function getCatalogOrNull(): Promise<PinballMachine[] | null> {
   } catch {
     return null;
   }
+}
+
+/** The stored catalog at any age, or null — never calls Pinball Map (see `peek`). */
+export function getStoredCatalog(): Promise<PinballMachine[] | null> {
+  return catalog.peek();
 }
 
 export function getCatalogStatus(): Promise<CatalogStatus> {

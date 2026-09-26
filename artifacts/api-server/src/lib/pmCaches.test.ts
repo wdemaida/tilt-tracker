@@ -82,6 +82,17 @@ test('catalog: another process\'s recent failure (row.lastErrorAt) is respected'
   assert.equal(fetches, 0);
 });
 
+test('catalog.peek: returns the stored copy at any age, never fetches, null when there is none', async () => {
+  let t = 1_000_000_000;
+  const noFetch = async (): Promise<PinballMachine[]> => { throw new Error('should not fetch'); };
+  assert.equal(await createCatalog({ store: memoryStore().store, now: () => t, fetchCatalog: noFetch }).peek(), null);
+  const old = memoryStore({ data: [M(7, 'Old')], fetchedAt: new Date(t - 30 * CATALOG_TTL_MS), lastError: 'down', lastErrorAt: new Date(t) });
+  const cat = createCatalog({ store: old.store, now: () => t, fetchCatalog: noFetch });
+  assert.deepEqual((await cat.peek())?.map(m => m.name), ['Old']);
+  const broken = createCatalog({ store: { ...old.store, read: async () => { throw new Error('db down'); } }, now: () => t, fetchCatalog: noFetch });
+  assert.equal(await broken.peek(), null);
+});
+
 test('catalogIndex: case-insensitive, first entry wins, built once per array', () => {
   const all = [M(1, 'The Addams Family'), M(2, 'the addams family')];
   const idx = catalogIndex(all);
