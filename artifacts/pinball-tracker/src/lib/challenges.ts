@@ -56,6 +56,7 @@ export function isAbandoned(c: Challenge) {
 /**
  * What to show as the viewer's final result on a history row: void and abandoned are about the whole
  * challenge, so they win over the personal outcome (which on those is no_show / abandoned anyway).
+ * (void is retired server-side — nobody playing is abandoned now — so only legacy rows show it.)
  */
 export function historyOutcome(c: Challenge): ChallengeOutcome | 'void' | null {
   if (c.status !== 'resolved') return null;

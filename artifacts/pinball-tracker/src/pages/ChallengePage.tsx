@@ -22,9 +22,9 @@ import type { Challenge, ChallengeParticipant } from '../lib/api';
 
 function rulesLine(c: Challenge) {
   switch (c.type) {
-    case 'high_score': return 'Best score in the window wins.';
+    case 'high_score': return 'Best score in the window wins. If nobody plays, it’s abandoned.';
     case 'race': return `First to beat ${formatScore(c.targetScore)} wins on the spot — matching it isn’t enough. If nobody beats it by the end, it’s abandoned.`;
-    case 'most_improved': return 'Biggest % gain over your own best from before the challenge wins.';
+    case 'most_improved': return 'Biggest % gain over your own best from before the challenge wins. If nobody plays, it’s abandoned.';
     case 'average': return `Highest average of all your scores in the window wins. You need at least ${c.minPlays ?? '?'} plays to qualify; if nobody does, it’s abandoned.`;
   }
 }
@@ -50,8 +50,14 @@ function OutcomeBanner({ c }: { c: Challenge }) {
   if (!o) return null;
   const m = outcomeMeta(o);
   const sub =
+    // void is retired (nobody playing is now abandoned); kept for legacy rows.
     o === 'void' ? 'Nobody posted a counting score.'
-    : o === 'abandoned' ? (c.type === 'race' ? 'Nobody beat the target in time — no winner, no loser.' : 'Nobody reached the minimum plays — no winner, no loser.')
+    // Abandoned = nobody finished. For race / average that covers nobody playing too; for high score
+    // and most improved it can only mean nobody played.
+    : o === 'abandoned' ? (
+      c.type === 'race' ? 'Nobody beat the target in time — no winner, no loser.'
+      : c.type === 'average' ? 'Nobody reached the minimum plays — no winner, no loser.'
+      : 'Nobody played in time — no winner, no loser.')
     : o === 'no_show' ? 'You didn’t post a counting score.'
     : o === 'forfeit' ? 'You withdrew from this challenge.'
     : o === 'win' && c.opponent && c.participants.find(p => p.user.id === c.opponent!.id)?.outcome === 'forfeit' ? 'They forfeited.'

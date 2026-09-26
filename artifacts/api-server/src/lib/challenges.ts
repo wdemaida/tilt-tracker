@@ -209,6 +209,7 @@ async function applyResolution(
       .set({ outcome: p.outcome, rank: p.rank, resultValue: p.resultValue == null ? null : String(p.resultValue) })
       .where(and(eq(challengeParticipants.challengeId, c.id), eq(challengeParticipants.userId, p.userId)));
   }
+  // r.void is always false now (void is retired — nobody playing is abandoned); the column stays.
   await tx.update(challenges).set({ status: 'resolved', void: r.void, resolvedAt: now }).where(eq(challenges.id, c.id));
   for (const p of r.participants) {
     await raiseNotification(tx, p.userId, 'challenge_result', {
@@ -418,11 +419,15 @@ export interface ChallengeView {
   type: Challenge['type'];
   status: Challenge['status'];
   phase: ReturnType<typeof phaseOf>;
-  /** Resolved with nobody playing (everyone no_show). */
+  /**
+   * RETIRED (2026-09-26): nobody playing is now abandoned, so new challenges always resolve with
+   * void = false. Only a legacy row can be true. Kept so the API shape doesn't change.
+   */
   void: boolean;
   /**
-   * Resolved race / average that nobody finished: every non-forfeited participant's outcome is
-   * 'abandoned'. Derived from the participant rows (no column); never true together with `void`.
+   * Resolved with nobody finishing — a race nobody beat, an average nobody qualified for, or any type
+   * nobody played: every non-forfeited participant's outcome is 'abandoned'. Derived from the
+   * participant rows (no column); never true together with `void`.
    */
   abandoned: boolean;
   matchMode: Challenge['matchMode'];

@@ -24,11 +24,15 @@
 //    [starts_at, ends_at] (blocks backdated uploads), and every other participant may see the score
 //    (a score at a home venue whose owner hid its activity doesn't count — see venueActivity.ts).
 //  - Outcomes: win / loss / tie / forfeit (withdrew after accepting; when only one participant is
-//    left they win on the spot) / no_show (no counting score) / abandoned (race or average nobody
-//    finished). Nobody played at all → the challenge is void and everyone is `no_show` (this wins over
-//    abandoned: a race nobody even played is void, not abandoned). Forfeits stay `forfeit` throughout.
-//  - Streaks (records): void neither extends nor breaks a win streak; every other outcome but a win,
-//    abandoned included, breaks one.
+//    left they win on the spot) / no_show (no counting score while someone else did play) / abandoned
+//    (nobody finished: a race nobody beat, an average nobody qualified for, or — ANY type — nobody
+//    posted a counting score at all; Will 2026-09-26: "you signed up and were supposed to play").
+//    Forfeits stay `forfeit` throughout.
+//  - VOID IS RETIRED (2026-09-26): nobody playing used to make a challenge void (everyone no_show,
+//    streaks untouched); it's now abandoned. The `void` column / field / record `voids` count stay so
+//    the schema and API don't change, but a new resolution always writes void = false.
+//  - Streaks (records): every outcome but a win, abandoned included, breaks one. (A legacy void
+//    challenge still neither extends nor breaks one.)
 
 export const CHALLENGE_TYPES = ['high_score', 'race', 'most_improved', 'average'] as const;
 export type ChallengeType = (typeof CHALLENGE_TYPES)[number];
@@ -248,9 +252,9 @@ export type ResolutionReason = 'deadline' | 'race_target' | 'forfeit';
 
 export interface Resolution {
   reason: ResolutionReason;
-  /** Nobody played (everyone no_show / forfeit). */
+  /** Retired (2026-09-26): always false. Kept so the column and API field don't change. */
   void: boolean;
-  /** A race / average nobody finished: every non-forfeited participant is `abandoned`. */
+  /** Nobody finished (race / average), or nobody played (any type): every non-forfeited participant is `abandoned`. */
   abandoned: boolean;
   participants: ResolvedParticipant[];
 }
@@ -279,8 +283,9 @@ export function resolutionTrigger(
  * 'race_target' (first to the target wins; others loss if they played, else no_show), 'deadline'
  * (per type — see the header). Ranks are competition ranks (1, 1, 3): winners first, then other
  * ranked participants by result, then those who played without qualifying, then no-shows, then
- * forfeits. Void = nobody played (so nobody won, lost or tied). Abandoned = a race / average where
- * someone played but nobody finished: every non-forfeited participant is `abandoned` (ranked: played ahead of didn't).
+ * forfeits. Abandoned = nobody finished — a race nobody beat or an average nobody qualified for, or
+ * a challenge of any type nobody played: every non-forfeited participant is `abandoned` (ranked:
+ * played ahead of didn't). Never void (retired).
  */
 export function resolveChallenge(type: ChallengeType, states: ParticipantState[], reason: ResolutionReason): Resolution {
   const remaining = states.filter(s => !s.forfeited);
@@ -301,14 +306,13 @@ export function resolveChallenge(type: ChallengeType, states: ParticipantState[]
     }
   } else {
     const qualified = remaining.filter(s => s.standing.qualified);
-    const noWinnerPossible = (type === 'race' || type === 'average') && qualified.length === 0;
-    if (noWinnerPossible && remaining.some(played)) {
-      // Nobody beat the target / reached min plays: abandoned for everyone, played or not.
-      // Ranks as before: those who played level ahead of those who didn't (live standings use this).
+    const nobodyFinished = (type === 'race' || type === 'average') && qualified.length === 0;
+    const nobodyPlayed = !remaining.some(played);
+    if (remaining.length && (nobodyFinished || nobodyPlayed)) {
+      // Nobody beat the target / reached min plays, or nobody played at all (any type): abandoned for
+      // everyone, played or not. Those who played rank level ahead of those who didn't (live standings
+      // use this).
       for (const s of remaining) decided.set(s.userId, { outcome: 'abandoned', group: played(s) ? 0 : 3, value: 0 });
-    } else if (noWinnerPossible) {
-      // Nobody played at all: void, everyone didn't show.
-      for (const s of remaining) decided.set(s.userId, { outcome: 'no_show', group: 3, value: 0 });
     } else {
       const top = Math.max(...qualified.map(val), -Infinity);
       const leaders = qualified.filter(s => val(s) === top);
@@ -330,8 +334,7 @@ export function resolveChallenge(type: ChallengeType, states: ParticipantState[]
   });
   participants.sort((a, b) => a.rank - b.rank || a.userId - b.userId);
   const abandoned = participants.some(p => p.outcome === 'abandoned');
-  const isVoid = !abandoned && !participants.some(p => p.outcome === 'win' || p.outcome === 'loss' || p.outcome === 'tie');
-  return { reason, void: isVoid, abandoned, participants };
+  return { reason, void: false, abandoned, participants };
 }
 
 /** Live ranks if the challenge ended now (for standings); forfeits last. */
@@ -491,8 +494,9 @@ export interface ChallengeRecord {
   ties: number;
   forfeits: number;
   noShows: number;
-  /** Races / averages nobody finished. Not a win, loss, tie or no-show. */
+  /** Challenges nobody finished or nobody played. Not a win, loss, tie or no-show. */
   abandoned: number;
+  /** Legacy void challenges only — void is retired, so this stays 0 from now on. */
   voids: number;
   currentStreak: number;
   bestStreak: number;
@@ -500,10 +504,10 @@ export interface ChallengeRecord {
 }
 
 /**
- * W/L/T/forfeit/no-show/abandoned totals and win streaks from resolved challenges. A void challenge
- * counts as a no-show (that's each participant's outcome) and in `voids`, and neither extends nor
- * breaks a streak. An abandoned one counts only in `abandoned` and DOES break a streak. Streaks are
- * consecutive wins in resolved order; any other non-void outcome ends one.
+ * W/L/T/forfeit/no-show/abandoned totals and win streaks from resolved challenges. An abandoned one
+ * counts only in `abandoned` and DOES break a streak. Streaks are consecutive wins in resolved order;
+ * any other outcome ends one. (A legacy void challenge — void is retired — counts as a no-show and in
+ * `voids`, and neither extends nor breaks a streak.)
  */
 export function computeRecord(entries: RecordEntry[]): ChallengeRecord {
   const rec: ChallengeRecord = {

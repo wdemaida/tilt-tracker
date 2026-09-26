@@ -454,12 +454,14 @@
   `score_locked_by_challenge`, admins included; the FK has no ON DELETE, so the DB refuses too.
   Machine retirement, admin machine/venue deletes and venue merges account for challenges.
 - **Race = strictly beat the target** (`> target`; equalling it is not a finish). **Nobody finishing**
-  (race: nobody beat the target; average: nobody reached `min_plays`) = **abandoned**: every
-  non-forfeited participant's `outcome` is `'abandoned'`, played or not, and ChallengeView has
-  `abandoned: true` (derived from the participant rows, no column; `void` stays false). Nobody
-  playing at all is still `void` (everyone `no_show`) for every type, race included. The record
-  (and each head-to-head row) counts `abandoned` on its own, not as W/L/T/no-show; abandoned
-  **breaks** a win streak, void doesn't. `challenge_result` notifications carry `abandoned` too.
+  (race: nobody beat the target; average: nobody reached `min_plays`) **or nobody playing at all
+  (any type)** = **abandoned**: every non-forfeited participant's `outcome` is `'abandoned'`,
+  played or not, and ChallengeView has `abandoned: true` (derived from the participant rows, no
+  column). **Void is retired** (2026-09-26, Will: "you signed up and were supposed to play"): no
+  new challenge resolves void; the `void` column, the ChallengeView/notification field and the
+  record's `voids` count stay for compatibility but are always false / 0 (only a legacy row could
+  differ; the UI's void handling is left in place for that). The record (and each head-to-head
+  row) counts `abandoned` on its own, not as W/L/T/no-show; abandoned **breaks** a win streak. `challenge_result` notifications carry `abandoned` too.
   The outcome CHECK is named `challenge_participants_outcome_check`; migrate15 drops and re-adds it.
 - `starts_at` null = starts at acceptance, stamped with the **DB clock** (same clock as
   `scores.created_at`). `most_improved` baselines are frozen at acceptance.

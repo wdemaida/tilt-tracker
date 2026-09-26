@@ -260,15 +260,19 @@ try {
   r = await call(bob, 'POST', `/challenges/${cid}/forfeit`);
   check('forfeit twice → 409', r.status === 409, r);
 
-  // ── both no-show (deadline via sweep) ──────────────────────────────────────
+  // ── nobody played (deadline via sweep): abandoned, not void (void is retired) ─
   r = await post(alice, { friendId: bob.id, type: 'high_score' });
   cid = r.body.id;
   await call(bob, 'POST', `/challenges/${cid}/accept`);
   await setWindow(cid, new Date(Date.now() - 3 * H), new Date(Date.now() - 60_000));
   sweep = await runChallengeSweep();
   r = await call(alice, 'GET', `/challenges/${cid}`);
-  check('sweep resolves past-deadline: void, both no_show', r.body?.status === 'resolved' && r.body?.void === true
-    && byUser(r.body)[alice.id] === 'no_show' && byUser(r.body)[bob.id] === 'no_show' && sweep.resolved >= 1, { body: r.body, sweep });
+  check('sweep resolves past-deadline, nobody played: abandoned (not void), both abandoned', r.body?.status === 'resolved'
+    && r.body?.void === false && r.body?.abandoned === true
+    && byUser(r.body)[alice.id] === 'abandoned' && byUser(r.body)[bob.id] === 'abandoned' && sweep.resolved >= 1, { body: r.body, sweep });
+  const noPlayResult = (await inbox(bob)).filter(n => n.payload?.challengeId === cid && n.kind === 'challenge_result');
+  check('nobody played: challenge_result says abandoned, void false', noPlayResult.length === 1
+    && noPlayResult[0].payload.outcome === 'abandoned' && noPlayResult[0].payload.abandoned === true && noPlayResult[0].payload.void === false, noPlayResult);
 
   // ── high score: counting rules, notifications, lock, deadline ──────────────
   r = await post(alice, { friendId: bob.id, type: 'high_score' });
@@ -438,12 +442,12 @@ try {
 
   // ── records ────────────────────────────────────────────────────────────────
   r = await call(alice, 'GET', '/challenges/record');
-  // alice: forfeit-win, void no_show, hs win, race loss, race abandoned, mi loss, avg win, soon forfeit
-  check('record totals for alice', r.status === 200 && r.body?.wins === 3 && r.body?.losses === 2 && r.body?.forfeits === 1
-    && r.body?.noShows === 1 && r.body?.voids === 1 && r.body?.abandoned === 1 && r.body?.ties === 0 && r.body?.played === 8, r.body);
+  // alice: forfeit-win, nobody-played abandoned, hs win, race loss, race abandoned, mi loss, avg win, soon forfeit
+  check('record totals for alice (voids stays 0: void is retired)', r.status === 200 && r.body?.wins === 3 && r.body?.losses === 2 && r.body?.forfeits === 1
+    && r.body?.noShows === 0 && r.body?.voids === 0 && r.body?.abandoned === 2 && r.body?.ties === 0 && r.body?.played === 8, r.body);
   check('record: head-to-head vs bob', r.body?.headToHead?.[0]?.opponent?.id === bob.id && r.body?.headToHead?.[0]?.played === 8
-    && r.body?.headToHead?.[0]?.abandoned === 1, r.body?.headToHead);
-  check('record: streaks', r.body?.currentStreak === 0 && r.body?.bestStreak === 2, r.body);
+    && r.body?.headToHead?.[0]?.abandoned === 2, r.body?.headToHead);
+  check('record: streaks (the nobody-played abandon broke the first run)', r.body?.currentStreak === 0 && r.body?.bestStreak === 1, r.body);
   r = await call(carol, 'GET', `/challenges/record/${encodeURIComponent(alice.username)}`);
   check("someone else's record: totals, but head-to-head only against the viewer", r.status === 200 && r.body?.wins === 3 && r.body?.headToHead?.length === 0, r.body);
   r = await call(bob, 'GET', `/challenges/record/${encodeURIComponent(alice.username)}`);

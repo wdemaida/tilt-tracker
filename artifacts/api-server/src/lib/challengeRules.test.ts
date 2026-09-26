@@ -251,13 +251,21 @@ test('one posts, the other does not: poster wins, other no_show', () => {
   }
 });
 
-test('both no-show: void, both no_show', () => {
+test('nobody played, any type: abandoned for everyone, never void (void is retired)', () => {
   for (const type of ['high_score', 'race', 'most_improved', 'average'] as const) {
-    const r = resolveChallenge(type, [state(type, A, []), state(type, B, [])], 'deadline');
-    assert.deepEqual(outcomes(r), { [A]: 'no_show', [B]: 'no_show' }, type);
-    assert.equal(r.void, true, type);
-    assert.equal(r.abandoned, false, `${type}: nobody played at all is void, not abandoned`);
+    const r = resolveChallenge(type, [state(type, A, [], { baseline: 10 }), state(type, B, [], { baseline: 10 })], 'deadline');
+    assert.deepEqual(outcomes(r), { [A]: 'abandoned', [B]: 'abandoned' }, type);
+    assert.deepEqual(ranks(r), { [A]: 1, [B]: 1 }, type);
+    assert.equal(r.void, false, type);
+    assert.equal(r.abandoned, true, `${type}: signed up and nobody played → abandoned`);
   }
+});
+
+test('nobody left in it played: abandoned, and a forfeiter who had played stays forfeit', () => {
+  const r = resolveChallenge('high_score', [state('high_score', A, []), state('high_score', B, []), state('high_score', C, [900], { forfeited: true })], 'deadline');
+  assert.deepEqual(outcomes(r), { [A]: 'abandoned', [B]: 'abandoned', [C]: 'forfeit' });
+  assert.equal(r.abandoned, true);
+  assert.equal(r.void, false);
 });
 
 test('forfeit: the other participant wins on the spot, whatever the scores', () => {
@@ -481,7 +489,7 @@ test('validateCreate: window rules', () => {
 
 // ── records ──────────────────────────────────────────────────────────────────
 
-test('computeRecord: totals, streaks, head-to-head; void counts as no-show and leaves streaks alone', () => {
+test('computeRecord: totals, streaks, head-to-head; a legacy void counts as no-show and leaves streaks alone', () => {
   const e = (id: number, day: number, outcome: any, opp: number, isVoid = false) =>
     ({ challengeId: id, resolvedAt: new Date(+T0 + day * DAY), void: isVoid, outcome, opponentIds: [opp] });
   const rec = computeRecord([
@@ -514,7 +522,7 @@ test('computeRecord: totals, streaks, head-to-head; void counts as no-show and l
   assert.equal(rec.headToHead[0].opponentId, B, 'most-played opponent first');
 });
 
-test('computeRecord: abandoned is its own count (not W/L/T/no-show) and breaks a streak; void does not', () => {
+test('computeRecord: abandoned is its own count (not W/L/T/no-show) and breaks a streak; a legacy void does not', () => {
   const e = (id: number, day: number, outcome: any, opp: number, isVoid = false) =>
     ({ challengeId: id, resolvedAt: new Date(+T0 + day * DAY), void: isVoid, outcome, opponentIds: [opp] });
   const rec = computeRecord([
