@@ -264,3 +264,17 @@
   expand badge); user/machine/venue/challenge rows use `FullPhotoButton` (camera icon).
 - Uploads only work from origins in the R2 bucket's CORS list (see api-server CLAUDE.md) — a scratch vite
   on another port can view but not upload.
+
+## Admin area (`src/pages/Admin*.tsx`, `components/admin/`, `lib/adminApi.ts`, added 2026-09-26)
+- Routes: `/admin` (Overview), `/admin/users`, `/admin/users/:id`, `/admin/activity` (`?userId=`,
+  `?category=`, `?type=`), `/admin/social` (`?tab=friendships|challenges|notifications`),
+  `/admin/scores` (`?userId=`), plus the existing Health / Stats / Config. `AdminNav` scrolls sideways
+  on phones rather than wrapping.
+- `AdminGate` renders nothing until `/api/users/me` says admin, so admin pages never fire requests
+  for guests or users (the server refuses them regardless).
+- Admin calls live in `lib/adminApi.ts` (`useAdminApi()`), built on the `request` helper exported from
+  `api.ts`. Every action goes through `ConfirmDialog` (optional reason → stored in the activity log)
+  and invalidates every `['admin', …]` query afterwards.
+- Event wording is `TYPE_TEXT` / `detail()` in `components/admin/AdminParts.tsx` — add a line there when
+  the server gains an activity type (unknown types still render, as their raw name).
+- A disabled account (`me.disabledAt`) gets `DisabledAccountNotice` from `Layout` instead of any page.
