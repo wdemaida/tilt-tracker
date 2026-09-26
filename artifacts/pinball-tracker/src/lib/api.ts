@@ -229,7 +229,9 @@ export function createApi(getToken: () => Promise<string | null>) {
       list: async (mine = false) =>
         request<any[]>(mine ? '/venues?mine=true' : '/venues', undefined, await tok()),
       machines: async (id: number) => request<any>(`/venues/${id}/machines`, undefined, await tok()),
-      pmMachines: (pmId: number) => request<any>(`/venues/pm-machines/${pmId}`),
+      // Signed in only: the server serves ids linked to a venue, or ones it just returned to this
+      // user (pm-match / nearby suggestions) — never an arbitrary id.
+      pmMachines: async (pmId: number) => request<any>(`/venues/pm-machines/${pmId}`, undefined, await tok()),
       // The Pinball Map listing a venue-step pick is, resolved lazily on pick (never per search
       // result): a HERE place by its own coordinates + name, or a TiltTrack venue by id (the server
       // uses its coordinates, and answers null for a private venue). Same matching rule as the
@@ -337,7 +339,8 @@ export function createApi(getToken: () => Promise<string | null>) {
       getToken: async () =>
         request<{ hasToken: boolean; pmUsername: string | null }>('/pinballmap/token', undefined, await tok()),
       auth: async (email: string, password: string) =>
-        request<{ token: string; username: string }>(
+        // The Pinball Map user token stays on the server; only the username comes back.
+        request<{ username: string }>(
           '/pinballmap/auth',
           { method: 'POST', body: JSON.stringify({ email, password }) },
           await tok()

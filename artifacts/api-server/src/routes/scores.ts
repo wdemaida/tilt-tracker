@@ -7,6 +7,7 @@ import { addressResolutionBlocker, linkageBlockedByPrivacy } from '../lib/venueA
 import { upsertMachineByName } from '../lib/machineUpsert.js';
 import { resolveScoreVenue } from '../lib/scoreVenue.js';
 import { getVenueRoster } from '../lib/pmRosterCache.js';
+import { repairPmLimiter } from '../lib/pmGuards.js';
 import { pmLocationUrl, isPmConfigured, PmApiError } from '../lib/pinballmapApi.js';
 import { redactScoreLocation, redactVenue, canSeeVenueLinkage } from '../lib/venuePrivacy.js';
 import { getAuth } from '@clerk/express';
@@ -265,7 +266,10 @@ router.get('/:id/repair', requireAppUser, async (req, res) => {
 
   if (venue.pinballMapId && linkageVisible) {
     try {
-      const { xrefs } = await getVenueRoster(venue.pinballMapId);
+      // Cache-first; a live refresh (stale cache) counts against the per-user repair limit.
+      const { xrefs } = await getVenueRoster(venue.pinballMapId, {
+        allowLive: () => repairPmLimiter.take(String(appUser.id)).ok,
+      });
       rosterCount = xrefs.length;
       suggestions = rankRosterForName(row.machineName, xrefs);
     } catch (err) {
