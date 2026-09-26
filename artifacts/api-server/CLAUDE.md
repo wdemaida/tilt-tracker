@@ -75,13 +75,45 @@ Implementation notes (fix/pm-etiquette, 2026-09-26):
 - Repair routes: 20 PM-touching calls/hour per user (`repairPmLimiter`); `place-search` and
   `pm-candidates` results cached 10 min per (venue, query), and only a cache miss is charged.
 - `POST /api/pinballmap/auth`: 5 attempts / 15 min per user and per IP (the last X-Forwarded-For
-  hop — the app doesn't set `trust proxy`). Returns only `{ username }`; the PM user token stays
-  server-side. `submit-score`: 10/min per user; the stored token is cleared only on a 401/403 that
-  isn't about our api_token — never on 429/5xx/timeout. **Open question:** submission sends
-  `user_token` in the JSON body without `user_email`; PM's docs describe `user_email` + `user_token`
-  query params. Not changed without evidence of which form their API accepts.
+  hop — the app doesn't set `trust proxy`). Returns only `{ username }`; the PM user token and email
+  stay server-side (`POST /api/users/setup` strips them too). `submit-score`: 10/min per user.
 - Admin health reads the stored catalog and pmClient's counters — it never calls Pinball Map.
-- Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/pmClient.test.ts src/lib/pmCaches.test.ts`.
+- Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/pmClient.test.ts src/lib/pmCaches.test.ts src/lib/pmAccount.test.ts`.
+
+## Pinball Map account connect + score posting (fix/pm-posting, 2026-09-26)
+Verified against **Pinball Map's source**, `github.com/pinballmap/pbm @ 1b527c0` — not their docs,
+which were how this broke. Before this fix connect had **never worked** (every correct login said
+"Invalid Pinball Map credentials") and every score post **silently did nothing** while the UI said
+it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx as success.
+- **Connect** — `GET /users/auth_details.json?login=&password=` (`users_controller.rb#auth_details`).
+  `login` = username OR email, case-insensitive. Success is **nested**:
+  `200 {"user":{"username","email","authentication_token"}}`. Failures are `200 {"errors":"…"}`:
+  "Unknown user" / "Incorrect password" → our 401 "Invalid Pinball Map credentials"; "User is not
+  yet confirmed…" → 400 (tell them to confirm their PM email); "login and password are required
+  fields" → 400. Disabled account = PM `403 {"error":"account_disabled"}` → our 403. PM caps this
+  at **10/min per api_token owner — shared by all TiltTrack users** → 429 → our 503 "Pinball Map is
+  busy" + Retry-After. A 401 mentioning `api_token` is **our** token → 503 "connection problem on
+  our side" + a loud `!!! PINBALL MAP REJECTED OUR api_token` log line. On success we store token +
+  username + the **email PM returned** (`users.pinball_map_email`, migrate18).
+- **Post** — `POST /machine_score_xrefs.json` (`machine_score_xrefs_controller.rb#create`). User auth
+  is `authenticate_from_token` (`application_controller.rb`): **both** `user_email` and `user_token`
+  (params, query or JSON body, or `X-User-Email`/`X-User-Token` headers), looked up with
+  `User.find_by(email:)` — **exact case**, hence storing PM's email rather than what the user typed.
+  Without a valid pair: `200 {"errors":"Authentication is required for this action…"}` (no 401).
+  `score` must be a **string** (the controller `gsub!`s it; a JSON number is a 500). Success is
+  **only** `201 {"machine_score_xref":{…,"username"}}`. Other failures `200 {"errors": "…" | [...]}`
+  (e.g. "Failed to find machine"). 80 / 2 min per api_token owner.
+- We send `user_email` + `user_token` + `location_machine_xref_id` + `score: String(score)` in the
+  **JSON body** (pmClient already JSON-encodes POST bodies and keeps only our api_token on the query
+  string, so no user credential lands in a URL / access log). Auth-required → clear stored token +
+  email, 401 `pm_reconnect_required`; other `errors` → 422 with PM's message; 403 account_disabled →
+  403; 429/5xx/timeout/breaker/our api_token → 503/502 and the credential is **never** cleared. A
+  stored token with no email (pre-migrate18) can't authenticate a write: `GET /token` reports
+  `hasToken: false` and submit returns `pm_reconnect_required`. A roster match with no xref id (0)
+  answers 422 without calling PM.
+- The PM calls are `getPmUserToken` / `submitPmScore` in `pinballmapApi.ts` (both `sensitive`: never
+  cached, recorded or de-duplicated, so `PM_MODE=offline` refuses them — test with the mocked
+  client in `pmAccount.test.ts`). The HTTP reply for each outcome is the pure `pmAccount.ts`.
 
 ## Venue repair (`src/lib/venueRepair.ts`, routes under `/api/venues/:id/repair/*`, added 2026-09-11)
 - Recovery path for a venue the upload flow never resolved: **1)** re-run HERE off the (possibly after-the-fact) address, **2)** link a Pinball Map location by search or manual id, **3)** re-sync the scores already logged there.
