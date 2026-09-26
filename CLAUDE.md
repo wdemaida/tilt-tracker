@@ -155,5 +155,7 @@ Feature-specific gotchas live in `artifacts/pinball-tracker/CLAUDE.md` (frontend
 | `artifacts/api-server/src/routes/scorePhotos.ts` | `/api/scores/:id/photo` upload-url / confirm / view |
 | `artifacts/pinball-tracker/src/lib/fullSizePhoto.ts` | Browser-side full-size encode (EXIF-free, ≤4096px) + R2 upload |
 | `artifacts/pinball-tracker/src/components/PhotoViewer.tsx` | Full-screen zoomable photo viewer |
+| `artifacts/api-server/src/lib/activityRetention.ts` | Activity-log retention tiers (the one type→tier map), settings, batched purge |
+| `artifacts/api-server/src/lib/photoOrphans.ts` | R2 photo orphan sweep (weekly from the daily cron, admin Run now, CLI) |
 | `lib/db/src/schema.ts` | Drizzle schema — source of truth for DB types |
 | `artifacts/api-server/migrate*.ts` | Numbered migration scripts (run once, keep for history) |

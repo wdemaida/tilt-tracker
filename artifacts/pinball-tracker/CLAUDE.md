@@ -290,3 +290,8 @@
 - Event wording is `TYPE_TEXT` / `detail()` in `components/admin/AdminParts.tsx` — add a line there when
   the server gains an activity type (unknown types still render, as their raw name).
 - A disabled account (`me.disabledAt`) gets `DisabledAccountNotice` from `Layout` instead of any page.
+- **Config → Data & Storage** (`components/admin/MaintenanceSettings.tsx`): `RetentionSettingsCard`
+  (activity-log tiers, server-side via `GET/PUT /api/admin/settings/retention` — unlike the theme
+  colours above, which are localStorage) and `PhotoOrphansCard` (dry run runs directly; the real run
+  goes through `ConfirmDialog`). Client-side validation mirrors the server's `limits`; the server is
+  the authority. The would-delete estimates reflect the *saved* settings, not unsaved inputs.

@@ -585,6 +585,9 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   `scores.created_at`). `most_improved` baselines are frozen at acceptance.
 - The sweep also sends `challenge_ending_soon` once per participant (`ending_soon_notified_at`) and
   deletes **read** notifications older than 30 days; unread ones are kept.
+  The same cron route then runs **daily housekeeping** (`lib/housekeeping.ts`, not inside
+  `runChallengeSweep` so `test-challenges.ts` doesn't purge the dev log): activity-log retention and
+  the weekly photo orphan sweep — see the two sections under "Admin area".
 - Tests: `npx tsx --test src/lib/challengeRules.test.ts`; `npx tsx test-challenges.ts` (dev branch
   only; borrows 3 friendless users and throwaway `zz-challenge-test` machines, cleans up).
 
@@ -628,9 +631,10 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   using the key from `DELETE … RETURNING`), logging failures — an orphan, never a dangling row. **Any
   future code that deletes scores (or clears `photo_key`) must delete the object the same way.** Today
   that route is the only score delete in `src/`.
-- **Orphans:** `npx tsx cleanup-photo-orphans.ts` (dry run; `--delete` to remove) lists `scores/` objects
-  no row references and older than 24h (the floor protects an upload between PUT and confirm). It refuses
-  a dev DB with the prod bucket or vice versa. No cron yet — run it by hand occasionally.
+- **Orphans:** swept weekly by the daily cron (see "Photo orphan sweep" below); by hand with
+  `npx tsx cleanup-photo-orphans.ts` (dry run; `--delete` to remove) or the admin Config page. Same
+  rules everywhere: `scores/` objects no row references and older than 24h (the floor protects an
+  upload between PUT and confirm); a dev DB with the prod bucket or vice versa is refused.
 - **Bucket CORS** is configured in the Cloudflare dashboard, not in code: dev allows
   `https://localhost:5174` and `https://192.168.192.218:5174`, prod `https://tilttrack.vercel.app`;
   methods PUT, GET; header Content-Type. A new dev origin/port can view photos (`<img>` needs no CORS)
@@ -712,3 +716,68 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   creates `zz-admin-test-*` users/machine/scores/challenge, fakes Clerk and R2, deletes everything it
   made including its events). Running the other `test-*.ts` scripts now also writes activity events
   for the borrowed dev users.
+
+## Activity-log retention (`src/lib/activityRetention.ts`, `app_settings`, migrate21, added 2026-09-26)
+- **Tiers — the type→tier map is `TIER_BY_TYPE` in `activityRetention.ts`, the only place it lives.**
+  Every type in `ACTIVITY_TYPES` must be listed there (`activityRetention.test.ts` fails otherwise), so
+  a new event type forces a retention decision. Unlisted types default to **standard**; unlisted
+  `admin.*` types to **admin**.
+  | Tier | Default | Types |
+  |---|---|---|
+  | high_volume | 90 days (7–3650) | `user.signed_in`, `notification.sent`, `system.*` heartbeats (stat snapshot, challenge sweep, activity retention, photo orphans) |
+  | standard | 365 days (30–3650) | scores, photos, venue repairs/merges, friends, pods, challenges, Pinball Map connect/post/fail, `user.first_setup`, anything unknown |
+  | admin | forever (`0`, or 365–36500) | every `admin.*` action (incl. `admin.settings_changed`, `admin.photo_orphans_run`), `user.signed_up`, `user.clerk_deleted` |
+  The purge's own record, `system.activity_retention`, is high-volume: 90 days of run history is
+  plenty and the overview only needs the newest.
+- **Settings** live in `app_settings` (key `activity_retention`, jsonb `{highVolumeDays, standardDays,
+  adminDays}`). Defaults are in code (`DEFAULT_RETENTION`): an empty table = defaults, and a stored
+  field that's missing or out of range falls back to its default field by field (`normalizeRetention`)
+  — a bad row can never mean "delete everything". `app_settings` is generic (key text PK, value jsonb,
+  updated_at, updated_by_id) — the theme colours could move there later; they haven't.
+- **Admin:** `GET /api/admin/settings/retention` (settings, limits, per-tier rows / oldest event /
+  rows the next run would delete, types per tier, last run) and `PUT` (all three fields, integers, in
+  range → else 400 `invalid_settings` with per-field `errors`; logs `admin.settings_changed` with
+  `before`/`after`). UI: `/admin/config` → *Data retention*.
+- **Job:** `runActivityRetention()` from the daily challenge-sweep route. Per tier: `DELETE … USING
+  (SELECT id … WHERE <tier> AND created_at < cutoff ORDER BY created_at LIMIT 5000)`, looped until a
+  short batch, capped at 200 batches (1M rows) per tier per run — the rest goes next day
+  (`capped: true`). Cutoffs are computed on the DB clock in UTC (`created_at` is naive UTC). A failing
+  tier is recorded in `errors`; the others still run. It then logs `system.activity_retention` with
+  per-tier counts — the overview's "Activity-log retention" row and the Config page's "last cleanup".
+- **Indexes:** the standard/admin tiers use `activity_events_created_at_idx` (migrate19); the
+  high-volume tier's `type = ANY(…) AND created_at < …` uses `activity_events_type_created_idx`
+  (migrate21).
+- **Volume estimate** (~5–10 events/user/day, ~1KB/row incl. indexes). Without retention: 25 users
+  ≈ 45–90MB/yr, 100 users ≈ 180–365MB/yr, growing forever. With the defaults, assuming ~60% of events
+  are high-volume (sign-ins + notifications dominate) and ~40% standard (admin rows are a rounding
+  error): steady state ≈ 0.6×(5–10)×90 + 0.4×(5–10)×365 ≈ 1,000–2,000 rows ≈ 1–2MB per user →
+  **25 users ≈ 25–50MB, 100 users ≈ 100–200MB**, reached after one year and then flat (Neon free tier:
+  0.5GB). Re-check the split against the Config page's per-tier counts once there's real traffic.
+- Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/activityRetention.test.ts`
+  (tier map, validation, normalisation, batching loop, tier SQL); `npx tsx test-retention.ts` (dev
+  branch only — backdated synthetic events in every tier, settings guards/validation/logging, two real
+  purge runs incl. a capped one, then the admin photo-orphan endpoints against a fake store; restores
+  the `app_settings` rows it touched and deletes everything it created).
+
+## Photo orphan sweep (`src/lib/photoOrphans.ts`, added 2026-09-26)
+- **What:** R2 objects under `scores/` not referenced by any `scores.photo_key` and older than 24h —
+  uploads PUT but never confirmed (tab closed mid-upload), failed confirm checks whose delete also
+  failed, best-effort deletes that failed after a score/photo delete or replace.
+- **When:** `runScheduledOrphanSweep()` from the daily challenge-sweep route; it actually runs (and
+  deletes) only when ≥ 7 days (minus 12h cron slack) have passed since the last *deleting* run —
+  dry runs don't count. State lives in `app_settings` key `photo_orphans_last_run`
+  (`{lastRun, lastDeleteRunAt}`). Logged as `system.photo_orphans`. Without R2 it's skipped quietly.
+- **Safety:** pages `ListObjectsV2` (≤ 100 pages), deletes ≤ 1,000 per run (`capped: true` = run again),
+  and **re-checks each batch of 100 candidates against the DB right before deleting** — a confirm that
+  lands mid-sweep keeps its object. Refuses a dev DB with a non-dev bucket or vice versa
+  (`envMismatch`). The 24h floor is `minAgeMs`, injectable for tests only.
+- **Admin:** `GET /api/admin/photo-orphans` (configured, env mismatch, last run, next due) and
+  `POST /api/admin/photo-orphans/run {dryRun}` — **a dry run unless `dryRun === false` exactly**;
+  logged as `admin.photo_orphans_run`. Responses carry `sampleScoreIds`, never keys (`publicOrphanResult`).
+  UI: `/admin/config` → *Photo storage cleanup* ("Run now (dry run)" / "Run now" with a confirm); the
+  overview's System card shows the last run.
+- **CLI:** `cleanup-photo-orphans.ts` calls the same `runPhotoOrphanSweep()` (trigger `cli`) and prints
+  every key.
+- Tests: `src/lib/photoOrphans.test.ts` (selection, 24h cutoff, dry run, re-check race, paging, caps,
+  failures, env mismatch, schedule, no keys in the public result); `test-photos.ts` plants a real
+  unconfirmed object in the dev bucket next to a referenced one and sweeps that score's prefix.
