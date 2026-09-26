@@ -1,18 +1,14 @@
 import { Link, useLocation } from 'wouter';
-import { Trophy, BarChart2, PlusCircle, Building2, ShieldCheck, Menu, X, Users, UserCheck, Bell } from 'lucide-react';
-import { PinballIcon } from './PinballIcon';
-import { SignedIn, SignedOut, UserButton, useAuth } from '@clerk/clerk-react';
+import { Trophy, PlusCircle, Menu, X, Bell } from 'lucide-react';
+import { SignedIn, SignedOut, useAuth } from '@clerk/clerk-react';
 import { useQuery } from '@tanstack/react-query';
 import { useApi } from '../lib/useApi';
 import { useState, useEffect, useRef } from 'react';
 import { UNREAD_COUNT_KEY } from '../lib/myFriends';
+import AvatarMenu from './AvatarMenu';
+import { SCORES, MACHINES, VENUES, STATS, CREW, isActivePath, badgeText, useCrewBadgeCount } from './nav';
 
-const navItems = [
-  { href: '/', label: 'Scores', Icon: Trophy },
-  { href: '/machines', label: 'Machines', Icon: PinballIcon },
-  { href: '/venues', label: 'Venues', Icon: Building2 },
-  { href: '/stats', label: 'Stats', Icon: BarChart2 },
-];
+const navItems = [SCORES, MACHINES, VENUES, STATS];
 
 /**
  * The inbox bell: unread count badge, polled every 60s and on window focus. Opens /notifications
@@ -49,6 +45,7 @@ export default function Header() {
   const [location] = useLocation();
   const { isSignedIn, isLoaded } = useAuth();
   const api = useApi();
+  const crewBadge = useCrewBadgeCount();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -70,18 +67,10 @@ export default function Header() {
     retry: false,
   });
 
-  const isAdmin = appUser?.role === 'admin';
-
-  // Pods and friends are private to their owner, so the entries only exist for signed-in users.
-  const mainNavItems = [
-    ...navItems,
-    ...(isSignedIn ? [{ href: '/pods', label: 'Pods', Icon: Users }, { href: '/friends', label: 'Friends', Icon: UserCheck }] : []),
-  ];
-
-  const allNavItems = [
-    ...mainNavItems,
-    ...(isAdmin ? [{ href: '/admin', label: 'Admin', Icon: ShieldCheck }] : []),
-  ];
+  // Crew (friends, pods) is private to its owner, so the entry only exists for signed-in users.
+  // Admin and your profile live in the avatar menu.
+  const mainNavItems = [...navItems, ...(isSignedIn ? [CREW] : [])];
+  const allNavItems = mainNavItems;
 
   return (
     <header ref={menuRef} className="sticky top-0 z-50 w-full border-b border-white/10 bg-background/80 backdrop-blur-xl">
@@ -102,24 +91,21 @@ export default function Header() {
                 key={href}
                 href={href}
                 className={`flex items-center space-x-2 text-sm font-bold uppercase tracking-wider transition-colors hover:text-white ${
-                  location === href ? 'text-glow-primary' : 'text-muted-foreground'
+                  isActivePath(location, href) ? 'text-glow-primary' : 'text-muted-foreground'
                 }`}
               >
                 <Icon className="w-4 h-4" aria-hidden />
                 <span>{label}</span>
+                {href === CREW.href && crewBadge > 0 && (
+                  <span
+                    className="min-w-[1.1rem] h-[1.1rem] px-1 rounded-full bg-friend text-zinc-950 text-[10px] font-black leading-[1.1rem] text-center"
+                    aria-label={`${crewBadge} pending friend ${crewBadge === 1 ? 'request' : 'requests'}`}
+                  >
+                    {badgeText(crewBadge)}
+                  </span>
+                )}
               </Link>
             ))}
-            {isAdmin && (
-              <Link
-                href="/admin"
-                className={`flex items-center space-x-2 text-sm font-bold uppercase tracking-wider transition-colors hover:text-white ${
-                  location === '/admin' ? 'text-glow-primary' : 'text-muted-foreground'
-                }`}
-              >
-                <ShieldCheck className="w-4 h-4" aria-hidden />
-                <span>Admin</span>
-              </Link>
-            )}
           </nav>
 
           <div className="flex items-center gap-1.5 sm:gap-3">
@@ -133,7 +119,7 @@ export default function Header() {
                 <PlusCircle className="w-4 h-4" />
                 Add Score
               </Link>
-              <UserButton afterSignOutUrl="/" />
+              <AvatarMenu />
             </SignedIn>
             <SignedOut>
               <Link
@@ -166,7 +152,7 @@ export default function Header() {
                 href={href}
                 onClick={() => setMenuOpen(false)}
                 className={`flex items-center gap-3 px-3 py-3 rounded-lg text-sm font-bold uppercase tracking-wider transition-colors hover:bg-white/5 hover:text-white ${
-                  location === href ? 'text-primary bg-primary/10' : 'text-muted-foreground'
+                  isActivePath(location, href) ? 'text-primary bg-primary/10' : 'text-muted-foreground'
                 }`}
               >
                 <Icon className="w-5 h-5" aria-hidden />
