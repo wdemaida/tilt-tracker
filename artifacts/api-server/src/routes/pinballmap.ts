@@ -4,6 +4,9 @@ import { eq } from 'drizzle-orm';
 import { requireAppUser } from '../middleware/requireAuth.js';
 import { getPmUserToken, submitPmScore, PmApiError } from '../lib/pinballmapApi.js';
 import { pmAuthLimiter, pmSubmitLimiter, refuseIfLimited } from '../lib/pmGuards.js';
+import {
+  authFailureReply, submitFailureReply, pmErrorReply, storedPmAuth, hasUsablePmConnection, type PmRouteReply,
+} from '../lib/pmAccount.js';
 import { getVenueRoster } from '../lib/pmRosterCache.js';
 import { parseScore } from '../lib/scoreRead.js';
 import { canSeeVenueLinkage } from '../lib/venuePrivacy.js';
@@ -19,21 +22,36 @@ function clientIp(req: any): string {
   return list[list.length - 1] ?? req.ip ?? 'unknown';
 }
 
-// GET /api/pinballmap/token — check if the current user has a stored PM token
+function send(res: any, reply: PmRouteReply, context: string, err?: PmApiError) {
+  if (reply.ourTokenRejected) {
+    console.error(`!!! PINBALL MAP REJECTED OUR api_token (${context}) — PINBALL_MAP_API_TOKEN is missing, revoked or wrong. PM features are down for every user. Detail: ${err?.detail ?? ''}`);
+  } else if (err) {
+    console.error(`PM ${context} failed:`, err.kind, err.status ?? '', err.message);
+  }
+  if (reply.retryAfterSec) res.setHeader('Retry-After', String(reply.retryAfterSec));
+  return res.status(reply.status).json(reply.body);
+}
+
+// GET /api/pinballmap/token — does the current user have a connection that can post? A token with no
+// stored email (connected before migrate18) can't authenticate a write, so it reports false and the
+// UI offers the connect form.
 router.get('/token', requireAppUser, (req, res) => {
   const user = (req as any).appUser;
-  res.json({ hasToken: !!user.pinballMapToken, pmUsername: user.pinballMapUsername ?? null });
+  const hasToken = hasUsablePmConnection(user);
+  res.json({ hasToken, pmUsername: hasToken ? user.pinballMapUsername ?? null : null });
 });
 
-// POST /api/pinballmap/auth — exchange PM credentials for a token and persist it.
-// 5 attempts per 15 minutes per user AND per IP (a password-guessing relay through our api_token
-// would otherwise be unlimited). The PM user token stays server-side: the response carries only the
-// username — the frontend never used the token (submit-score reads the stored one).
+// POST /api/pinballmap/auth — exchange PM credentials (username or email + password) for a token and
+// persist it with the canonical email PM returns (writes need both). 5 attempts per 15 minutes per
+// user AND per IP (a password-guessing relay through our api_token would otherwise be unlimited).
+// The PM user token and email stay server-side: the response carries only the username.
 router.post('/auth', requireAppUser, async (req, res) => {
-  const { email, password } = req.body ?? {};
-  if (typeof email !== 'string' || typeof password !== 'string' || !email || !password
-    || email.length > 320 || password.length > 1000) {
-    return res.status(400).json({ error: 'email and password required' });
+  // `login` is the field name; `email` is accepted from clients built before the rename.
+  const body = req.body ?? {};
+  const login = typeof body.login === 'string' ? body.login.trim() : typeof body.email === 'string' ? body.email.trim() : '';
+  const password = body.password;
+  if (!login || typeof password !== 'string' || !password || login.length > 320 || password.length > 1000) {
+    return res.status(400).json({ error: 'Enter your Pinball Map username or email and your password', code: 'pm_missing_fields' });
   }
   const user = (req as any).appUser;
 
@@ -44,37 +62,34 @@ router.post('/auth', requireAppUser, async (req, res) => {
 
   let result: Awaited<ReturnType<typeof getPmUserToken>>;
   try {
-    result = await getPmUserToken(email, password);
+    result = await getPmUserToken(login, password);
   } catch (err) {
-    if (err instanceof PmApiError) {
-      console.error('PM auth error:', err.kind, err.message);
-      if (err.retryAfterMs) res.setHeader('Retry-After', String(Math.ceil(err.retryAfterMs / 1000)));
-      return res.status(503).json({ error: err.message, code: `PM_${err.kind.toUpperCase()}` });
-    }
+    if (err instanceof PmApiError) return send(res, pmErrorReply(err), 'auth', err);
     throw err;
   }
-  if (!result) return res.status(401).json({ error: 'Invalid Pinball Map credentials' });
+  if (!result.ok) return send(res, authFailureReply(result), 'auth');
 
   await db.update(users)
-    .set({ pinballMapToken: result.token, pinballMapUsername: result.username })
+    .set({ pinballMapToken: result.token, pinballMapUsername: result.username, pinballMapEmail: result.email })
     .where(eq(users.id, user.id));
 
   res.json({ username: result.username });
 });
 
 // POST /api/pinballmap/submit-score
-// Body: { venueId, machineName, score, userToken? }
-// Uses stored token if userToken is omitted.
+// Body: { venueId, machineName, score }. Always posts with the stored connection (token + email);
+// there is no client-supplied token — PM can't authenticate a token without its email anyway.
 router.post('/submit-score', requireAppUser, async (req, res) => {
-  const { venueId, machineName, score } = req.body;
+  const { venueId, machineName, score } = req.body ?? {};
   const user = (req as any).appUser;
-  const userToken: string | undefined = req.body.userToken ?? user.pinballMapToken ?? undefined;
-  const usingStoredToken = !req.body.userToken && !!user.pinballMapToken;
 
-  if (!userToken || !venueId || typeof machineName !== 'string' || !machineName || score == null) {
-    return res.status(400).json({ error: 'venueId, machineName, and score are required; no Pinball Map token available' });
+  if (!venueId || typeof machineName !== 'string' || !machineName || score == null) {
+    return res.status(400).json({ error: 'venueId, machineName, and score are required' });
   }
-  // Pinball Map allows 80 score submissions / 2 min per IP — and every TiltTrack user shares ours.
+  const stored = storedPmAuth(user);
+  if (!stored.ok) return send(res, stored.reply, 'submit-score');
+
+  // Pinball Map allows 80 score submissions / 2 min per api_token owner — and every TiltTrack user shares ours.
   if (refuseIfLimited(res, pmSubmitLimiter.take(String(user.id)), 'Too many score submissions — wait a minute and try again')) return;
   const parsedScore = parseScore(score);
   if (parsedScore == null) {
@@ -97,32 +112,35 @@ router.post('/submit-score', requireAppUser, async (req, res) => {
       x.machine.name.toLowerCase().includes(needle) || needle.includes(x.machine.name.toLowerCase())
     );
 
-    if (!xref) {
+    // id 0 = the roster had the machine but no xref id for it; PM would only answer "Failed to find
+    // machine", so don't spend a call finding that out.
+    if (!xref || !xref.id) {
       return res.status(422).json({ error: `"${machineName}" not found on Pinball Map at this venue` });
     }
 
+    let result: Awaited<ReturnType<typeof submitPmScore>>;
     try {
-      await submitPmScore(userToken, xref.id, parsedScore);
+      result = await submitPmScore(stored.auth, xref.id, parsedScore);
     } catch (err) {
-      if (!(err instanceof PmApiError)) throw err;
-      console.error('PM submit-score failed:', err.kind, err.status ?? '', err.message);
-      // Only a 401/403 about the *user's* token means their session is gone. A 429, 5xx, timeout or
-      // open breaker says nothing about it — clearing the token then forced a needless re-login.
-      const userTokenRejected = err.kind === 'unauthorized' && !/api_token/i.test(err.detail ?? '');
-      if (userTokenRejected && usingStoredToken) {
-        await db.update(users).set({ pinballMapToken: null }).where(eq(users.id, user.id));
-        return res.status(401).json({ error: 'Pinball Map session expired — please re-enter credentials', code: 'PM_TOKEN_EXPIRED' });
-      }
-      if (err.retryAfterMs) res.setHeader('Retry-After', String(Math.ceil(err.retryAfterMs / 1000)));
-      const status = err.kind === 'rate_limited' || err.kind === 'unavailable' ? 503 : 502;
-      return res.status(status).json({
-        error: userTokenRejected ? 'Pinball Map rejected the score submission' : err.message,
-        code: `PM_${err.kind.toUpperCase()}`,
-      });
+      // 429 / 5xx / timeout / breaker / our api_token: nothing to do with the user's credential, so
+      // it is never cleared here — clearing it then forced a needless re-login.
+      if (err instanceof PmApiError) return send(res, pmErrorReply(err), 'submit-score', err);
+      throw err;
     }
 
-    res.json({ success: true, machineName: xref.machine.name, xrefId: xref.id });
+    if (!result.ok) {
+      const reply = submitFailureReply(result);
+      if (reply.clearCredential) {
+        await db.update(users).set({ pinballMapToken: null, pinballMapEmail: null }).where(eq(users.id, user.id));
+      }
+      console.error('PM submit-score refused:', result.reason, result.message);
+      return send(res, reply, 'submit-score');
+    }
+
+    res.json({ success: true, machineName: xref.machine.name, xrefId: xref.id, pmUsername: result.username });
   } catch (err) {
+    // e.g. the roster read failing with no cached copy to fall back on
+    if (err instanceof PmApiError) return send(res, pmErrorReply(err), 'submit-score roster', err);
     console.error('PM submit-score error:', err);
     res.status(500).json({ error: 'Failed to submit score to Pinball Map' });
   }

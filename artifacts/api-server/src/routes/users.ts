@@ -34,7 +34,11 @@ router.post('/setup', requireAuth, async (req, res) => {
 
   try {
     const [existing] = await db.select().from(users).where(eq(users.clerkId, clerkId)).limit(1);
-    if (existing) return res.json(existing);
+    if (existing) {
+      // The Pinball Map credential never goes to the browser, not even to its owner.
+      const { pinballMapToken: _t, pinballMapEmail: _e, ...safe } = existing;
+      return res.json(safe);
+    }
 
     const [user] = await db.insert(users).values({ clerkId, username: usernameClean, displayName }).returning();
     res.status(201).json(user);

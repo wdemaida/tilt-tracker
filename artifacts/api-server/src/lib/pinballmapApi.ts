@@ -203,41 +203,161 @@ export async function getPmMachinesAtLocation(pmLocationId: number): Promise<PmL
   return machines.map(m => ({ id: xrefMap.get(m.id) ?? 0, machine: m }));
 }
 
-/**
- * Exchanges a user's Pinball Map login for their user token. null = bad credentials; anything else
- * (rate limited, breaker open, not configured) throws, so the route doesn't call a PM outage a wrong
- * password. `sensitive`: the request carries a password, so it is never de-duplicated, cached,
- * recorded or logged beyond its path.
- */
-export async function getPmUserToken(email: string, password: string): Promise<{ token: string; username: string } | null> {
-  try {
-    const { body: data } = await pmClient().request<{ authentication_token?: string; username?: string }>({
-      path: '/users/auth_details.json',
-      params: { login: email, password },
-      sensitive: true,
-    });
-    if (!data?.authentication_token) return null;
-    return { token: data.authentication_token, username: data.username ?? '' };
-  } catch (err) {
-    if (err instanceof PmApiError && (err.kind === 'unauthorized' || err.kind === 'not_found')) return null;
-    throw err;
+// ── User account: connect + score posting ─────────────────────────────────────────────────────
+//
+// Protocol note — verified against Pinball Map's own source (github.com/pinballmap/pbm @ 1b527c0),
+// not their docs, on 2026-09-26. Almost every failure is an HTTP 200, so status alone proves nothing:
+//
+// • GET /users/auth_details.json?login=&password=   (api/v1/users_controller.rb#auth_details)
+//   `login` is the username OR email, case-insensitive. Success is NESTED:
+//     200 {"user":{"username","email","authentication_token"}}
+//   Failures are 200 {"errors":"<msg>"}: "login and password are required fields", "Unknown user",
+//   "Incorrect password", "User is not yet confirmed. Please follow emailed confirmation
+//   instructions." A disabled account is 403 {"error":"account_disabled"}. Our own api_token
+//   missing/rejected is 401 {"error":"A valid api_token is required ..."}. Rate limit: 10/min per
+//   api_token owner — i.e. shared by every TiltTrack user — then 429.
+//
+// • POST /machine_score_xrefs.json   (api/v1/machine_score_xrefs_controller.rb#create)
+//   Authenticated by authenticate_from_token (application_controller.rb): needs BOTH user_email and
+//   user_token, as params (query or JSON body) or X-User-Email/X-User-Token headers, and looks the
+//   user up with User.find_by(email:) — exact case, so we send the email auth_details returned, not
+//   what the user typed. Without a valid pair it answers 200 {"errors":"Authentication is required
+//   for this action. ..."} (no 401). `score` must be a STRING: the controller calls score.gsub!, so a
+//   JSON number is a 500. Success is 201 {"machine_score_xref":{..., "username"}}. Other failures:
+//   200 {"errors": "<msg>" | ["<msg>", ...]} (e.g. "Failed to find machine"). Rate limit 80 / 2 min
+//   per api_token owner.
+//
+// The user pair goes in the JSON body rather than headers: pmClient already JSON-encodes POST
+// bodies and keeps only our api_token on the query string, Rails merges the body into `params`
+// (which authenticate_from_token reads first), and nothing credential-bearing lands in a URL that
+// could end up in PM's access logs or ours. Both requests are `sensitive`, so pmClient never
+// caches, records, de-duplicates or logs them beyond their path.
+
+/** PM's `errors` field is a string, or an array of strings for model validation failures. */
+function pmErrorsText(errors: unknown): string | null {
+  if (typeof errors === 'string') return errors.trim() || null;
+  if (Array.isArray(errors)) {
+    const joined = errors.filter(e => typeof e === 'string').join('; ').trim();
+    return joined || null;
   }
+  return null;
 }
 
+/** True when a 401/403 body is about OUR api_token (a config problem), not the user's account. */
+export function isApiTokenRejection(err: unknown): boolean {
+  return err instanceof PmApiError && err.kind === 'unauthorized' && /api_token/i.test(err.detail ?? '');
+}
+
+function isAccountDisabled(err: unknown): boolean {
+  return err instanceof PmApiError && err.kind === 'unauthorized' && err.status === 403
+    && /account_disabled/i.test(err.detail ?? '');
+}
+
+export type PmAuthResult =
+  | { ok: true; token: string; username: string; email: string }
+  | {
+    ok: false;
+    reason: 'invalid_credentials' | 'unconfirmed' | 'missing_fields' | 'account_disabled' | 'rejected';
+    /** Pinball Map's own message (or "account_disabled"). */
+    message: string;
+  };
+
 /**
- * Posts a score to Pinball Map. Throws PmApiError on any failure — `kind === 'unauthorized'` (401/403)
- * is the only one that means the user's token is bad; check `detail` for "api_token" to tell our own
- * token apart.
- *
- * Protocol note (flagged 2026-09-26, unchanged here): this sends `user_token` in the JSON body with no
- * `user_email`. Pinball Map's docs describe user auth as `user_email` + `user_token` query params. It
- * has not been changed without evidence of which form their API accepts today.
+ * Exchanges a user's Pinball Map login (username or email) for their user token + canonical email.
+ * Returns `ok: false` for anything that is the *user's* problem (wrong password, unconfirmed,
+ * disabled). Throws PmApiError for everything else — rate limited, breaker open, network, our
+ * api_token rejected (`isApiTokenRejection`), or a response shaped unlike PM's source — so the route
+ * never calls a Pinball Map outage a wrong password.
  */
-export async function submitPmScore(userToken: string, locationMachineXrefId: number, score: number): Promise<void> {
-  await pmClient().request({
-    method: 'POST',
-    path: '/machine_score_xrefs.json',
-    body: { user_token: userToken, location_machine_xref_id: locationMachineXrefId, score },
-    sensitive: true,
-  });
+export async function getPmUserToken(login: string, password: string, client = pmClient()): Promise<PmAuthResult> {
+  let body: any;
+  try {
+    ({ body } = await client.request<any>({
+      path: '/users/auth_details.json',
+      params: { login, password },
+      sensitive: true,
+    }));
+  } catch (err) {
+    if (isAccountDisabled(err)) return { ok: false, reason: 'account_disabled', message: 'account_disabled' };
+    throw err;
+  }
+
+  const errors = pmErrorsText(body?.errors);
+  if (errors) {
+    if (/unknown user|incorrect password/i.test(errors)) return { ok: false, reason: 'invalid_credentials', message: errors };
+    if (/not yet confirmed/i.test(errors)) return { ok: false, reason: 'unconfirmed', message: errors };
+    if (/required/i.test(errors)) return { ok: false, reason: 'missing_fields', message: errors };
+    return { ok: false, reason: 'rejected', message: errors };
+  }
+
+  const user = body?.user;
+  const token = typeof user?.authentication_token === 'string' ? user.authentication_token : '';
+  const email = typeof user?.email === 'string' ? user.email : '';
+  if (!token || !email) {
+    // Not an answer PM's source can give — don't guess, and don't store half a credential.
+    throw new PmApiError('http', 'Pinball Map returned an unexpected sign-in response');
+  }
+  return { ok: true, token, email, username: typeof user.username === 'string' ? user.username : '' };
+}
+
+export interface PmUserAuth {
+  /** The email auth_details returned (exact case — PM looks it up with find_by). */
+  email: string;
+  token: string;
+}
+
+export type PmSubmitResult =
+  | { ok: true; username: string | null; scoreId: number | null }
+  | {
+    ok: false;
+    /** auth_required: PM didn't accept the email+token pair — the stored credential is dead. */
+    reason: 'auth_required' | 'account_disabled' | 'rejected';
+    message: string;
+  };
+
+/**
+ * Posts one score to Pinball Map. Success is ONLY a 201 carrying `machine_score_xref` — a bare 2xx
+ * proves nothing (PM reports most failures as 200 {"errors"}). Returns `ok: false` for answers about
+ * this user or this score; throws PmApiError for rate limits, outages, our api_token being rejected
+ * (`isApiTokenRejection`) or any response shaped unlike PM's source.
+ */
+export async function submitPmScore(
+  auth: PmUserAuth,
+  locationMachineXrefId: number,
+  score: number,
+  client = pmClient(),
+): Promise<PmSubmitResult> {
+  let res: { status: number; body: any };
+  try {
+    res = await client.request<any>({
+      method: 'POST',
+      path: '/machine_score_xrefs.json',
+      body: {
+        user_email: auth.email,
+        user_token: auth.token,
+        location_machine_xref_id: locationMachineXrefId,
+        score: String(score), // PM calls score.gsub! on it — a JSON number is a 500
+      },
+      sensitive: true,
+    });
+  } catch (err) {
+    if (isAccountDisabled(err)) return { ok: false, reason: 'account_disabled', message: 'account_disabled' };
+    throw err;
+  }
+
+  const { status, body } = res;
+  if (status === 201 && body?.machine_score_xref && typeof body.machine_score_xref === 'object') {
+    const x = body.machine_score_xref;
+    return {
+      ok: true,
+      username: typeof x.username === 'string' ? x.username : null,
+      scoreId: typeof x.id === 'number' ? x.id : null,
+    };
+  }
+  const errors = pmErrorsText(body?.errors);
+  if (errors) {
+    if (/authentication is required/i.test(errors)) return { ok: false, reason: 'auth_required', message: errors };
+    return { ok: false, reason: 'rejected', message: errors };
+  }
+  throw new PmApiError('http', `Pinball Map returned an unexpected response to the score post (${status})`, status);
 }
