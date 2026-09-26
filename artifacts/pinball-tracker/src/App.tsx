@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Switch, Route, useLocation } from 'wouter';
+import { Switch, Route, Redirect, useLocation, useSearch } from 'wouter';
 import { useAuth } from '@clerk/clerk-react';
 import { useQuery } from '@tanstack/react-query';
 import { useApi } from './lib/useApi';
@@ -9,7 +9,6 @@ import Layout from './components/Layout';
 import HomePage from './pages/HomePage';
 import MachinesPage from './pages/MachinesPage';
 import MachinePage from './pages/MachinePage';
-import MapPage from './pages/MapPage';
 import VenuesPage from './pages/VenuesPage';
 import VenuePage from './pages/VenuePage';
 import StatsPage from './pages/StatsPage';
@@ -27,6 +26,16 @@ import AdminPage from './pages/AdminPage';
 import AdminHealthPage from './pages/AdminHealthPage';
 import AdminConfigPage from './pages/AdminConfigPage';
 import AdminStatsPage from './pages/AdminStatsPage';
+
+/**
+ * The Map page is now the Venues page's Map view. Old links (bookmarks, shared URLs) keep working,
+ * including the `?venueId=` filter the venue page's map thumbnail used to send.
+ */
+function MapRedirect() {
+  const params = new URLSearchParams(useSearch());
+  const venueId = params.get('venueId');
+  return <Redirect replace to={`/venues?view=map${venueId ? `&venueId=${encodeURIComponent(venueId)}` : ''}`} />;
+}
 
 function AuthGate({ children }: { children: React.ReactNode }) {
   const { isSignedIn, isLoaded } = useAuth();
@@ -100,7 +109,7 @@ export default function App() {
         <Route path="/machines/:name" component={MachinePage} />
         <Route path="/venues/:id" component={VenuePage} />
         <Route path="/venues" component={VenuesPage} />
-        <Route path="/map" component={MapPage} />
+        <Route path="/map" component={MapRedirect} />
         <Route path="/stats">
           <AuthGate><StatsPage /></AuthGate>
         </Route>
