@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { db, scores, venues, machines, users, challenges } from '@workspace/db';
 import { eq, desc, count, sql, and, max, inArray } from 'drizzle-orm';
 import {
-  findNearestPmLocations, searchPmLocationsByName, searchPmLocationsWithAddress, getPmLocation,
+  searchPmLocationsByName, searchPmLocationsWithAddress, getPmLocation,
   pmLocationUrl, isPmConfigured, PmApiError, type PmLocation,
 } from '../lib/pinballmapApi.js';
 import { syncVenueMachineHistory, getFormerMachines } from '../lib/venueHistory.js';
@@ -19,7 +19,7 @@ import {
   isPreciseGeocode, pickConfidentHereMatch, adoptableHereMatch, stripPlaceNamePrefix, venueListFlags, describeHolder,
   linkageBlockedByPrivacy, isUniqueViolation, type AddressBlocker, type HolderView, type PrivacyFlags,
 } from '../lib/venueAddress.js';
-import { getVenueRoster } from '../lib/pmRosterCache.js';
+import { getVenueRoster, knownBadPmId } from '../lib/pmRosterCache.js';
 import { visibleScoreSql, canSeeVenueActivity, canManageInventory, usesOwnerInventory } from '../lib/venueActivity.js';
 import {
   getInventory, resolveCatalogMachine, addToInventory, removeFromInventory, deleteVenueInventory,
@@ -39,7 +39,10 @@ import {
   mergeSearchResults, queryLength, placeCacheKey, MIN_QUERY_CHARS, MIN_PLACE_QUERY_CHARS,
   SEARCH_RATE_WINDOWS, PLACE_CACHE_TTL_MS,
 } from '../lib/venueSearch.js';
-import { SlidingRateLimiter, TtlCache, cachedByCell, NEARBY_CACHE_TTL_MS } from '../lib/nearbyLookup.js';
+import { SlidingRateLimiter, TtlCache } from '../lib/nearbyLookup.js';
+import {
+  pmLocationsNear, allowPmIds, pmIdAllowedFor, pmMachinesLimiter, repairPmLimiter, refuseIfLimited, repairSearchCache,
+} from '../lib/pmGuards.js';
 import { matchPmLocation, PM_MATCH_RATE_WINDOWS } from '../lib/pmMatch.js';
 import { getAuth } from '@clerk/express';
 
@@ -339,14 +342,13 @@ router.get('/search', requireAppUser, async (req, res) => {
 //  - lat/lng/name: a HERE "Places" result. Its coordinates are the place's (public), not the user's.
 //  - venueId: a TiltTrack venue with no link yet; the server uses its own coordinates. A private
 //    venue gets no match (private venues carry no linkage), indistinguishable from "none nearby".
-// Pinball Map's nearby list is cached per ~110m cell for 10 minutes (failures aren't cached).
+// Pinball Map's nearby list comes from the per-cell cache shared with the upload / nearby-venues
+// suggestions (pmLocationsNear in pmGuards.ts: 10 minutes, failures negatively cached for 2).
 const pmMatchLimiter = new SlidingRateLimiter(PM_MATCH_RATE_WINDOWS);
-const pmNearbyCache = new TtlCache<Promise<PmLocation[]>>(NEARBY_CACHE_TTL_MS);
-setInterval(() => { pmMatchLimiter.sweep(); pmNearbyCache.sweep(); }, 10 * 60_000).unref();
-const pmLocationsNear = cachedByCell((lat, lng) => findNearestPmLocations(lat, lng), pmNearbyCache);
+setInterval(() => { pmMatchLimiter.sweep(); }, 10 * 60_000).unref();
 
 router.get('/pm-match', requireAppUser, async (req, res) => {
-  const appUser = (req as any).appUser as { id: number };
+  const appUser = (req as any).appUser as { id: number; clerkId: string };
   const none = { pinballMapId: null };
 
   let subject: { name: string; lat: number; lng: number } | null = null;
@@ -357,6 +359,7 @@ router.get('/pm-match', requireAppUser, async (req, res) => {
     if (!venue) return res.status(404).json({ error: 'Venue not found' });
     if (linkageBlockedByPrivacy(venue)) return res.json(none);
     if (venue.pinballMapId != null) {
+      allowPmIds(appUser.clerkId, [venue.pinballMapId]);
       return res.json({ pinballMapId: venue.pinballMapId, url: pmLocationUrl(venue.pinballMapId), linked: true });
     }
     if (venue.latitude == null || venue.longitude == null) return res.json(none);
@@ -382,6 +385,8 @@ router.get('/pm-match', requireAppUser, async (req, res) => {
   try {
     const match = matchPmLocation(subject, await pmLocationsNear(subject.lat, subject.lng));
     if (!match) return res.json(none);
+    // The machine step reads this id's roster next, via /pm-machines/:pmId.
+    allowPmIds(appUser.clerkId, [match.id]);
     res.json({
       pinballMapId: match.id,
       name: match.name,
@@ -395,10 +400,27 @@ router.get('/pm-match', requireAppUser, async (req, res) => {
   }
 });
 
-// GET /api/venues/pm-machines/:pmId — PM machine list without needing a DB venue record
-router.get('/pm-machines/:pmId', async (req, res) => {
+// GET /api/venues/pm-machines/:pmId — PM machine list without needing a DB venue record.
+// Used to be unauthenticated and accept any integer — an open proxy to Pinball Map through our
+// api_token. Now: signed in, rate limited per user, and the id must be linked to one of our venues
+// or have been handed to this user by pm-match / the nearby suggestions / a repair search in the last
+// 30 minutes (allowPmIds in pmGuards.ts). Ids that don't resolve are negatively cached for an hour
+// (pmRosterCache) and never get a cache row.
+router.get('/pm-machines/:pmId', requireAppUser, async (req, res) => {
+  const appUser = (req as any).appUser as { id: number; clerkId: string };
   const pmId = Number(req.params.pmId);
-  if (!pmId) return res.status(400).json({ error: 'Invalid pmId' });
+  if (!Number.isInteger(pmId) || pmId <= 0 || pmId > 2_147_483_647) return res.status(400).json({ error: 'Invalid pmId' });
+
+  if (!pmIdAllowedFor(appUser.clerkId, pmId)) {
+    const [linked] = await db.select({ id: venues.id }).from(venues).where(eq(venues.pinballMapId, pmId)).limit(1);
+    if (!linked) {
+      return res.status(404).json({ error: 'Pick this venue again to load its Pinball Map machines', code: 'pm_id_not_offered' });
+    }
+  }
+  const bad = knownBadPmId(pmId);
+  if (bad?.kind === 'not_found') return res.status(404).json({ error: bad.message, code: 'PM_NOT_FOUND' });
+  if (refuseIfLimited(res, pmMachinesLimiter.take(String(appUser.id)), 'Too many Pinball Map lookups — wait a moment')) return;
+
   try {
     const { xrefs } = await getVenueRoster(pmId);
     const pmMachines = xrefs.map(x => ({
@@ -412,7 +434,7 @@ router.get('/pm-machines/:pmId', async (req, res) => {
   } catch (err) {
     if (err instanceof PmApiError) {
       console.error('PM machines by pmId error:', err.kind, err.message);
-      return res.status(502).json({ error: err.message, code: `PM_${err.kind.toUpperCase()}` });
+      return pmFailure(res, err, 'Failed to fetch PM machines');
     }
     console.error('PM machines by pmId error:', err);
     res.status(500).json({ error: 'Failed to fetch PM machines' });
@@ -851,7 +873,10 @@ function hereIdTaken(res: any, holder?: { id: number; name: string } & PrivacyFl
 
 function pmFailure(res: any, err: unknown, fallback: string) {
   if (err instanceof PmApiError) {
-    return res.status(502).json({ error: err.message, code: `PM_${err.kind.toUpperCase()}` });
+    if (err.retryAfterMs) res.setHeader('Retry-After', String(Math.ceil(err.retryAfterMs / 1000)));
+    const status = err.kind === 'not_found' ? 404
+      : err.kind === 'rate_limited' || err.kind === 'unavailable' ? 503 : 502;
+    return res.status(status).json({ error: err.message, code: `PM_${err.kind.toUpperCase()}` });
   }
   console.error(fallback, err);
   return res.status(500).json({ error: fallback });
@@ -1078,10 +1103,22 @@ router.get('/:id/repair/place-search', requireAppUser, async (req, res) => {
   if (q.length < 2) return res.status(400).json({ error: 'Search for at least two characters' });
   if (q.length > 200 || near.length > 200) return res.status(400).json({ error: 'That search is too long' });
 
+  // The external half (Pinball Map + HERE) is cached 10 minutes per (venue, query, near); only a miss
+  // counts against the per-user repair limit. Holder info (venuesHolding) is always read fresh.
+  const cacheKey = `place-search:${venue.id}:${q.toLowerCase()}:${near.toLowerCase()}`;
+  type PlaceSearchExternal = {
+    pmLocations: PmLocation[]; pmError: string | null; nearResolved: string | null; hereNote: string | null; hereHits: HereVenue[];
+  };
+  const cachedExternal = repairSearchCache.get(cacheKey) as PlaceSearchExternal | undefined;
+  if (!cachedExternal && refuseIfLimited(res, repairPmLimiter.take(String(appUser.id)),
+    'Too many Pinball Map searches — wait a few minutes and try again')) return;
+
   try {
-    let pmLocations: PmLocation[] = [];
-    let pmError: string | null = null;
-    if (isPmConfigured()) {
+    let pmLocations: PmLocation[] = cachedExternal?.pmLocations ?? [];
+    let pmError: string | null = cachedExternal?.pmError ?? null;
+    if (cachedExternal) {
+      // served from the cache
+    } else if (isPmConfigured()) {
       try {
         pmLocations = await searchPmLocationsWithAddress(q);
       } catch (err) {
@@ -1105,10 +1142,12 @@ router.get('/:id/repair/place-search', requireAppUser, async (req, res) => {
         url: pmLocationUrl(loc.id),
       }));
 
-    let nearResolved: string | null = null;
-    let hereNote: string | null = null;
+    let nearResolved: string | null = cachedExternal?.nearResolved ?? null;
+    let hereNote: string | null = cachedExternal?.hereNote ?? null;
     const anchors: Array<{ lat: number; lng: number; radius: number }> = [];
-    if (near) {
+    if (cachedExternal) {
+      // HERE hits come from the cache below
+    } else if (near) {
       const g = await geocodeAddress(near);
       if (g) {
         nearResolved = g.label;
@@ -1122,7 +1161,7 @@ router.get('/:id/repair/place-search', requireAppUser, async (req, res) => {
     }
 
     const seen = new Set<string>();
-    const hereHits: HereVenue[] = [];
+    const hereHits: HereVenue[] = cachedExternal?.hereHits ?? [];
     for (const a of anchors) {
       for (const hit of await findVenueByName(q, a.lat, a.lng, 5, a.radius)) {
         if (!hit.hereId || seen.has(hit.hereId) || hit.venueLat == null || hit.venueLng == null) continue;
@@ -1130,6 +1169,11 @@ router.get('/:id/repair/place-search', requireAppUser, async (req, res) => {
         hereHits.push(hit);
       }
     }
+    // A Pinball Map failure isn't kept for 10 minutes: the breaker and negative caches handle retries.
+    if (!cachedExternal && !pmError) {
+      repairSearchCache.set(cacheKey, { pmLocations, pmError, nearResolved, hereNote, hereHits } satisfies PlaceSearchExternal);
+    }
+    allowPmIds(appUser.clerkId, pm.map(p => p.pinballMapId));
 
     const { byHere, byPm } = await venuesHolding(venue.id, hereHits.map(h => h.hereId!), pm.map(p => p.pinballMapId));
 
@@ -1180,6 +1224,8 @@ router.post('/:id/repair/place', requireAppUser, async (req, res) => {
       if (!Number.isInteger(pinballMapId) || pinballMapId <= 0) {
         return res.status(400).json({ error: 'A numeric pinballMapId is required' });
       }
+      if (refuseIfLimited(res, repairPmLimiter.take(String(appUser.id)),
+        'Too many Pinball Map lookups — wait a few minutes and try again')) return;
       let loc: PmLocation | null;
       try {
         loc = await getPmLocation(pinballMapId);
@@ -1319,17 +1365,28 @@ router.get('/:id/repair/pm-candidates', requireAppUser, async (req, res) => {
   const venue = await loadRepairableVenue(req, res);
   if (!venue) return;
 
-  const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+  const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 200) : '';
+  const appUser = (req as any).appUser as { id: number; clerkId: string };
+
+  // Cached 10 minutes per (venue, query); only a miss counts against the per-user repair limit.
+  const cacheKey = `pm-candidates:${venue.id}:${q.toLowerCase()}`;
+  const cached = repairSearchCache.get(cacheKey) as { nearby: PmLocation[]; named: PmLocation[] } | undefined;
+  if (!cached && refuseIfLimited(res, repairPmLimiter.take(String(appUser.id)),
+    'Too many Pinball Map searches — wait a few minutes and try again')) return;
 
   try {
-    let nearby: PmLocation[] = [];
-    let named: PmLocation[] = [];
+    let nearby: PmLocation[] = cached?.nearby ?? [];
+    let named: PmLocation[] = cached?.named ?? [];
 
-    if (!q && venue.latitude != null && venue.longitude != null) {
-      nearby = await findNearestPmLocations(venue.latitude, venue.longitude, 1);
-    }
-    if (q || nearby.length === 0) {
-      named = await searchPmLocationsByName(q || venue.name);
+    if (!cached) {
+      if (!q && venue.latitude != null && venue.longitude != null) {
+        // Same question pm-match and the nearby suggestions ask, so it shares their per-cell cache.
+        nearby = await pmLocationsNear(venue.latitude, venue.longitude);
+      }
+      if (q || nearby.length === 0) {
+        named = await searchPmLocationsByName(q || venue.name);
+      }
+      repairSearchCache.set(cacheKey, { nearby, named });
     }
 
     const seen = new Set<number>();
@@ -1344,6 +1401,7 @@ router.get('/:id/repair/pm-candidates', requireAppUser, async (req, res) => {
         url: pmLocationUrl(l.id),
       }));
 
+    allowPmIds(appUser.clerkId, candidates.map(c => c.pinballMapId));
     res.json({ candidates, searchedFor: q || venue.name });
   } catch (err) {
     return pmFailure(res, err, 'Failed to search Pinball Map');
@@ -1359,9 +1417,11 @@ router.post('/:id/repair/pm-link', requireAppUser, async (req, res) => {
   if (refuseRestrictedLinkage(venue, res)) return;
   const appUser = (req as any).appUser;
   const pinballMapId = Number(req.body.pinballMapId);
-  if (!pinballMapId || Number.isNaN(pinballMapId)) {
+  if (!Number.isInteger(pinballMapId) || pinballMapId <= 0 || pinballMapId > 2_147_483_647) {
     return res.status(400).json({ error: 'A numeric pinballMapId is required' });
   }
+  if (refuseIfLimited(res, repairPmLimiter.take(String(appUser.id)),
+    'Too many Pinball Map lookups — wait a few minutes and try again')) return;
 
   try {
     const pmLocation = await getPmLocation(pinballMapId);
@@ -1401,8 +1461,11 @@ router.get('/:id/repair/resync-preview', requireAppUser, async (req, res) => {
 
   const appUser = (req as any).appUser;
   const scopeUserId = appUser.role === 'admin' ? null : appUser.id;
+  if (refuseIfLimited(res, repairPmLimiter.take(String(appUser.id)),
+    'Too many Pinball Map lookups — wait a few minutes and try again')) return;
 
   try {
+    // force: refetches only if the cached roster is more than 5 minutes old (FORCE_MIN_AGE_MS).
     const { xrefs } = await getVenueRoster(venue.pinballMapId, { force: true });
     const proposals = await buildResyncPreview(venue.id, xrefs, scopeUserId);
     res.json({
@@ -1437,6 +1500,8 @@ router.post('/:id/repair/resync-apply', requireAppUser, async (req, res) => {
 
   const appUser = (req as any).appUser;
   const scopeUserId = appUser.role === 'admin' ? null : appUser.id;
+  if (refuseIfLimited(res, repairPmLimiter.take(String(appUser.id)),
+    'Too many Pinball Map lookups — wait a few minutes and try again')) return;
 
   try {
     const applied = await applyResync(venue.id, merges, scopeUserId);

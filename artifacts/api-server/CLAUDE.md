@@ -8,7 +8,7 @@
 
 ## Pinball Map API
 - **Every endpoint requires an `api_token` query param** as of 2026-07-30 — including read-only GETs. It goes on the **query string, not a header** (per `pinballmap.com/llms.txt`; the 2017 blog post describing `user_email`/`user_token` is the separate *user* auth for writes). Stored as `PINBALL_MAP_API_TOKEN` in `.env`; request one at <https://pinballmap.com/api_token>, approval is manual.
-  - Without it every call returns `401 {"error":"A valid api_token is required..."}`. This went unnoticed for weeks because every call site swallowed failures (`if (!res.ok) return []` / `.catch(() => [])`), so the app looked like it was working while silently producing empty venue and machine lists — and `upsertMachineByName()` quietly inserted unenriched AI-extracted names, creating duplicate machine rows ("Transformers" vs "The Transformers"). **Don't add new silent `catch → []` around PM calls.** Use `pmFetch` in `pinballmapApi.ts`, which throws a typed `PmApiError`; let it propagate and surface the reason.
+  - Without it every call returns `401 {"error":"A valid api_token is required..."}`. This went unnoticed for weeks because every call site swallowed failures (`if (!res.ok) return []` / `.catch(() => [])`), so the app looked like it was working while silently producing empty venue and machine lists — and `upsertMachineByName()` quietly inserted unenriched AI-extracted names, creating duplicate machine rows ("Transformers" vs "The Transformers"). **Don't add new silent `catch → []` around PM calls.** Every call goes through `pmClient` (via the helpers in `pinballmapApi.ts`), which throws a typed `PmApiError`; let it propagate and surface the reason.
 - `max_distance` is **integer miles** — decimal values get truncated to 0. Use `Math.ceil`.
 - `/locations/:id.json` (the default, full response) already embeds each machine's `name`, `manufacturer` and `year` on every `location_machine_xrefs[]` entry, alongside the xref `id`. `getPmMachinesAtLocation()` reads that in **one** call; it only falls back to `/locations/:id/machine_details.json` if names are ever missing. PM's own guidance singles out per-record fan-out as what gets apps blocked.
 - Use `no_details=1` on bulk reads (`machines.json`, `closest_by_lat_lon`, `locations.json`) to cut response size.
@@ -18,6 +18,70 @@
 - **Attribution is a licence condition**, not a nicety: data shown for a specific location must link to `https://pinballmap.com/map?by_location_id=<id>` (see `pmLocationUrl()`), not just the homepage. That URL is also how a user finds a location's numeric id in PM's own UI.
 - **Rate limits / caching**: PM explicitly warns against request volume that scales with your traffic rather than with how often the data changes. **All roster reads go through `getVenueRoster()` in `pmRosterCache.ts`** — never call `getPmMachinesAtLocation()` directly from a route. It's backed by the `pm_location_cache` table, keyed by *their* location id (so the venue page, `/pm-machines/:pmId` and score cross-posting share one entry), with a 6-hour TTL. Verified: 10 venue-page views produce 0 outbound requests. Pass `{ force: true }` only for deliberate user actions where freshness is the point (linking a venue, previewing a re-sync). On a PM failure with a cached row it returns the **stale** roster with `stale: true` rather than an empty list — a venue page should never imply a venue is empty because their API was down.
 - `syncVenueMachineHistory()` now only runs when the roster was actually re-fetched (`!roster.fromCache`). A cache hit carries no new information, and re-diffing on every page view churned `lastSeenAt` and re-upserted every machine row for nothing.
+
+## Pinball Map API — standing rule (see root CLAUDE.md)
+
+Pinball Map's maintainers granted Will an API token personally. **TiltTrack must never hammer their
+API.** This is a standing rule, not a guideline:
+
+- **Every PM request goes through `pmClient`** (`artifacts/api-server/src/lib/pmClient.ts`) — no raw
+  `fetch` to pinballmap.com anywhere, and never from the browser. It holds the token, a global
+  limiter (1 req/s, burst 5, concurrency 2), in-flight de-duplication, a 10 s timeout, a circuit
+  breaker honoring `Retry-After` (429 → default 15 min; 5xx/network/timeout → 2 min; rejected
+  api_token → 15 min; while open it fails fast, nothing retries per request), and an identifying
+  User-Agent. Every live call logs one line: `[PM live] <method> <path> <status> <ms> (n today)`.
+- **Every new call site needs a DB-backed cache with an explicit TTL** (rosters: `pm_location_cache`,
+  6 h; catalog: `pm_catalog_cache`, 24 h). Page views and unauthenticated routes only read cache or
+  trigger a refresh that is bounded per *key* (one per linked venue per TTL, one catalog fetch a
+  day, de-duplicated in flight) — never per request. Failures are negatively cached, never retried
+  per request.
+- **No per-record fan-out:** never call PM inside a loop; fetch once and pass the data in (e.g.
+  `syncVenueMachineHistory(venueId, xrefs, catalog)`, `upsertMachineByName(name, { catalog })`).
+- **Every PM-touching route requires sign-in and a per-user rate limit** (`pmGuards.ts`); PM ids
+  come from our DB or from a result we just returned to that user (30-min allowlist), never
+  arbitrary input.
+- **`force: true` only for deliberate user actions**, and it only refetches if the cached copy is
+  more than 5 minutes old (`FORCE_MIN_AGE_MS`).
+- **Before adding a PM feature, estimate worst-case calls/day** and write it in the PR/commit.
+- **Development & testing:** outside production `PM_MODE` defaults to `offline` — requests are
+  answered from recorded fixtures in `artifacts/api-server/fixtures/pm/` and anything unrecorded
+  fails loudly. Use `live` only for a deliberate task and `record` to refresh fixtures
+  (`PM_MODE=record npx tsx record-pm-fixtures.ts --catalog --roster <pmId> --near <lat,lng>`).
+  Non-prod live calls go through an on-disk cache (`artifacts/api-server/.pm-cache/`, 7-day TTL,
+  gitignored) and a hard budget — 50 live calls/day per machine, 20 per process (`PM_DEV_BUDGET=<n>`
+  overrides both); past it pmClient logs `PM DEV BUDGET EXHAUSTED` and refuses. Test scripts never
+  hit PM live unless `PM_LIVE_TESTS=1`; migrations and seed scripts never call PM.
+- **Production needs no PM variables beyond `PINBALL_MAP_API_TOKEN`.** Production is detected as
+  `NODE_ENV=production` **or** `RENDER=true` (Render sets `RENDER` on every service; neither
+  render.yaml nor the start script sets `NODE_ENV`) and is always `live`, with no fixtures, disk
+  cache or budget.
+
+Implementation notes (fix/pm-etiquette, 2026-09-26):
+- `GET /api/venues/pm-machines/:pmId` was an open proxy (unauthenticated, any integer). It now needs
+  `requireAppUser`, 30/min + 300/day per user, and an id that's linked to one of our venues or was
+  returned to this Clerk user by pm-match / nearby-venues / the photo-GPS suggestions / repair
+  searches in the last 30 min (`allowPmIds` / `pmIdAllowedFor`). Otherwise 404 `pm_id_not_offered`.
+- `getVenueRoster()` de-duplicates in flight per PM id, negatively caches a 404 for 1 h and other
+  failures (with no cached copy) for 10 min, and never writes a row for an id that didn't resolve —
+  `getPmMachinesAtLocation()` throws `not_found` for a missing location instead of returning `[]`.
+  `allowLive` lets a caller refuse the live half (the score-repair GET charges it to the repair limit).
+- The machine catalog lives in `pm_catalog_cache` (migrate16): 24 h TTL, in-flight de-dup, stale
+  served on failure, a failed refresh negatively cached 15 min (in memory and in the row, so other
+  processes see it). `GET /api/machines/search` answers 503 `catalog_unavailable` rather than
+  refetching per keystroke.
+- One per-cell cache for "PM locations near a point" (`pmLocationsNear`, 10 min, failures 2 min) is
+  shared by pm-match, nearby-venues, the photo-GPS upload path (which used to be uncached) and
+  `repair/pm-candidates`.
+- Repair routes: 20 PM-touching calls/hour per user (`repairPmLimiter`); `place-search` and
+  `pm-candidates` results cached 10 min per (venue, query), and only a cache miss is charged.
+- `POST /api/pinballmap/auth`: 5 attempts / 15 min per user and per IP (the last X-Forwarded-For
+  hop — the app doesn't set `trust proxy`). Returns only `{ username }`; the PM user token stays
+  server-side. `submit-score`: 10/min per user; the stored token is cleared only on a 401/403 that
+  isn't about our api_token — never on 429/5xx/timeout. **Open question:** submission sends
+  `user_token` in the JSON body without `user_email`; PM's docs describe `user_email` + `user_token`
+  query params. Not changed without evidence of which form their API accepts.
+- Admin health reads the stored catalog and pmClient's counters — it never calls Pinball Map.
+- Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/pmClient.test.ts src/lib/pmCaches.test.ts`.
 
 ## Venue repair (`src/lib/venueRepair.ts`, routes under `/api/venues/:id/repair/*`, added 2026-09-11)
 - Recovery path for a venue the upload flow never resolved: **1)** re-run HERE off the (possibly after-the-fact) address, **2)** link a Pinball Map location by search or manual id, **3)** re-sync the scores already logged there.

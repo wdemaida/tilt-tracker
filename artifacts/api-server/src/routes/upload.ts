@@ -12,7 +12,8 @@ import { mergeReads, mergePlayerReads, defaultPlayerIndex, templateToScore, chec
 import { getMachineScoreStats } from '../lib/machineScoreStats.js';
 import { fitUnderAnthropicLimit, TARGET_RAW_BYTES } from '../lib/imageCompress.js';
 import { getNearbyVenues, type Venue } from '../lib/hereApi.js';
-import { findNearestPmLocations, type PmLocation } from '../lib/pinballmapApi.js';
+import { type PmLocation } from '../lib/pinballmapApi.js';
+import { pmLocationsNear, allowPmIds } from '../lib/pmGuards.js';
 import { matchPmLocation } from '../lib/pmMatch.js';
 import { redactVenue, mayRevealByLocation } from '../lib/venuePrivacy.js';
 import {
@@ -137,7 +138,8 @@ async function fetchExternalVenues(lat: number, lng: number): Promise<ExternalVe
     getNearbyVenues(lat, lng),
     // Venue suggestions are the point of this call; Pinball Map ids are a bonus on top. If PM is
     // down or the api_token is missing, the user should still get their venue list.
-    findNearestPmLocations(lat, lng).catch(err => {
+    // pmLocationsNear is the per-cell cache shared with GET /api/venues/pm-match (pmGuards.ts).
+    pmLocationsNear(lat, lng).catch(err => {
       pmOk = false;
       console.error('Pinball Map lookup failed during venue suggestion:', err?.message ?? err);
       return [] as PmLocation[];
@@ -175,7 +177,7 @@ const cachedExternalVenues: ExternalLookup = async (lat, lng) => {
  * cached version; history venues are always read fresh, since they're redacted per requester.
  */
 async function suggestVenuesNear(
-  req: Request, lat: number, lng: number, external: ExternalLookup = fetchExternalVenues,
+  req: Request, lat: number, lng: number, external: ExternalLookup = cachedExternalVenues,
 ): Promise<Venue[]> {
   const { userId: clerkId } = getAuth(req);
   let requesterUserId: number | undefined;
@@ -199,7 +201,10 @@ async function suggestVenuesNear(
     v => !hereIdsSeen.has(v.hereId) && !namesSeen.has(v.name.toLowerCase())
   );
 
-  return attachPinballMapIds([...history, ...freshHere], pmLocations);
+  const suggestions = attachPinballMapIds([...history, ...freshHere], pmLocations);
+  // The machine step may read these ids' rosters next (GET /api/venues/pm-machines/:pmId).
+  allowPmIds(clerkId, suggestions.map(v => v.pinballMapId));
+  return suggestions;
 }
 
 // The wizard allows 3 items, and a video item contributes its best 3 frames (extracted in the
@@ -353,7 +358,7 @@ router.post('/nearby-venues', requireAuth, async (req, res) => {
     return res.status(429).json({ error: rateLimitMessage(decision.retryAfterMs), code: 'rate_limited' });
   }
   try {
-    res.json({ venues: await suggestVenuesNear(req, lat, lng, cachedExternalVenues) });
+    res.json({ venues: await suggestVenuesNear(req, lat, lng) });
   } catch (err: any) {
     console.error('Nearby venue lookup failed:', err?.message ?? err);
     res.status(502).json({ error: "Couldn't look up venues near you — pick one below instead" });
@@ -501,6 +506,7 @@ router.post('/', requireAuth, receivePhotos, async (req, res) => {
     const gps = gpsMeta ? { latitude: gpsMeta.latitude!, longitude: gpsMeta.longitude! } : null;
     const exifDatetime = meta.map(m => m.exifDatetime).filter((t): t is string => !!t).sort()[0] ?? null;
 
+    // Same cached lookup as "Use my current location" — it used to go uncached to HERE and PM per upload.
     const venueList: Venue[] = gps ? await suggestVenuesNear(req, gps.latitude, gps.longitude) : [];
 
     res.json({

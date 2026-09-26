@@ -1,6 +1,7 @@
 import { db, scores, machines, venueMachineHistory, venueInventory, challenges } from '@workspace/db';
 import { and, eq, count, inArray } from 'drizzle-orm';
 import { upsertMachineByName } from './machineUpsert.js';
+import { getCatalogOrNull } from './pinballMap.js';
 import type { PmLocationMachineXref } from './pinballmapApi.js';
 
 export interface RepairableVenue {
@@ -203,6 +204,8 @@ export async function applyResync(
   scopeUserId: number | null,
 ): Promise<AppliedMerge[]> {
   const applied: AppliedMerge[] = [];
+  // Fetched once for the whole loop — never per merge (no per-record fan-out).
+  const catalog = merges.length ? await getCatalogOrNull() : null;
 
   for (const merge of merges) {
     const [from] = await db.select().from(machines).where(eq(machines.id, merge.fromMachineId)).limit(1);
@@ -211,6 +214,7 @@ export async function applyResync(
     const target = await upsertMachineByName(merge.pmName, {
       manufacturer: merge.pmManufacturer,
       year: merge.pmYear,
+      catalog,
     });
     if (target.id === from.id) continue; // already canonical
 
@@ -249,10 +253,12 @@ export async function reenrichMachines(machineIds: number[]): Promise<number> {
     .from(machines)
     .where(inArray(machines.id, machineIds));
 
+  // Once for the whole loop, not per machine.
+  const catalog = await getCatalogOrNull();
   let enriched = 0;
   for (const row of rows) {
     const before = await db.select().from(machines).where(eq(machines.id, row.id)).limit(1);
-    await upsertMachineByName(row.name);
+    await upsertMachineByName(row.name, { catalog });
     const after = await db.select().from(machines).where(eq(machines.id, row.id)).limit(1);
     if (before[0]?.manufacturer !== after[0]?.manufacturer || before[0]?.year !== after[0]?.year) enriched++;
   }

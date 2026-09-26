@@ -5,7 +5,8 @@ import { spawn } from 'child_process';
 import { db, users, scores, machines, venues, stats, statHistory } from '@workspace/db';
 import { desc, asc, count, sql, eq } from 'drizzle-orm';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
-import { getAllMachines } from '../lib/pinballMap.js';
+import { getCatalogStatus } from '../lib/pinballMap.js';
+import { pmClient } from '../lib/pmClient.js';
 import { captureStatSnapshot } from '../lib/statSnapshot.js';
 
 const router = Router();
@@ -103,13 +104,26 @@ router.get('/health', async (_req, res) => {
       }
     })(),
 
-    // Pinball Map cache
+    // Pinball Map — read-only: the stored catalog and pmClient's own counters. A health page view
+    // must never cause a Pinball Map request (the old check refetched the catalog on a cold cache).
     (async () => {
       try {
-        const all = await getAllMachines();
-        return all.length > 0
-          ? { status: 'ok' as const, machineCount: all.length }
-          : { status: 'error' as const, error: 'Cache empty' };
+        const cat = await getCatalogStatus();
+        const pm = pmClient().stats();
+        const parts = [
+          `mode ${pm.mode}`,
+          `${pm.liveCallsToday} live call${pm.liveCallsToday === 1 ? '' : 's'} today (this process)`,
+          cat.fetchedAt ? `catalog from ${cat.fetchedAt.toISOString()}${cat.stale ? ' (stale)' : ''}` : 'catalog never fetched',
+        ];
+        if (pm.breakerOpenUntil) parts.push(`breaker open until ${new Date(pm.breakerOpenUntil).toISOString()} (${pm.breakerReason})`);
+        if (cat.lastError) parts.push(`last catalog error: ${cat.lastError}`);
+        const ok = cat.machineCount > 0 && !pm.breakerOpenUntil;
+        return {
+          status: ok ? 'ok' as const : 'error' as const,
+          machineCount: cat.machineCount,
+          note: parts.join(' · '),
+          ...(ok ? {} : { error: pm.breakerOpenUntil ? 'Circuit breaker open' : 'Catalog empty' }),
+        };
       } catch (err) {
         return { status: 'error' as const, error: String(err) };
       }

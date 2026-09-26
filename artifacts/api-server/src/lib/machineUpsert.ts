@@ -1,6 +1,6 @@
 import { db, machines } from '@workspace/db';
 import { sql } from 'drizzle-orm';
-import { getAllMachines } from './pinballMap.js';
+import { getCatalogOrNull, catalogIndex, type PinballMachine } from './pinballMap.js';
 
 interface UpsertMachineOptions {
   opdbId?: string;
@@ -8,14 +8,20 @@ interface UpsertMachineOptions {
   variant?: string;
   manufacturer?: string;
   year?: number;
+  /**
+   * The Pinball Map catalog, already fetched by the caller. Loops MUST pass it (fetch once, pass
+   * down) — `null` means "the caller tried and it's unavailable", so no lookup is attempted.
+   */
+  catalog?: PinballMachine[] | null;
 }
 
 export async function upsertMachineByName(name: string, opts: UpsertMachineOptions = {}) {
   const { opdbId, ipdbId, variant, manufacturer, year } = opts;
 
-  // Enrich from Pinball Map cache; caller-provided manufacturer/year are fallbacks when PM lookup misses
-  const pmAll = await getAllMachines().catch(() => []);
-  const pm = pmAll.find(m => m.name.toLowerCase() === name.toLowerCase());
+  // Enrich from the Pinball Map catalog (DB-cached, see pinballMap.ts); caller-provided
+  // manufacturer/year are fallbacks when the lookup misses.
+  const catalog = opts.catalog !== undefined ? opts.catalog : await getCatalogOrNull();
+  const pm = catalog ? catalogIndex(catalog).get(name.toLowerCase()) : undefined;
 
   const [row] = await db
     .insert(machines)

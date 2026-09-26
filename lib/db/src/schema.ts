@@ -130,6 +130,17 @@ export const pmLocationCache = pgTable('pm_location_cache', {
 
 export type PmLocationCache = typeof pmLocationCache.$inferSelect;
 
+// Pinball Map's machine catalog (machines.json), shared by every process — one row keyed 'machines'
+// (migrate16). data/fetched_at are null until the first successful fetch; last_error(_at) is the
+// negative cache for a failed refresh. See artifacts/api-server/src/lib/pinballMap.ts.
+export const pmCatalogCache = pgTable('pm_catalog_cache', {
+  key: text('key').primaryKey(),
+  data: jsonb('data'),
+  fetchedAt: timestamp('fetched_at'),
+  lastError: text('last_error'),
+  lastErrorAt: timestamp('last_error_at'),
+});
+
 export type VenueMachineHistory = typeof venueMachineHistory.$inferSelect;
 export type NewVenueMachineHistory = typeof venueMachineHistory.$inferInsert;
 
