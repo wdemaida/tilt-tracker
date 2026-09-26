@@ -343,7 +343,21 @@ export const activityEvents = pgTable('activity_events', {
   subjectIdx: index('activity_events_subject_idx').on(table.subjectUserId, table.id),
   typeIdx: index('activity_events_type_idx').on(table.type, table.id),
   targetIdx: index('activity_events_target_idx').on(table.targetType, table.targetId, table.id),
+  // Retention purge, high-volume tier: type = ANY(...) AND created_at < cutoff (migrate21).
+  typeCreatedIdx: index('activity_events_type_created_idx').on(table.type, table.createdAt),
 }));
+
+// Admin-editable server-side settings (migrate21). Defaults live in code (e.g. activityRetention.ts),
+// so an empty table = every default; a row only exists once an admin saved something or a job
+// recorded state (photo_orphans_last_run). Generic key/value so more settings can move here later.
+export const appSettings = pgTable('app_settings', {
+  key: text('key').primaryKey(),
+  value: jsonb('value').$type<unknown>().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  updatedById: integer('updated_by_id').references(() => users.id, { onDelete: 'set null' }),
+});
+
+export type AppSetting = typeof appSettings.$inferSelect;
 
 export type ActivityEvent = typeof activityEvents.$inferSelect;
 export type NewActivityEvent = typeof activityEvents.$inferInsert;
