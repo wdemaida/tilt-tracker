@@ -32,8 +32,10 @@ export function MachineThumb({ name, imageUrl, size = 'md' }: { name: string; im
 }
 
 /** Link into the create flow, prefilled. Friend-aqua outline, so it reads as a friend action. */
-export function ChallengeLink({ friend, machineId, size = 'md', label = 'Challenge', className = '' }: {
+export function ChallengeLink({ friend, machineId, size = 'md', label = 'Challenge', variant = 'outline', className = '' }: {
   friend?: string;
+  /** 'text': no border or padding — a quiet link (the machine page). */
+  variant?: 'outline' | 'text';
   machineId?: number;
   size?: 'sm' | 'md';
   label?: string;
@@ -43,11 +45,14 @@ export function ChallengeLink({ friend, machineId, size = 'md', label = 'Challen
   if (friend) q.set('friend', friend);
   if (machineId) q.set('machine', String(machineId));
   const qs = q.toString();
-  const pad = size === 'sm' ? 'px-2.5 py-1 text-[11px]' : 'px-3 py-1.5 text-xs';
+  const text = size === 'sm' ? 'text-[11px]' : 'text-xs';
+  const look = variant === 'text'
+    ? 'text-friend hover:text-friend/80'
+    : `border border-friend/40 text-friend hover:bg-friend/10 ${size === 'sm' ? 'px-2.5 py-1' : 'px-3 py-1.5'}`;
   return (
     <Link
       href={`/challenges/new${qs ? `?${qs}` : ''}`}
-      className={`inline-flex items-center gap-1.5 rounded-lg font-bold uppercase tracking-wider border border-friend/40 text-friend hover:bg-friend/10 transition-colors ${pad} ${className}`}
+      className={`inline-flex items-center gap-1.5 rounded-lg font-bold uppercase tracking-wider transition-colors ${text} ${look} ${className}`}
     >
       <Swords className="w-3.5 h-3.5" aria-hidden /> {label}
     </Link>

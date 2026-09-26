@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'wouter';
+import { useAuth } from '@clerk/clerk-react';
 import { format } from 'date-fns';
 import { ArrowLeft, Check, Clock, Crown, Flag, Loader2, Lock, MapPin, Swords, Target, Timer, X } from 'lucide-react';
 import UsernameLink from '../components/UsernameLink';
@@ -246,15 +247,19 @@ export default function ChallengePage() {
   const appUser = useAppUser();
   const now = useNow(1000);
   const valid = Number.isInteger(cid) && cid > 0;
+  // AuthGate renders its children for a moment before redirecting a signed-out visitor; don't fire a
+  // request that can only 401.
+  const { isSignedIn } = useAuth();
   const { data: c, isLoading, error } = useQuery({
     queryKey: challengeKey(cid),
     queryFn: () => api.challenges.get(cid),
-    enabled: valid,
+    enabled: valid && !!isSignedIn,
     retry: (n, e: any) => e?.status !== 404 && n < 1,
     // Keep live standings fresh while it's running; a finished one never changes.
     refetchInterval: q => (q.state.data?.status === 'active' ? 60_000 : false),
   });
 
+  if (!isSignedIn) return null;
   if (!valid || (error as any)?.status === 404) return <NotFound />;
   if (isLoading) return <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</p>;
   if (error || !c) return <p className="text-sm text-red-400">{challengeErrorText(error, 'Could not load this challenge')}</p>;

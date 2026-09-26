@@ -815,7 +815,7 @@ export default function MachinePage() {
               </p>
               {/* Quiet on purpose: a text link, not a second button beside Add Score. */}
               {myUsername && (
-                <ChallengeLink machineId={machine.id} label="Challenge a friend" size="sm" className="mt-2 border-transparent px-0 hover:bg-transparent hover:text-friend/80" />
+                <ChallengeLink machineId={machine.id} label="Challenge a friend" size="sm" variant="text" className="mt-2" />
               )}
             </div>
             <Link href="/add" className="flex items-center gap-2 px-4 py-2 rounded-lg border border-primary text-primary text-sm font-bold uppercase tracking-wider hover:bg-primary hover:text-white transition-colors flex-shrink-0">
