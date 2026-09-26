@@ -13,6 +13,9 @@ export const users = pgTable('users', {
   role: userRoleEnum('role').default('user').notNull(),
   pinballMapToken: text('pinball_map_token'),
   pinballMapUsername: text('pinball_map_username'),
+  // The email Pinball Map returned from auth_details — PM's write endpoints need it alongside the
+  // token (user_email + user_token, exact-case match). Never sent to the browser. (migrate18)
+  pinballMapEmail: text('pinball_map_email'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
