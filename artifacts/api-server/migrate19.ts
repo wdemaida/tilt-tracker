@@ -17,18 +17,6 @@
 import 'dotenv/config';
 import postgres from 'postgres';
 
-// DEV-BRANCH GUARD — deliberately refuses to run against anything but the Neon dev branch
-// (endpoint ep-late-mouse-at8antth) while this is still on feature/admin. Production is a
-// different endpoint, so running this from the production checkout (whose .env points at prod)
-// aborts here. Remove this block deliberately at ship time, when the migration is meant to hit
-// production.
-const DEV_ENDPOINT = 'ep-late-mouse-at8antth';
-const host = new URL(process.env.DATABASE_URL!).hostname;
-if (!host.startsWith(DEV_ENDPOINT)) {
-  console.error(`Refusing to run: DATABASE_URL is not the Neon dev branch (${DEV_ENDPOINT}). See the guard comment in migrate19.ts.`);
-  process.exit(1);
-}
-
 const sql = postgres(process.env.DATABASE_URL!, { onnotice: () => {} }); // re-runs print "already exists" notices
 
 await sql`
