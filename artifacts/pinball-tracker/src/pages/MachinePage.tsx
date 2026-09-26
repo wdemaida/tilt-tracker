@@ -800,14 +800,17 @@ export default function MachinePage() {
       </Link>
 
       {/* Header */}
-      <div className="flex items-start gap-5 mb-6">
+      {/* Phone: smaller type and image, and Add Score drops below the title block at full width —
+          a long name ("TRANSFORMERS: MORE THAN MEETS THE EYE (PRO)") used to push the button
+          off-screen. sm+ keeps the side-by-side layout. */}
+      <div className="flex items-start gap-4 sm:gap-5 mb-6">
         {machine.imageUrl && (
-          <img src={machine.imageUrl} alt={machine.name} className="w-24 h-24 rounded-xl object-cover border border-white/10 flex-shrink-0" />
+          <img src={machine.imageUrl} alt={machine.name} className="w-16 h-16 sm:w-24 sm:h-24 rounded-xl object-cover border border-white/10 flex-shrink-0" />
         )}
         <div className="flex-1 min-w-0">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h1 className="text-3xl font-black uppercase tracking-widest text-machine leading-tight">{machine.name}</h1>
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+            <div className="min-w-0">
+              <h1 className="text-2xl sm:text-3xl font-black uppercase tracking-wide sm:tracking-widest text-machine leading-tight sm:leading-tight [overflow-wrap:anywhere]">{machine.name}</h1>
               {(machine.manufacturer || machine.year) && (
                 <p className="text-sm text-muted-foreground mt-0.5">{[machine.manufacturer, machine.year].filter(Boolean).join(' · ')}</p>
               )}
@@ -819,7 +822,7 @@ export default function MachinePage() {
                 <ChallengeLink machineId={machine.id} label="Challenge a friend" size="sm" variant="text" className="mt-2" />
               )}
             </div>
-            <Link href="/add" className="flex items-center gap-2 px-4 py-2 rounded-lg border border-primary text-primary text-sm font-bold uppercase tracking-wider hover:bg-primary hover:text-white transition-colors flex-shrink-0">
+            <Link href="/add" className="flex items-center justify-center gap-2 w-full sm:w-auto px-4 py-2 rounded-lg border border-primary text-primary text-sm font-bold uppercase tracking-wider hover:bg-primary hover:text-white transition-colors flex-shrink-0">
               <PlusCircle className="w-4 h-4" /> Add Score
             </Link>
           </div>

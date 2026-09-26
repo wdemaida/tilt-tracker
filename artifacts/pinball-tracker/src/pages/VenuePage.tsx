@@ -176,10 +176,11 @@ export default function VenuePage() {
         </Link>
       </div>
 
-      <div className="flex items-start justify-between gap-4 mb-6">
+      <div className="flex items-start justify-between gap-3 sm:gap-4 mb-6">
         <div className="min-w-0">
-          <h1 className="text-3xl font-black uppercase tracking-widest text-venue leading-tight flex items-center gap-2">
-            {venue.name}
+          <h1 className="text-2xl sm:text-3xl font-black uppercase tracking-normal sm:tracking-widest text-venue leading-tight sm:leading-tight flex items-center gap-2">
+            {/* Own element so a long single word ("ELECTROMAGNETIC") can shrink and wrap on a phone. */}
+            <span className="min-w-0 [overflow-wrap:anywhere]">{venue.name}</span>
             {venue.isResidence && <Home className="w-5 h-5 text-venue/70 flex-shrink-0" />}
             {/* Same pencil, dialog and permission as the Venues page card (server's canEdit). */}
             {venue.canEdit && (

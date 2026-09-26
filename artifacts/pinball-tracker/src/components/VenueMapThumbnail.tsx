@@ -29,7 +29,7 @@ export default function VenueMapThumbnail({ venueId, latitude, longitude }: Venu
   if (latitude == null || longitude == null) {
     return (
       <div
-        className="w-32 h-20 flex-shrink-0 rounded-lg border border-venue/20 bg-venue/5 flex items-center justify-center"
+        className="w-20 h-14 sm:w-32 sm:h-20 flex-shrink-0 rounded-lg border border-venue/20 bg-venue/5 flex items-center justify-center"
         title="Venue address hidden by owner"
       >
         <Home className="w-8 h-8 text-venue/70" />
@@ -40,7 +40,7 @@ export default function VenueMapThumbnail({ venueId, latitude, longitude }: Venu
   return (
     <Link
       href={`/venues?view=map&venueId=${venueId}`}
-      className="w-32 h-20 flex-shrink-0 rounded-lg overflow-hidden border border-white/10 block relative isolate hover:border-venue/40 transition-colors"
+      className="w-20 h-14 sm:w-32 sm:h-20 flex-shrink-0 rounded-lg overflow-hidden border border-white/10 block relative isolate hover:border-venue/40 transition-colors"
     >
       <MapContainer
         center={[latitude, longitude]}

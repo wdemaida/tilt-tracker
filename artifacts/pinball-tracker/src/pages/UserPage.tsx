@@ -45,8 +45,8 @@ export default function UserPage() {
         <div className="w-14 h-14 rounded-full bg-card border border-white/10 flex items-center justify-center">
           <User className="w-7 h-7 text-muted-foreground" />
         </div>
-        <div>
-          <h1 className="text-3xl font-black uppercase tracking-widest text-white">{user.displayName}</h1>
+        <div className="min-w-0">
+          <h1 className="text-2xl sm:text-3xl font-black uppercase tracking-wide sm:tracking-widest text-white [overflow-wrap:anywhere]">{user.displayName}</h1>
           <p className="text-sm text-muted-foreground flex items-center gap-1.5 flex-wrap">
             <span className="text-username">@{user.username}</span>
             <PodMemberIcons pods={podMembership.get(user.username)} />
