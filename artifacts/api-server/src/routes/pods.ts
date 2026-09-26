@@ -4,6 +4,7 @@ import { and, asc, eq, inArray, ne, sql } from 'drizzle-orm';
 import { normalizePodColor, normalizePodName, nextPodColor, POD_NAME_MAX } from '../lib/podColor.js';
 import { isUniqueViolation } from '../lib/venueAddress.js';
 import { createRateLimiter } from '../lib/rateLimit.js';
+import { logActivity } from '../lib/activity.js';
 
 // Pods — private groupings of other users (feature/pods, step 2).
 //
@@ -137,6 +138,7 @@ router.post('/', async (req, res) => {
   try {
     const [created] = await db.insert(pods).values({ ownerId: appUser.id, name, color }).returning({ id: pods.id });
     const [pod] = await loadOwnedPods(appUser.id, created.id);
+    await logActivity({ type: 'pod.created', actorUserId: appUser.id, targetType: 'pod', targetId: created.id, payload: { name, color } });
     res.status(201).json(pod);
   } catch (err) {
     if (isUniqueViolation(err)) return res.status(409).json(nameTaken);
@@ -169,6 +171,10 @@ router.patch('/:id', async (req, res) => {
   try {
     await db.update(pods).set(patch).where(and(eq(pods.id, pod.id), eq(pods.ownerId, appUser.id)));
     const [updated] = await loadOwnedPods(appUser.id, pod.id);
+    await logActivity({
+      type: 'pod.updated', actorUserId: appUser.id, targetType: 'pod', targetId: pod.id,
+      payload: { ...(patch.name !== undefined && patch.name !== pod.name ? { renamedFrom: pod.name, name: patch.name } : { name: pod.name }), ...(patch.color !== undefined ? { color: patch.color } : {}) },
+    });
     res.json(updated);
   } catch (err) {
     if (isUniqueViolation(err)) return res.status(409).json(nameTaken);
@@ -184,6 +190,7 @@ router.delete('/:id', async (req, res) => {
   if (!pod) return;
   try {
     await db.delete(pods).where(and(eq(pods.id, pod.id), eq(pods.ownerId, appUser.id)));
+    await logActivity({ type: 'pod.deleted', actorUserId: appUser.id, targetType: 'pod', targetId: pod.id, payload: { name: pod.name, memberCount: pod.memberCount } });
     res.status(204).end();
   } catch (err) {
     console.error('Delete pod error:', err);
@@ -211,6 +218,9 @@ router.post('/:id/members', async (req, res) => {
       .onConflictDoNothing().returning({ userId: podMembers.userId });
     if (inserted.length) await db.update(pods).set({ updatedAt: new Date() }).where(eq(pods.id, pod.id));
     const [updated] = await loadOwnedPods(appUser.id, pod.id);
+    if (inserted.length) {
+      await logActivity({ type: 'pod.member_added', actorUserId: appUser.id, subjectUserId: userId, targetType: 'pod', targetId: pod.id, payload: { name: pod.name } });
+    }
     res.status(inserted.length ? 201 : 200).json(updated);
   } catch (err) {
     console.error('Add pod member error:', err);
@@ -234,6 +244,7 @@ router.delete('/:id/members/:userId', async (req, res) => {
     if (!removed.length) return res.status(404).json({ error: 'That user isn’t in this pod', code: 'not_a_member' });
     await db.update(pods).set({ updatedAt: new Date() }).where(eq(pods.id, pod.id));
     const [updated] = await loadOwnedPods(appUser.id, pod.id);
+    await logActivity({ type: 'pod.member_removed', actorUserId: appUser.id, subjectUserId: userId, targetType: 'pod', targetId: pod.id, payload: { name: pod.name } });
     res.json(updated);
   } catch (err) {
     console.error('Remove pod member error:', err);

@@ -1,5 +1,6 @@
 import { db, notifications } from '@workspace/db';
 import { and, eq, isNull, sql } from 'drizzle-orm';
+import { logActivity } from './activity.js';
 
 // The notifications inbox — writing side (feature/friends, phase 1). Reading is routes/notifications.ts.
 //
@@ -14,6 +15,9 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 //                                 (deduped per challenge: one unread at a time, carrying `score`)
 //   challenge_ending_soon       → each participant once, ~24h before the end (daily sweep)
 //   challenge_result            → every participant on resolution (`outcome`, `void` — retired, always false —, `abandoned`, `reason`)
+//   challenge_voided            → every participant, when an admin voids the challenge (`byAdmin: true`, no user ref)
+// Every raised notification is also written to the admin activity log as `notification.sent` — the
+// durable record, since the challenge sweep deletes read notifications after 30 days.
 // `payload` is kind-specific jsonb, and `dedupe` lets a kind say "there should only ever be one
 // unread one of me about X" — a re-sent friend request replaces the existing unread notification,
 // back at the top, instead of stacking a second one.
@@ -23,7 +27,7 @@ export type Executor = typeof db | Parameters<Parameters<typeof db.transaction>[
 export type NotificationKind =
   | 'friend_request' | 'friend_accepted'
   | 'challenge_received' | 'challenge_accepted' | 'challenge_declined' | 'challenge_cancelled'
-  | 'challenge_opponent_scored' | 'challenge_ending_soon' | 'challenge_result';
+  | 'challenge_opponent_scored' | 'challenge_ending_soon' | 'challenge_result' | 'challenge_voided';
 
 /** Who a friend notification is about, as it was at the time — enough to render and link it. */
 export interface UserRefPayload { userId: number; username: string; displayName: string }
@@ -51,7 +55,12 @@ export async function raiseNotification(
       sql`${notifications.payload} ->> ${dedupe.key} = ${String(dedupe.value)}`,
     ));
   }
-  await ex.insert(notifications).values({ userId, kind, payload });
+  const [row] = await ex.insert(notifications).values({ userId, kind, payload }).returning({ id: notifications.id });
+  // Inside the caller's transaction (a savepoint), so a rolled-back action takes its event with it.
+  await logActivity({
+    type: 'notification.sent', subjectUserId: userId, targetType: 'notification', targetId: row?.id ?? null,
+    payload: { kind, ...payload },
+  }, { tx: ex });
 }
 
 /**

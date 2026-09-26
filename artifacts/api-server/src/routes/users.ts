@@ -5,16 +5,19 @@ import { getAuth } from '@clerk/express';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { visibleScoreSql } from '../lib/venueActivity.js';
 import { hasFullPhotoSql } from '../lib/photoStore.js';
+import { logActivity, fromReq } from '../lib/activity.js';
 
 const router = Router();
 
-// GET /api/users/me — current user's profile (or null if not set up); token fields excluded
+// GET /api/users/me — current user's profile (or null if not set up); token fields excluded.
+// Deliberately NOT behind requireAppUser: a disabled account still gets its row (with disabledAt),
+// so the app can say "this account is disabled" instead of failing mysteriously.
 router.get('/me', requireAuth, async (req, res) => {
   const { userId: clerkId } = getAuth(req);
   if (!clerkId) return res.status(401).json({ error: 'Unauthorized' });
 
   const [user] = await db
-    .select({ id: users.id, clerkId: users.clerkId, username: users.username, displayName: users.displayName, role: users.role, createdAt: users.createdAt })
+    .select({ id: users.id, clerkId: users.clerkId, username: users.username, displayName: users.displayName, role: users.role, createdAt: users.createdAt, disabledAt: users.disabledAt, disabledReason: users.disabledReason })
     .from(users)
     .where(eq(users.clerkId, clerkId))
     .limit(1);
@@ -37,6 +40,10 @@ router.post('/setup', requireAuth, async (req, res) => {
     if (existing) return res.json(existing);
 
     const [user] = await db.insert(users).values({ clerkId, username: usernameClean, displayName }).returning();
+    await logActivity({
+      type: 'user.first_setup', ...fromReq(req), actorUserId: user.id, targetType: 'user', targetId: user.id,
+      payload: { username: user.username, displayName: user.displayName, clerkUserId: clerkId },
+    });
     res.status(201).json(user);
   } catch (err: any) {
     if (err?.code === '23505') return res.status(409).json({ error: 'Username already taken' });

@@ -24,6 +24,7 @@ import {
   getPhotoStore, newPhotoKey, verifyUpload, sanitizeDimension, deletePhotoBestEffort,
   UPLOAD_URL_TTL_S, VIEW_URL_TTL_S,
 } from '../lib/photoStore.js';
+import { logActivity } from '../lib/activity.js';
 
 const router = Router();
 
@@ -133,6 +134,12 @@ router.post('/:id/photo/confirm', requireAppUser, async (req, res) => {
     }
     if (outcome.kind === 'set' && outcome.previous) {
       await deletePhotoBestEffort(outcome.previous, `replace photo on score ${id}`, store);
+    }
+    if (outcome.kind === 'set') {
+      await logActivity({
+        type: outcome.previous ? 'photo.replaced' : 'photo.uploaded', actorUserId: appUser.id, targetType: 'score', targetId: id,
+        payload: { bytes: check.bytes, width, height },
+      });
     }
     res.json({ hasFullPhoto: true });
   } catch (err: any) {
