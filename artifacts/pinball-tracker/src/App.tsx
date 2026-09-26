@@ -1,4 +1,4 @@
-import { useEffect, lazy, Suspense } from 'react';
+import { useEffect } from 'react';
 import { Switch, Route, useLocation } from 'wouter';
 import { useAuth } from '@clerk/clerk-react';
 import { useQuery } from '@tanstack/react-query';
@@ -25,10 +25,6 @@ import AdminPage from './pages/AdminPage';
 import AdminHealthPage from './pages/AdminHealthPage';
 import AdminConfigPage from './pages/AdminConfigPage';
 import AdminStatsPage from './pages/AdminStatsPage';
-
-// DEV-ONLY pod color spike demo. import.meta.env.DEV is statically false in a
-// production build, so the import is dropped and the route doesn't exist.
-const PodColorsDemo = import.meta.env.DEV ? lazy(() => import('./dev/PodColorsDemo')) : null;
 
 function AuthGate({ children }: { children: React.ReactNode }) {
   const { isSignedIn, isLoaded } = useAuth();
@@ -131,11 +127,6 @@ export default function App() {
         <Route path="/admin/stats">
           <AdminGate><AdminStatsPage /></AdminGate>
         </Route>
-        {PodColorsDemo && (
-          <Route path="/dev/pod-colors">
-            <Suspense fallback={null}><PodColorsDemo /></Suspense>
-          </Route>
-        )}
         <Route component={NotFoundPage} />
       </Switch>
       </AccessGate>

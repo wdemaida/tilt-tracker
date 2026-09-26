@@ -137,10 +137,9 @@ unchanged. Keep in mind contradiction 1: as things stand it would be per-browser
 Precedence to decide in step 2: when a user is both a friend and a pod member and a pod is
 selected, the pod color should probably win, because it's the comparison the user asked for.
 
-## Demo (dev-only, delete later)
+## Demo (removed)
 
-`src/dev/PodColorsDemo.tsx` is routed at **`/dev/pod-colors`** only when `import.meta.env.DEV`
-(a lazy import in `App.tsx`). A production build drops it, which I confirmed by grepping `dist`.
-It shows chips, solid chips, labelled rows, a Recharts line chart and a scatter for 5 sample
-colors on dark and light surfaces, plus a hex-input playground. To remove it, delete the file and
-the `PodColorsDemo` lines in `App.tsx`.
+During the spike, a dev-only demo page (`src/dev/PodColorsDemo.tsx`) showed chips, solid chips,
+labelled rows, a Recharts line chart and a scatter for 5 sample colors on dark and light surfaces,
+plus a hex-input playground. It was removed before Pods shipped; it can be recovered from git
+history on `feature/pods` if needed.
