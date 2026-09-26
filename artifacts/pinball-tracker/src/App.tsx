@@ -27,6 +27,11 @@ import AdminPage from './pages/AdminPage';
 import AdminHealthPage from './pages/AdminHealthPage';
 import AdminConfigPage from './pages/AdminConfigPage';
 import AdminStatsPage from './pages/AdminStatsPage';
+import AdminUsersPage from './pages/AdminUsersPage';
+import AdminUserPage from './pages/AdminUserPage';
+import AdminActivityPage from './pages/AdminActivityPage';
+import AdminSocialPage from './pages/AdminSocialPage';
+import AdminScoresPage from './pages/AdminScoresPage';
 
 /**
  * The Map page is now the Venues page's Map view. Old links (bookmarks, shared URLs) keep working,
@@ -95,7 +100,9 @@ function AdminGate({ children }: { children: React.ReactNode }) {
     if (appUser.role !== 'admin') navigate('/');
   }, [isLoaded, isSignedIn, appUser, isLoading]);
 
-  if (!isLoaded || isLoading) return null;
+  // Render nothing until we know it's an admin, so admin pages never fire requests for anyone else
+  // (the server refuses them anyway).
+  if (!isLoaded || isLoading || !isSignedIn || appUser?.role !== 'admin') return null;
   return <>{children}</>;
 }
 
@@ -143,6 +150,21 @@ export default function App() {
         <Route path="/sign-up/*" component={SignUpPage} />
         <Route path="/admin">
           <AdminGate><AdminPage /></AdminGate>
+        </Route>
+        <Route path="/admin/users">
+          <AdminGate><AdminUsersPage /></AdminGate>
+        </Route>
+        <Route path="/admin/users/:id">
+          <AdminGate><AdminUserPage /></AdminGate>
+        </Route>
+        <Route path="/admin/activity">
+          <AdminGate><AdminActivityPage /></AdminGate>
+        </Route>
+        <Route path="/admin/social">
+          <AdminGate><AdminSocialPage /></AdminGate>
+        </Route>
+        <Route path="/admin/scores">
+          <AdminGate><AdminScoresPage /></AdminGate>
         </Route>
         <Route path="/admin/health">
           <AdminGate><AdminHealthPage /></AdminGate>
