@@ -9,7 +9,7 @@ import { MachineThumb } from '../components/ChallengeParts';
 import {
   TYPE_META, TYPE_ORDER, SCORE_RULES, challengeErrorText, invalidateChallengeQueries, formatScore, formatDuration,
 } from '../lib/challenges';
-import type { ChallengeType, CreateChallengeBody, PodUser } from '../lib/api';
+import type { ChallengeType, ChallengeVenueOption as VenueOption, CreateChallengeBody, PodUser } from '../lib/api';
 
 // /challenges/new — one form, top to bottom: who, what machine, what kind, when, where, send.
 // Prefill with `?friend=<username>&machine=<id>` (the Friends tab, a profile and a machine page link
@@ -25,7 +25,6 @@ const END_PRESETS = [
 type EndKey = (typeof END_PRESETS)[number]['key'];
 
 interface MachineOption { id: number; name: string; imageUrl: string | null; manufacturer?: string | null; year?: number | null; bestScore?: number | null; lastPlayed?: string | null }
-interface VenueOption { id: number; name: string; city?: string | null; state?: string | null; isResidence?: boolean; privacyTier?: string }
 
 function Step({ n, title, children, hint }: { n: number; title: string; hint?: React.ReactNode; children: React.ReactNode }) {
   return (
@@ -128,17 +127,26 @@ export default function NewChallengePage() {
       .map(m => allMachines.find(x => x.id === m.id) ?? m);
   }, [machineQuery, allMachines, myMachines]);
 
-  const { data: allVenues = [] } = useQuery({
-    queryKey: ['venues', 'all-for-challenge'],
-    queryFn: () => api.venues.list(false) as Promise<VenueOption[]>,
-    enabled: venueLocked,
+  // Only public venues that have the machine (in the chosen match mode) — the server re-checks on
+  // send and answers machine_not_at_venue if Pinball Map has since moved it.
+  const venueOptionsQuery = useQuery({
+    queryKey: ['challenges', 'venue-options', machineId, matchMode],
+    queryFn: () => api.challenges.venueOptions(machineId!, matchMode),
+    enabled: machineId != null,
     staleTime: 60_000,
   });
-  const publicVenues = useMemo(() => allVenues.filter(v => !v.isResidence && (v.privacyTier ?? 'full') === 'full'), [allVenues]);
+  const venueOptions = venueOptionsQuery.data ?? [];
   const venueResults = useMemo(() => {
     const q = venueQuery.trim();
-    return (q ? publicVenues.filter(v => nameMatches(v.name, q)) : publicVenues).slice(0, 8);
-  }, [venueQuery, publicVenues]);
+    return (q ? venueOptions.filter(v => nameMatches(v.name, q)) : venueOptions).slice(0, 8);
+  }, [venueQuery, venueOptions]);
+  // A different machine or match mode can rule out the venue already picked: drop it once the new
+  // list says so (and drop it outright if the machine is cleared).
+  useEffect(() => {
+    if (!venue) return;
+    if (machineId == null) { setVenue(null); return; }
+    if (venueOptionsQuery.isSuccess && !venueOptionsQuery.data.some(v => v.id === venue.id)) setVenue(null);
+  }, [venue, machineId, venueOptionsQuery.isSuccess, venueOptionsQuery.data]);
 
   // ── window ──
   const now = Date.now();
@@ -431,8 +439,9 @@ export default function NewChallengePage() {
             </div>
           ) : (
             <div className="mt-3">
-              <input type="search" value={venueQuery} onChange={e => setVenueQuery(e.target.value)} placeholder="Search public venues…"
-                aria-label="Search venues" className={inputClass} />
+              <input type="search" value={venueQuery} onChange={e => setVenueQuery(e.target.value)}
+                placeholder={machine ? `Search venues with ${machine.name}…` : 'Search public venues…'}
+                aria-label="Search venues" className={inputClass} disabled={!machine} />
               <div className="mt-2 flex flex-col gap-1">
                 {venueResults.map(v => (
                   <button key={v.id} type="button" onClick={() => { setVenue(v); setVenueQuery(''); }}
@@ -442,7 +451,17 @@ export default function NewChallengePage() {
                     {(v.city || v.state) && <span className="text-[11px] text-muted-foreground flex-shrink-0">{[v.city, v.state].filter(Boolean).join(', ')}</span>}
                   </button>
                 ))}
-                {venueResults.length === 0 && <p className="text-xs text-muted-foreground">No public venue matches. Home venues can’t be used.</p>}
+                {!machine ? (
+                  <p className="text-xs text-muted-foreground">Pick a machine first — only venues that have it can be chosen.</p>
+                ) : venueOptionsQuery.isLoading ? (
+                  <p className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="w-3 h-3 animate-spin" /> Finding venues with this machine…</p>
+                ) : venueOptionsQuery.isError ? (
+                  <p className="text-xs text-red-300">{challengeErrorText(venueOptionsQuery.error)}</p>
+                ) : venueOptions.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">No public venue on TiltTrack has {matchMode === 'game' ? 'any model of this game' : 'this exact model'} right now. Home venues can’t be used.</p>
+                ) : venueResults.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">No venue with this machine matches “{venueQuery.trim()}”.</p>
+                ) : null}
               </div>
             </div>
           )

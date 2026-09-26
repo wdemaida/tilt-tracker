@@ -1,19 +1,22 @@
 import {
   db, challenges, challengeParticipants, challengeScores, scores, machines, venues, users, friendships, notifications,
-  type Challenge,
+  venueMachineHistory, pmLocationCache, type Challenge,
 } from '@workspace/db';
 import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, lte, gt, ne, or, sql, type SQL } from 'drizzle-orm';
 import {
   computeStanding, resolveChallenge, resolutionTrigger, projectedRanks, scoreCounts, baselineFrom, bestOnMachine,
   raceTarget, matchGroupFor, pendingExpired, canAccept, canDecline, canCancel, canForfeit, phaseOf, validateCreate,
-  computeRecord, ENDING_SOON_MS,
-  type CandidateScore, type CountRule, type MatchRule, type ParticipantState, type ResolutionReason, type Outcome,
+  computeRecord, rosterHasMachine, ENDING_SOON_MS,
+  type CandidateScore, type MatchMode, type CountRule, type MatchRule, type ParticipantState, type ResolutionReason, type Outcome,
   type ChallengeRecord,
 } from './challengeRules.js';
 import { canSeeScore, type ActivityVenue } from './venueActivity.js';
 import { isPrivateVenue } from './venueAddress.js';
 import { acceptedPairSql } from './friendships.js';
 import { raiseNotification, settleNotifications, type Executor } from './notify.js';
+import { getVenueRoster } from './pmRosterCache.js';
+import { getAllMachines } from './pinballMap.js';
+import type { PmLocationMachineXref } from './pinballmapApi.js';
 
 // Challenges — database orchestration (feature/challenges, phase 2). The rules are pure, in
 // challengeRules.ts; this file loads rows, asks the rules, and writes the answers. Routes are
@@ -61,7 +64,7 @@ export type ChallengeRow = Challenge & {
   venue: { id: number; name: string } | null;
 };
 
-type ScoredCandidate = CandidateScore & { venueName: string | null };
+type ScoredCandidate = CandidateScore & { venueName: string | null; venueTimezone: string | null };
 
 export class ChallengeError extends Error {
   constructor(public status: number, public code: string, message: string) { super(message); }
@@ -126,6 +129,9 @@ async function loadCandidates(ex: Executor, rule: MatchRule, userIds: number[], 
       hasPhoto: sql<boolean>`(${scores.photoUrl} IS NOT NULL OR ${scores.photoThumbnail} IS NOT NULL)`,
       vOwnerId: venues.ownerId, vIsResidence: venues.isResidence, vTier: venues.privacyTier,
       vShow: venues.showMachinesAndScores,
+      // Shown in the venue's zone, like ScoreCard — except a hidden-tier venue's zone, which would
+      // narrow down where it is (the same CASE as GET /api/machines/:name).
+      venueTimezone: sql<string | null>`CASE WHEN ${venues.privacyTier} = 'hidden' THEN NULL ELSE ${venues.timezone} END`,
     })
     .from(scores)
     .innerJoin(machines, eq(machines.id, scores.machineId))
@@ -137,7 +143,7 @@ async function loadCandidates(ex: Executor, rule: MatchRule, userIds: number[], 
       : null;
     const visibleToOthers = audience.filter(a => a.id !== r.userId).every(a => canSeeScore({ userId: r.userId }, venue, a));
     return {
-      id: r.id, userId: r.userId, machineId: r.machineId, opdbId: r.opdbId, venueId: r.venueId, venueName: r.venueName,
+      id: r.id, userId: r.userId, machineId: r.machineId, opdbId: r.opdbId, venueId: r.venueId, venueName: r.venueName, venueTimezone: r.venueTimezone ?? null,
       score: r.score, playedAt: r.playedAt, createdAt: r.createdAt, hasPhoto: !!r.hasPhoto, visibleToOthers,
     };
   });
@@ -404,7 +410,7 @@ export interface ParticipantView {
     liveRank: number | null;
     reachedTargetAt: Date | null;
   } | null;
-  scores?: Array<{ id: number; score: number; playedAt: Date; createdAt: Date; venueId: number | null; venueName: string | null }>;
+  scores?: Array<{ id: number; score: number; playedAt: Date; createdAt: Date; venueId: number | null; venueName: string | null; venueTimezone: string | null }>;
 }
 
 export interface ChallengeView {
@@ -475,7 +481,7 @@ function buildView(c: ChallengeRow, participants: ParticipantRow[], candidates: 
       if (includeScores) {
         view.scores = (ev.counting.get(p.userId) ?? [])
           .sort((a, b) => +b.createdAt - +a.createdAt)
-          .map(s => ({ id: s.id, score: s.score, playedAt: s.playedAt, createdAt: s.createdAt, venueId: s.venueId, venueName: s.venueName }));
+          .map(s => ({ id: s.id, score: s.score, playedAt: s.playedAt, createdAt: s.createdAt, venueId: s.venueId, venueName: s.venueName, venueTimezone: s.venueTimezone }));
       }
       return view;
     }),
@@ -595,6 +601,107 @@ async function resolveInvitee(body: Record<string, unknown>): Promise<UserRef & 
   return row;
 }
 
+// ── venue lock: the venue must have the machine ─────────────────────────────
+//
+// A challenge locked to a venue that doesn't have its machine can't be played. Sources, in order
+// (any one of them is enough):
+//   1. the venue's current Pinball Map roster, when it's PM-linked — through pmRosterCache, the only
+//      sanctioned way to read one (6h cache; a stale copy during a PM outage). If Pinball Map can't
+//      be reached at all we fall through to our own data rather than block the challenge;
+//   2. venue_machine_history — a machine seen there and not since marked removed;
+//   3. a score recorded on the machine at the venue.
+// "The machine" follows the match mode: exact = that machine; game = any model in its OPDB group.
+// Pinball Map roster entries map to TiltTrack machines by name (see rosterHasMachine).
+
+/** Every TiltTrack machine the rule accepts: the machine itself, plus (game mode) its group's models. */
+async function targetMachines(rule: MatchRule): Promise<Array<{ id: number; name: string }>> {
+  return db.select({ id: machines.id, name: machines.name }).from(machines).where(rule.matchGroup
+    ? or(eq(machines.id, rule.machineId), sql`split_part(${machines.opdbId}, '-', 1) = ${rule.matchGroup}`)
+    : eq(machines.id, rule.machineId));
+}
+
+/** Pinball Map's catalog (PM machine id → opdb_id), for game-mode matches TiltTrack has no row for. */
+async function pmCatalogOpdb(rule: MatchRule): Promise<Map<number, string | null> | undefined> {
+  if (!rule.matchGroup) return undefined;
+  try {
+    return new Map((await getAllMachines()).map(m => [m.id, m.opdb_id]));
+  } catch {
+    return undefined; // name matching still works without it
+  }
+}
+
+export type VenueMachineSource = 'pinball_map' | 'history' | 'scores';
+
+/** Which source (if any) shows the venue has the rule's machine. See the block comment above. */
+export async function venueMachineSource(
+  venue: { id: number; pinballMapId: number | null }, rule: MatchRule,
+): Promise<VenueMachineSource | null> {
+  const targets = await targetMachines(rule);
+  const targetIds = targets.map(t => t.id);
+
+  if (venue.pinballMapId) {
+    try {
+      const { xrefs } = await getVenueRoster(venue.pinballMapId);
+      if (rosterHasMachine(xrefs, targets.map(t => t.name), rule.matchGroup, await pmCatalogOpdb(rule))) return 'pinball_map';
+    } catch (err) {
+      console.error('Challenge venue check: Pinball Map roster unavailable, using TiltTrack data:', err);
+    }
+  }
+
+  const [seen] = await db.select({ id: venueMachineHistory.id }).from(venueMachineHistory).where(and(
+    eq(venueMachineHistory.venueId, venue.id), isNull(venueMachineHistory.removedAt), inArray(venueMachineHistory.machineId, targetIds),
+  )).limit(1);
+  if (seen) return 'history';
+
+  const [played] = await db.select({ id: scores.id }).from(scores)
+    .where(and(eq(scores.venueId, venue.id), inArray(scores.machineId, targetIds))).limit(1);
+  if (played) return 'scores';
+  return null;
+}
+
+export interface VenueOption { id: number; name: string; city: string | null; state: string | null }
+
+/**
+ * GET /api/challenges/venue-options?machineId=&matchMode= — the public venues a challenge on this
+ * machine can be locked to. Same sources as venueMachineSource, but it reads the cached Pinball Map
+ * rosters as they are (any age) instead of fetching one per venue; POST /api/challenges re-checks
+ * the chosen venue against a fresh-enough roster.
+ */
+export async function venueOptions(query: Record<string, unknown>): Promise<VenueOption[]> {
+  const machineId = Number(query.machineId);
+  if (!Number.isInteger(machineId) || machineId <= 0) throw new ChallengeError(400, 'invalid_machine', 'machineId is required');
+  const matchMode = (query.matchMode ?? 'game') as MatchMode;
+  if (matchMode !== 'game' && matchMode !== 'exact') throw new ChallengeError(400, 'invalid_match_mode', 'matchMode must be game or exact');
+  const [machine] = await db.select({ id: machines.id, opdbId: machines.opdbId }).from(machines).where(eq(machines.id, machineId)).limit(1);
+  if (!machine) throw new ChallengeError(404, 'machine_not_found', 'Machine not found');
+
+  const rule: MatchRule = { machineId, matchGroup: matchGroupFor(matchMode, machine.opdbId) };
+  const targets = await targetMachines(rule);
+  const targetIds = targets.map(t => t.id);
+  const isPublic = and(eq(venues.isResidence, false), eq(venues.privacyTier, 'full'));
+
+  const ids = new Set<number>();
+  const cached = await db.select({ id: venues.id, roster: pmLocationCache.machines }).from(venues)
+    .innerJoin(pmLocationCache, eq(pmLocationCache.pmLocationId, venues.pinballMapId))
+    .where(isPublic);
+  if (cached.length) {
+    const catalog = await pmCatalogOpdb(rule);
+    const names = targets.map(t => t.name);
+    for (const c of cached) if (rosterHasMachine(c.roster as PmLocationMachineXref[], names, rule.matchGroup, catalog)) ids.add(c.id);
+  }
+  const seen = await db.selectDistinct({ id: venueMachineHistory.venueId }).from(venueMachineHistory)
+    .where(and(isNull(venueMachineHistory.removedAt), inArray(venueMachineHistory.machineId, targetIds)));
+  seen.forEach(r => ids.add(r.id));
+  const played = await db.selectDistinct({ id: scores.venueId }).from(scores)
+    .where(and(isNotNull(scores.venueId), inArray(scores.machineId, targetIds)));
+  played.forEach(r => r.id != null && ids.add(r.id));
+
+  if (!ids.size) return [];
+  return db.select({ id: venues.id, name: venues.name, city: venues.city, state: venues.state }).from(venues)
+    .where(and(isPublic, inArray(venues.id, [...ids])))
+    .orderBy(asc(venues.name));
+}
+
 /** POST /api/challenges */
 export async function createChallenge(me: AppUser, body: Record<string, unknown>, now = new Date()): Promise<ChallengeView> {
   const input = validateCreate(body, now);
@@ -611,18 +718,21 @@ export async function createChallenge(me: AppUser, body: Record<string, unknown>
   const [machine] = await db.select({ id: machines.id, name: machines.name, opdbId: machines.opdbId }).from(machines).where(eq(machines.id, machineId)).limit(1);
   if (!machine) throw new ChallengeError(404, 'machine_not_found', 'Machine not found');
 
+  const rule: MatchRule = { machineId: machine.id, matchGroup: matchGroupFor(v.matchMode, machine.opdbId) };
+
   let venueId: number | null = null;
   if (body.venueId !== undefined && body.venueId !== null && body.venueId !== '') {
     venueId = Number(body.venueId);
     const [venue] = Number.isInteger(venueId) && venueId > 0
-      ? await db.select({ id: venues.id, isResidence: venues.isResidence, privacyTier: venues.privacyTier }).from(venues).where(eq(venues.id, venueId)).limit(1)
+      ? await db.select({ id: venues.id, isResidence: venues.isResidence, privacyTier: venues.privacyTier, pinballMapId: venues.pinballMapId }).from(venues).where(eq(venues.id, venueId)).limit(1)
       : [];
     if (!venue) throw new ChallengeError(404, 'venue_not_found', 'Venue not found');
     // A venue lock names the venue to the other participant, so it must be a public one.
     if (isPrivateVenue(venue)) throw new ChallengeError(400, 'venue_private', 'A challenge can only be locked to a public venue');
+    if (!(await venueMachineSource(venue, rule))) {
+      throw new ChallengeError(400, 'machine_not_at_venue', 'That venue doesn’t have this machine right now');
+    }
   }
-
-  const rule: MatchRule = { machineId: machine.id, matchGroup: matchGroupFor(v.matchMode, machine.opdbId) };
   const audience = [{ id: me.id, role: me.role }, { id: friend.id, role: friend.role }];
   const creatorScores = await loadCandidates(db, rule, [me.id], audience);
 

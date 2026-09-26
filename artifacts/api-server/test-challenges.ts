@@ -11,7 +11,9 @@
 // Borrows three existing users that are in no friendship and no challenge yet (so it never disturbs
 // seeded data), makes two of them friends, and works on three throwaway `zz-challenge-test` machines.
 // At the end it deletes every challenge among those users, the scores on the throwaway machines,
-// the machines, the friendship it made, and every notification it raised for them.
+// the machines, the friendship it made, and every notification it raised for them. The venue-lock
+// checks use three throwaway `zz-challenge-test` venues (one "Pinball Map linked" through a fake
+// location id whose roster is planted in pm_location_cache, so no network call), removed at the end.
 //
 //   cd artifacts/api-server && npx tsx test-challenges.ts
 
@@ -29,7 +31,7 @@ const { default: challengesRouter } = await import('./src/routes/challenges.js')
 const { default: notificationsRouter } = await import('./src/routes/notifications.js');
 const { default: scoresRouter } = await import('./src/routes/scores.js');
 const { runChallengeSweep } = await import('./src/lib/challenges.js');
-const { db, users, friendships, notifications, challenges, challengeParticipants, challengeScores, scores, machines, venues } = await import('@workspace/db');
+const { db, users, friendships, notifications, challenges, challengeParticipants, challengeScores, scores, machines, venues, venueMachineHistory, pmLocationCache } = await import('@workspace/db');
 const { and, desc, eq, inArray, or, sql } = await import('drizzle-orm');
 
 const H = 60 * 60 * 1000;
@@ -48,8 +50,6 @@ const [{ foreign }] = await db.select({ foreign: sql<number>`count(*)::int` }).f
   .where(sql`read_at IS NOT NULL AND created_at < now() - interval '30 days'`);
 if (foreign > 0) throw new Error(`${foreign} read notifications older than 30 days already exist on dev — the sweep would delete them. Aborting.`);
 
-const [publicVenue] = await db.select({ id: venues.id, name: venues.name }).from(venues)
-  .where(sql`privacy_tier = 'full' AND NOT is_residence`).limit(1);
 const [privateVenue] = await db.select({ id: venues.id }).from(venues)
   .where(sql`privacy_tier <> 'full' OR is_residence`).limit(1);
 
@@ -91,7 +91,10 @@ const setWindow = (id: number, startsAt: Date | null, endsAt: Date) =>
   db.update(challenges).set({ startsAt, endsAt }).where(eq(challenges.id, id));
 
 let machineIds: number[] = [];
+let venueIds: number[] = [];
 let friendshipId: number | null = null;
+// A Pinball Map location id no real venue uses (checked below), for the planted roster.
+const FAKE_PM_ID = 2_147_000_000 + Math.floor(Math.random() * 400_000);
 
 try {
   // ── fixtures ───────────────────────────────────────────────────────────────
@@ -102,6 +105,25 @@ try {
   ]).returning({ id: machines.id });
   machineIds = made.map(m => m.id);
   const [PRO, PREM, OTHER] = machineIds;
+  const [pmClash] = await db.select({ id: venues.id }).from(venues).where(eq(venues.pinballMapId, FAKE_PM_ID)).limit(1);
+  if (pmClash) throw new Error(`Fake Pinball Map id ${FAKE_PM_ID} is taken — rerun`);
+  // HIST: machine history says the Premium is there (and the "other" machine was, but was removed).
+  // PLAYED: no history, but alice logged a score on the "other" machine there.
+  // PMV: "linked" to Pinball Map; its (planted, fresh) roster lists the Pro.
+  const madeVenues = await db.insert(venues).values([
+    { name: 'zz-challenge-test venue (history)' },
+    { name: 'zz-challenge-test venue (played)' },
+    { name: 'zz-challenge-test venue (pinball map)', pinballMapId: FAKE_PM_ID },
+  ]).returning({ id: venues.id, name: venues.name });
+  venueIds = madeVenues.map(v => v.id);
+  const [HIST, PLAYED, PMV] = madeVenues;
+  await db.insert(venueMachineHistory).values([
+    { venueId: HIST.id, machineId: PREM },
+    { venueId: HIST.id, machineId: OTHER, removedAt: new Date() },
+  ]);
+  await db.insert(scores).values({ userId: alice.id, machineId: OTHER, venueId: PLAYED.id, venueName: PLAYED.name, score: 1234, playedAt: new Date(Date.now() - 20 * 24 * H), createdAt: new Date(Date.now() - 20 * 24 * H) });
+  await db.insert(pmLocationCache).values({ pmLocationId: FAKE_PM_ID, machines: [{ id: 0, machine: { id: 0, name: 'zz-challenge-test (Pro)' } }], fetchedAt: new Date() });
+
   const [f] = await db.insert(friendships).values({ requesterId: alice.id, addresseeId: bob.id, status: 'accepted', respondedAt: new Date() }).returning({ id: friendships.id });
   friendshipId = f.id;
 
@@ -134,6 +156,37 @@ try {
     r = await post(alice, { friendId: bob.id, type: 'high_score', venueId: privateVenue.id });
     check('lock to a private venue → 400 venue_private', r.status === 400 && r.body?.code === 'venue_private', r);
   }
+
+  // ── venue lock: the venue must have the machine ────────────────────────────
+  const lockTo = async (label: string, venueId: number, body: Record<string, unknown>, ok: boolean) => {
+    const res = await post(alice, { friendId: bob.id, type: 'high_score', venueId, ...body });
+    check(label, ok ? res.status === 201 && res.body?.venue?.id === venueId : res.status === 400 && res.body?.code === 'machine_not_at_venue', res);
+    if (res.status === 201) await call(alice, 'POST', `/challenges/${res.body.id}/cancel`);
+  };
+  await lockTo('venue lock, game mode: another model of the game there (history) → 201', HIST.id, { matchMode: 'game' }, true);
+  await lockTo('venue lock, exact mode: only another model there → 400 machine_not_at_venue', HIST.id, { matchMode: 'exact' }, false);
+  await lockTo('venue lock: machine history marked removed → 400', HIST.id, { machineId: OTHER, matchMode: 'exact' }, false);
+  await lockTo('venue lock: a score on the machine there → 201', PLAYED.id, { machineId: OTHER, matchMode: 'exact' }, true);
+  await lockTo('venue lock: nothing shows the machine there → 400', PLAYED.id, { matchMode: 'exact' }, false);
+  await lockTo('venue lock: Pinball Map roster lists it → 201', PMV.id, { matchMode: 'exact' }, true);
+  await lockTo('venue lock: Pinball Map roster lacks it → 400', PMV.id, { machineId: OTHER, matchMode: 'exact' }, false);
+  const optionIds = async (machineId: number | string, matchMode: string) =>
+    new Set(((await call(alice, 'GET', `/challenges/venue-options?machineId=${machineId}&matchMode=${matchMode}`)).body ?? []).map((v: any) => v.id));
+  let opts = await optionIds(PRO, 'game');
+  check('venue options (Pro, game): history + Pinball Map venues, not the other', opts.has(HIST.id) && opts.has(PMV.id) && !opts.has(PLAYED.id), [...opts]);
+  opts = await optionIds(PRO, 'exact');
+  check('venue options (Pro, exact): Pinball Map venue only', opts.has(PMV.id) && !opts.has(HIST.id) && !opts.has(PLAYED.id), [...opts]);
+  opts = await optionIds(OTHER, 'exact');
+  check('venue options (other): where it was played, not where it was removed', opts.has(PLAYED.id) && !opts.has(HIST.id) && !opts.has(PMV.id), [...opts]);
+  if (privateVenue) {
+    const [privMachine] = await db.select({ machineId: scores.machineId }).from(scores).where(eq(scores.venueId, privateVenue.id)).limit(1);
+    if (privMachine) {
+      opts = await optionIds(privMachine.machineId, 'exact');
+      check('venue options never include a private venue', !opts.has(privateVenue.id), [...opts]);
+    }
+  }
+  r = await call(alice, 'GET', '/challenges/venue-options?machineId=abc');
+  check('venue options without a machine → 400 invalid_machine', r.status === 400 && r.body?.code === 'invalid_machine', r);
 
   // ── decline ────────────────────────────────────────────────────────────────
   r = await post(alice, { friendUsername: bob.username, type: 'high_score' });
@@ -354,11 +407,13 @@ try {
   await call(alice, 'POST', `/challenges/${miCarol}/cancel`);
 
   // ── average ────────────────────────────────────────────────────────────────
-  r = await post(alice, { friendId: bob.id, type: 'average', minPlays: 3, venueId: publicVenue?.id });
-  check('average with min plays + venue lock', r.status === 201 && r.body?.minPlays === 3 && r.body?.venue?.id === publicVenue?.id, r.body);
+  // Locked to the history venue: game mode, and only the Premium is there — that's enough.
+  const [lockVenue] = await db.select({ id: venues.id, name: venues.name }).from(venues).where(eq(venues.id, venueIds[0]));
+  r = await post(alice, { friendId: bob.id, type: 'average', minPlays: 3, venueId: lockVenue.id });
+  check('average with min plays + venue lock', r.status === 201 && r.body?.minPlays === 3 && r.body?.venue?.id === lockVenue.id, r.body);
   const avg = r.body.id;
   await call(bob, 'POST', `/challenges/${avg}/accept`);
-  const atVenue = { venueId: publicVenue?.id, venueName: publicVenue?.name };
+  const atVenue = { venueId: lockVenue.id, venueName: lockVenue.name };
   for (const v of [1000, 2000, 3000]) await upload(alice, { score: v, ...atVenue });   // mean 2000, qualified
   for (const v of [9000, 9000]) await upload(bob, { score: v, ...atVenue });          // mean 9000, only 2
   await upload(bob, { score: 9000 });                                                  // no venue → doesn't count
@@ -419,6 +474,15 @@ try {
   if (cids.length) await db.delete(challenges).where(inArray(challenges.id, cids)); // cascades participants + challenge_scores
   if (machineIds.length) {
     await db.delete(scores).where(inArray(scores.machineId, machineIds));
+  }
+  if (venueIds.length) {
+    await db.delete(scores).where(inArray(scores.venueId, venueIds));
+    await db.delete(venueMachineHistory).where(inArray(venueMachineHistory.venueId, venueIds));
+    await db.delete(venues).where(inArray(venues.id, venueIds));
+  }
+  await db.delete(pmLocationCache).where(eq(pmLocationCache.pmLocationId, FAKE_PM_ID));
+  if (machineIds.length) {
+    await db.delete(venueMachineHistory).where(inArray(venueMachineHistory.machineId, machineIds));
     await db.delete(machines).where(inArray(machines.id, machineIds));
   }
   await db.delete(friendships).where(and(inArray(friendships.requesterId, ids), inArray(friendships.addresseeId, ids)));

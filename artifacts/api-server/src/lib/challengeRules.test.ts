@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  opdbGroup, matchGroupFor, machineMatches, exclusionReason, scoreCounts, baselineFrom, bestOnMachine,
+  opdbGroup, matchGroupFor, machineMatches, rosterHasMachine, exclusionReason, scoreCounts, baselineFrom, bestOnMachine,
   raceTarget, computeStanding, resolveChallenge, resolutionTrigger, raceWinner, projectedRanks,
   pendingExpired, canAccept, canDecline, canCancel, canForfeit, phaseOf, validateCreate, computeRecord,
   MAX_WINDOW_DAYS, MIN_PLAYS,
@@ -65,6 +65,30 @@ test('game mode matches every model of the game; exact matches only that machine
   const fallback = { machineId: NO_OPDB.id, matchGroup: matchGroupFor('game', null) };
   assert.ok(machineMatches(fallback, noOpdb));
   assert.ok(!machineMatches(fallback, pro));
+});
+
+// ── venue lock: does a Pinball Map roster carry the machine? ─────────────────
+
+test('rosterHasMachine: exact mode matches the machine by name, case-insensitively', () => {
+  const roster = [{ machine: { id: 900, name: 'The Munsters (Pro)' } }, { machine: { id: 901, name: 'Godzilla (Premium)' } }];
+  assert.ok(rosterHasMachine(roster, ['the munsters (pro) '], null));
+  assert.ok(!rosterHasMachine(roster, ['The Munsters (Premium)'], null));
+  assert.ok(!rosterHasMachine([], ['The Munsters (Pro)'], null));
+});
+
+test('rosterHasMachine: game mode matches another model of the game', () => {
+  // The roster has only the Premium; the challenge is on the Pro. Its target names include every
+  // TiltTrack model in the group...
+  const roster = [{ machine: { id: 901, name: 'The Munsters (Premium)' } }];
+  assert.ok(rosterHasMachine(roster, ['The Munsters (Pro)', 'The Munsters (Premium)'], 'GbPde'));
+  // ...and a model TiltTrack has never seen matches through Pinball Map's catalog.
+  const catalog = new Map<number, string | null>([[901, MUNSTERS_PREM.opdb], [902, OTHER.opdb]]);
+  assert.ok(rosterHasMachine(roster, ['The Munsters (Pro)'], 'GbPde', catalog));
+  assert.ok(!rosterHasMachine([{ machine: { id: 902, name: 'Something else' } }], ['The Munsters (Pro)'], 'GbPde', catalog));
+  // Exact mode never consults the catalog.
+  assert.ok(!rosterHasMachine(roster, ['The Munsters (Pro)'], null, catalog));
+  // No catalog (Pinball Map unreachable): name match only.
+  assert.ok(!rosterHasMachine(roster, ['The Munsters (Pro)'], 'GbPde'));
 });
 
 // ── what counts ──────────────────────────────────────────────────────────────

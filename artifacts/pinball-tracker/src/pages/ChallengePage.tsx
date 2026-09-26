@@ -8,7 +8,7 @@ import UsernameLink from '../components/UsernameLink';
 import { MachineThumb, OutcomeChip } from '../components/ChallengeParts';
 import { useApi } from '../lib/useApi';
 import { useAppUser } from '../lib/useAppUser';
-import { formatScoreTime } from '../lib/scoreTime';
+import { formatScoreTime, zoneAbbreviation } from '../lib/scoreTime';
 import {
   TYPE_META, SCORE_RULES, challengeKey, invalidateChallengeQueries, challengeErrorText, meAndThem, formatScore,
   formatResult, formatDuration, useNow, isAbandoned, historyOutcome, outcomeMeta,
@@ -146,12 +146,16 @@ function ScoreList({ c, p, isMe }: { c: Challenge; p: ChallengeParticipant; isMe
         <p className="text-xs text-muted-foreground">None yet.</p>
       ) : (
         <ul className="flex flex-col gap-1.5">
-          {list.map(s => (
+          {list.map(s => {
+            // Venue-local time, with the zone only when it differs from the reader's (as ScoreCard).
+            const zone = zoneAbbreviation(s.playedAt, s.venueTimezone);
+            return (
             <li key={s.id} className="rounded-lg border border-white/10 bg-card px-3 py-2 flex items-center gap-3">
               <div className="flex-1 min-w-0">
                 <p className="text-[11px] text-muted-foreground flex items-center gap-1">
                   <Clock className="w-3 h-3 flex-shrink-0" aria-hidden />
-                  {formatScoreTime(s.playedAt, null, 'MMM d · h:mm a')}
+                  {formatScoreTime(s.playedAt, s.venueTimezone, 'MMM d · h:mm a')}
+                  {zone && <span className="text-muted-foreground/60">{zone}</span>}
                 </p>
                 {s.venueName && (
                   <p className="text-[11px] text-venue flex items-center gap-1 min-w-0">
@@ -166,7 +170,8 @@ function ScoreList({ c, p, isMe }: { c: Challenge; p: ChallengeParticipant; isMe
                 {formatScore(s.score)}
               </Link>
             </li>
-          ))}
+            );
+          })}
         </ul>
       )}
     </div>

@@ -80,6 +80,28 @@ export function machineMatches(rule: MatchRule, score: { machineId: number; opdb
   return score.machineId === rule.machineId;
 }
 
+/**
+ * Does a Pinball Map roster carry a challenge's machine? (The venue-lock check.) Roster entries are
+ * Pinball Map machines, which reach TiltTrack's machines table by name (syncVenueMachineHistory →
+ * upsertMachineByName), so the match is by name against `targetNames` — every TiltTrack machine the
+ * rule accepts (the challenge's machine in exact mode; every model in its OPDB group in game mode),
+ * case-insensitive. In game mode a roster model TiltTrack has never seen can still match through
+ * Pinball Map's own catalog (`catalogOpdbByPmId`: PM machine id → opdb_id), when that's available.
+ */
+export function rosterHasMachine(
+  roster: Array<{ machine: { id: number; name: string } }>,
+  targetNames: string[],
+  matchGroup: string | null,
+  catalogOpdbByPmId?: Map<number, string | null>,
+): boolean {
+  const names = new Set(targetNames.map(n => n.trim().toLowerCase()));
+  return roster.some(x => {
+    if (names.has(String(x.machine?.name ?? '').trim().toLowerCase())) return true;
+    if (!matchGroup || !catalogOpdbByPmId) return false;
+    return opdbGroup(catalogOpdbByPmId.get(x.machine?.id) ?? null) === matchGroup;
+  });
+}
+
 // ── what counts ──────────────────────────────────────────────────────────────
 
 export interface CandidateScore {

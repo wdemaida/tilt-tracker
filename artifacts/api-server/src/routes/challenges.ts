@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import {
-  ChallengeError, createChallenge, actOnChallenge, getChallenge, listChallenges, getRecord, type ListFilter,
+  ChallengeError, createChallenge, actOnChallenge, getChallenge, listChallenges, getRecord, venueOptions, type ListFilter,
 } from '../lib/challenges.js';
 
 // Challenges (feature/challenges, phase 2). Rules: lib/challengeRules.ts; orchestration:
@@ -44,6 +44,15 @@ router.get('/record/:username', async (req, res) => {
   try {
     res.json(await getRecord(req.params.username, (req as any).appUser));
   } catch (err) { fail(res, err, 'Load challenge record'); }
+});
+
+// GET /api/challenges/venue-options?machineId=&matchMode=game|exact — public venues that have the
+// machine (Pinball Map roster, machine history or a score there), for the create form's venue lock.
+// Declared before /:id so "venue-options" isn't read as an id.
+router.get('/venue-options', async (req, res) => {
+  try {
+    res.json(await venueOptions(req.query as Record<string, unknown>));
+  } catch (err) { fail(res, err, 'Load venue options'); }
 });
 
 // GET /api/challenges/:id — detail with live standings and each participant's counting scores.

@@ -153,8 +153,11 @@ export interface ChallengeParticipant {
     reachedTargetAt: string | null;
   } | null;
   /** Detail only: the scores that count, newest upload first. */
-  scores?: Array<{ id: number; score: number; playedAt: string; createdAt: string; venueId: number | null; venueName: string | null }>;
+  scores?: Array<{ id: number; score: number; playedAt: string; createdAt: string; venueId: number | null; venueName: string | null; venueTimezone: string | null }>;
 }
+
+/** GET /api/challenges/venue-options — a public venue that has the challenge's machine. */
+export interface ChallengeVenueOption { id: number; name: string; city: string | null; state: string | null }
 
 export interface Challenge {
   id: number;
@@ -328,6 +331,10 @@ export function createApi(getToken: () => Promise<string | null>) {
       get: async (id: number) => request<Challenge>(`/challenges/${id}`, undefined, await tok()),
       create: async (body: CreateChallengeBody) =>
         request<Challenge>('/challenges', { method: 'POST', body: JSON.stringify(body) }, await tok()),
+      // Public venues a challenge on this machine can be locked to (they have it, per Pinball Map,
+      // machine history or a score there). The server re-checks on create (machine_not_at_venue).
+      venueOptions: async (machineId: number, matchMode: 'game' | 'exact') =>
+        request<ChallengeVenueOption[]>(`/challenges/venue-options?machineId=${machineId}&matchMode=${matchMode}`, undefined, await tok()),
       act: async (id: number, action: 'accept' | 'decline' | 'cancel' | 'forfeit') =>
         request<Challenge>(`/challenges/${id}/${action}`, { method: 'POST' }, await tok()),
       // No username = your own record (head-to-head vs everyone).

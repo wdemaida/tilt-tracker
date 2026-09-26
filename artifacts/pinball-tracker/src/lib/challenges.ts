@@ -130,6 +130,7 @@ const ERROR_COPY: Record<string, string> = {
   machine_not_found: 'That machine isn’t on TiltTrack any more.',
   venue_not_found: 'That venue isn’t on TiltTrack any more.',
   venue_private: 'A challenge can only be locked to a public venue.',
+  machine_not_at_venue: 'That venue doesn’t have this machine right now.',
   race_target_required: 'You have no score on this machine to beat yet — pick a number instead.',
   no_baseline: 'Most improved needs a score of yours on this machine from before the challenge — log one first.',
   creator_no_baseline: 'The challenger no longer has an earlier score on this machine, so improvement can’t be measured.',

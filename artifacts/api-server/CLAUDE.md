@@ -442,6 +442,13 @@
   [starts_at, ends_at], and visible to every other participant (`canSeeScore`) — a score at a home
   venue with activity hidden doesn't count. **"Has a photo" = `photo_url` OR `photo_thumbnail`**:
   the client only ever sends the data-URL thumbnail; `photo_url` is never written.
+- **A venue lock must have the machine** (`venueMachineSource`, 400 `machine_not_at_venue`). Sources,
+  any one is enough: the venue's Pinball Map roster via `pmRosterCache` (PM-linked venues; a PM
+  failure falls through rather than blocking), then `venue_machine_history` rows not removed, then
+  a score on the machine there. Match mode applies: 'game' = any model in the OPDB group; roster
+  entries match TiltTrack machines by name, plus PM's catalog `opdb_id` in game mode
+  (`rosterHasMachine`, pure). The create form's picker uses `GET /api/challenges/venue-options`
+  (same sources, but reads cached rosters at any age instead of fetching one per venue).
 - **The lock**: the counting scores are recorded in `challenge_scores` every time a challenge is
   synced (so the moment one is uploaded). PATCH / DELETE / per-score machine repair answer 409
   `score_locked_by_challenge`, admins included; the FK has no ON DELETE, so the DB refuses too.
