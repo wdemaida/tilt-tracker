@@ -13,7 +13,7 @@ import {
   redactVenue, canSeeVenueLinkage, exactVenueNameKey, isPrivateTier, linkageClearedForPrivacy,
 } from '../lib/venuePrivacy.js';
 import { createRateLimiter } from '../lib/rateLimit.js';
-import { hasFullPhotoSql } from '../lib/photoStore.js';
+import { hasFullPhotoSql, hasThumbnailSql } from '../lib/photoStore.js';
 import { canRepairVenue, buildResyncPreview, applyResync, reenrichMachines } from '../lib/venueRepair.js';
 import {
   addressResolutionBlocker, pmLocationToPlace, formatPmAddress, buildManualAddressQuery,
@@ -600,6 +600,7 @@ router.get('/:id/scores', async (req, res) => {
         username: users.username,
         displayName: users.displayName,
         hasFullPhoto: hasFullPhotoSql,
+        hasThumbnail: hasThumbnailSql,
         group: scoreGroupSql(scope, requester),
       })
       .from(scores)

@@ -4,7 +4,9 @@
 // test-challenges.ts (req.appUser + a req.auth() answering the test user's clerk id; no header =
 // guest). Then, for real: presigned PUT → R2 → confirm (HeadObject) → list shows hasFullPhoto and no
 // key → guest GET signs a URL whose bytes match → replace deletes the old object → hidden home-venue
-// score is a 404 to strangers and guests → DELETE /api/scores/:id removes the object.
+// score is a 404 to strangers and guests → a 90-day-old thumbnail-only score answers url:null + its
+// thumbnail (canUpload for the owner only) and then takes a full photo → DELETE /api/scores/:id
+// removes the object.
 //
 // Borrows two existing non-admin users (the owner and a stranger), and makes one throwaway
 // `zz-photo-test` machine and one hidden home venue owned by the owner. Everything it creates —
@@ -173,6 +175,40 @@ try {
 
   const none = await call(null, 'GET', `/scores/2147483000/photo`);
   check('unknown score → 404', none.status === 404, none);
+
+  // ── an older, thumbnail-only score: view it, then attach the full photo later ──
+  const longAgo = new Date(Date.now() - 90 * 24 * 3600_000);
+  const thumbUrl = `data:image/jpeg;base64,${(await jpeg(4)).toString('base64')}`;
+  const [old] = await db.insert(scores).values({
+    userId: owner.id, machineId, score: 424242, playedAt: longAgo, createdAt: longAgo, photoThumbnail: thumbUrl,
+  }).returning();
+  scoreIds.push(old.id);
+  everScoreIds.add(old.id);
+  const tGuest = await call(null, 'GET', `/scores/${old.id}/photo`);
+  check('thumbnail-only: guest GET /photo → url null + thumbnail, canUpload false',
+    tGuest.status === 200 && tGuest.body.url === null && tGuest.body.thumbnail === thumbUrl && tGuest.body.canUpload === false, tGuest.body);
+  const tStranger = await call(stranger, 'GET', `/scores/${old.id}/photo`);
+  check('thumbnail-only: stranger canUpload false', tStranger.status === 200 && tStranger.body.canUpload === false, tStranger.body);
+  const tOwner = await call(owner, 'GET', `/scores/${old.id}/photo`);
+  check('thumbnail-only: owner canUpload true', tOwner.status === 200 && tOwner.body.canUpload === true, tOwner.body);
+
+  const { u: uo, put: puto } = await uploadVia(owner, old.id, await jpeg(5));
+  check('owner gets an upload URL for a 90-day-old score and the PUT succeeds', uo.status === 200 && !!puto?.ok, uo);
+  const co = await call(owner, 'POST', `/scores/${old.id}/photo/confirm`, { key: uo.body?.key, width: 64, height: 48 });
+  check('confirm attaches the full photo to the older score', co.status === 200 && co.body.hasFullPhoto === true, co);
+  const oView = await call(null, 'GET', `/scores/${old.id}/photo`);
+  check('older score now signs a URL, no thumbnail in the response', oView.status === 200 && typeof oView.body.url === 'string' && oView.body.thumbnail === null, oView.body);
+  const oOwner = await call(owner, 'GET', `/scores/${old.id}/photo`);
+  check('owner may still replace it (not challenge-locked) → canUpload true', oOwner.body?.canUpload === true, oOwner.body);
+  const oList = (await call(null, 'GET', '/scores')).body as any[];
+  const oListed = oList.find(s => s.id === old.id);
+  check('list shows the older score with hasFullPhoto=true', oListed?.hasFullPhoto === true, oListed);
+
+  const [bare] = await db.insert(scores).values({ userId: owner.id, machineId, score: 111, playedAt: longAgo }).returning();
+  scoreIds.push(bare.id);
+  everScoreIds.add(bare.id);
+  const bareView = await call(owner, 'GET', `/scores/${bare.id}/photo`);
+  check('a score with no photo at all → 404, even for its owner', bareView.status === 404, bareView);
 
   // ── delete removes the object ──────────────────────────────────────────────
   const del = await call(owner, 'DELETE', `/scores/${sid}`);

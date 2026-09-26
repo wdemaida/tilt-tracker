@@ -4,7 +4,7 @@ import { eq, desc, sql, and } from 'drizzle-orm';
 import { getAuth } from '@clerk/express';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { visibleScoreSql } from '../lib/venueActivity.js';
-import { hasFullPhotoSql } from '../lib/photoStore.js';
+import { hasFullPhotoSql, hasThumbnailSql } from '../lib/photoStore.js';
 
 const router = Router();
 
@@ -73,6 +73,7 @@ router.get('/:username', async (req, res) => {
         venueIsResidence: venues.isResidence,
         photoUrl: scores.photoUrl,
         hasFullPhoto: hasFullPhotoSql,
+        hasThumbnail: hasThumbnailSql,
         machineName: machines.name,
         machineImageUrl: machines.imageUrl,
       })

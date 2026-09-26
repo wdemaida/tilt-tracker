@@ -65,7 +65,7 @@ export type ChallengeRow = Challenge & {
   venue: { id: number; name: string } | null;
 };
 
-type ScoredCandidate = CandidateScore & { venueName: string | null; venueTimezone: string | null; hasFullPhoto: boolean };
+type ScoredCandidate = CandidateScore & { venueName: string | null; venueTimezone: string | null; hasFullPhoto: boolean; hasThumbnail: boolean };
 
 export class ChallengeError extends Error {
   constructor(public status: number, public code: string, message: string) { super(message); }
@@ -130,6 +130,9 @@ async function loadCandidates(ex: Executor, rule: MatchRule, userIds: number[], 
       hasPhoto: sql<boolean>`(${scores.photoUrl} IS NOT NULL OR ${scores.photoThumbnail} IS NOT NULL)`,
       // Full-size photo on R2 (display only — never part of the "has a photo" rule above).
       hasFullPhoto: sql<boolean>`(${scores.photoKey} IS NOT NULL)`,
+      // The data-URL thumbnail alone (not photo_url, which dev seed scripts fill) — lets the list offer
+      // the viewer for a thumbnail-only score.
+      hasThumbnail: sql<boolean>`(${scores.photoThumbnail} IS NOT NULL)`,
       vOwnerId: venues.ownerId, vIsResidence: venues.isResidence, vTier: venues.privacyTier,
       vShow: venues.showMachinesAndScores,
       // Shown in the venue's zone, like ScoreCard — except a hidden-tier venue's zone, which would
@@ -147,7 +150,7 @@ async function loadCandidates(ex: Executor, rule: MatchRule, userIds: number[], 
     const visibleToOthers = audience.filter(a => a.id !== r.userId).every(a => canSeeScore({ userId: r.userId }, venue, a));
     return {
       id: r.id, userId: r.userId, machineId: r.machineId, opdbId: r.opdbId, venueId: r.venueId, venueName: r.venueName, venueTimezone: r.venueTimezone ?? null,
-      score: r.score, playedAt: r.playedAt, createdAt: r.createdAt, hasPhoto: !!r.hasPhoto, hasFullPhoto: !!r.hasFullPhoto, visibleToOthers,
+      score: r.score, playedAt: r.playedAt, createdAt: r.createdAt, hasPhoto: !!r.hasPhoto, hasFullPhoto: !!r.hasFullPhoto, hasThumbnail: !!r.hasThumbnail, visibleToOthers,
     };
   });
 }
@@ -414,7 +417,7 @@ export interface ParticipantView {
     liveRank: number | null;
     reachedTargetAt: Date | null;
   } | null;
-  scores?: Array<{ id: number; score: number; playedAt: Date; createdAt: Date; venueId: number | null; venueName: string | null; venueTimezone: string | null; hasFullPhoto: boolean }>;
+  scores?: Array<{ id: number; score: number; playedAt: Date; createdAt: Date; venueId: number | null; venueName: string | null; venueTimezone: string | null; hasFullPhoto: boolean; hasThumbnail: boolean }>;
 }
 
 export interface ChallengeView {
@@ -489,7 +492,7 @@ function buildView(c: ChallengeRow, participants: ParticipantRow[], candidates: 
       if (includeScores) {
         view.scores = (ev.counting.get(p.userId) ?? [])
           .sort((a, b) => +b.createdAt - +a.createdAt)
-          .map(s => ({ id: s.id, score: s.score, playedAt: s.playedAt, createdAt: s.createdAt, venueId: s.venueId, venueName: s.venueName, venueTimezone: s.venueTimezone, hasFullPhoto: s.hasFullPhoto }));
+          .map(s => ({ id: s.id, score: s.score, playedAt: s.playedAt, createdAt: s.createdAt, venueId: s.venueId, venueName: s.venueName, venueTimezone: s.venueTimezone, hasFullPhoto: s.hasFullPhoto, hasThumbnail: s.hasThumbnail }));
       }
       return view;
     }),
