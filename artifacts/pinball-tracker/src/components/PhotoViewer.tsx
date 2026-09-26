@@ -1,7 +1,13 @@
 // Full-screen viewer for a score's full-size photo (Cloudflare R2 — see src/lib/fullSizePhoto.ts).
 //
 // Opens instantly: the list's thumbnail (when there is one) is blown up and blurred as a placeholder
-// while GET /api/scores/:id/photo signs a URL, then the full image cross-fades in. Zoom and pan are
+// while GET /api/scores/:id/photo signs a URL, then the full image cross-fades in.
+//
+// Thumbnail-only scores (no full-size photo was saved — e.g. posted from an old cached app) open here
+// too: the endpoint answers `url: null` plus the thumbnail, which is shown unblurred but capped at
+// THUMB_MAX_UPSCALE × its natural size so it isn't smeared across a desktop screen, with a note saying
+// so. When the server says `canUpload` (the viewer owns the score), the viewer offers "Upload the
+// full-size photo" (or a quiet "Replace photo") — see FullPhotoUpload.tsx. Zoom and pan are
 // a few lines of pointer maths rather than a library: pinch / drag on touch, wheel / click on desktop,
 // double-tap to toggle. Closes with ×, Escape, a tap on the backdrop, or a swipe down at 1×.
 //
@@ -11,8 +17,10 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useQuery } from '@tanstack/react-query';
+import { useAuth } from '@clerk/clerk-react';
 import { Camera, Loader2, X, AlertTriangle } from 'lucide-react';
 import { useApi } from '../lib/useApi';
+import { FullPhotoUploadButton } from './FullPhotoUpload';
 import { formatScoreTime } from '../lib/scoreTime';
 
 export interface PhotoCaption {
@@ -25,7 +33,8 @@ export interface PhotoCaption {
 
 interface Props {
   scoreId: number;
-  /** The list's data-URL thumbnail, shown blurred until the full image arrives. */
+  /** The list's data-URL thumbnail, shown blurred until the full image arrives. Lists that don't
+   *  carry thumbnails omit it; a thumbnail-only score's arrives with the photo response instead. */
   thumbnail?: string | null;
   caption?: PhotoCaption;
   onClose: () => void;
@@ -35,6 +44,8 @@ const MAX_SCALE = 6;
 const DOUBLE_TAP_MS = 300;
 const TAP_SLOP_PX = 8;
 const DISMISS_DRAG_PX = 110;
+/** A thumbnail-only score is shown at most this many times its natural (~160px) size. */
+const THUMB_MAX_UPSCALE = 3;
 
 interface View { s: number; x: number; y: number }
 const IDENTITY: View = { s: 1, x: 0, y: 0 };
@@ -51,9 +62,12 @@ export function captionText(c: PhotoCaption | undefined): string {
 
 export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Props) {
   const api = useApi();
+  // `canUpload` depends on who's asking, so the viewer's identity is part of the key. Invalidating
+  // ['score-photo', id] (FullPhotoUpload) still matches every variant.
+  const { userId } = useAuth();
   // The signed URL lives ~10 minutes; refetch well inside that.
   const { data, isError } = useQuery({
-    queryKey: ['score-photo', scoreId],
+    queryKey: ['score-photo', scoreId, userId ?? 'guest'],
     queryFn: () => api.scores.photo(scoreId),
     staleTime: 4 * 60_000,
     gcTime: 8 * 60_000,
@@ -62,15 +76,26 @@ export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Pr
   const [loaded, setLoaded] = useState(false);
   const [imgError, setImgError] = useState(false);
   const failed = isError || imgError;
+  const thumbOnly = !!data && !data.url;
+  const thumbSrc = thumbnail ?? data?.thumbnail ?? null;
+  // A refetch re-signs the same object (new query string); only a different object — a replacement
+  // upload — should drop back to the placeholder.
+  const photoIdentity = data?.url ? data.url.split('?')[0] : null;
+  useEffect(() => { setLoaded(false); setImgError(false); }, [photoIdentity]);
+  const loading = !failed && (!data || (!!data.url && !loaded));
 
   // ── layout: the photo box is sized from its aspect ratio to fit the stage ──
   const stageRef = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState({ w: 0, h: 0 });
-  const [thumbRatio, setThumbRatio] = useState<number | null>(null);
+  const [thumbSize, setThumbSize] = useState<{ w: number; h: number } | null>(null);
+  const thumbRatio = thumbSize ? thumbSize.w / thumbSize.h : null;
   const ratio = data?.width && data?.height ? data.width / data.height : thumbRatio ?? 4 / 3;
-  const box = stage.w && stage.h
+  const fit = stage.w && stage.h
     ? (stage.w / stage.h > ratio ? { w: stage.h * ratio, h: stage.h } : { w: stage.w, h: stage.w / ratio })
     : { w: 0, h: 0 };
+  // No fake sharpness: a thumbnail-only photo stops growing at THUMB_MAX_UPSCALE × natural size.
+  const cap = thumbOnly && thumbSize && fit.w ? Math.min(1, (thumbSize.w * THUMB_MAX_UPSCALE) / fit.w) : 1;
+  const box = { w: fit.w * cap, h: fit.h * cap };
 
   useLayoutEffect(() => {
     const el = stageRef.current;
@@ -277,18 +302,18 @@ export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Pr
           }}
           onTransitionEnd={() => setAnimating(false)}
         >
-          {thumbnail && (
+          {thumbSrc && (
             <img
-              src={thumbnail}
-              alt=""
-              aria-hidden
+              src={thumbSrc}
+              alt={thumbOnly ? (text ? `Score photo thumbnail: ${text}` : 'Score photo thumbnail') : ''}
+              aria-hidden={!thumbOnly}
               draggable={false}
               onLoad={e => {
                 const t = e.currentTarget;
-                if (t.naturalWidth && t.naturalHeight) setThumbRatio(t.naturalWidth / t.naturalHeight);
+                if (t.naturalWidth && t.naturalHeight) setThumbSize({ w: t.naturalWidth, h: t.naturalHeight });
               }}
               className="absolute inset-0 w-full h-full object-contain transition-opacity duration-300"
-              style={{ filter: failed ? 'none' : 'blur(14px)', opacity: loaded ? 0 : 1 }}
+              style={{ filter: failed || thumbOnly ? 'none' : 'blur(14px)', opacity: loaded ? 0 : 1 }}
             />
           )}
           {data?.url && !imgError && (
@@ -304,7 +329,7 @@ export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Pr
           )}
         </div>
 
-        {!loaded && !failed && (
+        {loading && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
             <Loader2 className="w-8 h-8 text-white/80 animate-spin" aria-label="Loading full-size photo" />
           </div>
@@ -312,7 +337,7 @@ export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Pr
         {failed && (
           <div className="pointer-events-none absolute inset-x-0 bottom-4 flex justify-center px-4">
             <p className="flex items-center gap-2 rounded-lg bg-black/70 px-3 py-2 text-xs text-amber-300">
-              <AlertTriangle className="w-3.5 h-3.5" /> Couldn't load the full-size photo
+              <AlertTriangle className="w-3.5 h-3.5" /> Couldn't load the photo
             </p>
           </div>
         )}
@@ -336,7 +361,19 @@ export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Pr
         style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))', opacity: backdropOpacity }}
       >
         {text && <p className="text-sm font-semibold text-white truncate">{text}</p>}
-        <p className="mt-0.5 text-[11px] text-white/50">
+        {thumbOnly && (
+          <p className="mt-1 text-xs text-amber-200/90">
+            Thumbnail only — the full-size photo wasn't saved for this score.
+          </p>
+        )}
+        {data?.canUpload && (
+          <div className="mt-2 flex justify-center">
+            {thumbOnly
+              ? <FullPhotoUploadButton scoreId={scoreId} label="Upload the full-size photo" />
+              : <FullPhotoUploadButton scoreId={scoreId} label="Replace photo" variant="quiet" />}
+          </div>
+        )}
+        <p className="mt-1 text-[11px] text-white/50">
           {zoomed ? 'Drag to pan · double-tap or click to reset' : 'Pinch, scroll or double-tap to zoom'}
         </p>
       </div>
@@ -346,25 +383,29 @@ export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Pr
 }
 
 /**
- * A small camera button for score rows without a thumbnail (user, machine, venue, challenge lists).
- * Renders nothing unless the score has a full-size photo.
+ * A small camera button for score rows that don't show a thumbnail (user, machine, venue, challenge
+ * lists). Full-size photo: the normal button. Thumbnail only: the same button, dimmed — the thumbnail
+ * is still the score's proof photo (and the viewer is where its owner can add the full one), but it
+ * shouldn't compete with rows that have a real photo. No photo at all: nothing.
  */
-export function FullPhotoButton({ scoreId, hasFullPhoto, caption, className = '' }: {
+export function FullPhotoButton({ scoreId, hasFullPhoto, hasThumbnail, caption, className = '' }: {
   scoreId: number;
   hasFullPhoto?: boolean;
+  hasThumbnail?: boolean;
   caption?: PhotoCaption;
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
-  if (!hasFullPhoto) return null;
+  if (!hasFullPhoto && !hasThumbnail) return null;
+  const label = hasFullPhoto ? 'View photo' : 'View photo thumbnail';
   return (
     <>
       <button
         type="button"
         onClick={e => { e.preventDefault(); e.stopPropagation(); setOpen(true); }}
-        aria-label="View photo"
-        title="View photo"
-        className={`inline-flex items-center justify-center rounded p-1 text-muted-foreground hover:text-white hover:bg-white/10 transition-colors ${className}`}
+        aria-label={label}
+        title={hasFullPhoto ? label : 'View thumbnail (no full-size photo)'}
+        className={`inline-flex items-center justify-center rounded p-1 hover:text-white hover:bg-white/10 transition-colors ${hasFullPhoto ? 'text-muted-foreground' : 'text-muted-foreground/45'} ${className}`}
       >
         <Camera className="w-3.5 h-3.5" />
       </button>

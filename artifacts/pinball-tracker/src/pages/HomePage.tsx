@@ -13,6 +13,7 @@ import ScoreCard from '../components/ScoreCard';
 import { usePodMembership } from '../lib/myPods';
 import ScoreRepairSection from '../components/ScoreRepairSection';
 import ScoreVenuePicker from '../components/ScoreVenuePicker';
+import { FullPhotoUploadButton } from '../components/FullPhotoUpload';
 import { toLocalInput, localInputToIso } from '../lib/datetime';
 
 type Filter = 'all' | 'casual' | 'tournament';
@@ -27,6 +28,9 @@ interface EditScore {
   venueId: number | null;
   venueName: string | null;
   venueTimezone: string | null;
+  hasFullPhoto: boolean;
+  /** The server only lets a score's owner upload its photo — admins editing others' scores can't. */
+  isOwn: boolean;
 }
 
 export default function HomePage() {
@@ -103,6 +107,7 @@ export default function HomePage() {
       id: s.id, machineId: s.machineId, machineName: s.machineName, score: s.score,
       type: s.type, playedAt: s.playedAt, venueId: s.venueId ?? null, venueName: s.venueName ?? null,
       venueTimezone: s.venueTimezone ?? null,
+      hasFullPhoto: !!s.hasFullPhoto, isOwn: !!appUser && s.username === appUser.username,
     });
     setEditScoreVal(Number(s.score).toLocaleString());
     setEditType(s.type);
@@ -301,6 +306,20 @@ export default function HomePage() {
                       }}
                     />
                   )}
+                </div>
+              )}
+
+              {/* Full-size photo: the same upload as the photo viewer's button, reachable here for
+                  scores with no photo at all (which have nothing to tap on the card). */}
+              {editScore?.isOwn && (
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Photo</span>
+                  <FullPhotoUploadButton
+                    scoreId={editScore.id}
+                    variant="quiet"
+                    align="start"
+                    label={editScore.hasFullPhoto ? 'Replace the full-size photo' : 'Upload the full-size photo'}
+                  />
                 </div>
               )}
 

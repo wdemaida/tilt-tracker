@@ -176,6 +176,7 @@ function ScoreList({ c, p, isMe }: { c: Challenge; p: ChallengeParticipant; isMe
               <FullPhotoButton
                 scoreId={s.id}
                 hasFullPhoto={s.hasFullPhoto}
+                hasThumbnail={s.hasThumbnail}
                 caption={{ machineName: c.machine.name, score: s.score, playedAt: s.playedAt, venueTimezone: s.venueTimezone, username: p.user.username }}
               />
               <Link href={`/machines/${encodeURIComponent(c.machine.name)}`} className="text-base font-black text-primary whitespace-nowrap hover:text-primary/80">

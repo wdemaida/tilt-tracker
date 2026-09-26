@@ -1254,6 +1254,7 @@ export default function MachinePage() {
                     <FullPhotoButton
                       scoreId={s.id}
                       hasFullPhoto={s.hasFullPhoto}
+                      hasThumbnail={s.hasThumbnail}
                       caption={{ machineName: machine.name, score: s.score, playedAt: s.playedAt, venueTimezone: s.venueTimezone, username: s.username }}
                     />
                     {Number(s.score).toLocaleString()}

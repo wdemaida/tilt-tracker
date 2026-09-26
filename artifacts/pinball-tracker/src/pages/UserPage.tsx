@@ -92,6 +92,7 @@ export default function UserPage() {
                   <FullPhotoButton
                     scoreId={s.id}
                     hasFullPhoto={s.hasFullPhoto}
+                    hasThumbnail={s.hasThumbnail}
                     caption={{ machineName: s.machineName, score: s.score, playedAt: s.playedAt, venueTimezone: s.venueTimezone, username: user.username }}
                   />
                   <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground border border-white/20 rounded px-1.5 py-0.5">
