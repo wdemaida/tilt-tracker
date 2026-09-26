@@ -63,6 +63,7 @@ router.get('/:username', async (req, res) => {
         score: scores.score,
         playedAt: scores.playedAt,
         type: scores.type,
+        venueId: scores.venueId,
         venueName: scores.venueName,
         // Withheld for hidden-tier venues, matching redactVenue. Done in SQL because this route has
         // no requester plumbing; the owner therefore falls back to their own clock here, which reads
