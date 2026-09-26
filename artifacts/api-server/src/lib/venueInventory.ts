@@ -67,7 +67,7 @@ export async function resolveCatalogMachine(input: { machineId?: unknown; name?:
   }
   const pm = catalog.find(m => m.name.toLowerCase() === name.toLowerCase());
   if (pm) {
-    return upsertMachineByName(pm.name, { manufacturer: pm.manufacturer ?? undefined, year: pm.year ?? undefined });
+    return upsertMachineByName(pm.name, { manufacturer: pm.manufacturer ?? undefined, year: pm.year ?? undefined, catalog });
   }
   const [existing] = await db.select().from(machines).where(sql`lower(${machines.name}) = ${name.toLowerCase()}`).limit(1);
   return existing ?? null;

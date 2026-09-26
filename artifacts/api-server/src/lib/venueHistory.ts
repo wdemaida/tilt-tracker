@@ -1,17 +1,26 @@
 import { db, venueMachineHistory, machines } from '@workspace/db';
 import { and, eq, isNull, isNotNull, notInArray, desc } from 'drizzle-orm';
 import { upsertMachineByName } from './machineUpsert.js';
+import { getCatalogOrNull, type PinballMachine } from './pinballMap.js';
 import type { PmLocationMachineXref } from './pinballmapApi.js';
 
 // Diffs the live Pinball Map machine list against our last-known snapshot for a venue,
 // recording arrivals/departures. Called opportunistically whenever a venue's machine list
 // is fetched — there's no polling; a venue's history only advances when someone looks at it.
-export async function syncVenueMachineHistory(venueId: number, pmXrefs: PmLocationMachineXref[]) {
+// `catalog`: pass it if you already have it; otherwise it's read ONCE here for the whole roster
+// (it used to be fetched per machine inside upsertMachineByName — N catalog reads per sync).
+export async function syncVenueMachineHistory(
+  venueId: number,
+  pmXrefs: PmLocationMachineXref[],
+  catalog?: PinballMachine[] | null,
+) {
+  const cat = catalog !== undefined ? catalog : (pmXrefs.length ? await getCatalogOrNull() : null);
   const currentIds: number[] = [];
   for (const xref of pmXrefs) {
     const row = await upsertMachineByName(xref.machine.name, {
       manufacturer: xref.machine.manufacturer,
       year: xref.machine.year,
+      catalog: cat,
     });
     currentIds.push(row.id);
   }

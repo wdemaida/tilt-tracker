@@ -73,10 +73,13 @@ router.get('/search', async (req, res) => {
   const q = String(req.query.q ?? '');
   if (!q) return res.json([]);
   try {
-    const results = await searchMachines(q, 10);
+    // The catalog is DB-cached for 24h and a failed refresh is negatively cached, so this route can't
+    // turn keystrokes into Pinball Map requests (see pinballMap.ts).
+    const results = await searchMachines(q.slice(0, 100), 10);
     res.json(results);
   } catch (err) {
-    res.status(500).json({ error: 'Search failed' });
+    console.error('Machine search error:', (err as Error)?.message ?? err);
+    res.status(503).json({ error: 'Machine search is unavailable right now', code: 'catalog_unavailable' });
   }
 });
 
