@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'wouter';
-import { Camera, TrendingUp, MapPin, Trophy } from 'lucide-react';
+import { Camera, TrendingUp, MapPin, Trophy, Users, Globe } from 'lucide-react';
 import { PinballIcon } from '../components/PinballIcon';
 import { enableGuestMode } from '../lib/guestMode';
 import bridgeImage from '../assets/welcome-bridge.jpg';
@@ -24,6 +24,22 @@ const YOUR_DOTS = [
   { cx: 190, cy: 254.36, score: '1,330,410' },
   { cx: 306.8, cy: 165.07, score: '34,000,000' },
   { cx: 435.28, cy: 207.43, score: '18,500,000' },
+];
+
+const BARN_MACHINES = [
+  'Fire!',
+  'World Cup Soccer',
+  'Lights… Camera… Action!',
+  'Creature from the Black Lagoon',
+  "Ripley's Believe It or Not!",
+];
+
+const STORY_STOPS = [
+  { when: '1950s', title: "Grandpa's route", body: 'My grandfather starts an operator business: pool tables, jukeboxes and cigarette machines.' },
+  { when: '1980s–2000s', title: "Dad's route and the barn", body: 'Pinball and arcade games go out to bars and bowling alleys. Broken ones come home to the barn, where I test them for free.' },
+  { when: 'Last one standing', title: "Ripley's stays", body: "When the route closes, Dad keeps one machine, Ripley's Believe It or Not. It's still in the barn, waiting for me to go get it." },
+  { when: 'In a boarding line', title: 'The idea', body: "Listening to a pinball podcast, I realize I still can't tell if I'm getting better. A photo and some AI could fix that." },
+  { when: 'Now', title: 'Players, not just scores', body: 'Friends, pods and challenges, for everyone with no machines nearby and nobody to play with.' },
 ];
 
 export default function WelcomePage() {
@@ -180,6 +196,121 @@ export default function WelcomePage() {
             <p className="mt-3.5 text-muted-foreground leading-relaxed">
               Old machines don't track anything — no leaderboard, no history, nothing - TiltTrack does, for every machine you'll ever drop a coin into, no matter how old.
             </p>
+          </div>
+        </div>
+      </section>
+
+      {/* Founder's note */}
+      <section className="py-16 sm:py-28 border-t border-white/10">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 grid grid-cols-1 lg:grid-cols-[0.8fr_1.2fr] gap-8 lg:gap-16 items-start">
+          <div>
+            <div className="text-xs font-bold uppercase tracking-[0.22em] text-muted-foreground">A note from the founder</div>
+            <h2 className="mt-3 font-display uppercase font-black tracking-tight leading-[1.05] text-4xl sm:text-5xl">
+              It started<br />in a <span className="text-glow-primary">barn.</span>
+            </h2>
+            <div className="mt-7">
+              <div className="text-[0.7rem] font-extrabold uppercase tracking-[0.14em] text-muted-foreground">Off the route, in the barn</div>
+              <div className="mt-2.5 flex flex-wrap gap-2">
+                {BARN_MACHINES.map(name => (
+                  <span key={name} className="text-xs font-bold text-machine border border-machine/35 bg-machine/10 rounded-full px-3 py-1">
+                    {name}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="max-w-[62ch] space-y-4 text-[1.05rem] leading-relaxed text-foreground/80">
+            <p>
+              My dad ran a route. From the '80s into the 2000s he put pinball and arcade games in bars, bowling alleys and restaurants, and when one broke, it came home to our barn. I was the official tester. I'd prop the coin door open and play for hours, or lift the glass to trigger modes by hand and learn how the rules worked.
+            </p>
+            <p>
+              I never got very good. What I loved was finishing a game and seeing everything it had. On Creature I wanted every <span className="font-semibold text-foreground">Move Your Car</span> animation, not the points.
+            </p>
+            <p>
+              Years later I came back to pinball wanting to finally get better, and found there was no easy way to tell if I was. So I built one. Take a picture, and TiltTrack remembers.
+            </p>
+            <p>
+              Then I hit the other problem. Where I live now there are hardly any machines, and nobody I know plays. Pinball has always been better with other people. TiltTrack is how I'm finding them, and how you can too.
+            </p>
+            <div className="pt-4 border-t border-white/10 flex items-baseline gap-2.5">
+              <span className="font-bold text-foreground">Will</span>
+              <span className="text-sm font-bold text-username">@helmhead</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Story timeline */}
+      <section className="py-16 sm:py-28 border-t border-white/10">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="text-center max-w-[58ch] mx-auto">
+            <div className="text-xs font-bold uppercase tracking-[0.22em] text-muted-foreground">Where this came from</div>
+            <h2 className="mt-3 font-display uppercase font-black tracking-tight text-3xl sm:text-4xl">
+              Three generations <span className="text-glow-primary">of pinball.</span>
+            </h2>
+          </div>
+          <ol className="mt-12 sm:mt-14 grid grid-cols-1 lg:grid-cols-5 lg:gap-5">
+            {STORY_STOPS.map((stop, i) => {
+              const last = i === STORY_STOPS.length - 1;
+              return (
+                <li key={stop.title} className="relative pl-9 pb-8 lg:pl-0 lg:pb-0 lg:pt-9">
+                  {!last && (
+                    <span
+                      aria-hidden
+                      className="absolute bg-white/15 left-[7px] top-2 -bottom-2 w-0.5 lg:left-4 lg:-right-5 lg:top-[7px] lg:bottom-auto lg:w-auto lg:h-0.5"
+                    />
+                  )}
+                  <span
+                    aria-hidden
+                    className={`absolute left-0 top-1 lg:top-0 w-4 h-4 rounded-full border-[3px] ${last ? 'border-primary bg-primary shadow-[0_0_10px_hsl(var(--primary)/0.8),0_0_26px_hsl(var(--primary)/0.45)]' : 'border-machine bg-card'}`}
+                  />
+                  <div className={`text-xs font-extrabold uppercase tracking-[0.14em] ${last ? 'text-primary' : 'text-machine'}`}>{stop.when}</div>
+                  <h3 className="mt-1.5 font-extrabold">{stop.title}</h3>
+                  <p className="mt-2 text-sm leading-relaxed text-muted-foreground max-w-[40ch]">{stop.body}</p>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+      </section>
+
+      {/* Mission */}
+      <section className="py-16 sm:py-28 border-t border-white/10">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="max-w-[62ch]">
+            <div className="text-xs font-bold uppercase tracking-[0.22em] text-muted-foreground">What TiltTrack is for</div>
+            <h2 className="mt-3 font-display uppercase font-black tracking-tight text-3xl sm:text-4xl">
+              Better games, <span className="text-glow-primary">better company.</span>
+            </h2>
+          </div>
+          <div className="mt-12 grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="rounded-2xl border border-white/10 bg-card p-6">
+              <div className="w-11 h-11 rounded-xl bg-primary/15 border border-primary/45 flex items-center justify-center mb-5">
+                <Camera className="w-5 h-5 text-primary" />
+              </div>
+              <h3 className="font-bold">Every play counts</h3>
+              <p className="mt-2.5 text-sm leading-relaxed text-muted-foreground">
+                Not just the ones worth bragging about. The drained balls and the so-so nights are what show how far you've come, so log them all. It only takes a photo.
+              </p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-card p-6">
+              <div className="w-11 h-11 rounded-xl bg-username/15 border border-username/45 flex items-center justify-center mb-5">
+                <Users className="w-5 h-5 text-username" />
+              </div>
+              <h3 className="font-bold">See where you stand</h3>
+              <p className="mt-2.5 text-sm leading-relaxed text-muted-foreground">
+                Put your scores next to everyone else's on the same machine. Find the players at your level and the ones worth chasing. Some of them turn into friends.
+              </p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-card p-6">
+              <div className="w-11 h-11 rounded-xl bg-venue/15 border border-venue/45 flex items-center justify-center mb-5">
+                <Globe className="w-5 h-5 text-venue" />
+              </div>
+              <h3 className="font-bold">Play together from anywhere</h3>
+              <p className="mt-2.5 text-sm leading-relaxed text-muted-foreground">
+                No machines nearby, and nobody you know plays? Pods and challenges give you people to compete with, wherever they are. Pinball has always been better with company.
+              </p>
+            </div>
           </div>
         </div>
       </section>
