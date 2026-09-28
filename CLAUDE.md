@@ -3,6 +3,16 @@
 Pinball high score tracker. Deployed at **[tilttrack.vercel.app](https://tilttrack.vercel.app)**.
 See [SPEC.md](./SPEC.md) for the full feature spec.
 
+## Mission
+
+TiltTrack exists so that:
+
+1. Players can **easily log all their plays** (snap a photo, done) and **watch themselves improve** over time.
+2. Players can **see their progress next to others** and maybe find new friends through it.
+3. Players in **"pinball wastelands"**, places with few machines and nobody local to play with, can still get the social, play-together side of pinball that has kept it alive since the 1940s.
+
+Getting better and *completing* games matters as much as chasing raw high scores. When weighing a feature or writing copy, ask which of these three it serves.
+
 ---
 
 **pnpm workspaces** — always run installs from the repo root with `pnpm install`.
