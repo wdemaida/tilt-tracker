@@ -81,6 +81,11 @@ export const TIER_BY_TYPE: Readonly<Record<string, RetentionTier>> = {
   'profile.challenge_prefs_updated': 'standard',
   // notifications — one row per notification raised; the most numerous type after sign-ins
   'notification.sent': 'high_volume',
+  // badges — earning is a user milestone (standard); a grant or revoke is a moderation action, kept
+  // with the admin trail. The awards themselves live in user_badges, so none of these is load-bearing.
+  'badge.earned': 'standard',
+  'badge.granted': 'admin',
+  'badge.revoked': 'admin',
   // Pinball Map
   'pm.connected': 'standard',
   'pm.score_posted': 'standard',
@@ -101,6 +106,7 @@ export const TIER_BY_TYPE: Readonly<Record<string, RetentionTier>> = {
   'admin.machine_deleted': 'admin',
   'admin.settings_changed': 'admin',
   'admin.photo_orphans_run': 'admin',
+  'admin.badge_updated': 'admin',
   // system heartbeats — daily, routine. The overview's "last ran" only needs the newest one, and
   // 90 days of run history (incl. this purge's own system.activity_retention results) is plenty.
   'system.stat_snapshot': 'high_volume',

@@ -18,6 +18,7 @@ import friendsRouter from './routes/friends.js';
 import notificationsRouter from './routes/notifications.js';
 import challengesRouter from './routes/challenges.js';
 import meRouter from './routes/me.js';
+import badgesRouter from './routes/badges.js';
 import { requireAppUser, rejectDisabledUser } from './middleware/requireAuth.js';
 import { clerkWebhookHandler, logClerkWebhookStatus } from './routes/clerkWebhook.js';
 import { routeActivity, PM_RULES, VENUE_RULES, MACHINE_RULES } from './lib/activityRoutes.js';
@@ -72,7 +73,7 @@ app.post('/api/cron/stat-snapshot', async (req, res) => {
 // resolves past-deadline challenges, expires unanswered ones, sends "ending soon" notices, and
 // deletes READ notifications older than 30 days (unread ones are kept forever). Then the daily
 // housekeeping (lib/housekeeping.ts): activity-log retention every day, the R2 photo orphan sweep
-// once a week. Same shared-secret guard as the stat snapshot above. Reads also resolve challenges lazily, so a missed run only
+// once a week, the badge safety-net sweep every day. Same shared-secret guard as the stat snapshot above. Reads also resolve challenges lazily, so a missed run only
 // delays notifications — it never leaves a challenge showing the wrong state.
 app.post('/api/cron/challenge-sweep', async (req, res) => {
   if (!process.env.CRON_SECRET) return void res.status(500).json({ error: 'CRON_SECRET not configured' });
@@ -105,6 +106,8 @@ app.use('/api/friends', requireAppUser, friendsRouter);
 app.use('/api/notifications', requireAppUser, notificationsRouter);
 app.use('/api/challenges', requireAppUser, challengesRouter);
 app.use('/api/me', requireAppUser, meRouter);
+// Public badge catalog + images (optional auth). Admin badge routes are under /api/admin.
+app.use('/api/badges', badgesRouter);
 
 // Backup in-process trigger for the same snapshot — fires if the dyno happens to already be warm
 // at 1am America/New_York. The GitHub Actions workflow calling /api/cron/stat-snapshot above is the

@@ -7,6 +7,8 @@ import { visibleScoreSql } from '../lib/venueActivity.js';
 import { hasFullPhotoSql, hasThumbnailSql } from '../lib/photoStore.js';
 import { logActivity, fromReq } from '../lib/activity.js';
 import { challengeMeFor } from '../lib/challengeReach.js';
+import { userBadgeShelf } from '../lib/badges.js';
+import { resolveViewer } from './badges.js';
 
 const router = Router();
 
@@ -53,6 +55,20 @@ router.post('/setup', requireAuth, async (req, res) => {
   } catch (err: any) {
     if (err?.code === '23505') return res.status(409).json({ error: 'Username already taken' });
     res.status(500).json({ error: 'Failed to create profile' });
+  }
+});
+
+// GET /api/users/:username/badges — the profile's badge shelf, newest first. Public: anyone who can
+// view the profile (guests included) sees it, no friend or pod check. Source scores are linked only
+// when the viewer may see them; source challenges only for participants (lib/badges.ts).
+router.get('/:username/badges', async (req, res) => {
+  try {
+    const shelf = await userBadgeShelf(req.params.username, await resolveViewer(req));
+    if (!shelf) return res.status(404).json({ error: 'User not found' });
+    res.json(shelf);
+  } catch (err) {
+    console.error('User badges error:', err);
+    res.status(500).json({ error: 'Failed to load badges' });
   }
 });
 

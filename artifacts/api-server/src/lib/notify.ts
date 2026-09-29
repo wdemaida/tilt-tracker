@@ -20,6 +20,8 @@ import { logActivity } from './activity.js';
 //   challenge_ending_soon       → each participant once, ~24h before the end (daily sweep)
 //   challenge_result            → every participant on resolution (`outcome`, `void` — retired, always false —, `abandoned`, `reason`)
 //   challenge_voided            → every participant, when an admin voids the challenge (`byAdmin: true`, no user ref)
+//   badge_earned                → the earner (lib/badges.ts): `badgeId`, `badgeName`, `icon`, `color`,
+//                                 `imageVersion` (null = no image), `granted: true` for a manual grant
 // Every raised notification is also written to the admin activity log as `notification.sent` — the
 // durable record, since the challenge sweep deletes read notifications after 30 days.
 // `payload` is kind-specific jsonb, and `dedupe` lets a kind say "there should only ever be one
@@ -32,7 +34,8 @@ export type NotificationKind =
   | 'friend_request' | 'friend_accepted'
   | 'challenge_received' | 'challenge_accepted' | 'challenge_declined' | 'challenge_cancelled'
   | 'challenge_opponent_scored' | 'challenge_ending_soon' | 'challenge_result' | 'challenge_voided'
-  | 'challenge_countered';
+  | 'challenge_countered'
+  | 'badge_earned';
 
 /** Who a friend notification is about, as it was at the time — enough to render and link it. */
 export interface UserRefPayload { userId: number; username: string; displayName: string }

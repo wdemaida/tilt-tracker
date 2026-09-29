@@ -12,6 +12,7 @@ import type { AddressInfo } from 'node:net';
 import { appUserRefusal, requireAppUser, requireAdmin, rejectDisabledUser, setAuthForTests } from '../middleware/requireAuth.js';
 import adminRouter from '../routes/admin.js';
 import adminAreaRouter from '../routes/adminArea.js';
+import adminBadgesRouter from '../routes/adminBadges.js';
 import { getClerkActivity, setClerkBan, setClerkAdminForTests } from './clerkAdmin.js';
 
 const base = { username: 'u', displayName: 'U', pinballMapToken: null, pinballMapUsername: null, disabledReason: null, disabledById: null, createdAt: new Date() };
@@ -94,7 +95,9 @@ test('every admin route refuses guests, users, disabled admins and profile-less 
   const routes = routesOf(adminRouter);
   const areaRoutes = routesOf(adminAreaRouter);
   assert.ok(areaRoutes.length >= 18, `admin area has its routes (${areaRoutes.length})`);
-  for (const r of areaRoutes) {
+  const badgeRoutes = routesOf(adminBadgesRouter);
+  assert.ok(badgeRoutes.length >= 12, `admin badges has its routes (${badgeRoutes.length})`);
+  for (const r of [...areaRoutes, ...badgeRoutes]) {
     assert.ok(routes.some(x => x.method === r.method && x.path === r.path), `${r.method} ${r.path} is mounted inside the guarded admin router`);
   }
   for (const r of routes) {

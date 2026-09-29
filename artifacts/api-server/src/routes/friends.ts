@@ -10,6 +10,7 @@ import { raiseNotification, settleNotifications, type Executor, type UserRefPayl
 import { isUniqueViolation } from '../lib/venueAddress.js';
 import { createRateLimiter } from '../lib/rateLimit.js';
 import { logActivity } from '../lib/activity.js';
+import { onFriendBadges } from '../lib/badges.js';
 
 // Friends (feature/friends, phase 1). The rules live in lib/friendRules.ts; this file loads the
 // pair's single row (under a row lock), asks the rules what to do, writes it, and raises the
@@ -246,6 +247,10 @@ router.post('/requests', async (req, res) => {
         actorUserId: me.id, subjectUserId: target.id, targetType: 'user', targetId: target.id,
         payload: { username: target.username, ...(result === 'accepted' ? { viaMutualRequest: true } : {}) },
       });
+      // Badge marks (idempotent per recipient / per pair), then both sides re-checked. Never throws.
+      await onFriendBadges(result === 'accepted'
+        ? { kind: 'accepted', acceptor: me.id, requester: target.id }
+        : { kind: 'sent', from: me.id, to: target.id });
     }
     if (result === 'unavailable') {
       return res.status(403).json({ error: 'You can’t send this person a friend request.', code: 'request_unavailable' });
@@ -276,6 +281,7 @@ router.post('/requests/:userId/accept', async (req, res) => {
     });
     if (!ok) return res.status(404).json(noRequest);
     await logActivity({ type: 'friend.request_accepted', actorUserId: me.id, subjectUserId: target.id, targetType: 'user', targetId: target.id, payload: { username: target.username } });
+    await onFriendBadges({ kind: 'accepted', acceptor: me.id, requester: target.id });
     res.json({ relationship: 'friends' });
   } catch (err) {
     console.error('Accept friend request error:', err);
@@ -290,18 +296,20 @@ router.post('/requests/:userId/decline', async (req, res) => {
   const target = await loadTarget(req, res, req.params.userId);
   if (!target) return;
   try {
-    const ok = await db.transaction(async tx => {
+    // The pair's decline count after this one (null = nothing to decline) — it's the badge mark's ref.
+    const declineNumber = await db.transaction(async tx => {
       const row = await lockPair(tx, me.id, target.id);
-      if (!row || !canRespond(row, me.id)) return false;
+      if (!row || !canRespond(row, me.id)) return null;
       const next = afterDecline(row);
       await tx.update(friendships)
         .set({ status: next.status, declineCount: next.declineCount, respondedAt: new Date() })
         .where(eq(friendships.id, row.id));
       await settleNotifications(tx, me.id, 'friend_request', target.id, 'read');
-      return true;
+      return next.declineCount;
     });
-    if (!ok) return res.status(404).json(noRequest);
+    if (declineNumber == null) return res.status(404).json(noRequest);
     await logActivity({ type: 'friend.request_declined', actorUserId: me.id, subjectUserId: target.id, targetType: 'user', targetId: target.id, payload: { username: target.username } });
+    await onFriendBadges({ kind: 'declined', decliner: me.id, requester: target.id, declineNumber });
     res.json({ relationship: 'none' });
   } catch (err) {
     console.error('Decline friend request error:', err);

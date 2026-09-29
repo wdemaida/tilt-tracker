@@ -41,13 +41,14 @@ export const ACTIVITY_TYPES = {
   ],
   profile: ['profile.challenge_prefs_updated'],
   notification: ['notification.sent'],
+  badge: ['badge.earned', 'badge.granted', 'badge.revoked'],
   pm: ['pm.connected', 'pm.score_posted', 'pm.score_post_failed'],
   admin: [
     'admin.user_updated', 'admin.user_disabled', 'admin.user_enabled',
     'admin.score_deleted', 'admin.photo_deleted', 'admin.thumbnail_deleted',
     'admin.challenge_voided', 'admin.friendship_removed', 'admin.notification_deleted', 'admin.notifications_cleared',
     'admin.venue_deleted', 'admin.machine_updated', 'admin.machine_deleted',
-    'admin.settings_changed', 'admin.photo_orphans_run',
+    'admin.settings_changed', 'admin.photo_orphans_run', 'admin.badge_updated',
   ],
   system: ['system.stat_snapshot', 'system.challenge_sweep', 'system.activity_retention', 'system.photo_orphans'],
 } as const;

@@ -16,6 +16,7 @@ import { visibleScoreSql } from '../lib/venueActivity.js';
 import { onScoreCreated, scoreLockedByChallenge, SCORE_LOCKED } from '../lib/challenges.js';
 import { hasFullPhotoSql, publicScoreRow, deletePhotoBestEffort } from '../lib/photoStore.js';
 import { logActivity } from '../lib/activity.js';
+import { onScoreBadges } from '../lib/badges.js';
 
 // Optional — resolves the caller's app user + role, without requiring auth.
 async function resolveRequester(req: any): Promise<{ id: number; role: string } | undefined> {
@@ -135,7 +136,10 @@ router.post('/', requireAppUser, async (req, res) => {
       userAgent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : null,
       payload: { score: row.score, machineId: row.machineId, venueId: row.venueId, playedAt: row.playedAt, type: row.type, hasThumbnail: !!row.photoThumbnail, appVersion },
     });
-    res.status(201).json(publicScoreRow(row));
+    // Badges: the score metrics and every live rule badge. Never throws; the "Score logged!" step
+    // shows whatever this returns.
+    const newBadges = await onScoreBadges(row);
+    res.status(201).json({ ...publicScoreRow(row), newBadges });
   } catch (err) {
     console.error('Create score error:', err);
     res.status(500).json({ error: 'Failed to create score' });

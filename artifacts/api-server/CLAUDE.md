@@ -850,3 +850,52 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
 - Tests: `src/lib/photoOrphans.test.ts` (selection, 24h cutoff, dry run, re-check race, paging, caps,
   failures, env mismatch, schedule, no keys in the public result); `test-photos.ts` plants a real
   unconfirmed object in the dev bucket next to a referenced one and sweeps that score's prefix.
+
+## Badges (`badges.ts`, `badgeMetrics.ts`, `badgeRules.ts`, `routes/badges.ts`, `routes/adminBadges.ts`, migrate23, added 2026-09-29)
+- **Tables:** `badges` (kind `metric` | `rule` | `manual`; status `draft` → `live` → `retired`; optional
+  256x256 WebP `image` in bytea + `image_version`, bumped on every upload and **never reset** — a
+  removed-then-re-uploaded image gets a new `?v=`; `activated_at` = first go-live), `user_badges`
+  (PK user+badge — earned once; a yearly badge is a new badge row), `user_metric_marks` (PK
+  user+metric+ref). migrate23 is dev-guarded; remove the guard deliberately at ship time.
+- **One engine:** every award goes through `awardBadges(userId, { metrics, score })` — it loads only
+  live, in-window badges the trigger can affect and the user lacks, evaluates, inserts ON CONFLICT DO
+  NOTHING, raises `badge_earned` and logs `badge.earned`. **Never throws** (like `onScoreCreated`).
+  Triggers: `POST /api/scores` (`onScoreBadges`; the response gains `newBadges`), the friend routes
+  (`onFriendBadges` — marks, then both users), the Clerk webhook's `session.created`
+  (`onSignInBadges` — the `login_days` mark is written **before** the retention gate, so it counts
+  with high-volume at 0), and `runBadgeSweep()` in daily housekeeping (metric badges for users
+  active in the last 25 h). No automatic revocation, ever.
+- **Metrics** (`badgeMetrics.ts`): a registry; each metric is one `GROUP BY user_id` SQL used for a
+  single user, the sweep and the retroactive backfill (`HAVING value >= threshold`) — never a loop.
+  Derived: `scores_posted`, `distinct_machines`, `distinct_venues`. Marks (`ref` makes them
+  idempotent): `friend_requests_sent` (ref = recipient), `…accepted_by_you` / `your_requests_accepted`
+  (ref = other user), `…declined_by_you` / `your_requests_declined` (ref = other:declineNumber),
+  `login_days` (ref = America/New_York date). **Phase 3** (after feature/challenge-recs merges):
+  the challenge metrics are listed in `PENDING_METRICS` (admin shows them as "phase 3"; activation
+  answers 400 `metric_unavailable`) — see the `TODO(phase 3)` notes in `badgeMetrics.ts` and
+  `badges.ts` for where they and the `applyResolution` / decline / counter triggers plug in.
+- **Rules** (`badgeRules.ts`, pure): localDate / daysOfWeek / localTime in the **venue's** zone
+  (fallback America/New_York), `postedWithinHours` (always on with a date, default 48; also refuses a
+  played_at > 15 min after posting), machine (group = OPDB group captured on save by
+  `resolveRuleRefs`, or exact), venue / city / state, minScore, scoreType, requiresPhoto, count +
+  distinct. `loadRuleScores()` narrows candidates in SQL; `ruleSatisfied()` decides in TypeScript. A
+  forward-only (`retroactive: false`) rule badge counts only scores posted after `activated_at`; a
+  forward-only metric badge is simply not backfilled (it's earned at the next trigger).
+- **Admin** (`/api/admin/badges*`, inside the admin router — adminAuth.test.ts enumerates it): list,
+  metrics, detail + holders, create (draft), PATCH (`key`/`kind`/`metric` frozen once awarded → 409
+  `locked_field`; a live badge can't be edited into an unactivatable state), image upload (multer
+  memory, ≤ 1 MB, PNG/WebP/JPEG → sharp `fit: contain` on transparent → 256 WebP), image delete,
+  preview (dry run, writes nothing), activate (retroactive backfill in bulk; skipped with
+  `skippedWindow` if the availability window is shut), retire, grants (badge must be live) and
+  revoke (`DELETE …/grants?userId=`; also deletes that unread notification). Every action logs
+  `admin.badge_updated` / `badge.granted` / `badge.revoked` (admin tier).
+- **Public** (optional auth, guests included): `GET /api/badges` (live catalog, requirement text,
+  window, earned counts, the viewer's earn dates), `GET /api/badges/:id/image?v=` (immutable for a
+  year only when `v` is current), `GET /api/users/:username/badges` (no friend/pod check; a source
+  score is linked only if `canSeeScore`, a source challenge only for its participants). Never
+  select `badges.image` in a list — `badgeCols` is the column list without it.
+- Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/badgeRules.test.ts
+  src/lib/badgeMetrics.test.ts src/lib/badges.test.ts` (metrics SQL runs in PGlite);
+  `npx tsx test-badges.ts` (dev branch only — borrows 3 friendless users, zz-badge-test machine /
+  venues / badges, simulates the webhook with a throwaway Svix secret and high-volume = 0 via the
+  in-process retention loader, cleans up everything incl. marks, notifications and events).

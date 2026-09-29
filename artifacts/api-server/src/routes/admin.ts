@@ -10,6 +10,7 @@ import { pmClient } from '../lib/pmClient.js';
 import { captureStatSnapshot } from '../lib/statSnapshot.js';
 import { logActivity, fromReq } from '../lib/activity.js';
 import adminAreaRouter from './adminArea.js';
+import adminBadgesRouter from './adminBadges.js';
 
 const router = Router();
 router.use(requireAppUser, requireAdmin);
@@ -375,5 +376,7 @@ router.delete('/stats/:id', async (req, res) => {
 // The admin area (overview, users, activity, social, scores & photos, admin actions) — behind the
 // same requireAppUser + requireAdmin guard declared at the top of this router.
 router.use(adminAreaRouter);
+// Badges (/api/admin/badges/*) — same guard.
+router.use(adminBadgesRouter);
 
 export default router;

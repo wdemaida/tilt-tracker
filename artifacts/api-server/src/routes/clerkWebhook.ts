@@ -3,11 +3,14 @@ import { Webhook, WebhookVerificationError } from 'svix';
 import { db, users } from '@workspace/db';
 import { eq } from 'drizzle-orm';
 import { insertActivity, isActivityRecorded, type ActivityInput } from '../lib/activity.js';
+import { onSignInBadges } from '../lib/badges.js';
 
 // POST /api/webhooks/clerk — Clerk → Svix → here. Records every sign-in and sign-up in the activity
 // log (Clerk is the only place a sign-in is observable; the app never sees the password step).
 //
-//   session.created → user.signed_in   (actor = our user if they have a profile yet)
+//   session.created → user.signed_in   (actor = our user if they have a profile yet), plus the
+//                     badges' login_days mark (one per Eastern day) — written even when the
+//                     retention gate below doesn't record the event, and on a Svix retry (idempotent)
 //   user.created    → user.signed_up
 //   user.deleted    → user.clerk_deleted (our users row is left alone)
 //   anything else   → 200, ignored
@@ -27,6 +30,8 @@ export interface ClerkWebhookDeps {
   record: (ev: ActivityInput) => Promise<number | null>;
   /** Whether this event type is recorded at all (its retention tier isn't 0). Default: always. */
   shouldRecord?: (type: string) => Promise<boolean>;
+  /** A sign-in by a user with a profile (badges: login_days). Must not throw; failures are logged. */
+  onSignedIn?: (userId: number, at: Date) => Promise<void>;
 }
 
 type ClerkEvent = { type: string; data: Record<string, any> };
@@ -131,6 +136,15 @@ export function createClerkWebhookHandler(deps: ClerkWebhookDeps) {
     try {
       const ev = await eventFor(evt, svixId, deps.resolveUserId);
       if (!ev) return void res.json({ ok: true, ignored: evt.type });
+      // Before the retention gate: a login day counts for badges whether or not sign-ins are logged.
+      if (ev.type === 'user.signed_in' && ev.actorUserId && deps.onSignedIn) {
+        const at = typeof evt.data?.created_at === 'number' && evt.data.created_at > 0 ? new Date(evt.data.created_at) : new Date();
+        try {
+          await deps.onSignedIn(ev.actorUserId, at);
+        } catch (err: any) {
+          console.error('[clerk-webhook] sign-in badge hook failed:', err?.message ?? err);
+        }
+      }
       // Its retention tier is set to 0 ("don't record"): acknowledge so Svix doesn't retry.
       if (deps.shouldRecord && !(await deps.shouldRecord(ev.type))) return void res.json({ ok: true, notRecorded: ev.type });
       const id = await deps.record(ev);
@@ -152,6 +166,7 @@ export const clerkWebhookHandler = createClerkWebhookHandler({
   resolveUserId,
   record: ev => insertActivity(ev),
   shouldRecord: isActivityRecorded,
+  onSignedIn: onSignInBadges,
 });
 
 export function logClerkWebhookStatus(): void {

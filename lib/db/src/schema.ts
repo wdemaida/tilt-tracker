@@ -1,4 +1,4 @@
-import { pgTable, serial, bigserial, text, bigint, timestamp, real, integer, pgEnum, uniqueIndex, index, primaryKey, date, boolean, jsonb, varchar, numeric, type AnyPgColumn } from 'drizzle-orm/pg-core';
+import { pgTable, serial, bigserial, text, bigint, timestamp, real, integer, pgEnum, uniqueIndex, index, primaryKey, date, boolean, jsonb, varchar, numeric, customType, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 export const scoreTypeEnum = pgEnum('score_type', ['casual', 'tournament']);
@@ -395,6 +395,84 @@ export const appSettings = pgTable('app_settings', {
 });
 
 export type AppSetting = typeof appSettings.$inferSelect;
+
+// Raw bytes (postgres.js hands bytea back as a Buffer).
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => 'bytea' });
+
+// Badges (migrate23). One row per badge; every award goes through the engine in
+// artifacts/api-server/src/lib/badges.ts. Kinds:
+//   metric — `metric` (a key in badgeMetrics.ts) compared as value >= `threshold`
+//   rule   — `rule` jsonb, the declarative score conditions of badgeRules.ts (never SQL or code)
+//   manual — no rule; an admin grants it by hand
+// `image` is the server-re-encoded 256x256 WebP (small, a few dozen at most — kept in the DB rather
+// than R2 so it can be served with an immutable public cache); `imageVersion` is bumped on every
+// upload and never reset, so `?v=` URLs never collide. No image = the lucide `icon` in `color`.
+// `status`: draft → live (activateBadge, which backfills when `retroactive`) → retired (no new awards;
+// earned ones stay). `activatedAt` is stamped on first activation: a forward-only rule badge counts
+// only scores posted after it. `availableFrom`/`availableTo` (naive UTC, like every timestamp here)
+// bound when it can be earned. migrate23 also adds CHECKs (kind/status values, metric needs a
+// threshold, rule needs a rule) that Drizzle doesn't model here.
+export type BadgeKind = 'metric' | 'rule' | 'manual';
+export type BadgeStatus = 'draft' | 'live' | 'retired';
+export const badges = pgTable('badges', {
+  id: serial('id').primaryKey(),
+  key: text('key').unique().notNull(),
+  name: text('name').notNull(),
+  description: text('description').default('').notNull(),
+  icon: text('icon').default('award').notNull(),
+  color: varchar('color', { length: 7 }).default('#f59e0b').notNull(),
+  image: bytea('image'),
+  imageVersion: integer('image_version').default(0).notNull(),
+  kind: text('kind').$type<BadgeKind>().notNull(),
+  metric: text('metric'),
+  threshold: integer('threshold'),
+  rule: jsonb('rule').$type<Record<string, unknown>>(),
+  retroactive: boolean('retroactive').default(false).notNull(),
+  status: text('status').$type<BadgeStatus>().default('draft').notNull(),
+  availableFrom: timestamp('available_from'),
+  availableTo: timestamp('available_to'),
+  activatedAt: timestamp('activated_at'),
+  sortOrder: integer('sort_order').default(0).notNull(),
+  createdById: integer('created_by_id').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+}, (table) => ({
+  statusIdx: index('badges_status_idx').on(table.status),
+}));
+
+// Who has which badge. A badge is earned once (the primary key); a yearly badge is a new badge row
+// each year. Source columns say what earned it (all nullable): the score that completed a rule, the
+// challenge that resolved it (phase 3), or the admin who granted it. `note` is shown on the profile.
+export const userBadges = pgTable('user_badges', {
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  badgeId: integer('badge_id').references(() => badges.id, { onDelete: 'cascade' }).notNull(),
+  earnedAt: timestamp('earned_at').defaultNow().notNull(),
+  sourceScoreId: integer('source_score_id').references(() => scores.id, { onDelete: 'set null' }),
+  sourceChallengeId: integer('source_challenge_id').references(() => challenges.id, { onDelete: 'set null' }),
+  grantedById: integer('granted_by_id').references(() => users.id, { onDelete: 'set null' }),
+  note: text('note'),
+}, (table) => ({
+  pk: primaryKey({ name: 'user_badges_pkey', columns: [table.userId, table.badgeId] }),
+  badgeIdx: index('user_badges_badge_id_idx').on(table.badgeId),
+}));
+
+// Event-sourced badge metrics whose sources are deleted or purged elsewhere (friendships are deleted
+// on unfriend; activity_events has retention). One row per (user, metric, ref) — `ref` makes a metric
+// idempotent and hard to farm (a login day's ref is its America/New_York date; a friend request's is
+// the recipient's id). A metric's value is COUNT(*). Written regardless of activity-retention settings.
+export const userMetricMarks = pgTable('user_metric_marks', {
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  metric: text('metric').notNull(),
+  ref: text('ref').notNull(),
+  at: timestamp('at').defaultNow().notNull(),
+}, (table) => ({
+  pk: primaryKey({ name: 'user_metric_marks_pkey', columns: [table.userId, table.metric, table.ref] }),
+  metricIdx: index('user_metric_marks_metric_idx').on(table.metric, table.userId),
+}));
+
+export type Badge = typeof badges.$inferSelect;
+export type UserBadge = typeof userBadges.$inferSelect;
+export type UserMetricMark = typeof userMetricMarks.$inferSelect;
 
 export type ActivityEvent = typeof activityEvents.$inferSelect;
 export type NewActivityEvent = typeof activityEvents.$inferInsert;
