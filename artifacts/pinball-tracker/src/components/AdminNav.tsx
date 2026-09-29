@@ -6,6 +6,7 @@ const TABS = [
   { href: '/admin/activity', label: 'Activity' },
   { href: '/admin/crew',     label: 'Crew' },
   { href: '/admin/scores',   label: 'Scores' },
+  { href: '/admin/badges',   label: 'Badges' },
   { href: '/admin/health',   label: 'Health' },
   { href: '/admin/stats',    label: 'Stats' },
   { href: '/admin/config',   label: 'Config' },
@@ -16,7 +17,7 @@ export default function AdminNav() {
   // /admin/users/12 keeps "Users" lit.
   const active = (href: string) => (href === '/admin' ? location === '/admin' : location === href || location.startsWith(`${href}/`));
   return (
-    // Eight tabs don't fit a phone: the strip scrolls sideways instead of wrapping.
+    // Nine tabs don't fit a phone: the strip scrolls sideways instead of wrapping.
     <nav className="flex gap-1 border-b border-white/10 mb-8 overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0" aria-label="Admin sections">
       {TABS.map(t => (
         <Link

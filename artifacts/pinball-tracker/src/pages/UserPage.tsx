@@ -12,6 +12,7 @@ import { ChallengeMeChips, ChallengeMeEditor } from '../components/ChallengeMeCa
 import { ChallengeLink } from '../components/ChallengeParts';
 import { FRIEND_WITH_KEY } from '../lib/myFriends';
 import { FullPhotoButton } from '../components/PhotoViewer';
+import BadgeShelf from '../components/BadgeShelf';
 
 export default function UserPage() {
   const { username } = useParams<{ username: string }>();
@@ -61,6 +62,9 @@ export default function UserPage() {
           </div>
         )}
       </div>
+
+      {/* Public — anyone who can see the profile sees the badges. */}
+      <BadgeShelf username={user.username} />
 
       {/* Signed-in only; hidden until they've finished a challenge. */}
       {isSignedIn && friendship && (

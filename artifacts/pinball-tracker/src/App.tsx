@@ -32,6 +32,8 @@ import AdminUserPage from './pages/AdminUserPage';
 import AdminActivityPage from './pages/AdminActivityPage';
 import AdminSocialPage from './pages/AdminSocialPage';
 import AdminScoresPage from './pages/AdminScoresPage';
+import AdminBadgesPage from './pages/AdminBadgesPage';
+import BadgesPage from './pages/BadgesPage';
 
 /**
  * The Map page is now the Venues page's Map view. Old links (bookmarks, shared URLs) keep working,
@@ -143,6 +145,7 @@ export default function App() {
         </Route>
         <Route path="/setup" component={SetupPage} />
         <Route path="/users/:username" component={UserPage} />
+        <Route path="/badges" component={BadgesPage} />
         <Route path="/welcome" component={WelcomePage} />
         <Route path="/sign-in" component={SignInPage} />
         <Route path="/sign-in/*" component={SignInPage} />
@@ -165,6 +168,9 @@ export default function App() {
         </Route>
         <Route path="/admin/scores">
           <AdminGate><AdminScoresPage /></AdminGate>
+        </Route>
+        <Route path="/admin/badges">
+          <AdminGate><AdminBadgesPage /></AdminGate>
         </Route>
         <Route path="/admin/health">
           <AdminGate><AdminHealthPage /></AdminGate>

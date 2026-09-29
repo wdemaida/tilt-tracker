@@ -18,6 +18,8 @@ import {
 import { extractVideoFrames, isVideoFile, VideoFrameError, VIDEO_UNSUPPORTED_MESSAGE } from '../lib/videoFrames';
 import { ScoreDigitInput } from '../components/ScoreDigitInput';
 import { MissingLocationNotice, type CurrentLocationState } from '../components/MissingLocationNotice';
+import BadgeImage from '../components/BadgeImage';
+import { BADGES_KEY, type Badge } from '../lib/badges';
 import {
   describePhotoLocation, detectPlatform, queryGeoPermission, getCurrentPosition, geoFailureMessage, CurrentPositionError,
   type PhotoLocationInfo, type PhotoSource, type GeoPermission,
@@ -82,6 +84,8 @@ interface SavedScore {
   venueId: number | null;
   machineName: string;
   score: number;
+  /** Badges this score just earned (POST /api/scores `newBadges`). */
+  newBadges: Badge[];
 }
 
 export default function AddScorePage() {
@@ -710,7 +714,12 @@ export default function AddScorePage() {
       queryClient.invalidateQueries({ queryKey: ['machines'] });
       queryClient.invalidateQueries({ queryKey: ['stats'] });
       queryClient.invalidateQueries({ queryKey: ['venues'] });
-      setSavedScore({ id: row.id, venueId: row.venueId, machineName: data.machineName, score: data.score });
+      const newBadges: Badge[] = Array.isArray(row.newBadges) ? row.newBadges : [];
+      if (newBadges.length) {
+        queryClient.invalidateQueries({ queryKey: ['user-badges'] });
+        queryClient.invalidateQueries({ queryKey: BADGES_KEY });
+      }
+      setSavedScore({ id: row.id, venueId: row.venueId, machineName: data.machineName, score: data.score, newBadges });
       setStep(4);
       void runFullPhotoUpload(row.id);
     },
@@ -2050,6 +2059,22 @@ export default function AddScorePage() {
               <p className="text-sm text-muted-foreground">{savedScore.machineName}</p>
               <p className="text-3xl font-bold text-primary">{Number(savedScore.score).toLocaleString()}</p>
             </div>
+            {savedScore.newBadges.length > 0 && (
+              <div className="w-full rounded-xl border border-amber-400/30 bg-amber-400/5 p-4 flex flex-col items-center gap-3" role="status">
+                <p className="text-xs font-bold uppercase tracking-widest text-amber-300">
+                  {savedScore.newBadges.length === 1 ? 'Badge earned!' : `${savedScore.newBadges.length} badges earned!`}
+                </p>
+                <div className="flex flex-wrap justify-center gap-4">
+                  {savedScore.newBadges.map(b => (
+                    <div key={b.id} className="flex flex-col items-center gap-1.5 max-w-[8rem] text-center">
+                      <BadgeImage badge={b} size={96} />
+                      <p className="text-sm font-bold uppercase tracking-wider text-white [overflow-wrap:anywhere]">{b.name}</p>
+                      {b.description && <p className="text-[11px] text-muted-foreground">{b.description}</p>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             {fullPhoto.status === 'working' && (
               <p className="flex items-center gap-1.5 text-xs text-muted-foreground" role="status">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" /> Saving full-size photo…

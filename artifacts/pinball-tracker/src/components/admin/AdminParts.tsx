@@ -244,6 +244,10 @@ const TYPE_TEXT: Record<string, string> = {
   'admin.machine_deleted': 'deleted a machine',
   'admin.settings_changed': 'changed a setting',
   'admin.photo_orphans_run': 'ran the photo orphan sweep',
+  'admin.badge_updated': 'changed a badge',
+  'badge.earned': 'earned a badge',
+  'badge.granted': 'granted a badge to',
+  'badge.revoked': 'revoked a badge from',
   'system.stat_snapshot': 'Daily stat snapshot ran',
   'system.challenge_sweep': 'Daily challenge sweep ran',
   'system.activity_retention': 'Activity-log retention ran',
@@ -263,6 +267,7 @@ function targetLink(ev: ActivityEvent): ReactNode {
     case 'score': return <span className="text-muted-foreground">score #{id}</span>;
     case 'pod': return <span className="text-muted-foreground">pod #{id}</span>;
     case 'machine': return <span className="text-muted-foreground">machine #{id}</span>;
+    case 'badge': return <Link href="/admin/badges" className="text-primary hover:underline">badge #{id}</Link>;
     default: return null;
   }
 }
@@ -290,6 +295,10 @@ function detail(ev: ActivityEvent): string | null {
         p.detail,
       ].filter(Boolean).join(' · ');
     case 'notification.sent': return String(p.kind ?? '');
+    case 'badge.earned': case 'badge.granted': case 'badge.revoked':
+      return [p.name, p.trigger && p.trigger !== 'grant' ? `via ${p.trigger}` : null, p.note, p.reason].filter(Boolean).join(' · ') || null;
+    case 'admin.badge_updated':
+      return [p.action, p.name, typeof p.awarded === 'number' && p.awarded > 0 ? `${p.awarded} awarded` : null].filter(Boolean).join(' · ') || null;
     case 'challenge.resolved':
       return Array.isArray(p.outcomes) ? p.outcomes.map((o: any) => `@${o.username ?? o.userId} ${o.outcome}`).join(', ') + (p.reason ? ` (${p.reason})` : '') : null;
     case 'challenge.declined':

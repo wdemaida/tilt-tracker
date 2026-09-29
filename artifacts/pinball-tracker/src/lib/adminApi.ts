@@ -158,6 +158,59 @@ export interface AdminUserDetail {
 
 export type ActionResponse = Record<string, any>;
 
+// ── badges (/api/admin/badges, routes/adminBadges.ts on the api-server) ─────
+
+export type BadgeKind = 'metric' | 'rule' | 'manual';
+export type BadgeStatus = 'draft' | 'live' | 'retired';
+
+/** The rule vocabulary (badgeRules.ts). Every condition present must hold. */
+export interface BadgeRule {
+  localDate?: { from: string; to: string };
+  daysOfWeek?: number[];
+  localTime?: { from: string; to: string };
+  postedWithinHours?: number;
+  machine?: { machineId: number; matchMode: 'group' | 'exact'; matchGroup?: string | null; name?: string };
+  venueId?: number;
+  city?: string;
+  state?: string;
+  minScore?: number;
+  scoreType?: 'casual' | 'tournament';
+  requiresPhoto?: boolean;
+  count?: number;
+  distinct?: 'none' | 'machine' | 'venue';
+}
+
+export interface AdminBadge {
+  id: number; key: string; name: string; description: string; icon: string; color: string;
+  imageVersion: number | null; hasImage: boolean;
+  kind: BadgeKind; metric: string | null; threshold: number | null; rule: BadgeRule | null;
+  retroactive: boolean; status: BadgeStatus;
+  availableFrom: string | null; availableTo: string | null; activatedAt: string | null;
+  sortOrder: number; createdAt: string; updatedAt: string;
+  requirement: string; earnedCount: number; metricAvailable: boolean; activationBlocker: string | null;
+}
+
+export interface BadgeMetricInfo {
+  key: string; label: string; description: string; source: 'derived' | 'marks'; triggers: string[]; available: boolean;
+}
+
+export interface BadgeHolder {
+  earnedAt: string; note: string | null; sourceScoreId: number | null; sourceChallengeId: number | null;
+  user: UserRef; grantedBy: UserRef | null;
+}
+
+export interface BadgePreview {
+  kind: BadgeKind; retroactive: boolean; outsideWindow: boolean; total: number; newCount: number;
+  qualifying: Array<{ user: UserRef; value: number | null; sourceScoreId: number | null; alreadyHas: boolean }>;
+}
+
+/** Create/PATCH body. Dates are ISO strings or null. */
+export type BadgeInput = Partial<{
+  key: string; name: string; description: string; icon: string; color: string; kind: BadgeKind;
+  metric: string | null; threshold: number | null; rule: BadgeRule | null; retroactive: boolean;
+  availableFrom: string | null; availableTo: string | null; sortOrder: number;
+}>;
+
 function qs(params: Record<string, string | number | null | undefined | boolean>): string {
   const p = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '' && v !== false) p.set(k, String(v));
@@ -199,6 +252,23 @@ export function createAdminApi(getToken: () => Promise<string | null>) {
     saveRetention: (s: RetentionSettings) => put<RetentionView>('/admin/settings/retention', s),
     photoOrphans: () => get<PhotoOrphanStatus>('/admin/photo-orphans'),
     runPhotoOrphans: (dryRun: boolean) => post<PhotoOrphanRunResult>('/admin/photo-orphans/run', { dryRun }),
+    badges: () => get<{ items: AdminBadge[]; limits: Record<string, number>; image: { maxBytes: number; size: number; types: string[] } }>('/admin/badges'),
+    badge: (id: number) => get<{ badge: AdminBadge; holders: BadgeHolder[] }>(`/admin/badges/${id}`),
+    badgeMetrics: () => get<BadgeMetricInfo[]>('/admin/badges/metrics'),
+    createBadge: (body: BadgeInput) => post<{ badge: AdminBadge }>('/admin/badges', body),
+    updateBadge: async (id: number, body: BadgeInput) =>
+      request<{ badge: AdminBadge }>(`/admin/badges/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, await tok()),
+    uploadBadgeImage: async (id: number, file: File) => {
+      const form = new FormData();
+      form.append('image', file);
+      return request<{ imageVersion: number; bytes: number }>(`/admin/badges/${id}/image`, { method: 'POST', body: form }, await tok());
+    },
+    deleteBadgeImage: (id: number) => del<{ imageVersion: null }>(`/admin/badges/${id}/image`),
+    previewBadge: (id: number) => post<BadgePreview>(`/admin/badges/${id}/preview`),
+    activateBadge: (id: number) => post<{ awarded: number; skippedWindow: boolean }>(`/admin/badges/${id}/activate`),
+    retireBadge: (id: number) => post<ActionResponse>(`/admin/badges/${id}/retire`),
+    grantBadge: (id: number, userIds: number[], note: string) => post<{ granted: number; alreadyHad: number }>(`/admin/badges/${id}/grants`, { userIds, note }),
+    revokeBadge: (id: number, userId: number, reason: string) => del<ActionResponse>(`/admin/badges/${id}/grants${qs({ userId, reason })}`),
   };
 }
 

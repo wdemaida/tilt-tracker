@@ -314,3 +314,19 @@
   colours above, which are localStorage) and `PhotoOrphansCard` (dry run runs directly; the real run
   goes through `ConfirmDialog`). Client-side validation mirrors the server's `limits`; the server is
   the authority. The would-delete estimates reflect the *saved* settings, not unsaved inputs.
+
+## Badges (`components/BadgeImage.tsx`, `BadgeShelf.tsx`, `pages/BadgesPage.tsx`, `AdminBadgesPage.tsx`, added 2026-09-29)
+- **`BadgeImage` is the only way to draw a badge**: the uploaded image when `imageVersion` is set,
+  else the lucide `icon` (`BADGE_ICONS`, kebab-case names; unknown → award) in `color` on a tinted
+  disc. `locked` = grayscale + dimmed (the catalog's not-yet-earned look — same asset). Image URLs
+  carry `?v=<imageVersion>` and are cached immutably, so never build one without the version.
+- Profile (`UserPage` → `BadgeShelf`): public for everyone, 48px grid newest first, "View all" past
+  12, tap → `BadgeDetail` (96px). No badges → hidden, except on your own profile (link to `/badges`).
+- `/badges` catalog (public route): live badges; unearned ones locked; `availabilityText()` gives
+  "Earn it on Dec 25, 2026" for a one-day rule, else the window.
+- AddScorePage step 4 shows `newBadges` from the score POST at 96px; the notifications page renders
+  `badge_earned`.
+- `/admin/badges`: list + editor (kind, metric + N or the rule form builder, window, retroactive),
+  image upload with a live 48/96/locked preview, Preview / Go live / Retire, grant picker (admin user
+  search) and per-holder revoke — all through `ConfirmDialog`. Preview and Go live use the **saved**
+  badge.

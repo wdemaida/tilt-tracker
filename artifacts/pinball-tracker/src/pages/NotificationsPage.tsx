@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useInfiniteQuery, useMutation } from '@tanstack/react-query';
 import { Link } from 'wouter';
 import { formatDistanceToNow } from 'date-fns';
-import { Ban, Bell, Flag, Loader2, Swords, Timer, Trophy, TrendingUp, UserCheck, UserPlus } from 'lucide-react';
+import { Award, Ban, Bell, Flag, Loader2, Swords, Timer, Trophy, TrendingUp, UserCheck, UserPlus } from 'lucide-react';
 import { useApi } from '../lib/useApi';
 import { queryClient } from '../lib/queryClient';
 import { NOTIFICATIONS_KEY, UNREAD_COUNT_KEY } from '../lib/myFriends';
@@ -52,6 +52,13 @@ function describe(n: AppNotification): { text: React.ReactNode; href: string | n
         href: n.payload.username ? `/users/${n.payload.username}` : '/friends',
         Icon: UserCheck,
       };
+    case 'badge_earned': {
+      const badgeName = typeof n.payload.badgeName === 'string' ? n.payload.badgeName : 'a';
+      return {
+        text: <>You {n.payload.granted ? 'were awarded' : 'earned'} the <span className="font-semibold text-white">{badgeName}</span> badge</>,
+        href: '/badges', Icon: Award,
+      };
+    }
   }
 
   // Challenge kinds — each links to the challenge page (/challenges/:id).
@@ -208,7 +215,7 @@ export default function NotificationsPage() {
         <div className="rounded-xl border border-dashed border-white/15 p-8 text-center">
           <Bell className="w-8 h-8 text-muted-foreground mx-auto mb-3" aria-hidden />
           <p className="text-sm text-white font-bold mb-1">Nothing yet</p>
-          <p className="text-sm text-muted-foreground">Friend requests, challenges and results will show up here.</p>
+          <p className="text-sm text-muted-foreground">Friend requests, challenges, results and badges will show up here.</p>
         </div>
       ) : (
         <div className="flex flex-col gap-2">
