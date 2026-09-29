@@ -1,7 +1,7 @@
 // "Upload the full-size photo" for a score that's already saved — the owner picks an image and it
 // goes through exactly the AddScorePage path: prepareUploadImage (HEIC native decoder, then
-// heic2any) → encodeFullSizePhoto (canvas re-encode: no EXIF/GPS, ≤ 4096px) → upload-url → PUT to
-// R2 → confirm. Used by PhotoViewer (only when the server says `canUpload`) and the Home edit dialog
+// heic2any) → encodeScorePhoto (canvas re-encode: no EXIF/GPS, ≤ 4096px, else the ~2000px copy) →
+// upload-url → PUT to R2 → confirm. Used by PhotoViewer (only when the server says `canUpload`) and the Home edit dialog
 // (own scores only). The server enforces owner-only, rate limits, size/type and challenge locks
 // regardless; this just keeps the button from being offered where it would be refused.
 
@@ -10,12 +10,12 @@ import { Loader2, Upload, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { useApi } from '../lib/useApi';
 import { queryClient } from '../lib/queryClient';
 import { prepareUploadImage } from '../lib/prepareUploadImage';
-import { encodeFullSizePhoto, uploadFullSizePhoto } from '../lib/fullSizePhoto';
+import { encodeScorePhoto, encodeFailMessage, uploadFullSizePhoto, type FullPhotoEncodeResult } from '../lib/fullSizePhoto';
 
 type State =
   | { status: 'idle' }
   | { status: 'working'; step: 'preparing' | 'uploading' }
-  | { status: 'saved' }
+  | { status: 'saved'; smaller: boolean }
   | { status: 'failed'; message: string };
 
 /** Every query whose rows carry hasFullPhoto / hasThumbnail, plus the viewer's own. */
@@ -45,19 +45,20 @@ export function FullPhotoUploadButton({ scoreId, label, variant = 'primary', ali
       return setState({ status: 'failed', message: 'That isn’t a photo — pick an image file.' });
     }
     setState({ status: 'working', step: 'preparing' });
-    let encoded = null;
+    let encoded: FullPhotoEncodeResult;
     try {
-      encoded = await encodeFullSizePhoto(await prepareUploadImage(file));
+      encoded = await encodeScorePhoto(await prepareUploadImage(file));
     } catch (err) {
       console.warn('Preparing full-size photo failed:', err);
+      encoded = { ok: false, reason: 'decode', detail: String(err) };
     }
-    if (!encoded) {
-      return setState({ status: 'failed', message: 'Couldn’t read that photo in this browser — try a JPEG.' });
+    if (!encoded.ok) {
+      return setState({ status: 'failed', message: encodeFailMessage(encoded.reason) });
     }
     setState({ status: 'working', step: 'uploading' });
-    const result = await uploadFullSizePhoto(api, scoreId, encoded);
+    const result = await uploadFullSizePhoto(api, scoreId, encoded.photo);
     if (result.ok) {
-      setState({ status: 'saved' });
+      setState({ status: 'saved', smaller: encoded.photo.variant === 'fallback' });
       invalidatePhotoQueries(scoreId);
       onUploaded?.();
     } else {
@@ -96,7 +97,7 @@ export function FullPhotoUploadButton({ scoreId, label, variant = 'primary', ali
       )}
       {state.status === 'saved' && (
         <p role="status" className="flex items-center gap-1.5 text-xs text-emerald-400">
-          <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" /> Full-size photo saved
+          <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" /> {state.smaller ? 'Saved a smaller copy of the photo' : 'Full-size photo saved'}
         </p>
       )}
     </div>

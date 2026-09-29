@@ -253,6 +253,16 @@
   Safari's ~16.7MP canvas limit; 24MP iPhone photos exceed it) and encoded JPEG 0.92, stepping down if
   over 11.5MB. Video frames are drawn at native resolution during extraction (the `<video>` is gone by save
   time) and marked `ready`. A `heicFailed` image gets no full-size.
+- **Encoded at pick time, with a fallback** (added 2026-09-29 — an Android user's full photos silently
+  never uploaded). `setBestImage()` hands the image to `FullPhotoEncoder`, which encodes in the
+  background right away (one encode at a time, latest image wins, a replaced image's encode aborts at
+  its next step); `runFullPhotoUpload` awaits that result. Android gallery/cloud Files may not be
+  readable minutes later at save time. If the full encode fails (`encodeFullSizePhoto` returns
+  `{ ok: false, reason: 'heic' | 'decode' | 'too_large' | 'no_image' }`), `encodeScorePhoto` redraws
+  the ~2000px `PreparedImage.file` through a canvas and uploads that (`variant: 'fallback'`, step 4:
+  "Saved a smaller copy of the photo"). Always redrawn — `file` is the untouched original when it was
+  already a ≤2000px JPEG. **Nothing goes silently idle after a real attempt**: a failed encode or upload
+  shows the failed line with a reason and Retry (which re-encodes).
 - **HEIC:** `prepareUploadImage` tries the browser's native decoder (`createImageBitmap`, Safari 17+)
   before heic2any. heic2any paints the whole decoded image into one canvas, so a 24MP+ HEIC on an iPhone
   exceeds the canvas limit and silently becomes `heicFailed` (server decode). Note iOS usually hands

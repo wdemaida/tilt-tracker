@@ -12,7 +12,7 @@ import { queryClient } from '../lib/queryClient';
 import { PinballIcon } from '../components/PinballIcon';
 import { toLocalInput, localInputToIso, naiveToLocalInput } from '../lib/datetime';
 import { prepareUploadImage, type PreparedImage } from '../lib/prepareUploadImage';
-import { encodeFullSizePhoto, uploadFullSizePhoto, type EncodedFullPhoto } from '../lib/fullSizePhoto';
+import { FullPhotoEncoder, uploadFullSizePhoto, encodeFailMessage } from '../lib/fullSizePhoto';
 import { extractVideoFrames, isVideoFile, VideoFrameError, VIDEO_UNSUPPORTED_MESSAGE } from '../lib/videoFrames';
 import { ScoreDigitInput } from '../components/ScoreDigitInput';
 import { MissingLocationNotice, type CurrentLocationState } from '../components/MissingLocationNotice';
@@ -190,8 +190,15 @@ export default function AddScorePage() {
   // The image the thumbnail was made from — also the one that becomes the full-size photo once the
   // score saves (fullSizePhoto.ts). Set wherever generateThumbnail is called, so the two never differ.
   const bestImageRef = useRef<PreparedImage | null>(null);
-  const fullPhotoEncoded = useRef<EncodedFullPhoto | null>(null);
-  const [fullPhoto, setFullPhoto] = useState<{ status: 'idle' | 'working' | 'saved' | 'failed'; message?: string }>({ status: 'idle' });
+  // Encodes the full-size photo as soon as it's picked — see FullPhotoEncoder for why not at save.
+  const fullPhotoEncoder = useRef<FullPhotoEncoder | null>(null);
+  if (!fullPhotoEncoder.current) fullPhotoEncoder.current = new FullPhotoEncoder();
+  const [fullPhoto, setFullPhoto] = useState<{
+    status: 'idle' | 'working' | 'saved' | 'failed';
+    message?: string;
+    /** Saved the ~2000px copy because the full-size encode failed. */
+    smaller?: boolean;
+  }>({ status: 'idle' });
   const machineAutoSelected = useRef(false);
   const [, navigate] = useLocation();
   const api = useApi();
@@ -270,25 +277,32 @@ export default function AddScorePage() {
   }
 
   /** Picks the image behind the thumbnail (and so the full-size photo). */
+  /** Picks the image behind the thumbnail (and so the full-size photo), and starts encoding it. */
   function setBestImage(image: PreparedImage | null) {
-    if (bestImageRef.current !== image) fullPhotoEncoded.current = null;
     bestImageRef.current = image;
+    fullPhotoEncoder.current!.prepare(image);
   }
 
   /**
-   * After the score saves: encode the full-size photo and upload it to R2, in the background. The
-   * wizard doesn't wait — step 4 shows a status line, and the upload carries on if the user taps
-   * Done. Silent when there's nothing to upload or the server has full-size photos switched off.
+   * After the score saves: wait for the full-size encode (started at pick time, falling back to the
+   * ~2000px copy) and upload it to R2, in the background. The wizard doesn't wait — step 4 shows a
+   * status line, and the upload carries on if the user taps Done. Silent only when there's no photo
+   * or the server has full-size photos switched off; any other failure shows Retry and a reason.
    */
   async function runFullPhotoUpload(scoreId: number) {
-    if (!bestImageRef.current) return;
+    const image = bestImageRef.current;
+    if (!image) return;
+    const encoder = fullPhotoEncoder.current!;
     setFullPhoto({ status: 'working' });
-    if (!fullPhotoEncoded.current) fullPhotoEncoded.current = await encodeFullSizePhoto(bestImageRef.current);
-    const encoded = fullPhotoEncoded.current;
-    if (!encoded) return setFullPhoto({ status: 'idle' });
-    const result = await uploadFullSizePhoto(api, scoreId, encoded);
+    const encoded = await encoder.result(image);
+    if (!encoded.ok) {
+      // A failed encode is forgotten so Retry tries again (it may have been memory pressure).
+      encoder.reset();
+      return setFullPhoto({ status: 'failed', message: encodeFailMessage(encoded.reason) });
+    }
+    const result = await uploadFullSizePhoto(api, scoreId, encoded.photo);
     if (result.ok) {
-      setFullPhoto({ status: 'saved' });
+      setFullPhoto({ status: 'saved', smaller: encoded.photo.variant === 'fallback' });
       queryClient.invalidateQueries({ queryKey: ['scores'] });
     } else {
       setFullPhoto(result.disabled ? { status: 'idle' } : { status: 'failed', message: result.message });
@@ -2032,13 +2046,16 @@ export default function AddScorePage() {
             )}
             {fullPhoto.status === 'saved' && (
               <p className="flex items-center gap-1.5 text-xs text-green-400" role="status">
-                <CheckCircle2 className="w-3.5 h-3.5" /> Full-size photo saved
+                <CheckCircle2 className="w-3.5 h-3.5" /> {fullPhoto.smaller ? 'Saved a smaller copy of the photo' : 'Full-size photo saved'}
               </p>
             )}
             {fullPhoto.status === 'failed' && (
               <p className="flex items-center gap-2 text-xs text-amber-300" role="status">
                 <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
-                <span>Couldn't save the full-size photo — the score and thumbnail are saved.</span>
+                <span>
+                  Couldn't save the full-size photo — the score and thumbnail are saved.
+                  {fullPhoto.message && <> {fullPhoto.message}</>}
+                </span>
                 <button type="button" onClick={() => void runFullPhotoUpload(savedScore.id)}
                   className="font-bold uppercase tracking-wider text-primary hover:text-primary/80 flex-shrink-0">
                   Retry
