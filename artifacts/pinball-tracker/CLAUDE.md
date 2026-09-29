@@ -287,6 +287,15 @@
 - Uploads only work from origins in the R2 bucket's CORS list (see api-server CLAUDE.md) — a scratch vite
   on another port can view but not upload.
 
+## Stale-tab guard (`src/lib/appVersion.ts`, `components/UpdateBanner.tsx`, added 2026-09-29)
+- `vite.config.ts` bakes a build id (Vercel's `VERCEL_GIT_COMMIT_SHA`, else `git rev-parse`, else the build
+  time) into `import.meta.env.VITE_APP_BUILD_ID` and emits `dist/version.json` with the same id
+  (`vercel.json` serves it `no-store`). When a tab becomes visible (at most every 10 min) it fetches
+  `/version.json`; a different id shows a small "A new version is available — Reload" banner. It never
+  reloads by itself (it would lose a half-entered score); on `/add` Reload asks first. Off under the
+  dev server (no version.json there) — test with `npx vite build && npx vite preview`.
+- Every API call sends the id as `X-App-Version`; `score.created` records it as `appVersion`.
+
 ## Admin area (`src/pages/Admin*.tsx`, `components/admin/`, `lib/adminApi.ts`, added 2026-09-26)
 - Routes: `/admin` (Overview), `/admin/users`, `/admin/users/:id`, `/admin/activity` (`?userId=`,
   `?category=`, `?type=`), `/admin/crew` (`?tab=friendships|challenges|notifications`),

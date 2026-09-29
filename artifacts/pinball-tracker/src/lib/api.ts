@@ -1,3 +1,5 @@
+import { APP_BUILD_ID } from './appVersion';
+
 const BASE = import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : '/api';
 
 export async function request<T>(path: string, init?: RequestInit, token?: string | null): Promise<T> {
@@ -5,6 +7,8 @@ export async function request<T>(path: string, init?: RequestInit, token?: strin
   if (!(init?.body instanceof FormData)) headers['Content-Type'] = 'application/json';
   if (init?.headers) Object.assign(headers, init.headers);
   if (token) headers['Authorization'] = `Bearer ${token}`;
+  // Which build sent this — recorded on score.created, so a stale tab shows up in the activity log.
+  headers['X-App-Version'] = APP_BUILD_ID;
 
   const res = await fetch(`${BASE}${path}`, { ...init, headers });
   if (!res.ok) {
@@ -553,7 +557,7 @@ export function createApi(getToken: () => Promise<string | null>) {
         exifDatetime: img.exifDatetime ?? null,
       }))));
 
-      const headers: Record<string, string> = {};
+      const headers: Record<string, string> = { 'X-App-Version': APP_BUILD_ID };
       if (token) headers['Authorization'] = `Bearer ${token}`;
       const res = await fetch(`${BASE}/upload${legacy ? '' : '?set=1'}`, { method: 'POST', body: form, headers });
       if (!res.ok) {
