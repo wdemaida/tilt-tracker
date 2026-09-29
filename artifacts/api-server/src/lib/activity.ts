@@ -37,8 +37,9 @@ export const ACTIVITY_TYPES = {
   pod: ['pod.created', 'pod.updated', 'pod.deleted', 'pod.member_added', 'pod.member_removed'],
   challenge: [
     'challenge.created', 'challenge.accepted', 'challenge.declined', 'challenge.cancelled',
-    'challenge.forfeited', 'challenge.resolved', 'challenge.expired',
+    'challenge.forfeited', 'challenge.resolved', 'challenge.expired', 'challenge.countered',
   ],
+  profile: ['profile.challenge_prefs_updated'],
   notification: ['notification.sent'],
   pm: ['pm.connected', 'pm.score_posted', 'pm.score_post_failed'],
   admin: [

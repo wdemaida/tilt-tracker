@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import {
   opdbGroup, matchGroupFor, machineMatches, rosterHasMachine, exclusionReason, scoreCounts, baselineFrom, bestOnMachine,
   raceTarget, computeStanding, resolveChallenge, resolutionTrigger, raceWinner, projectedRanks,
-  pendingExpired, canAccept, canDecline, canCancel, canForfeit, phaseOf, validateCreate, computeRecord,
+  pendingExpired, canAccept, canDecline, canCounter, canCancel, canForfeit, phaseOf, validateCreate, computeRecord,
+  parseDeclineReason, saidNo,
   MAX_WINDOW_DAYS, MIN_PLAYS,
   type CandidateScore, type CountRule, type ChallengeType, type ParticipantState, type Standing,
 } from './challengeRules.js';
@@ -423,6 +424,38 @@ test('phaseOf', () => {
   assert.equal(phaseOf(c, at(11)), 'live');
   assert.equal(phaseOf(c, at(73)), 'ended');
   assert.equal(phaseOf({ ...c, status: 'declined' }, at(1)), 'declined');
+  assert.equal(phaseOf({ ...c, status: 'countered' }, at(1)), 'countered');
+});
+
+// ── declining / countering ───────────────────────────────────────────────────
+
+test('canCounter: the invitee of a pending challenge, like a decline', () => {
+  const pending = { creatorId: A, status: 'pending' as const, startsAt: null, endsAt: at(72) };
+  const inviteeP = { userId: B, response: 'pending' as const, outcome: null };
+  assert.ok(canCounter(pending, inviteeP));
+  assert.ok(!canCounter(pending, { userId: A, response: 'accepted', outcome: null }), 'not the creator');
+  assert.ok(!canCounter(pending, undefined), 'not a stranger');
+  assert.ok(!canCounter({ ...pending, status: 'active' }, inviteeP), 'not once it is under way');
+  assert.ok(!canCounter({ ...pending, status: 'countered' }, inviteeP), 'not twice');
+  assert.ok(!canCounter(pending, { userId: B, response: 'countered', outcome: null }));
+});
+
+test('parseDeclineReason', () => {
+  assert.equal(parseDeclineReason(undefined), null);
+  assert.equal(parseDeclineReason({}), null);
+  assert.equal(parseDeclineReason({ reason: '' }), null);
+  assert.equal(parseDeclineReason({ reason: null }), null);
+  assert.equal(parseDeclineReason({ reason: 'cant_reach' }), 'cant_reach');
+  assert.equal(parseDeclineReason({ reason: 'no_thanks' }), 'no_thanks');
+  assert.equal(parseDeclineReason({ reason: 'busy' }), 'invalid');
+  assert.equal(parseDeclineReason({ reason: 1 }), 'invalid');
+});
+
+test('saidNo: declined and countered participants are out', () => {
+  assert.ok(saidNo('declined'));
+  assert.ok(saidNo('countered'));
+  assert.ok(!saidNo('pending'));
+  assert.ok(!saidNo('accepted'));
 });
 
 // ── creation input ───────────────────────────────────────────────────────────

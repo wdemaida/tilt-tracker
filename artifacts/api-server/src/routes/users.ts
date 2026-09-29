@@ -6,6 +6,7 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import { visibleScoreSql } from '../lib/venueActivity.js';
 import { hasFullPhotoSql, hasThumbnailSql } from '../lib/photoStore.js';
 import { logActivity, fromReq } from '../lib/activity.js';
+import { challengeMeFor } from '../lib/challengeReach.js';
 
 const router = Router();
 
@@ -94,7 +95,15 @@ router.get('/:username', async (req, res) => {
       .where(and(eq(scores.userId, user.id), visibleScoreSql(viewer)))
       .orderBy(desc(scores.playedAt));
 
-    res.json({ user: { id: user.id, username: user.username, displayName: user.displayName }, scores: userScores });
+    // "Challenge me on" — only for an accepted friend (guests, strangers and the user themselves get
+    // no field; the owner edits theirs through /api/me/challenge-prefs).
+    const challengeMe = await challengeMeFor(user.id, viewer?.id);
+
+    res.json({
+      user: { id: user.id, username: user.username, displayName: user.displayName },
+      scores: userScores,
+      ...(challengeMe ? { challengeMe: challengeMe.map(m => ({ id: m.machineId, name: m.name, variant: m.variant, imageUrl: m.imageUrl })) } : {}),
+    });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch user' });
   }

@@ -37,8 +37,8 @@
 export const CHALLENGE_TYPES = ['high_score', 'race', 'most_improved', 'average'] as const;
 export type ChallengeType = (typeof CHALLENGE_TYPES)[number];
 export type MatchMode = 'game' | 'exact';
-export type ChallengeStatus = 'pending' | 'active' | 'resolved' | 'declined' | 'cancelled' | 'expired';
-export type ParticipantResponse = 'pending' | 'accepted' | 'declined';
+export type ChallengeStatus = 'pending' | 'active' | 'resolved' | 'declined' | 'cancelled' | 'expired' | 'countered';
+export type ParticipantResponse = 'pending' | 'accepted' | 'declined' | 'countered';
 export type Outcome = 'win' | 'loss' | 'tie' | 'forfeit' | 'no_show' | 'abandoned';
 
 export const MIN_PLAYS = { min: 3, max: 10 } as const;
@@ -370,6 +370,8 @@ export function canAccept(c: LifecycleChallenge, p: LifecycleParticipant | undef
   return !!p && c.status === 'pending' && p.response === 'pending' && p.userId !== c.creatorId;
 }
 export const canDecline = canAccept;
+/** Answering "can't get to this one" with a counter-offer: exactly when a plain decline is allowed. */
+export const canCounter = canAccept;
 export function canCancel(c: LifecycleChallenge, actorId: number): boolean {
   return c.status === 'pending' && c.creatorId === actorId;
 }
@@ -379,14 +381,37 @@ export function canForfeit(c: LifecycleChallenge, p: LifecycleParticipant | unde
 
 /**
  * What the UI shows: pending, scheduled (accepted, start date ahead), live, resolved, declined,
- * cancelled, expired. ('ended' only for the instant between the deadline and a lazy resolve.)
+ * cancelled, expired, countered. ('ended' only for the instant between the deadline and a lazy resolve.)
  */
-export type ChallengePhase = 'pending' | 'scheduled' | 'live' | 'ended' | 'resolved' | 'declined' | 'cancelled' | 'expired';
+export type ChallengePhase = 'pending' | 'scheduled' | 'live' | 'ended' | 'resolved' | 'declined' | 'cancelled' | 'expired' | 'countered';
 export function phaseOf(c: LifecycleChallenge, now: Date): ChallengePhase {
   if (c.status !== 'active') return c.status;
   if (c.startsAt && +now < +c.startsAt) return 'scheduled';
   if (+now > +c.endsAt) return 'ended';
   return 'live';
+}
+
+// ── declining ────────────────────────────────────────────────────────────────
+
+/**
+ * Why an invitee said no. Every kind of answer is stored (challenge_participants.decline_reason) so
+ * badges can tell "can't get there" from "not interested": 'cant_reach' (a plain decline after
+ * "Can't get to this one", and every counter-offer) and 'no_thanks'. A decline sent without a reason
+ * (an older client) stays null.
+ */
+export const DECLINE_REASONS = ['cant_reach', 'no_thanks'] as const;
+export type DeclineReason = (typeof DECLINE_REASONS)[number];
+
+/** The optional `reason` of a decline body: a DeclineReason, null when absent, or 'invalid'. */
+export function parseDeclineReason(body: unknown): DeclineReason | null | 'invalid' {
+  const raw = body && typeof body === 'object' ? (body as Record<string, unknown>).reason : undefined;
+  if (raw === undefined || raw === null || raw === '') return null;
+  return (DECLINE_REASONS as readonly unknown[]).includes(raw) ? raw as DeclineReason : 'invalid';
+}
+
+/** A participant who said no — plain decline or counter-offer. They're out of this challenge. */
+export function saidNo(response: ParticipantResponse): boolean {
+  return response === 'declined' || response === 'countered';
 }
 
 // ── creation input ───────────────────────────────────────────────────────────

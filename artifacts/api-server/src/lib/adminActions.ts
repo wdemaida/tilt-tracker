@@ -6,6 +6,8 @@ import { logActivity, type ActivityInput } from './activity.js';
 import { setClerkBan } from './clerkAdmin.js';
 import { deletePhotoBestEffort, getPhotoStore, type PhotoStore } from './photoStore.js';
 import { raiseNotification, settleNotifications } from './notify.js';
+import { saidNo } from './challengeRules.js';
+import { settleInvitation } from './challenges.js';
 
 // Admin actions (routes/adminArea.ts is the HTTP side). Every action:
 //   - is only reachable behind requireAppUser + requireAdmin (the admin router's guard);
@@ -165,7 +167,7 @@ export async function deleteThumbnailAsAdmin(admin: Admin, scoreId: number, meta
 
 // ── challenges ───────────────────────────────────────────────────────────────
 
-const CLOSED: string[] = ['declined', 'cancelled', 'expired'];
+const CLOSED: string[] = ['declined', 'countered', 'cancelled', 'expired'];
 
 export async function voidChallenge(admin: Admin, challengeId: number, reasonRaw: unknown, meta: Meta = {}): Promise<ActionResult> {
   const reason = cleanReason(reasonRaw);
@@ -186,8 +188,8 @@ export async function voidChallenge(admin: Admin, challengeId: number, reasonRaw
     }).where(eq(challenges.id, challengeId));
 
     for (const p of parts) {
-      if (p.response === 'declined') continue;
-      await settleNotifications(tx, p.userId, 'challenge_received', challengeId, 'delete', 'challengeId');
+      if (saidNo(p.response)) continue;
+      await settleInvitation(tx, p.userId, challengeId, 'delete');
       await raiseNotification(tx, p.userId, 'challenge_voided', {
         challengeId, challengeType: c.type, machineName: machine?.name ?? null, byAdmin: true,
       });

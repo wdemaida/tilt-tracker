@@ -14,6 +14,11 @@
 // the machines, the friendship it made, and every notification it raised for them. The venue-lock
 // checks use three throwaway `zz-challenge-test` venues (one "Pinball Map linked" through a fake
 // location id whose roster is planted in pm_location_cache, so no network call), removed at the end.
+// Challenge recs (feature/challenge-recs): decline reasons, counter-offers (incl. a counter of a
+// counter), /api/me/challenge-prefs and /api/challenges/recommendations — privacy (someone else's
+// hidden residence, the "at home" label, hidden-score exclusion from level 3) and zero Pinball Map
+// calls — plus the profile's challengeMe field, using two more throwaway machines and two throwaway
+// residences. The borrowed users' challenge prefs / seeded_at are restored at the end.
 //
 //   cd artifacts/api-server && npx tsx test-challenges.ts
 
@@ -27,11 +32,18 @@ if (!new URL(process.env.DATABASE_URL!).hostname.startsWith(DEV_ENDPOINT)) {
 }
 
 const { default: express } = await import('express');
+const { readFileSync } = await import('node:fs');
 const { default: challengesRouter } = await import('./src/routes/challenges.js');
 const { default: notificationsRouter } = await import('./src/routes/notifications.js');
 const { default: scoresRouter } = await import('./src/routes/scores.js');
+const { default: meRouter } = await import('./src/routes/me.js');
+const { default: usersRouter } = await import('./src/routes/users.js');
 const { runChallengeSweep } = await import('./src/lib/challenges.js');
-const { db, users, friendships, notifications, challenges, challengeParticipants, challengeScores, scores, machines, venues, venueMachineHistory, pmLocationCache } = await import('@workspace/db');
+const { pmClient } = await import('./src/lib/pmClient.js');
+const {
+  db, users, friendships, notifications, challenges, challengeParticipants, challengeScores, scores, machines, venues, venueMachineHistory,
+  pmLocationCache, venueInventory, userChallengeMachines, userChallengeVenues, activityEvents,
+} = await import('@workspace/db');
 const { and, desc, eq, inArray, or, sql } = await import('drizzle-orm');
 
 const H = 60 * 60 * 1000;
@@ -53,6 +65,13 @@ if (foreign > 0) throw new Error(`${foreign} read notifications older than 30 da
 const [privateVenue] = await db.select({ id: venues.id }).from(venues)
   .where(sql`privacy_tier <> 'full' OR is_residence`).limit(1);
 
+// Challenge prefs the borrowed users already have (normally none) — restored at the end.
+const prefsBefore = {
+  seeded: await db.select({ id: users.id, at: users.challengeVenuesSeededAt }).from(users).where(inArray(users.id, ids)),
+  machines: await db.select().from(userChallengeMachines).where(inArray(userChallengeMachines.userId, ids)),
+  venues: await db.select().from(userChallengeVenues).where(inArray(userChallengeVenues.userId, ids)),
+};
+
 const app = express();
 app.use(express.json());
 const stub = (req: any, _res: any, next: any) => {
@@ -64,13 +83,15 @@ const stub = (req: any, _res: any, next: any) => {
 app.use('/api/challenges', stub, challengesRouter);
 app.use('/api/notifications', stub, notificationsRouter);
 app.use('/api/scores', stub, scoresRouter);
+app.use('/api/me', stub, meRouter);
+app.use('/api/users', stub, usersRouter);
 const server = app.listen(0);
 const port = (server.address() as any).port;
 
-async function call(as: { id: number }, method: string, path: string, body?: unknown) {
+async function call(as: { id: number } | null, method: string, path: string, body?: unknown) {
   const res = await fetch(`http://localhost:${port}/api${path}`, {
     method,
-    headers: { 'content-type': 'application/json', 'x-test-user': String(as.id) },
+    headers: { 'content-type': 'application/json', ...(as ? { 'x-test-user': String(as.id) } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
@@ -455,6 +476,185 @@ try {
   r = await call(bob, 'GET', '/challenges/record/zz-nobody-here');
   check('record for unknown user → 404', r.status === 404, r);
 
+  // ── decline reasons ────────────────────────────────────────────────────────
+  const bobPart = (b: any) => b?.participants?.find((p: any) => p.user.id === bob.id);
+  const declinedWith = async (reason: string | undefined) => {
+    const made = await post(alice, { friendId: bob.id, type: 'high_score' });
+    const res = await call(bob, 'POST', `/challenges/${made.body.id}/decline`, reason === undefined ? undefined : { reason });
+    const note = (await inbox(alice)).filter(n => n.payload?.challengeId === made.body.id && n.kind === 'challenge_declined');
+    return { id: made.body.id, res, note };
+  };
+  let d = await declinedWith('maybe');
+  check('decline with an unknown reason → 400 invalid_reason', d.res.status === 400 && d.res.body?.code === 'invalid_reason', d.res);
+  await call(alice, 'POST', `/challenges/${d.id}/cancel`);
+  d = await declinedWith('no_thanks');
+  check('decline no_thanks → declined, reason stored', d.res.status === 200 && d.res.body?.status === 'declined' && bobPart(d.res.body)?.declineReason === 'no_thanks', d.res.body);
+  check('challenge_declined carries reason no_thanks', d.note.length === 1 && d.note[0].payload.reason === 'no_thanks', d.note);
+  d = await declinedWith('cant_reach');
+  check('decline cant_reach → declined, reason stored + in the notification', bobPart(d.res.body)?.declineReason === 'cant_reach'
+    && d.note.length === 1 && d.note[0].payload.reason === 'cant_reach', { body: d.res.body, note: d.note });
+  const [declEvent] = await db.select({ payload: activityEvents.payload }).from(activityEvents)
+    .where(and(eq(activityEvents.type, 'challenge.declined'), eq(activityEvents.targetId, String(d.id))));
+  check('challenge.declined activity carries the reason', (declEvent?.payload as any)?.reason === 'cant_reach', declEvent);
+  d = await declinedWith(undefined);
+  check('decline without a reason → declined, reason null', d.res.status === 200 && bobPart(d.res.body)?.declineReason === null
+    && d.note.length === 1 && d.note[0].payload.reason === null, { body: d.res.body, note: d.note });
+
+  // ── counter-offers ─────────────────────────────────────────────────────────
+  r = await post(alice, { friendId: bob.id, type: 'high_score' });
+  const orig = r.body.id;
+  const counterBody = { machineId: OTHER, type: 'high_score', matchMode: 'exact', endsAt: iso(72 * H) };
+  r = await call(bob, 'POST', `/challenges/${orig}/counter`, { ...counterBody, type: 'darts' });
+  check('counter with a bad body → 400 invalid_type', r.status === 400 && r.body?.code === 'invalid_type', r);
+  let [origRow] = await db.select().from(challenges).where(eq(challenges.id, orig));
+  let kids = await db.select({ id: challenges.id }).from(challenges).where(eq(challenges.counteredFromId, orig));
+  check('…nothing written: original still pending, no counter row', origRow.status === 'pending' && kids.length === 0, { origRow, kids });
+  r = await call(alice, 'POST', `/challenges/${orig}/counter`, counterBody);
+  check('the creator cannot counter their own → 409 cannot_counter', r.status === 409 && r.body?.code === 'cannot_counter', r);
+  r = await call(carol, 'POST', `/challenges/${orig}/counter`, counterBody);
+  check('a stranger cannot counter → 404', r.status === 404 && r.body?.code === 'challenge_not_found', r);
+  r = await call(bob, 'GET', `/challenges/${orig}`);
+  check('invitee view: canCounter', r.body?.me?.canCounter === true, r.body?.me);
+  r = await call(bob, 'POST', `/challenges/${orig}/counter`, { ...counterBody, friendId: carol.id });
+  check('bob counters (a friend in the body is ignored) → 201', r.status === 201 && r.body?.counter?.id > 0, r);
+  const ctr = r.body?.counter ?? {};
+  check('original: countered, links to the counter', r.body?.original?.status === 'countered' && r.body?.original?.phase === 'countered'
+    && r.body?.original?.counteredToId === ctr.id, r.body?.original);
+  check('counter: pending, created by bob, against alice, links back, exact machine', ctr.status === 'pending' && ctr.creatorId === bob.id
+    && ctr.opponent?.id === alice.id && ctr.counteredFromId === orig && ctr.machine?.id === OTHER && ctr.matchGroup === null, ctr);
+  const [bp] = await db.select().from(challengeParticipants).where(and(eq(challengeParticipants.challengeId, orig), eq(challengeParticipants.userId, bob.id)));
+  check('bob on the original: response countered, reason cant_reach', bp?.response === 'countered' && bp?.declineReason === 'cant_reach', bp);
+  const an = (await inbox(alice)).filter(n => n.payload?.challengeId === ctr.id);
+  check('alice got challenge_countered (not a separate challenge_received)', an.length === 1 && an[0].kind === 'challenge_countered'
+    && an[0].payload.newChallengeId === ctr.id && an[0].payload.counteredFromId === orig && an[0].payload.userId === bob.id
+    && an[0].payload.machineName === 'zz-challenge-test other' && an[0].payload.originalMachineName === 'zz-challenge-test (Pro)', an);
+  check("bob's invitation to the original marked read", (await inbox(bob)).filter(n => n.payload?.challengeId === orig && n.kind === 'challenge_received').every(n => n.readAt));
+  const [ctrEvent] = await db.select({ payload: activityEvents.payload }).from(activityEvents)
+    .where(and(eq(activityEvents.type, 'challenge.countered'), eq(activityEvents.targetId, String(orig))));
+  check('challenge.countered activity links the new challenge', (ctrEvent?.payload as any)?.newChallengeId === ctr.id, ctrEvent);
+  r = await call(bob, 'POST', `/challenges/${orig}/counter`, counterBody);
+  check('countering again → 409 cannot_counter', r.status === 409 && r.body?.code === 'cannot_counter', r);
+  r = await call(bob, 'POST', `/challenges/${orig}/accept`);
+  check('accepting a countered challenge → 409', r.status === 409, r);
+  r = await call(alice, 'GET', `/challenges/${orig}`);
+  check("alice's view of the original: countered, bob's answer visible", r.body?.status === 'countered' && bobPart(r.body)?.response === 'countered'
+    && bobPart(r.body)?.declineReason === 'cant_reach' && r.body?.counteredToId === ctr.id, r.body);
+  r = await call(alice, 'GET', '/challenges?status=history');
+  check('countered shows in history', r.body?.some((c: any) => c.id === orig && c.status === 'countered'), r.body?.map((c: any) => [c.id, c.status]));
+  r = await call(alice, 'GET', `/challenges/${ctr.id}`);
+  check('alice may accept / decline / counter the counter', r.body?.me?.canAccept && r.body?.me?.canDecline && r.body?.me?.canCounter, r.body?.me);
+  r = await call(alice, 'POST', `/challenges/${ctr.id}/counter`, { machineId: PREM, type: 'high_score', matchMode: 'exact', endsAt: iso(72 * H) });
+  check('a counter can itself be countered (by alice, now the creator)', r.status === 201 && r.body?.counter?.counteredFromId === ctr.id
+    && r.body?.counter?.creatorId === alice.id && r.body?.original?.status === 'countered', r);
+  const ctr2 = r.body?.counter?.id;
+  check("bob's challenge_countered for it", (await inbox(bob)).some(n => n.payload?.challengeId === ctr2 && n.kind === 'challenge_countered' && !n.readAt));
+  r = await call(bob, 'POST', `/challenges/${ctr2}/accept`);
+  check('the counter of a counter is accepted → active', r.status === 200 && r.body?.status === 'active', r.body);
+  check("accepting settles bob's challenge_countered", (await inbox(bob)).filter(n => n.payload?.challengeId === ctr2 && n.kind === 'challenge_countered').every(n => n.readAt));
+  r = await call(bob, 'POST', `/challenges/${ctr2}/counter`, counterBody);
+  check('countering an active challenge → 409 cannot_counter', r.status === 409 && r.body?.code === 'cannot_counter', r);
+  r = await call(bob, 'POST', '/challenges/999999999/counter', counterBody);
+  check('countering a challenge that does not exist → 404', r.status === 404, r);
+
+  // ── challenge prefs + recommendations (zero Pinball Map calls) ─────────────
+  const madeHome = await db.insert(machines).values([{ name: 'zz-challenge-test home' }, { name: 'zz-challenge-test hidden home' }]).returning({ id: machines.id });
+  machineIds.push(...madeHome.map(m => m.id));
+  const [HOME_M, HIDDEN_M] = madeHome.map(m => m.id);
+  const homes = await db.insert(venues).values([
+    { name: 'zz-challenge-test bob residence', isResidence: true, ownerId: bob.id },
+    { name: 'zz-challenge-test carol residence', isResidence: true, ownerId: carol.id, showMachinesAndScores: false },
+  ]).returning({ id: venues.id, name: venues.name });
+  venueIds.push(...homes.map(v => v.id));
+  const [BOB_HOME, CAROL_HOME] = homes;
+  await db.insert(venueInventory).values([
+    { venueId: BOB_HOME.id, machineId: HOME_M, addedById: bob.id },
+    { venueId: CAROL_HOME.id, machineId: HIDDEN_M, addedById: carol.id },
+  ]);
+  // bob played at carol's (activity hidden) lately: that score must never reach alice's level 3.
+  await db.insert(scores).values({ userId: bob.id, machineId: HIDDEN_M, venueId: CAROL_HOME.id, venueName: CAROL_HOME.name, score: 4242, playedAt: new Date(Date.now() - 2 * 24 * H), createdAt: new Date(Date.now() - 2 * 24 * H) });
+  // A stale cached roster still counts for a recommendation (and must not trigger a refresh).
+  await db.update(pmLocationCache).set({ fetchedAt: new Date(Date.now() - 30 * 24 * H) }).where(eq(pmLocationCache.pmLocationId, FAKE_PM_ID));
+
+  r = await call(bob, 'GET', '/me/challenge-prefs');
+  check('GET prefs → 200 with limits', r.status === 200 && Array.isArray(r.body?.machines) && r.body?.limits?.machines === 3, r);
+  const [seeded] = await db.select({ at: users.challengeVenuesSeededAt }).from(users).where(eq(users.id, bob.id));
+  check('first read seeds: challenge_venues_seeded_at stamped', seeded?.at != null, seeded);
+  const wasSeeded = prefsBefore.seeded.find(s => s.id === bob.id)?.at != null;
+  if (!wasSeeded) {
+    check('seeding includes his own residence (it has inventory), marked home, source auto',
+      r.body?.venues?.some((v: any) => v.id === BOB_HOME.id && v.isHome && v.source === 'auto'), r.body?.venues);
+  }
+  r = await call(bob, 'PUT', '/me/challenge-prefs', { machineIds: [PRO, PREM, OTHER, HOME_M] });
+  check('PUT more than 3 machines → 400 too_many_machines', r.status === 400 && r.body?.code === 'too_many_machines', r);
+  r = await call(bob, 'PUT', '/me/challenge-prefs', { machineIds: [999999999] });
+  check('PUT an unknown machine → 400 machine_not_found', r.status === 400 && r.body?.code === 'machine_not_found', r);
+  r = await call(bob, 'PUT', '/me/challenge-prefs', { machineIds: 'PRO' });
+  check('PUT a non-array → 400 invalid_prefs', r.status === 400 && r.body?.code === 'invalid_prefs', r);
+  const [strangerHome] = await db.select({ id: venues.id }).from(venues).where(sql`(is_residence OR privacy_tier <> 'full')
+    AND owner_id IS DISTINCT FROM ${bob.id} AND NOT EXISTS (SELECT 1 FROM scores s WHERE s.venue_id = venues.id AND s.user_id = ${bob.id})`).limit(1);
+  if (strangerHome) {
+    r = await call(bob, 'PUT', '/me/challenge-prefs', { venueIds: [strangerHome.id] });
+    check("PUT someone else's private venue you never played at → 400 venue_not_found", r.status === 400 && r.body?.code === 'venue_not_found', r);
+  }
+  const prefEventCount = async () => (await db.select({ id: activityEvents.id }).from(activityEvents)
+    .where(and(eq(activityEvents.type, 'profile.challenge_prefs_updated'), eq(activityEvents.actorUserId, bob.id)))).length;
+  const prefEventsBefore = await prefEventCount();
+  r = await call(bob, 'PUT', '/me/challenge-prefs', { machineIds: [PREM], venueIds: [PMV.id, BOB_HOME.id, CAROL_HOME.id] });
+  const srcOf = (id: number) => r.body?.venues?.find((v: any) => v.id === id)?.source;
+  check('PUT prefs → 200, lists replaced', r.status === 200 && JSON.stringify(r.body?.machines?.map((m: any) => m.id)) === JSON.stringify([PREM])
+    && [PMV.id, BOB_HOME.id, CAROL_HOME.id].every(id => r.body?.venues?.some((v: any) => v.id === id)) && r.body?.venues?.length === 3, r.body);
+  check('a hand-added venue is source added; a seeded one it kept stays auto', srcOf(PMV.id) === 'added' && (wasSeeded || srcOf(BOB_HOME.id) === 'auto'), r.body?.venues);
+  check('profile.challenge_prefs_updated logged for the saved PUT', (await prefEventCount()) === prefEventsBefore + 1);
+
+  r = await call(carol, 'GET', `/challenges/recommendations/${encodeURIComponent(bob.username)}`);
+  check('recommendations for a non-friend → 403 not_friends', r.status === 403 && r.body?.code === 'not_friends', r);
+  r = await call(alice, 'GET', `/challenges/recommendations/${encodeURIComponent(alice.username)}`);
+  check('recommendations for yourself → 400 cannot_challenge_self', r.status === 400 && r.body?.code === 'cannot_challenge_self', r);
+  r = await call(alice, 'GET', '/challenges/recommendations/zz-nobody-here');
+  check('recommendations for an unknown user → 404', r.status === 404 && r.body?.code === 'user_not_found', r);
+
+  const pmBefore = pmClient().stats().liveCallsToday;
+  const logged: string[] = [];
+  const realLog = console.log;
+  console.log = (...a: unknown[]) => { logged.push(a.map(String).join(' ')); realLog(...a); };
+  let recs: Awaited<ReturnType<typeof call>>;
+  try {
+    recs = await call(alice, 'GET', `/challenges/recommendations/${encodeURIComponent(bob.username)}`);
+  } finally { console.log = realLog; }
+  const rec = (id: number) => recs.body?.recommendations?.find((x: any) => x.machineId === id);
+  const recsJson = JSON.stringify(recs.body);
+  check('recommendations → 200', recs.status === 200 && recs.body?.user?.id === bob.id && Array.isArray(recs.body?.recommendations), recs);
+  check('level 1: his "challenge me on" machine', rec(PREM)?.level === 1, rec(PREM));
+  check('level 2 from a stale cached Pinball Map roster: the Pro at the public venue, labelled with its name',
+    rec(PRO)?.level === 2 && rec(PRO)?.venueLabel === PMV.name, rec(PRO));
+  check("level 2: his own residence's machine, labelled 'at home'", rec(HOME_M)?.level === 2 && rec(HOME_M)?.venueLabel === 'at home', rec(HOME_M));
+  check('no private venue name anywhere in the response', !recsJson.includes(BOB_HOME.name) && !recsJson.includes(CAROL_HOME.name), recs.body);
+  if (alice.role !== 'admin') {
+    check("someone else's hidden residence never surfaces — not in level 2, and the score there is excluded from level 3", !rec(HIDDEN_M), rec(HIDDEN_M));
+  }
+  check('level 3: a machine he played lately, no venue label', rec(OTHER)?.level === 3 && !('venueLabel' in (rec(OTHER) ?? {})), rec(OTHER));
+  check('viewerCanReach + viewerBest: alice played the Pro lately', rec(PRO)?.viewerCanReach === true && typeof rec(PRO)?.viewerBest === 'number', rec(PRO));
+  check('zero Pinball Map calls: live count unchanged, no [PM] log line', pmClient().stats().liveCallsToday === pmBefore && !logged.some(l => l.includes('[PM')), logged);
+  const reachSrc = readFileSync(new URL('./src/lib/challengeReach.ts', import.meta.url), 'utf8');
+  check('challengeReach.ts never imports the roster fetcher, pmClient or the catalog', !/from '\.\/(pmRosterCache|pmClient|pinballMap|venueInventory)\.js'/.test(reachSrc));
+  const [rosterRow] = await db.select({ fetchedAt: pmLocationCache.fetchedAt }).from(pmLocationCache).where(eq(pmLocationCache.pmLocationId, FAKE_PM_ID));
+  check('the stale cached roster was not refreshed', +rosterRow.fetchedAt < Date.now() - 29 * 24 * H, rosterRow);
+
+  r = await call(alice, 'GET', `/users/${encodeURIComponent(bob.username)}`);
+  check('profile: a friend sees challengeMe (level 1 only)', JSON.stringify(r.body?.challengeMe?.map((m: any) => m.id)) === JSON.stringify([PREM]), r.body?.challengeMe);
+  r = await call(carol, 'GET', `/users/${encodeURIComponent(bob.username)}`);
+  check('profile: a non-friend gets no challengeMe', r.status === 200 && !('challengeMe' in (r.body ?? {})), Object.keys(r.body ?? {}));
+  r = await call(null, 'GET', `/users/${encodeURIComponent(bob.username)}`);
+  check('profile: a guest gets no challengeMe', r.status === 200 && !('challengeMe' in (r.body ?? {})), Object.keys(r.body ?? {}));
+  r = await call(bob, 'GET', `/users/${encodeURIComponent(bob.username)}`);
+  check('profile: your own gets no challengeMe (edit via /api/me)', r.status === 200 && !('challengeMe' in (r.body ?? {})), Object.keys(r.body ?? {}));
+
+  r = await call(bob, 'PUT', '/me/challenge-prefs', { venueIds: [BOB_HOME.id] });
+  check('PUT only venues leaves machines alone; a removed venue stays removed', r.status === 200 && r.body?.machines?.length === 1
+    && r.body?.venues?.length === 1 && r.body?.venues?.[0]?.id === BOB_HOME.id, r.body);
+  r = await call(bob, 'GET', '/me/challenge-prefs');
+  check('…no re-seeding on the next read', r.body?.venues?.length === 1, r.body?.venues);
+
   // ── notification retention + clear all ─────────────────────────────────────
   const old = new Date(Date.now() - 31 * 24 * H);
   const [readOld] = await db.insert(notifications).values({ userId: carol.id, kind: 'challenge_result', payload: { challengeId: -1 }, createdAt: old, readAt: old }).returning({ id: notifications.id });
@@ -479,9 +679,16 @@ try {
   if (machineIds.length) {
     await db.delete(scores).where(inArray(scores.machineId, machineIds));
   }
+  // Challenge prefs back to what they were (normally: none, never seeded).
+  await db.delete(userChallengeMachines).where(inArray(userChallengeMachines.userId, ids));
+  await db.delete(userChallengeVenues).where(inArray(userChallengeVenues.userId, ids));
+  if (prefsBefore.machines.length) await db.insert(userChallengeMachines).values(prefsBefore.machines).onConflictDoNothing();
+  if (prefsBefore.venues.length) await db.insert(userChallengeVenues).values(prefsBefore.venues).onConflictDoNothing();
+  for (const s of prefsBefore.seeded) await db.update(users).set({ challengeVenuesSeededAt: s.at }).where(eq(users.id, s.id));
   if (venueIds.length) {
     await db.delete(scores).where(inArray(scores.venueId, venueIds));
     await db.delete(venueMachineHistory).where(inArray(venueMachineHistory.venueId, venueIds));
+    await db.delete(venueInventory).where(inArray(venueInventory.venueId, venueIds));
     await db.delete(venues).where(inArray(venues.id, venueIds));
   }
   await db.delete(pmLocationCache).where(eq(pmLocationCache.pmLocationId, FAKE_PM_ID));

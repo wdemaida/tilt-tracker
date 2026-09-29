@@ -591,6 +591,37 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
 - Tests: `npx tsx --test src/lib/challengeRules.test.ts`; `npx tsx test-challenges.ts` (dev branch
   only; borrows 3 friendless users and throwaway `zz-challenge-test` machines, cleans up).
 
+## Challenge recommendations + counter-offers (`challengeReach.ts`, `challengeRecs.ts`, `routes/me.ts`, migrate22, added 2026-09-29)
+- **Three levels** of "machines this player can reach": 1 = "Challenge me on" (`user_challenge_machines`,
+  max 3, exact machines), 2 = the machines at their "challenge locations" (`user_challenge_venues`),
+  3 = machines they scored on in the last 60 days (visits, then recency). `challengeRecs.ts` (pure,
+  unit-tested) keeps each machine at its highest level, ranks "viewer can reach it too" first, then
+  "viewer has a score", caps 3 / 8 / 5. The create form turns a picked recommendation into `matchMode 'exact'`.
+- **Zero Pinball Map calls**: level 2 reads `pm_location_cache` directly (any age), then
+  `venue_machine_history` (not removed), and a private venue's `venue_inventory`. Never
+  `getVenueRoster` / pmClient; `challengeReach.ts` doesn't import them (test-challenges.ts checks).
+- **Privacy**: someone else's private venue only contributes when the viewer may see its activity, and
+  never with its name; the player's own private venue shows as "at home". Level 3 goes through
+  `visibleScoreSql(viewer)`. Recommendations are friends only (403 `not_friends`). `GET /api/users/:username`
+  adds `challengeMe` (level 1) for accepted friends only. `PUT /api/me/challenge-prefs` only accepts a
+  venue that's public, yours, or one you've scored at — so an id can't reveal a stranger's home's name.
+- **Seeding** (`ensureSeeded`, once — `users.challenge_venues_seeded_at`): up to 5 venues with ≥ 2 visits
+  in 180 days, plus your own residence if it has an inventory. Runs on the first prefs read, yours or a
+  friend's recommendations request. After that removals stick; new candidates are `suggestions`.
+- **Answers**: decline takes `{ reason: 'cant_reach' | 'no_thanks' }` (`challenge_participants.decline_reason`,
+  in the `challenge_declined` payload and the `challenge.declined` event). `POST /api/challenges/:id/counter`
+  (create body; friend = the original creator) in one transaction: original → status `countered`, the
+  counterer's row → response `countered` / reason `cant_reach`, and a new challenge with
+  `countered_from_id`, created by the counterer. Its invitation is a `challenge_countered` notification
+  (not `challenge_received`), so accept/decline/cancel/expire/void settle both kinds (`settleInvitation`).
+  Counters of counters are allowed. `ChallengeView` has `counteredFromId` / `counteredToId`, `me.canCounter`
+  and each participant's `declineReason`. Every "declined" branch (audience, opponent, history, admin
+  void / list) treats `countered` the same (`saidNo`).
+- Tests: `npx tsx --test src/lib/challengeRecs.test.ts` (+ challengeRules); `test-challenges.ts` covers
+  reasons, counters, prefs, recommendations and the profile field. Note: its "accept → window starts
+  now" check fails when this machine's clock runs behind Neon's (accept stamps the DB clock) — seen
+  2026-09-29 with Neon ~0.8 s ahead; that and the most-improved/record checks after it pass with the clock aligned.
+
 ## Full-size score photos (`src/lib/photoStore.ts`, `routes/scorePhotos.ts`, migrate17, added 2026-09-26)
 - **Storage:** Cloudflare R2, private buckets — `tilttrack-photos-dev` (local/dev) and `tilttrack-photos`
   (prod). Env: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`. **Optional:** with

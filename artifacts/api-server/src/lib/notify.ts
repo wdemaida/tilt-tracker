@@ -9,7 +9,11 @@ import { logActivity } from './activity.js';
 // lib/challenges.ts and routes/challenges.ts; every payload carries `challengeId`, `challengeType`,
 // `machineName` and the other person's userId/username/displayName):
 //   challenge_received          → the invitee, on create
-//   challenge_accepted/declined → the creator
+//   challenge_accepted/declined → the creator (declined carries `reason`: 'cant_reach' / 'no_thanks' / null)
+//   challenge_countered         → the original creator, when the invitee answers with a counter-offer:
+//                                 challengeId = the NEW challenge (it's that one's invitation — no
+//                                 challenge_received is raised for a counter), counteredFromId = the
+//                                 original, machineName = the new machine, originalMachineName
 //   challenge_cancelled         → the invitee (the creator withdrew before acceptance)
 //   challenge_opponent_scored   → the other participant(s), when a counting score is posted
 //                                 (deduped per challenge: one unread at a time, carrying `score`)
@@ -27,7 +31,8 @@ export type Executor = typeof db | Parameters<Parameters<typeof db.transaction>[
 export type NotificationKind =
   | 'friend_request' | 'friend_accepted'
   | 'challenge_received' | 'challenge_accepted' | 'challenge_declined' | 'challenge_cancelled'
-  | 'challenge_opponent_scored' | 'challenge_ending_soon' | 'challenge_result' | 'challenge_voided';
+  | 'challenge_opponent_scored' | 'challenge_ending_soon' | 'challenge_result' | 'challenge_voided'
+  | 'challenge_countered';
 
 /** Who a friend notification is about, as it was at the time — enough to render and link it. */
 export interface UserRefPayload { userId: number; username: string; displayName: string }

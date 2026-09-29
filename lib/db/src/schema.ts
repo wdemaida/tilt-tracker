@@ -1,4 +1,4 @@
-import { pgTable, serial, bigserial, text, bigint, timestamp, real, integer, pgEnum, uniqueIndex, index, primaryKey, date, boolean, jsonb, varchar, numeric } from 'drizzle-orm/pg-core';
+import { pgTable, serial, bigserial, text, bigint, timestamp, real, integer, pgEnum, uniqueIndex, index, primaryKey, date, boolean, jsonb, varchar, numeric, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 export const scoreTypeEnum = pgEnum('score_type', ['casual', 'tournament']);
@@ -21,6 +21,9 @@ export const users = pgTable('users', {
   disabledAt: timestamp('disabled_at'),
   disabledReason: text('disabled_reason'),
   disabledById: integer('disabled_by_id'),
+  // When "Challenge locations" were first seeded from this user's history (migrate22). Seeding runs
+  // once: after that a removed venue stays removed, and new candidates are only suggested.
+  challengeVenuesSeededAt: timestamp('challenge_venues_seeded_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
@@ -257,7 +260,12 @@ export const notifications = pgTable('notifications', {
 // ("GbPde") captured at creation for match_mode 'game'; null means exact machine only.
 // `visibility` is reserved ('participants') — nothing reads it yet.
 export type ChallengeType = 'high_score' | 'race' | 'most_improved' | 'average';
-export type ChallengeStatus = 'pending' | 'active' | 'resolved' | 'declined' | 'cancelled' | 'expired';
+// 'countered' (migrate22): the invitee couldn't get to the machine and answered with a counter-offer
+// — a new challenge whose countered_from_id points back here.
+export type ChallengeStatus = 'pending' | 'active' | 'resolved' | 'declined' | 'cancelled' | 'expired' | 'countered';
+export type ChallengeResponse = 'pending' | 'accepted' | 'declined' | 'countered';
+// Why an invitee said no (migrate22). A counter-offer stores 'cant_reach' too.
+export type ChallengeDeclineReason = 'cant_reach' | 'no_thanks';
 // 'abandoned' = a race / average nobody finished (not a win, loss, tie or no-show; breaks a win streak).
 export type ChallengeOutcome = 'win' | 'loss' | 'tie' | 'forfeit' | 'no_show' | 'abandoned';
 export const challenges = pgTable('challenges', {
@@ -283,9 +291,13 @@ export const challenges = pgTable('challenges', {
   adminCancelledAt: timestamp('admin_cancelled_at'),
   adminCancelledById: integer('admin_cancelled_by_id'),
   adminCancelReason: text('admin_cancel_reason'),
+  // A counter-offer's original (migrate22). The original's status is then 'countered'; chains of
+  // counters are allowed, each pointing at the one before.
+  counteredFromId: integer('countered_from_id').references((): AnyPgColumn => challenges.id, { onDelete: 'set null' }),
 }, (table) => ({
   statusEndsIdx: index('challenges_status_ends_at_idx').on(table.status, table.endsAt),
   creatorIdx: index('challenges_creator_id_idx').on(table.creatorId),
+  counteredFromIdx: index('challenges_countered_from_id_idx').on(table.counteredFromId),
 }));
 
 // One row per (challenge, participant) — the creator included (accepted at creation). Groups later
@@ -294,7 +306,9 @@ export const challenges = pgTable('challenges', {
 export const challengeParticipants = pgTable('challenge_participants', {
   challengeId: integer('challenge_id').references(() => challenges.id, { onDelete: 'cascade' }).notNull(),
   userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-  response: text('response').$type<'pending' | 'accepted' | 'declined'>().default('pending').notNull(),
+  response: text('response').$type<ChallengeResponse>().default('pending').notNull(),
+  // Set with response 'declined' ('cant_reach' / 'no_thanks') or 'countered' (always 'cant_reach').
+  declineReason: text('decline_reason').$type<ChallengeDeclineReason>(),
   outcome: text('outcome').$type<ChallengeOutcome>(),
   baselineScore: bigint('baseline_score', { mode: 'number' }),
   resultValue: numeric('result_value'),
@@ -316,6 +330,29 @@ export const challengeScores = pgTable('challenge_scores', {
 }, (table) => ({
   pk: primaryKey({ name: 'challenge_scores_pkey', columns: [table.challengeId, table.scoreId] }),
   scoreIdx: index('challenge_scores_score_id_idx').on(table.scoreId),
+}));
+
+// Challenge preferences (migrate22) — what a friend's create form recommends for this user.
+// "Challenge me on": up to 3 exact machines (the API enforces the max), ordered by `position`.
+export const userChallengeMachines = pgTable('user_challenge_machines', {
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  machineId: integer('machine_id').references(() => machines.id, { onDelete: 'cascade' }).notNull(),
+  position: integer('position').default(0).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  pk: primaryKey({ name: 'user_challenge_machines_pkey', columns: [table.userId, table.machineId] }),
+}));
+
+// "Challenge locations": venues this user can get to. 'auto' = seeded once from their history
+// (users.challenge_venues_seeded_at), 'added' = picked by hand. A private venue's machines are never
+// shown grouped under its name — see src/lib/challengeReach.ts on the api-server.
+export const userChallengeVenues = pgTable('user_challenge_venues', {
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  venueId: integer('venue_id').references(() => venues.id, { onDelete: 'cascade' }).notNull(),
+  source: text('source').$type<'auto' | 'added'>().default('added').notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+}, (table) => ({
+  pk: primaryKey({ name: 'user_challenge_venues_pkey', columns: [table.userId, table.venueId] }),
 }));
 
 // The admin activity log (migrate19) — append-only, one row per thing that happened, written only
