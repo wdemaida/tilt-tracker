@@ -8,6 +8,7 @@ import { usePodMembership } from '../lib/myPods';
 import PodMemberIcons from '../components/PodMemberIcons';
 import FriendButton from '../components/FriendButton';
 import ChallengeRecordCard from '../components/ChallengeRecordCard';
+import { ChallengeMeChips, ChallengeMeEditor } from '../components/ChallengeMeCard';
 import { ChallengeLink } from '../components/ChallengeParts';
 import { FRIEND_WITH_KEY } from '../lib/myFriends';
 import { FullPhotoButton } from '../components/PhotoViewer';
@@ -64,6 +65,13 @@ export default function UserPage() {
       {/* Signed-in only; hidden until they've finished a challenge. */}
       {isSignedIn && friendship && (
         <ChallengeRecordCard username={user.username} self={friendship.relationship === 'self'} />
+      )}
+
+      {/* Yours: edit what friends get recommended. A friend's: their "Challenge me on" machines (the
+          server only sends challengeMe to accepted friends). */}
+      {isSignedIn && friendship?.relationship === 'self' && <ChallengeMeEditor />}
+      {isSignedIn && friendship?.relationship === 'friends' && data.challengeMe && (
+        <ChallengeMeChips username={user.username} machines={data.challengeMe} />
       )}
 
       <div className="flex flex-col gap-3">

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { Link } from 'wouter';
 import { formatDistanceToNow } from 'date-fns';
-import { Check, Loader2, Lock, Swords, Timer, X } from 'lucide-react';
+import { Check, CornerDownRight, Loader2, Lock, MapPinOff, Swords, Timer, X } from 'lucide-react';
 import UsernameLink from '../components/UsernameLink';
 import { OutcomeChip, MachineThumb } from '../components/ChallengeParts';
 import { useApi } from '../lib/useApi';
@@ -11,11 +11,12 @@ import {
   useChallengeList, invalidateChallengeQueries, challengeErrorText, typeLabel, meAndThem, formatResult,
   timingText, useNow, historyOutcome,
 } from '../lib/challenges';
-import type { Challenge } from '../lib/api';
+import type { Challenge, ChallengeDeclineReason } from '../lib/api';
 
 // Crew → Challenges. Four sections from three list queries (pending is split by who has to act):
 // Waiting on you · Live · Sent · History. Every row links to /challenges/:id; the inline buttons are
-// only the actions a row can take without opening it (accept/decline, cancel).
+// only the actions a row can take without opening it (accept / can't get to this one / no thanks,
+// cancel). "Can't get to this one" offers a counter-offer (/challenges/new?counterOf=) or a decline.
 
 function Section({ title, count, children }: { title: string; count?: number; children: React.ReactNode }) {
   return (
@@ -33,11 +34,14 @@ const btn = 'relative z-10 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg
 function ChallengeRow({ c, myId, now }: { c: Challenge; myId: number | null; now: number }) {
   const api = useApi();
   const [error, setError] = useState<string | null>(null);
+  const [cantReach, setCantReach] = useState(false);
   const act = useMutation({
-    mutationFn: (action: 'accept' | 'decline' | 'cancel') => api.challenges.act(c.id, action),
-    onSuccess: () => { setError(null); invalidateChallengeQueries(); },
+    mutationFn: ({ action, reason }: { action: 'accept' | 'decline' | 'cancel'; reason?: ChallengeDeclineReason }) =>
+      api.challenges.act(c.id, action, reason ? { reason } : undefined),
+    onSuccess: () => { setError(null); setCantReach(false); invalidateChallengeQueries(); },
     onError: e => { setError(challengeErrorText(e)); invalidateChallengeQueries(); },
   });
+  const doing = (action: string, reason?: string) => act.isPending && act.variables?.action === action && act.variables?.reason === reason;
   const { me, them } = meAndThem(c, myId);
   const opponent = them?.user ?? c.opponent;
   const timing = timingText(c, now);
@@ -47,7 +51,11 @@ function ChallengeRow({ c, myId, now }: { c: Challenge; myId: number | null; now
   const spin = <Loader2 className="w-3 h-3 animate-spin" aria-hidden />;
 
   let historyNote: string | null = null;
-  if (c.status === 'declined') historyNote = 'Declined';
+  if (c.status === 'declined') {
+    const reason = c.participants.find(p => p.response === 'declined')?.declineReason;
+    historyNote = reason === 'cant_reach' ? 'Can’t get to it' : reason === 'no_thanks' ? 'Passed' : 'Declined';
+  }
+  else if (c.status === 'countered') historyNote = 'Countered';
   else if (c.status === 'cancelled') historyNote = 'Cancelled';
   else if (c.status === 'expired') historyNote = 'Expired — never answered';
 
@@ -97,22 +105,50 @@ function ChallengeRow({ c, myId, now }: { c: Challenge; myId: number | null; now
           {c.status === 'resolved' && c.resolvedAt && (
             <p className="text-[11px] text-muted-foreground mt-1">Ended {formatDistanceToNow(new Date(c.resolvedAt), { addSuffix: true })}</p>
           )}
+          {(c.counteredFromId || c.counteredToId) && (
+            <p className="relative z-10 text-[11px] text-muted-foreground mt-1 inline-flex items-center gap-1">
+              <CornerDownRight className="w-3 h-3" aria-hidden />
+              {c.counteredToId
+                ? <Link href={`/challenges/${c.counteredToId}`} className="text-friend hover:underline">See the counter-offer</Link>
+                : <>Counter-offer to <Link href={`/challenges/${c.counteredFromId}`} className="text-friend hover:underline">an earlier challenge</Link></>}
+            </p>
+          )}
 
           {(c.me.canAccept || c.me.canCancel) && c.status === 'pending' && (
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              {c.me.canAccept && (
-                <button type="button" disabled={busy} onClick={() => act.mutate('accept')} className={`${btn} bg-friend text-zinc-950 hover:opacity-90`}>
-                  {busy && act.variables === 'accept' ? spin : <Check className="w-3 h-3" aria-hidden />} Accept
+              {c.me.canAccept && !cantReach && (
+                <button type="button" disabled={busy} onClick={() => act.mutate({ action: 'accept' })} className={`${btn} bg-friend text-zinc-950 hover:opacity-90`}>
+                  {doing('accept') ? spin : <Check className="w-3 h-3" aria-hidden />} Accept
                 </button>
               )}
-              {c.me.canDecline && (
-                <button type="button" disabled={busy} onClick={() => act.mutate('decline')} className={`${btn} border border-white/15 text-muted-foreground hover:text-white hover:border-white/30`}>
-                  {busy && act.variables === 'decline' ? spin : <X className="w-3 h-3" aria-hidden />} Decline
-                </button>
+              {c.me.canDecline && !cantReach && (
+                <>
+                  <button type="button" disabled={busy} onClick={() => setCantReach(true)} className={`${btn} border border-white/15 text-muted-foreground hover:text-white hover:border-white/30`}>
+                    <MapPinOff className="w-3 h-3" aria-hidden /> Can’t get to this one
+                  </button>
+                  <button type="button" disabled={busy} onClick={() => act.mutate({ action: 'decline', reason: 'no_thanks' })} className={`${btn} border border-white/15 text-muted-foreground hover:text-white hover:border-white/30`}>
+                    {doing('decline', 'no_thanks') ? spin : <X className="w-3 h-3" aria-hidden />} No thanks
+                  </button>
+                </>
+              )}
+              {c.me.canDecline && cantReach && (
+                <>
+                  {(c.me.canCounter ?? true) && (
+                    <Link href={`/challenges/new?counterOf=${c.id}`} className={`${btn} bg-friend text-zinc-950 hover:opacity-90`}>
+                      <Swords className="w-3 h-3" aria-hidden /> Suggest another machine
+                    </Link>
+                  )}
+                  <button type="button" disabled={busy} onClick={() => act.mutate({ action: 'decline', reason: 'cant_reach' })} className={`${btn} border border-white/15 text-muted-foreground hover:text-white hover:border-white/30`}>
+                    {doing('decline', 'cant_reach') ? spin : <X className="w-3 h-3" aria-hidden />} Just decline
+                  </button>
+                  <button type="button" onClick={() => setCantReach(false)} className={`${btn} text-muted-foreground hover:text-white`}>
+                    Back
+                  </button>
+                </>
               )}
               {c.me.canCancel && (
-                <button type="button" disabled={busy} onClick={() => act.mutate('cancel')} className={`${btn} border border-white/15 text-muted-foreground hover:text-white hover:border-white/30`}>
-                  {busy && act.variables === 'cancel' ? spin : <X className="w-3 h-3" aria-hidden />} Cancel
+                <button type="button" disabled={busy} onClick={() => act.mutate({ action: 'cancel' })} className={`${btn} border border-white/15 text-muted-foreground hover:text-white hover:border-white/30`}>
+                  {doing('cancel') ? spin : <X className="w-3 h-3" aria-hidden />} Cancel
                 </button>
               )}
             </div>

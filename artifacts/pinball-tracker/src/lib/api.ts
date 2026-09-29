@@ -69,6 +69,7 @@ export interface AppNotification {
     | 'friend_request' | 'friend_accepted'
     | 'challenge_received' | 'challenge_accepted' | 'challenge_declined' | 'challenge_cancelled'
     | 'challenge_opponent_scored' | 'challenge_ending_soon' | 'challenge_result' | 'challenge_voided'
+    | 'challenge_countered'
     | (string & {});
   /** Challenge kinds add challengeId, challengeType, machineName (+ score / outcome / void per kind). */
   payload: {
@@ -131,9 +132,12 @@ export interface VenueMergeResult {
 // ── Challenges (lib/challenges.ts + challengeRules.ts on the api-server) ──────────────────────
 
 export type ChallengeType = 'high_score' | 'race' | 'most_improved' | 'average';
-export type ChallengeStatus = 'pending' | 'active' | 'resolved' | 'declined' | 'cancelled' | 'expired';
-export type ChallengePhase = 'pending' | 'scheduled' | 'live' | 'ended' | 'resolved' | 'declined' | 'cancelled' | 'expired';
-export type ChallengeResponse = 'pending' | 'accepted' | 'declined';
+/** `countered`: the invitee couldn't get to the machine and answered with a counter-offer (a new challenge). */
+export type ChallengeStatus = 'pending' | 'active' | 'resolved' | 'declined' | 'cancelled' | 'expired' | 'countered';
+export type ChallengePhase = 'pending' | 'scheduled' | 'live' | 'ended' | 'resolved' | 'declined' | 'cancelled' | 'expired' | 'countered';
+export type ChallengeResponse = 'pending' | 'accepted' | 'declined' | 'countered';
+/** Why an invitee said no. A counter-offer is always `cant_reach`; an older decline may have none. */
+export type ChallengeDeclineReason = 'cant_reach' | 'no_thanks';
 /** `abandoned`: a race nobody beat, or an average nobody qualified for — no winner, no loser. */
 export type ChallengeOutcome = 'win' | 'loss' | 'tie' | 'forfeit' | 'no_show' | 'abandoned' | (string & {});
 
@@ -141,6 +145,8 @@ export interface ChallengeParticipant {
   user: PodUser;
   isCreator: boolean;
   response: ChallengeResponse;
+  /** Newer servers only. */
+  declineReason?: ChallengeDeclineReason | null;
   respondedAt: string | null;
   /** Final once resolved ('forfeit' as soon as they withdraw). */
   outcome: ChallengeOutcome | null;
@@ -182,11 +188,45 @@ export interface Challenge {
   createdAt: string;
   resolvedAt: string | null;
   creatorId: number;
+  /** This one is a counter-offer to that challenge. Newer servers only. */
+  counteredFromId?: number | null;
+  /** This one was countered: the counter-offer's id. Newer servers only. */
+  counteredToId?: number | null;
   timeLeftMs: number | null;
   startsInMs: number | null;
-  me: { response: ChallengeResponse; outcome: ChallengeOutcome | null; canAccept: boolean; canDecline: boolean; canCancel: boolean; canForfeit: boolean };
+  me: { response: ChallengeResponse; outcome: ChallengeOutcome | null; canAccept: boolean; canDecline: boolean; canCounter?: boolean; canCancel: boolean; canForfeit: boolean };
   opponent: PodUser | null;
   participants: ChallengeParticipant[];
+}
+
+/** One machine the create form recommends for a friend (GET /api/challenges/recommendations/:username). */
+export interface ChallengeRecommendation {
+  machineId: number;
+  name: string;
+  variant: string | null;
+  imageUrl: string | null;
+  /** 1 = "Challenge me on", 2 = at a venue they can reach, 3 = played lately. */
+  level: 1 | 2 | 3;
+  /** Level 2: a public venue's name, or 'at home' (their own private venue). Never a private venue's name. */
+  venueLabel?: string;
+  /** You can reach it too. */
+  viewerCanReach: boolean;
+  /** Your best score on this exact machine. */
+  viewerBest?: number;
+}
+
+/** A machine on someone's "Challenge me on" list (profile + prefs). */
+export interface ChallengeMeMachine { id: number; name: string; variant: string | null; imageUrl: string | null }
+
+/** A venue in your own challenge-locations list or its suggestions. Only ever your own. */
+export interface ChallengePrefVenue { id: number; name: string; isPrivate: boolean; isHome: boolean; source?: 'auto' | 'added' }
+
+/** GET/PUT /api/me/challenge-prefs */
+export interface ChallengePrefs {
+  machines: Array<ChallengeMeMachine & { manufacturer: string | null; year: number | null }>;
+  venues: ChallengePrefVenue[];
+  suggestions: ChallengePrefVenue[];
+  limits: { machines: number; venues: number };
 }
 
 interface RecordCounts {
@@ -364,8 +404,23 @@ export function createApi(getToken: () => Promise<string | null>) {
       // machine history or a score there). The server re-checks on create (machine_not_at_venue).
       venueOptions: async (machineId: number, matchMode: 'game' | 'exact') =>
         request<ChallengeVenueOption[]>(`/challenges/venue-options?machineId=${machineId}&matchMode=${matchMode}`, undefined, await tok()),
-      act: async (id: number, action: 'accept' | 'decline' | 'cancel' | 'forfeit') =>
-        request<Challenge>(`/challenges/${id}/${action}`, { method: 'POST' }, await tok()),
+      // `decline` may say why ('cant_reach' | 'no_thanks') — stored, and passed on to the challenger.
+      act: async (id: number, action: 'accept' | 'decline' | 'cancel' | 'forfeit', body?: { reason?: ChallengeDeclineReason }) =>
+        request<Challenge>(`/challenges/${id}/${action}`, { method: 'POST', body: body ? JSON.stringify(body) : undefined }, await tok()),
+      // "Can't get to this one — how about this instead": a create body (no friend: it goes to the
+      // original's creator). The original ends `countered`; the answer is a new pending challenge.
+      counter: async (id: number, body: Omit<CreateChallengeBody, 'friendId' | 'friendUsername'>) =>
+        request<{ original: Challenge; counter: Challenge }>(`/challenges/${id}/counter`, { method: 'POST', body: JSON.stringify(body) }, await tok()),
+      // Machines to challenge this friend on, levels 1–3, each flagged when you can reach it too.
+      // Friends only (403 not_friends). Never calls Pinball Map.
+      recommendations: async (username: string) =>
+        request<{ user: PodUser; recommendations: ChallengeRecommendation[] }>(
+          `/challenges/recommendations/${encodeURIComponent(username)}`, undefined, await tok()),
+      // Your own "Challenge me on" machines (max 3) and challenge locations. PUT replaces whichever
+      // list is sent.
+      prefs: async () => request<ChallengePrefs>('/me/challenge-prefs', undefined, await tok()),
+      savePrefs: async (body: { machineIds?: number[]; venueIds?: number[] }) =>
+        request<ChallengePrefs>('/me/challenge-prefs', { method: 'PUT', body: JSON.stringify(body) }, await tok()),
       // No username = your own record (head-to-head vs everyone).
       record: async (username?: string) =>
         request<ChallengeRecord>(username ? `/challenges/record/${encodeURIComponent(username)}` : '/challenges/record', undefined, await tok()),

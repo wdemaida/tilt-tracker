@@ -223,6 +223,8 @@ const TYPE_TEXT: Record<string, string> = {
   'challenge.forfeited': 'forfeited a challenge',
   'challenge.resolved': 'Challenge resolved',
   'challenge.expired': 'Challenge expired unanswered',
+  'challenge.countered': 'answered a challenge with a counter-offer to',
+  'profile.challenge_prefs_updated': 'changed their challenge preferences',
   'notification.sent': 'Notification sent to',
   'pm.connected': 'connected their Pinball Map account',
   'pm.score_posted': 'posted a score to Pinball Map',
@@ -290,8 +292,14 @@ function detail(ev: ActivityEvent): string | null {
     case 'notification.sent': return String(p.kind ?? '');
     case 'challenge.resolved':
       return Array.isArray(p.outcomes) ? p.outcomes.map((o: any) => `@${o.username ?? o.userId} ${o.outcome}`).join(', ') + (p.reason ? ` (${p.reason})` : '') : null;
-    case 'challenge.created': case 'challenge.accepted': case 'challenge.declined': case 'challenge.cancelled': case 'challenge.forfeited':
-      return [p.challengeType, p.machineName].filter(Boolean).join(' · ') || null;
+    case 'challenge.declined':
+      return [p.challengeType, p.machineName, p.reason === 'cant_reach' ? 'can’t get to it' : p.reason === 'no_thanks' ? 'no thanks' : null].filter(Boolean).join(' · ') || null;
+    case 'challenge.countered':
+      return [`${p.machineName ?? '?'} → ${p.newMachineName ?? '?'}`, p.newChallengeId ? `new #${p.newChallengeId}` : null].filter(Boolean).join(' · ');
+    case 'challenge.created': case 'challenge.accepted': case 'challenge.cancelled': case 'challenge.forfeited':
+      return [p.challengeType, p.machineName, p.counteredFromId ? `counter to #${p.counteredFromId}` : null].filter(Boolean).join(' · ') || null;
+    case 'profile.challenge_prefs_updated':
+      return [typeof p.machineCount === 'number' ? `${p.machineCount} machines` : null, typeof p.venueCount === 'number' ? `${p.venueCount} locations` : null].filter(Boolean).join(' · ') || null;
     case 'pod.created': case 'pod.deleted': case 'pod.member_added': case 'pod.member_removed':
       return p.name ?? null;
     case 'pod.updated': return p.renamedFrom ? `“${p.renamedFrom}” → “${p.name}”` : p.color ? `color ${p.color}` : null;

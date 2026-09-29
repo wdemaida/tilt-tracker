@@ -139,8 +139,24 @@ const ERROR_COPY: Record<string, string> = {
   cannot_decline: 'This challenge can’t be declined any more.',
   cannot_cancel: 'This challenge can’t be cancelled any more — they may already have answered.',
   cannot_forfeit: 'This challenge can’t be forfeited now.',
+  cannot_counter: 'You can’t suggest another machine for this one any more — it may have been cancelled, expired or already answered.',
+  invalid_reason: 'Something went wrong sending your answer — try again.',
   challenge_not_found: 'This challenge doesn’t exist, or isn’t one of yours.',
+  too_many_machines: 'Pick at most 3 machines to be challenged on.',
+  too_many_venues: 'That’s a lot of challenge locations — remove a few first.',
+  invalid_prefs: 'Those challenge settings didn’t look right — try again.',
 };
+
+/** Recommendation groups on the create form, most reliable first. */
+export const REC_LEVEL_LABEL: Record<1 | 2 | 3, string> = {
+  1: 'Wants to be challenged on',
+  2: 'Can reach',
+  3: 'Played lately',
+};
+
+/** The query key for someone's recommendations, and your own challenge preferences. */
+export const recommendationsKey = (username: string) => ['challenges', 'recommendations', username.toLowerCase()];
+export const CHALLENGE_PREFS_KEY = ['challenges', 'prefs'];
 
 export function challengeErrorText(e: unknown, fallback = 'Something went wrong'): string {
   const code = (e as any)?.code as string | undefined;

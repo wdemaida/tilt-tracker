@@ -70,7 +70,20 @@ function describe(n: AppNotification): { text: React.ReactNode; href: string | n
       case 'challenge_accepted':
         return { text: <>{name} accepted your challenge: {what}</>, href, Icon: Swords };
       case 'challenge_declined':
-        return { text: <>{name} declined your challenge: {what}</>, href, Icon: Ban };
+        // Neutral on purpose: "can't get to it" isn't a refusal, and "passed" isn't a snub.
+        return n.payload.reason === 'cant_reach'
+          ? { text: <>{name} can’t get to the machine for {what}</>, href, Icon: Ban }
+          : n.payload.reason === 'no_thanks'
+            ? { text: <>{name} passed on {what}</>, href, Icon: Ban }
+            : { text: <>{name} declined your challenge: {what}</>, href, Icon: Ban };
+      case 'challenge_countered': {
+        // challengeId is the NEW challenge (the counter-offer) — the link goes there to accept it.
+        const original = typeof n.payload.originalMachineName === 'string' ? n.payload.originalMachineName : null;
+        return {
+          text: <>{name} can’t get to {original ? <span className="text-machine font-semibold">{original}</span> : 'your machine'} and suggested {what} instead</>,
+          href, Icon: Swords,
+        };
+      }
       case 'challenge_cancelled':
         return { text: <>{name} withdrew their challenge: {what}</>, href, Icon: Ban };
       case 'challenge_voided':

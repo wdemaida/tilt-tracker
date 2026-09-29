@@ -55,7 +55,7 @@ function Challenges() {
   return (
     <>
       <div className="mb-3">
-        <Segmented value={status} onChange={setStatus} options={['active', 'pending', 'resolved', 'cancelled', 'declined', 'expired', 'all'].map(s => ({ value: s, label: s }))} />
+        <Segmented value={status} onChange={setStatus} options={['active', 'pending', 'resolved', 'cancelled', 'declined', 'countered', 'expired', 'all'].map(s => ({ value: s, label: s }))} />
       </div>
       <ErrorNote error={q.error} />
       {q.isLoading ? <p className="text-muted-foreground text-sm">Loading…</p> : items.length === 0 ? <p className="text-sm text-muted-foreground">None.</p> : (

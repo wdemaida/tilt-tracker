@@ -3,7 +3,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'wouter';
 import { useAuth } from '@clerk/clerk-react';
 import { format } from 'date-fns';
-import { ArrowLeft, Check, Clock, Crown, Flag, Loader2, Lock, MapPin, Swords, Target, Timer, X } from 'lucide-react';
+import { ArrowLeft, Check, Clock, CornerDownRight, Crown, Flag, Loader2, Lock, MapPin, MapPinOff, Swords, Target, Timer, X } from 'lucide-react';
 import UsernameLink from '../components/UsernameLink';
 import { MachineThumb, OutcomeChip } from '../components/ChallengeParts';
 import { FullPhotoButton } from '../components/PhotoViewer';
@@ -14,7 +14,7 @@ import {
   TYPE_META, SCORE_RULES, challengeKey, invalidateChallengeQueries, challengeErrorText, meAndThem, formatScore,
   formatResult, formatDuration, useNow, isAbandoned, historyOutcome, outcomeMeta,
 } from '../lib/challenges';
-import type { Challenge, ChallengeParticipant } from '../lib/api';
+import type { Challenge, ChallengeDeclineReason, ChallengeParticipant } from '../lib/api';
 
 // /challenges/:id — one challenge, for its participants. Machine + rules up top, a live countdown,
 // the standings (you in username yellow, them in friend aqua), each side's counting scores, and the
@@ -40,7 +40,11 @@ function statusLine(c: Challenge, now: number): { text: string; tone: string } {
     }
     case 'ended': return { text: 'Time’s up — settling…', tone: 'text-muted-foreground' };
     case 'resolved': return { text: `Finished ${c.resolvedAt ? format(new Date(c.resolvedAt), 'MMM d, h:mm a') : ''}`, tone: 'text-muted-foreground' };
-    case 'declined': return { text: 'Declined', tone: 'text-muted-foreground' };
+    case 'declined': {
+      const reason = c.participants.find(p => p.response === 'declined')?.declineReason;
+      return { text: reason === 'cant_reach' ? 'Declined — can’t get to this machine' : reason === 'no_thanks' ? 'Passed on' : 'Declined', tone: 'text-muted-foreground' };
+    }
+    case 'countered': return { text: 'Countered — another machine was suggested', tone: 'text-muted-foreground' };
     case 'cancelled': return { text: 'Cancelled', tone: 'text-muted-foreground' };
     case 'expired': return { text: 'Expired — never accepted', tone: 'text-muted-foreground' };
   }
@@ -136,7 +140,12 @@ function StandingCard({ c, p, isMe, leader }: { c: Challenge; p: ChallengePartic
       {c.type === 'average' && value != null && <p className="text-[11px] text-muted-foreground -mt-0.5">average</p>}
       {detail}
       {p.response === 'pending' && <p className="text-[11px] text-amber-200 mt-1">Hasn’t answered</p>}
-      {p.response === 'declined' && <p className="text-[11px] text-muted-foreground mt-1">Declined</p>}
+      {p.response === 'declined' && (
+        <p className="text-[11px] text-muted-foreground mt-1">
+          {p.declineReason === 'cant_reach' ? 'Can’t get to it' : p.declineReason === 'no_thanks' ? 'Passed' : 'Declined'}
+        </p>
+      )}
+      {p.response === 'countered' && <p className="text-[11px] text-muted-foreground mt-1">Suggested another machine</p>}
     </div>
   );
 }
@@ -191,18 +200,41 @@ function ScoreList({ c, p, isMe }: { c: Challenge; p: ChallengeParticipant; isMe
   );
 }
 
+/** "This is a counter-offer to …" / "Countered with …" — each side of a counter links to the other. */
+function CounterLinks({ c }: { c: Challenge }) {
+  if (!c.counteredFromId && !c.counteredToId) return null;
+  return (
+    <div className="mb-6 rounded-lg border border-white/10 bg-card px-4 py-3 text-sm text-white/85 flex flex-col gap-1">
+      {c.counteredFromId && (
+        <p className="flex items-center gap-1.5"><CornerDownRight className="w-4 h-4 text-friend flex-shrink-0" aria-hidden />
+          A counter-offer to <Link href={`/challenges/${c.counteredFromId}`} className="text-friend hover:underline">an earlier challenge</Link> that couldn’t be played.
+        </p>
+      )}
+      {c.counteredToId && (
+        <p className="flex items-center gap-1.5"><CornerDownRight className="w-4 h-4 text-friend flex-shrink-0" aria-hidden />
+          Answered with <Link href={`/challenges/${c.counteredToId}`} className="text-friend hover:underline">a counter-offer on another machine</Link>.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function Actions({ c }: { c: Challenge }) {
   const api = useApi();
   const [confirmForfeit, setConfirmForfeit] = useState(false);
+  const [cantReach, setCantReach] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const act = useMutation({
-    mutationFn: (action: 'accept' | 'decline' | 'cancel' | 'forfeit') => api.challenges.act(c.id, action),
-    onSuccess: () => { setError(null); setConfirmForfeit(false); invalidateChallengeQueries(); },
+    mutationFn: ({ action, reason }: { action: 'accept' | 'decline' | 'cancel' | 'forfeit'; reason?: ChallengeDeclineReason }) =>
+      api.challenges.act(c.id, action, reason ? { reason } : undefined),
+    onSuccess: () => { setError(null); setConfirmForfeit(false); setCantReach(false); invalidateChallengeQueries(); },
     onError: e => { setError(challengeErrorText(e)); invalidateChallengeQueries(); },
   });
   const { canAccept, canDecline, canCancel, canForfeit } = c.me;
+  const canCounter = c.me.canCounter ?? canDecline;
   if (!canAccept && !canDecline && !canCancel && !canForfeit) return null;
   const busy = act.isPending;
+  const doing = (action: string, reason?: string) => busy && act.variables?.action === action && act.variables?.reason === reason;
   const spin = <Loader2 className="w-4 h-4 animate-spin" aria-hidden />;
   const base = 'inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition-colors disabled:opacity-50';
   const ghost = `${base} border border-white/15 text-muted-foreground hover:text-white hover:border-white/30`;
@@ -211,18 +243,23 @@ function Actions({ c }: { c: Challenge }) {
     <div className="mb-6">
       <div className="flex flex-wrap items-center gap-2">
         {canAccept && (
-          <button type="button" disabled={busy} onClick={() => act.mutate('accept')} className={`${base} bg-friend text-zinc-950 hover:opacity-90`}>
-            {busy && act.variables === 'accept' ? spin : <Check className="w-4 h-4" aria-hidden />} Accept
+          <button type="button" disabled={busy} onClick={() => act.mutate({ action: 'accept' })} className={`${base} bg-friend text-zinc-950 hover:opacity-90`}>
+            {doing('accept') ? spin : <Check className="w-4 h-4" aria-hidden />} Accept
+          </button>
+        )}
+        {canDecline && !cantReach && (
+          <button type="button" disabled={busy} onClick={() => setCantReach(true)} className={ghost}>
+            <MapPinOff className="w-4 h-4" aria-hidden /> Can’t get to this one
           </button>
         )}
         {canDecline && (
-          <button type="button" disabled={busy} onClick={() => act.mutate('decline')} className={ghost}>
-            {busy && act.variables === 'decline' ? spin : <X className="w-4 h-4" aria-hidden />} Decline
+          <button type="button" disabled={busy} onClick={() => act.mutate({ action: 'decline', reason: 'no_thanks' })} className={ghost}>
+            {doing('decline', 'no_thanks') ? spin : <X className="w-4 h-4" aria-hidden />} No thanks
           </button>
         )}
         {canCancel && (
-          <button type="button" disabled={busy} onClick={() => act.mutate('cancel')} className={ghost}>
-            {busy && act.variables === 'cancel' ? spin : <X className="w-4 h-4" aria-hidden />} Cancel challenge
+          <button type="button" disabled={busy} onClick={() => act.mutate({ action: 'cancel' })} className={ghost}>
+            {doing('cancel') ? spin : <X className="w-4 h-4" aria-hidden />} Cancel challenge
           </button>
         )}
         {canForfeit && !confirmForfeit && (
@@ -231,10 +268,28 @@ function Actions({ c }: { c: Challenge }) {
           </button>
         )}
       </div>
+      {cantReach && canDecline && (
+        <div className="mt-3 rounded-lg border border-friend/30 bg-friend/5 p-3">
+          <p className="text-sm text-white/90 mb-2">Can’t get to {c.machine.name}? Suggest a machine you can both play — it goes back to them as a counter-offer, not a no.</p>
+          <div className="flex flex-wrap items-center gap-2">
+            {canCounter && (
+              <Link href={`/challenges/new?counterOf=${c.id}`} className={`${base} bg-friend text-zinc-950 hover:opacity-90`}>
+                <Swords className="w-4 h-4" aria-hidden /> Suggest another machine
+              </Link>
+            )}
+            <button type="button" disabled={busy} onClick={() => act.mutate({ action: 'decline', reason: 'cant_reach' })} className={ghost}>
+              {doing('decline', 'cant_reach') ? spin : <X className="w-4 h-4" aria-hidden />} Just decline
+            </button>
+            <button type="button" onClick={() => setCantReach(false)} className="px-2 py-2 text-xs font-bold uppercase tracking-wider text-muted-foreground hover:text-white">
+              Back
+            </button>
+          </div>
+        </div>
+      )}
       {confirmForfeit && (
         <div className="mt-3 rounded-lg border border-red-400/30 bg-red-400/5 p-3 flex flex-wrap items-center gap-2">
           <p className="text-sm text-white/90 flex-1 min-w-[12rem]">Forfeit? It counts as a forfeit on your record and they win.</p>
-          <button type="button" disabled={busy} onClick={() => act.mutate('forfeit')} className={`${base} bg-red-500/80 text-white hover:bg-red-500`}>
+          <button type="button" disabled={busy} onClick={() => act.mutate({ action: 'forfeit' })} className={`${base} bg-red-500/80 text-white hover:bg-red-500`}>
             {busy ? spin : 'Forfeit'}
           </button>
           <button type="button" onClick={() => setConfirmForfeit(false)} className="px-2 py-2 text-xs font-bold uppercase tracking-wider text-muted-foreground hover:text-white">
@@ -322,6 +377,7 @@ export default function ChallengePage() {
       </div>
 
       <OutcomeBanner c={c} />
+      <CounterLinks c={c} />
       <Actions c={c} />
 
       {/* terms */}

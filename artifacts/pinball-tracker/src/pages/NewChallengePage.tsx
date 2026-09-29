@@ -1,19 +1,30 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Link, useLocation, useSearch } from 'wouter';
-import { ArrowLeft, Check, Info, Loader2, MapPin, Minus, Plus, Search, Swords, X } from 'lucide-react';
+import { ArrowLeft, Check, Home, Info, Loader2, MapPin, Minus, Plus, Swords, X } from 'lucide-react';
 import { useApi } from '../lib/useApi';
 import { useMyFriends } from '../lib/myFriends';
 import { toLocalInput, localInputToIso } from '../lib/datetime';
 import { MachineThumb } from '../components/ChallengeParts';
+import MachinePicker, { nameMatches, pickerInputClass, type MachineOption } from '../components/MachinePicker';
 import {
-  TYPE_META, TYPE_ORDER, SCORE_RULES, challengeErrorText, invalidateChallengeQueries, formatScore, formatDuration,
+  TYPE_META, TYPE_ORDER, SCORE_RULES, REC_LEVEL_LABEL, challengeErrorText, challengeKey, recommendationsKey,
+  invalidateChallengeQueries, formatScore, formatDuration,
 } from '../lib/challenges';
-import type { ChallengeType, ChallengeVenueOption as VenueOption, CreateChallengeBody, PodUser } from '../lib/api';
+import type { ChallengeRecommendation, ChallengeType, ChallengeVenueOption as VenueOption, CreateChallengeBody, PodUser } from '../lib/api';
 
 // /challenges/new — one form, top to bottom: who, what machine, what kind, when, where, send.
-// Prefill with `?friend=<username>&machine=<id>` (the Friends tab, a profile and a machine page link
-// here). Everything is validated again on the server; its error codes map to challengeErrorText().
+// Prefill with `?friend=<username>&machine=<id>[&mode=exact]` (the Friends tab, a profile and a
+// machine page link here). Everything is validated again on the server; its error codes map to
+// challengeErrorText().
+//
+// Once a friend is picked, "Recommended for @friend" lists machines they can reach (their "Challenge
+// me on" picks, machines at venues they can get to, machines they played lately) — picking one sets
+// the exact model, since a Pro and a Premium can play very differently.
+//
+// `?counterOf=<id>` — a counter-offer ("can't get to this one"): the friend is the original's
+// challenger (fixed), type and duration are prefilled from it, and sending goes to
+// POST /challenges/:id/counter, which ends the original as countered.
 
 const DAY = 86_400_000;
 const END_PRESETS = [
@@ -23,8 +34,6 @@ const END_PRESETS = [
   { key: 'custom', label: 'Custom', ms: 0 },
 ] as const;
 type EndKey = (typeof END_PRESETS)[number]['key'];
-
-interface MachineOption { id: number; name: string; imageUrl: string | null; manufacturer?: string | null; year?: number | null; bestScore?: number | null; lastPlayed?: string | null }
 
 function Step({ n, title, children, hint }: { n: number; title: string; hint?: React.ReactNode; children: React.ReactNode }) {
   return (
@@ -62,21 +71,50 @@ function Segmented<T extends string>({ value, options, onChange, label }: {
   );
 }
 
-const inputClass = 'w-full rounded-lg border border-white/10 bg-background px-3 py-2.5 text-sm text-white placeholder:text-muted-foreground focus:outline-none focus:border-friend/60';
+const inputClass = pickerInputClass;
 
-/** Any word of the query appears in the name, punctuation-insensitive. */
-function nameMatches(name: string, q: string) {
-  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, ' ');
-  const hay = norm(name);
-  return norm(q).split(/\s+/).filter(Boolean).every(w => hay.includes(w));
+/** One recommendation row: pick it to challenge on that exact machine. */
+function RecommendationRow({ r, onPick }: { r: ChallengeRecommendation; onPick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onPick}
+      className="flex items-center gap-3 rounded-lg border border-white/10 px-2.5 py-2 text-left hover:border-machine/50 transition-colors"
+    >
+      <MachineThumb name={r.name} imageUrl={r.imageUrl} size="sm" />
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-semibold text-machine truncate">{r.name}</span>
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
+          {r.venueLabel && (
+            r.venueLabel === 'at home'
+              ? <span className="inline-flex items-center gap-1"><Home className="w-3 h-3" aria-hidden /> at home</span>
+              : <span className="inline-flex items-center gap-1 text-venue min-w-0"><MapPin className="w-3 h-3 flex-shrink-0" aria-hidden /><span className="truncate">{r.venueLabel}</span></span>
+          )}
+          {r.viewerBest != null && <span>Your best <span className="text-primary font-semibold">{formatScore(r.viewerBest)}</span></span>}
+        </span>
+      </span>
+      {r.viewerCanReach && (
+        <span className="flex-shrink-0 rounded-md border border-friend/40 bg-friend/10 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-friend">
+          You can reach it too
+        </span>
+      )}
+    </button>
+  );
+}
+
+/** A preset matching `ms` within an hour, else 'custom'. */
+function presetFor(ms: number): EndKey {
+  return END_PRESETS.find(p => p.ms && Math.abs(p.ms - ms) < 60 * 60 * 1000)?.key ?? 'custom';
 }
 
 export default function NewChallengePage() {
   const api = useApi();
   const [, navigate] = useLocation();
   const params = new URLSearchParams(useSearch());
-  const prefillFriend = params.get('friend');
+  const counterOf = Number(params.get('counterOf')) || null;
+  const prefillFriend = counterOf ? null : params.get('friend');
   const prefillMachine = Number(params.get('machine')) || null;
+  const prefillExact = params.get('mode') === 'exact';
 
   const { friends, isLoading: friendsLoading } = useMyFriends();
   const { data: allMachines = [], isLoading: machinesLoading } = useQuery({
@@ -93,8 +131,7 @@ export default function NewChallengePage() {
   // ── form state ──
   const [friend, setFriend] = useState<PodUser | null>(null);
   const [machineId, setMachineId] = useState<number | null>(prefillMachine);
-  const [machineQuery, setMachineQuery] = useState('');
-  const [matchMode, setMatchMode] = useState<'game' | 'exact'>('game');
+  const [matchMode, setMatchMode] = useState<'game' | 'exact'>(prefillExact ? 'exact' : 'game');
   const [type, setType] = useState<ChallengeType | null>(null);
   const [raceTarget, setRaceTarget] = useState<'mine' | 'number'>('mine');
   const [targetText, setTargetText] = useState('');
@@ -116,16 +153,48 @@ export default function NewChallengePage() {
   }, [prefillFriend, friends, friend]);
   const prefillNotFriend = !!prefillFriend && !friendsLoading && !friends.some(x => x.user.username.toLowerCase() === prefillFriend.toLowerCase());
 
-  const machine = allMachines.find(m => m.id === machineId) ?? null;
-  const myBest = machineId != null ? myMachines.find(m => m.id === machineId)?.bestScore ?? null : null;
+  // ── counter-offer mode ──
+  const originalQuery = useQuery({
+    queryKey: challengeKey(counterOf ?? 0),
+    queryFn: () => api.challenges.get(counterOf!),
+    enabled: counterOf != null,
+    retry: false,
+  });
+  const original = originalQuery.data ?? null;
+  const originalCreator = original?.participants.find(p => p.isCreator)?.user ?? null;
+  const prefilledFromOriginal = useRef(false);
+  useEffect(() => {
+    if (!original || prefilledFromOriginal.current || friendsLoading) return;
+    prefilledFromOriginal.current = true;
+    const f = friends.find(x => x.user.id === originalCreator?.id);
+    if (f) setFriend(f.user);
+    setType(original.type);
+    if (original.type === 'average' && original.minPlays) setMinPlays(original.minPlays);
+    // Same length of challenge, counted from now.
+    const length = +new Date(original.endsAt) - +new Date(original.startsAt ?? original.createdAt);
+    const key = presetFor(length);
+    setEndKey(key);
+    if (key === 'custom') setEndInput(toLocalInput(new Date(Date.now() + Math.max(length, 60 * 60 * 1000))));
+  }, [original, originalCreator, friends, friendsLoading]);
+  const counterBlocked = counterOf != null && (originalQuery.isError || (!!original && !(original.me.canCounter ?? original.me.canDecline)));
+  const counterNotFriend = counterOf != null && !!original && !friendsLoading && !friends.some(x => x.user.id === originalCreator?.id);
 
-  const machineResults = useMemo(() => {
-    const q = machineQuery.trim();
-    if (q) return allMachines.filter(m => nameMatches(m.name, q)).slice(0, 8);
-    // No query: the machines you've played, most recent first.
-    return [...myMachines].sort((a, b) => String(b.lastPlayed ?? '').localeCompare(String(a.lastPlayed ?? ''))).slice(0, 6)
-      .map(m => allMachines.find(x => x.id === m.id) ?? m);
-  }, [machineQuery, allMachines, myMachines]);
+  // ── recommendations for the picked friend ──
+  const recsQuery = useQuery({
+    queryKey: recommendationsKey(friend?.username ?? ''),
+    queryFn: () => api.challenges.recommendations(friend!.username),
+    enabled: !!friend,
+    staleTime: 60_000,
+    retry: false,
+  });
+  const recs = recsQuery.data?.recommendations ?? [];
+  const recLevels = ([1, 2, 3] as const).map(level => ({ level, items: recs.filter(r => r.level === level) })).filter(g => g.items.length);
+
+  const recPick = recs.find(r => r.machineId === machineId);
+  const machine: MachineOption | null = allMachines.find(m => m.id === machineId)
+    ?? (recPick ? { id: recPick.machineId, name: recPick.name, imageUrl: recPick.imageUrl } : null);
+  const myBest = machineId != null ? myMachines.find(m => m.id === machineId)?.bestScore ?? recPick?.viewerBest ?? null : null;
+  const pickRecommendation = (r: ChallengeRecommendation) => { setMachineId(r.machineId); setMatchMode('exact'); };
 
   // Only public venues that have the machine (in the chosen match mode) — the server re-checks on
   // send and answers machine_not_at_venue if Pinball Map has since moved it.
@@ -160,10 +229,10 @@ export default function NewChallengePage() {
   const typeReady = type != null && (type !== 'race' || raceTarget === 'mine' || (Number.isInteger(targetNum) && targetNum > 0));
   const venueReady = !venueLocked || !!venue;
   const windowReady = Number.isFinite(endMs) && (startMode === 'accept' || (startMs != null && Number.isFinite(startMs)));
-  const ready = !!friend && !!machine && typeReady && venueReady && windowReady;
+  const ready = !!friend && !!machine && typeReady && venueReady && windowReady && !counterBlocked;
 
   const send = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const body: CreateChallengeBody = {
         friendId: friend!.id,
         type: type!,
@@ -175,26 +244,58 @@ export default function NewChallengePage() {
       if (type === 'race' && raceTarget === 'number') body.targetScore = targetNum;
       if (type === 'average') body.minPlays = minPlays;
       if (venueLocked && venue) body.venueId = venue.id;
+      if (counterOf != null) {
+        const { friendId: _f, ...rest } = body;
+        return (await api.challenges.counter(counterOf, rest)).counter;
+      }
       return api.challenges.create(body);
     },
     onSuccess: c => { invalidateChallengeQueries(); navigate(`/challenges/${c.id}`); },
-    onError: e => setError(challengeErrorText(e, 'Could not send the challenge')),
+    onError: e => setError(challengeErrorText(e, counterOf != null ? 'Could not send the counter-offer' : 'Could not send the challenge')),
   });
 
   const durationText = Number.isFinite(endMs) ? formatDuration(endMs - (startMs ?? now)) : null;
 
   return (
     <div className="max-w-2xl">
-      <Link href="/crew?tab=challenges" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-white transition-colors mb-4">
-        <ArrowLeft className="w-4 h-4" /> Challenges
+      <Link href={counterOf ? `/challenges/${counterOf}` : '/crew?tab=challenges'} className="flex items-center gap-2 text-sm text-muted-foreground hover:text-white transition-colors mb-4">
+        <ArrowLeft className="w-4 h-4" /> {counterOf ? 'Back to the challenge' : 'Challenges'}
       </Link>
-      <h1 className="text-3xl font-black uppercase tracking-widest text-white mb-6 flex items-center gap-3">
-        <Swords className="w-7 h-7 text-friend" aria-hidden /> New challenge
+      <h1 className={`text-3xl font-black uppercase tracking-widest text-white flex items-center gap-3 ${counterOf ? 'mb-2' : 'mb-6'}`}>
+        <Swords className="w-7 h-7 text-friend" aria-hidden /> {counterOf ? 'Suggest another machine' : 'New challenge'}
       </h1>
+      {counterOf != null && (
+        <div className="mb-6 text-sm text-muted-foreground">
+          {originalQuery.isLoading ? (
+            <p className="flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Loading the challenge…</p>
+          ) : originalQuery.isError ? (
+            <p className="text-red-400">{challengeErrorText(originalQuery.error, 'Could not load the challenge you’re answering')}</p>
+          ) : original && (
+            <p>
+              Can’t get to <span className="text-machine font-semibold">{original.machine.name}</span>? Offer{' '}
+              {originalCreator ? <span className="text-friend font-semibold">@{originalCreator.username}</span> : 'them'} a machine you can both play.
+              Sending it answers their challenge — it shows as countered, not declined.
+              {counterBlocked && <span className="block mt-1 text-amber-300">This challenge can’t be answered any more.</span>}
+            </p>
+          )}
+        </div>
+      )}
 
       {/* 1 — friend */}
-      <Step n={1} title="Who" hint="Only your friends can be challenged.">
-        {friendsLoading ? (
+      <Step n={1} title="Who" hint={counterOf ? 'The counter-offer goes to whoever challenged you.' : 'Only your friends can be challenged.'}>
+        {counterOf ? (
+          friend ? (
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-friend bg-friend/15 text-friend text-sm">
+              <Check className="w-3.5 h-3.5" aria-hidden />
+              <span className="font-semibold">{friend.displayName}</span>
+              <span className="text-friend/80">@{friend.username}</span>
+            </span>
+          ) : counterNotFriend ? (
+            <p className="text-xs text-amber-300">You’re no longer friends with @{originalCreator?.username}, so you can’t send them a counter-offer.</p>
+          ) : (
+            <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</p>
+          )
+        ) : friendsLoading ? (
           <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="w-4 h-4 animate-spin" /> Loading friends…</p>
         ) : friends.length === 0 ? (
           <p className="text-sm text-muted-foreground">
@@ -245,44 +346,32 @@ export default function NewChallengePage() {
           </div>
         ) : (
           <>
-            <div className="relative">
-              <Search className="w-4 h-4 text-muted-foreground absolute left-3 top-1/2 -translate-y-1/2" aria-hidden />
-              <input
-                type="search"
-                value={machineQuery}
-                onChange={e => setMachineQuery(e.target.value)}
-                placeholder="Search machines on TiltTrack…"
-                aria-label="Search machines"
-                className={`${inputClass} pl-9`}
-              />
-            </div>
-            <div className="mt-2 flex flex-col gap-1.5">
-              {machinesLoading ? (
-                <p className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="w-3 h-3 animate-spin" /> Loading machines…</p>
-              ) : machineResults.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  {machineQuery.trim() ? `No machine on TiltTrack matches “${machineQuery.trim()}”. Someone has to log a score on it first.` : 'Search for a machine.'}
-                </p>
-              ) : (
-                <>
-                  {!machineQuery.trim() && <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Machines you’ve played</p>}
-                  {machineResults.map(m => (
-                    <button
-                      key={m.id}
-                      type="button"
-                      onClick={() => { setMachineId(m.id); setMachineQuery(''); }}
-                      className="flex items-center gap-3 rounded-lg border border-white/10 px-2.5 py-2 text-left hover:border-machine/50 transition-colors"
-                    >
-                      <MachineThumb name={m.name} imageUrl={m.imageUrl} size="sm" />
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-sm font-semibold text-machine truncate">{m.name}</span>
-                        {(m.manufacturer || m.year) && <span className="block text-[11px] text-muted-foreground">{[m.manufacturer, m.year].filter(Boolean).join(' · ')}</span>}
-                      </span>
-                    </button>
-                  ))}
-                </>
-              )}
-            </div>
+            {friend && (recsQuery.isLoading || recLevels.length > 0) && (
+              <div className="mb-4 rounded-lg border border-friend/25 bg-friend/5 p-3">
+                <p className="text-[11px] font-bold uppercase tracking-widest text-friend mb-2">Recommended for @{friend.username}</p>
+                {recsQuery.isLoading ? (
+                  <p className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="w-3 h-3 animate-spin" /> Finding machines they can reach…</p>
+                ) : (
+                  <div className="flex flex-col gap-3">
+                    {recLevels.map(g => (
+                      <div key={g.level}>
+                        <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">{REC_LEVEL_LABEL[g.level]}</p>
+                        <div className="flex flex-col gap-1.5">
+                          {g.items.map(r => <RecommendationRow key={r.machineId} r={r} onPick={() => pickRecommendation(r)} />)}
+                        </div>
+                      </div>
+                    ))}
+                    <p className="text-[11px] text-muted-foreground">Picking one challenges on that exact model.</p>
+                  </div>
+                )}
+              </div>
+            )}
+            <MachinePicker
+              allMachines={allMachines}
+              myMachines={myMachines}
+              loading={machinesLoading}
+              onPick={m => setMachineId(m.id)}
+            />
           </>
         )}
         <div className="mt-4">
@@ -501,7 +590,7 @@ export default function NewChallengePage() {
         className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-6 py-3 rounded-lg bg-friend text-zinc-950 text-sm font-black uppercase tracking-wider hover:opacity-90 disabled:opacity-40 transition-opacity"
       >
         {send.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Swords className="w-4 h-4" aria-hidden />}
-        Send challenge
+        {counterOf ? 'Send counter-offer' : 'Send challenge'}
       </button>
     </div>
   );

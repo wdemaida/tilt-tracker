@@ -108,14 +108,14 @@ export function AdminScoreRow({ s, showUser = true }: { s: AdminScore; showUser?
 
 const TYPE_LABEL: Record<string, string> = { high_score: 'High score', race: 'Race', most_improved: 'Most improved', average: 'Average' };
 const STATUS_TONE: Record<string, 'muted' | 'primary' | 'danger' | 'ok' | 'warn'> = {
-  active: 'ok', pending: 'warn', resolved: 'primary', cancelled: 'muted', declined: 'muted', expired: 'muted',
+  active: 'ok', pending: 'warn', resolved: 'primary', cancelled: 'muted', declined: 'muted', countered: 'muted', expired: 'muted',
 };
 
 export function AdminChallengeRow({ c }: { c: AdminChallenge }) {
   const admin = useAdminApi();
   const refresh = useRefreshAdmin();
   const [confirm, setConfirm] = useState(false);
-  const closed = ['declined', 'cancelled', 'expired'].includes(c.status);
+  const closed = ['declined', 'countered', 'cancelled', 'expired'].includes(c.status);
   return (
     <li className="px-3 sm:px-4 py-3">
       <div className="flex flex-wrap items-center gap-2">
