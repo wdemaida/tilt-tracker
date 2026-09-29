@@ -45,6 +45,9 @@ export const TIER_BY_TYPE: Readonly<Record<string, RetentionTier>> = {
   'score.repair_machine': 'standard',
   'photo.uploaded': 'standard',
   'photo.replaced': 'standard',
+  // one per upload attempt / per failed one — pairs with photo.uploaded to spot uploads that never landed
+  'photo.upload_started': 'standard',
+  'photo.failed': 'standard',
   // venues
   'venue.repair_here': 'standard',
   'venue.repair_here_attach': 'standard',

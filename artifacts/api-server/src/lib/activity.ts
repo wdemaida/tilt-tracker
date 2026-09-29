@@ -23,7 +23,9 @@ export type Executor = typeof db | Parameters<Parameters<typeof db.transaction>[
  */
 export const ACTIVITY_TYPES = {
   auth: ['user.signed_up', 'user.signed_in', 'user.first_setup', 'user.clerk_deleted'],
-  score: ['score.created', 'score.edited', 'score.deleted', 'score.repair_machine', 'photo.uploaded', 'photo.replaced'],
+  score: ['score.created', 'score.edited', 'score.deleted', 'score.repair_machine', 'photo.uploaded', 'photo.replaced',
+    'photo.upload_started', 'photo.failed',
+  ],
   venue: [
     'venue.repair_here', 'venue.repair_here_attach', 'venue.repair_place', 'venue.repair_pm_link',
     'venue.resync_applied', 'venue.merged',

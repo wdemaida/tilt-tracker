@@ -127,8 +127,10 @@ router.post('/', requireAppUser, async (req, res) => {
     // Challenges: records the lock if this score counts, resolves a won race on the spot, and tells
     // the opponent. Never throws — a challenge problem must not fail the upload.
     await onScoreCreated(row);
+    // The user agent says which browser/device posted it — how the Android full-size photo gap was found.
     await logActivity({
       type: 'score.created', actorUserId: appUser.id, targetType: 'score', targetId: row.id,
+      userAgent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : null,
       payload: { score: row.score, machineId: row.machineId, venueId: row.venueId, playedAt: row.playedAt, type: row.type, hasThumbnail: !!row.photoThumbnail },
     });
     res.status(201).json(publicScoreRow(row));

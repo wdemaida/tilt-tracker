@@ -12,7 +12,9 @@ import { queryClient } from '../lib/queryClient';
 import { PinballIcon } from '../components/PinballIcon';
 import { toLocalInput, localInputToIso, naiveToLocalInput } from '../lib/datetime';
 import { prepareUploadImage, type PreparedImage } from '../lib/prepareUploadImage';
-import { FullPhotoEncoder, uploadFullSizePhoto, encodeFailMessage } from '../lib/fullSizePhoto';
+import {
+  FullPhotoEncoder, uploadFullSizePhoto, encodeFailMessage, reportFullPhotoFailure, uploadFailure,
+} from '../lib/fullSizePhoto';
 import { extractVideoFrames, isVideoFile, VideoFrameError, VIDEO_UNSUPPORTED_MESSAGE } from '../lib/videoFrames';
 import { ScoreDigitInput } from '../components/ScoreDigitInput';
 import { MissingLocationNotice, type CurrentLocationState } from '../components/MissingLocationNotice';
@@ -298,14 +300,23 @@ export default function AddScorePage() {
     if (!encoded.ok) {
       // A failed encode is forgotten so Retry tries again (it may have been memory pressure).
       encoder.reset();
+      if (encoded.reason !== 'cancelled') {
+        reportFullPhotoFailure(api, scoreId, image, {
+          stage: 'encode', reason: encoded.reason, detail: encoded.detail,
+          originalWidth: encoded.originalWidth, originalHeight: encoded.originalHeight,
+        });
+      }
       return setFullPhoto({ status: 'failed', message: encodeFailMessage(encoded.reason) });
     }
     const result = await uploadFullSizePhoto(api, scoreId, encoded.photo);
     if (result.ok) {
       setFullPhoto({ status: 'saved', smaller: encoded.photo.variant === 'fallback' });
       queryClient.invalidateQueries({ queryKey: ['scores'] });
+    } else if (result.disabled) {
+      setFullPhoto({ status: 'idle' });
     } else {
-      setFullPhoto(result.disabled ? { status: 'idle' } : { status: 'failed', message: result.message });
+      reportFullPhotoFailure(api, scoreId, image, uploadFailure(result));
+      setFullPhoto({ status: 'failed', message: result.message });
     }
   }
 

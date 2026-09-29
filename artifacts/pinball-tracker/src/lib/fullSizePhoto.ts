@@ -17,6 +17,8 @@
 // Flow: POST /photo/upload-url → PUT the blob to the signed R2 URL → POST /photo/confirm. The
 // server HEADs the object before recording it (see api-server lib/photoStore.ts). Every failure is
 // reported to POST /photo/failed (reportFullPhotoFailure) — the PUT to R2 is otherwise invisible to
+// the server. Every failure is
+// reported to POST /photo/failed (reportFullPhotoFailure) — the PUT to R2 is otherwise invisible to
 // the server.
 
 import type { createApi } from './api';
@@ -187,7 +189,9 @@ export async function uploadFullSizePhoto(api: Api, scoreId: number, photo: Enco
       return { ok: false, disabled: false, message: `Upload failed (${put.status})`, stage, detail: `HTTP ${put.status} ${put.statusText}`.trim() };
     }
     stage = 'confirm';
-    await api.scores.photoConfirm(scoreId, { key, width: photo.width, height: photo.height });
+    await api.scores.photoConfirm(scoreId, {
+      key, width: photo.width, height: photo.height, variant: photo.variant, fallbackReason: photo.fallbackReason,
+    });
     return { ok: true };
   } catch (err: any) {
     if (err?.code === 'photos_disabled') return { ok: false, disabled: true, message: '', stage, detail: 'photos_disabled' };
@@ -204,4 +208,41 @@ export function encodeFailMessage(reason: EncodeFailReason): string {
     case 'too_large': return 'The photo is too large to upload.';
     default: return 'This browser couldn’t read the photo.';
   }
+}
+
+export interface FullPhotoFailure {
+  stage: 'encode' | UploadStage;
+  reason: string;
+  detail?: string;
+  originalWidth?: number;
+  originalHeight?: number;
+}
+
+/**
+ * Tells the server a full-size upload failed (activity log `photo.failed`). Fire-and-forget: never
+ * throws, never awaited by the UI. The image's source type/size (the picked file, for photos) goes
+ * with it — never the file itself.
+ */
+export function reportFullPhotoFailure(
+  api: Api, scoreId: number, image: Pick<PreparedImage, 'file' | 'full' | 'heicFailed'> | null | undefined, failure: FullPhotoFailure,
+): void {
+  try {
+    const source = image?.full?.blob ?? image?.file;
+    void api.scores.photoFailed(scoreId, {
+      ...failure,
+      detail: failure.detail?.slice(0, 300),
+      userAgent: navigator.userAgent,
+      fileType: source?.type || null,
+      fileSize: source?.size ?? null,
+      heicFailed: image?.heicFailed ?? null,
+    }).catch(() => undefined);
+  } catch {
+    // Reporting must never break the caller.
+  }
+}
+
+/** The failure report for an upload that failed (reason: HTTP status, or `network`). */
+export function uploadFailure(result: Extract<FullPhotoUploadResult, { ok: false }>): FullPhotoFailure {
+  const status = /HTTP (\d{3})/.exec(result.detail)?.[1];
+  return { stage: result.stage, reason: status ? `http_${status}` : 'network', detail: result.detail };
 }

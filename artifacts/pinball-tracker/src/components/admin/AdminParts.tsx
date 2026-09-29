@@ -197,6 +197,8 @@ const TYPE_TEXT: Record<string, string> = {
   'score.repair_machine': 'repaired a score’s machine',
   'photo.uploaded': 'uploaded a full-size photo',
   'photo.replaced': 'replaced a full-size photo',
+  'photo.upload_started': 'started a full-size photo upload',
+  'photo.failed': 'failed to upload a full-size photo',
   'venue.repair_here': 're-ran the HERE lookup for a venue',
   'venue.repair_here_attach': 'attached a HERE place to a venue',
   'venue.repair_place': 'set a venue’s place',
@@ -271,6 +273,20 @@ function detail(ev: ActivityEvent): string | null {
       return [p.machineName, typeof p.score === 'number' ? p.score.toLocaleString() : null].filter(Boolean).join(' · ') || null;
     case 'score.edited':
       return p.changes ? Object.entries(p.changes as Record<string, any>).map(([k, v]) => `${k}: ${v?.from ?? '∅'} → ${v?.to ?? '∅'}`).join(', ') : null;
+    case 'photo.uploaded': case 'photo.replaced':
+      return [
+        p.variant === 'fallback' ? `smaller copy (full-size ${p.fallbackReason ?? 'failed'})` : null,
+        p.width && p.height ? `${p.width}×${p.height}` : null,
+        typeof p.bytes === 'number' ? `${(p.bytes / 1024 / 1024).toFixed(1)} MB` : null,
+      ].filter(Boolean).join(' · ') || null;
+    case 'photo.failed':
+      return [
+        `${p.stage ?? '?'}: ${p.reason ?? '?'}`,
+        p.fileType,
+        typeof p.fileSize === 'number' ? `${(p.fileSize / 1024 / 1024).toFixed(1)} MB` : null,
+        p.originalWidth && p.originalHeight ? `${p.originalWidth}×${p.originalHeight}` : null,
+        p.detail,
+      ].filter(Boolean).join(' · ');
     case 'notification.sent': return String(p.kind ?? '');
     case 'challenge.resolved':
       return Array.isArray(p.outcomes) ? p.outcomes.map((o: any) => `@${o.username ?? o.userId} ${o.outcome}`).join(', ') + (p.reason ? ` (${p.reason})` : '') : null;

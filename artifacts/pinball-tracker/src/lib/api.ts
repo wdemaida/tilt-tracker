@@ -264,8 +264,11 @@ export function createApi(getToken: () => Promise<string | null>) {
         request<FullPhotoLink>(`/scores/${id}/photo`, undefined, await tok()),
       photoUploadUrl: async (id: number) =>
         request<{ key: string; url: string; expiresIn: number }>(`/scores/${id}/photo/upload-url`, { method: 'POST' }, await tok()),
-      photoConfirm: async (id: number, body: { key: string; width: number; height: number }) =>
+      photoConfirm: async (id: number, body: { key: string; width: number; height: number; variant?: 'full' | 'fallback'; fallbackReason?: string }) =>
         request<{ hasFullPhoto: true }>(`/scores/${id}/photo/confirm`, { method: 'POST', body: JSON.stringify(body) }, await tok()),
+      // A failed full-size upload, for the admin activity log (`photo.failed`) — see reportFullPhotoFailure.
+      photoFailed: async (id: number, body: Record<string, unknown>) =>
+        request<void>(`/scores/${id}/photo/failed`, { method: 'POST', body: JSON.stringify(body) }, await tok()),
     },
     machines: {
       list: async (mine = false) =>

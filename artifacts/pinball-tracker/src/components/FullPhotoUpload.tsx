@@ -10,7 +10,11 @@ import { Loader2, Upload, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { useApi } from '../lib/useApi';
 import { queryClient } from '../lib/queryClient';
 import { prepareUploadImage } from '../lib/prepareUploadImage';
-import { encodeScorePhoto, encodeFailMessage, uploadFullSizePhoto, type FullPhotoEncodeResult } from '../lib/fullSizePhoto';
+import {
+  encodeScorePhoto, encodeFailMessage, uploadFullSizePhoto, reportFullPhotoFailure, uploadFailure,
+  type FullPhotoEncodeResult,
+} from '../lib/fullSizePhoto';
+import type { PreparedImage } from '../lib/prepareUploadImage';
 
 type State =
   | { status: 'idle' }
@@ -46,13 +50,19 @@ export function FullPhotoUploadButton({ scoreId, label, variant = 'primary', ali
     }
     setState({ status: 'working', step: 'preparing' });
     let encoded: FullPhotoEncodeResult;
+    let image: PreparedImage | null = null;
     try {
-      encoded = await encodeScorePhoto(await prepareUploadImage(file));
+      image = await prepareUploadImage(file);
+      encoded = await encodeScorePhoto(image);
     } catch (err) {
       console.warn('Preparing full-size photo failed:', err);
       encoded = { ok: false, reason: 'decode', detail: String(err) };
     }
     if (!encoded.ok) {
+      reportFullPhotoFailure(api, scoreId, image ?? { file, heicFailed: false }, {
+        stage: 'encode', reason: encoded.reason, detail: encoded.detail,
+        originalWidth: encoded.originalWidth, originalHeight: encoded.originalHeight,
+      });
       return setState({ status: 'failed', message: encodeFailMessage(encoded.reason) });
     }
     setState({ status: 'working', step: 'uploading' });
@@ -62,6 +72,7 @@ export function FullPhotoUploadButton({ scoreId, label, variant = 'primary', ali
       invalidatePhotoQueries(scoreId);
       onUploaded?.();
     } else {
+      if (!result.disabled) reportFullPhotoFailure(api, scoreId, image, uploadFailure(result));
       setState({
         status: 'failed',
         message: result.disabled ? 'Photo uploads aren’t available right now.' : result.message || 'Upload failed',

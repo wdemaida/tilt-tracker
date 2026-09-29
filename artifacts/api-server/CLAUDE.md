@@ -619,6 +619,14 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   lands); *replacing* one on a locked score is 409 `score_locked_by_challenge`.
   Nothing depends on the score being new: the viewer's owner-only "Upload the full-size photo" button
   attaches one to any older score through the same two calls.
+- **Observability** (added 2026-09-29, after an Android user's uploads died client-side with no trace):
+  upload-url logs `photo.upload_started`; `photo.uploaded` carries `variant` (`full`, or `fallback` = the
+  browser's ~2000px copy, with `fallbackReason`) plus width/height/bytes. `POST .../photo/failed` (owner
+  only, 20/10 min, 204) lets the browser report any failure — `stage` encode | upload_url | put | confirm,
+  `reason`, `detail`, file type/size, original dims — as `photo.failed` (`lib/photoFailure.ts` whitelists
+  and caps the body). The PUT to R2 is only visible this way. A `photo.upload_started` with neither a
+  `photo.uploaded` nor a `photo.failed` after it means the tab died mid-upload. `score.created` rows
+  carry the request's user agent.
 - **View:** `GET /api/scores/:id/photo` — optional auth, guests included (240/10 min per user or IP).
   Loads through `visibleScoreSql(viewer)`, so a hidden home-venue score is a 404 to strangers and guests.
   Returns JSON `{ url, width, height, expiresAt }` (presigned GET, 10 min) rather than a 302: an `<img>`

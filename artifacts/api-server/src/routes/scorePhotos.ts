@@ -1,7 +1,10 @@
 // Full-size score photos (Cloudflare R2) — see lib/photoStore.ts for the storage side.
 //
 //   POST /api/scores/:id/photo/upload-url  owner only → { key, url, expiresIn } (presigned PUT, 5 min)
-//   POST /api/scores/:id/photo/confirm     owner only, { key, width?, height? } → { hasFullPhoto: true }
+//   POST /api/scores/:id/photo/confirm     owner only, { key, width?, height?, variant?, fallbackReason? }
+//                                          → { hasFullPhoto: true }
+//   POST /api/scores/:id/photo/failed      owner only — the browser reports a failed upload (any stage,
+//                                          incl. the PUT to R2 we never see) → activity `photo.failed`; 204
 //   GET  /api/scores/:id/photo             anyone who can see the score (guests included)
 //                                          → { url, width, height, expiresAt, thumbnail, canUpload }
 //                                          url: presigned GET (~10 min), or null for a thumbnail-only
@@ -34,6 +37,7 @@ import {
   UPLOAD_URL_TTL_S, VIEW_URL_TTL_S,
 } from '../lib/photoStore.js';
 import { logActivity } from '../lib/activity.js';
+import { parsePhotoFailure } from '../lib/photoFailure.js';
 
 const router = Router();
 
@@ -43,6 +47,8 @@ const uploadUrlLimiter = createRateLimiter({ limit: 30, windowMs: 10 * 60_000 })
 const confirmLimiter = createRateLimiter({ limit: 30, windowMs: 10 * 60_000 });
 // Viewing is open to guests, so it's keyed per user when signed in, else per client IP.
 const viewLimiter = createRateLimiter({ limit: 240, windowMs: 10 * 60_000 });
+// Failure reports only write an activity row; a real client sends one per failed attempt.
+const failedLimiter = createRateLimiter({ limit: 20, windowMs: 10 * 60_000 });
 
 const DISABLED = { error: 'Full-size photos are not available right now', code: 'photos_disabled' } as const;
 
@@ -93,6 +99,11 @@ router.post('/:id/photo/upload-url', requireAppUser, async (req, res) => {
 
     const key = newPhotoKey(id);
     const url = await store.presignPut(key);
+    // Paired with photo.uploaded / photo.failed: a start with neither is an upload that died silently.
+    await logActivity({
+      type: 'photo.upload_started', actorUserId: appUser.id, targetType: 'score', targetId: id,
+      payload: { replacing: !!score.photoKey },
+    });
     res.json({ key, url, expiresIn: UPLOAD_URL_TTL_S });
   } catch (err: any) {
     console.error(`[photos] upload-url for score ${id} failed:`, err?.name ?? '', err?.message ?? err);
@@ -147,13 +158,44 @@ router.post('/:id/photo/confirm', requireAppUser, async (req, res) => {
     if (outcome.kind === 'set') {
       await logActivity({
         type: outcome.previous ? 'photo.replaced' : 'photo.uploaded', actorUserId: appUser.id, targetType: 'score', targetId: id,
-        payload: { bytes: check.bytes, width, height },
+        payload: {
+          bytes: check.bytes, width, height,
+          // `fallback`: the browser couldn't encode the full-size photo and sent its ~2000px copy.
+          variant: req.body?.variant === 'fallback' ? 'fallback' : 'full',
+          fallbackReason: typeof req.body?.fallbackReason === 'string' ? req.body.fallbackReason.slice(0, 40) : undefined,
+        },
       });
     }
     res.json({ hasFullPhoto: true });
   } catch (err: any) {
     console.error(`[photos] confirm for score ${id} failed:`, err?.name ?? '', err?.message ?? err);
     res.status(500).json({ error: 'Could not save the photo' });
+  }
+});
+
+// POST /api/scores/:id/photo/failed
+router.post('/:id/photo/failed', requireAppUser, async (req, res) => {
+  const appUser = (req as any).appUser;
+  const id = scoreIdParam(req);
+  if (id == null) return void res.status(404).json({ error: 'Score not found' });
+
+  const limit = failedLimiter.hit(appUser.id);
+  if (!limit.allowed) return void tooMany(res, limit.retryAfterMs);
+
+  const payload = parsePhotoFailure(req.body);
+  if (!payload) return void res.status(400).json({ error: 'Unknown failure stage' });
+  try {
+    const [score] = await db.select({ userId: scores.userId }).from(scores).where(eq(scores.id, id)).limit(1);
+    if (!score) return void res.status(404).json({ error: 'Score not found' });
+    if (score.userId !== appUser.id) return void res.status(403).json({ error: 'Not your score' });
+    await logActivity({
+      type: 'photo.failed', actorUserId: appUser.id, targetType: 'score', targetId: id, payload: { ...payload },
+      userAgent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : null,
+    });
+    res.status(204).end();
+  } catch (err: any) {
+    console.error(`[photos] failure report for score ${id} failed:`, err?.name ?? '', err?.message ?? err);
+    res.status(500).json({ error: 'Could not record the failure' });
   }
 });
 
