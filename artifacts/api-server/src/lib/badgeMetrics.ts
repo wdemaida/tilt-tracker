@@ -107,12 +107,14 @@ export const METRICS: readonly MetricDef[] = [
 ];
 
 // TODO(phase 3): the challenge-derived metrics. They read challenges.status,
-// challenge_participants.response / decline_reason and challenges.countered_from_id, which only exist
-// once feature/challenge-recs (migrate22) is on main. Implement each as a MetricDef with
-// source 'derived', triggers ['challenge', 'sweep'] — wins/losses/ties/abandoned/streaks from
-// computeRecord() (challengeRules.ts; note it has bestStreak for wins but no loss streak yet), the
-// rest as GROUP BY queries — move it into METRICS, and delete it from this list. Seeded badges on
-// these metrics (migrate23) stay draft until then: activateBadge refuses an unavailable metric.
+// challenge_participants.response / decline_reason, challenges.countered_from_id and (group
+// challenges, migrate24) challenges.proposed_by_id / proposal_decided_at. Implement each as a
+// MetricDef with source 'derived', triggers ['challenge', 'sweep'] — wins/losses/ties/abandoned/
+// streaks from computeRecord() (challengeRules.ts: bestStreak and bestLossStreak), the rest as
+// GROUP BY queries that exclude proposal rows (status proposed / rejected / lapsed) — move it into
+// METRICS, and delete it from this list. counters_accepted is now a proposal fact (proposed_by_id),
+// not "challenges you created"; the exact SQL is in the badges plan's "Phase 3 notes". Seeded badges
+// on these metrics (migrate23) stay draft until then: activateBadge refuses an unavailable metric.
 export const PENDING_METRICS: ReadonlyArray<Pick<MetricDef, 'key' | 'label' | 'description'>> = [
   { key: 'challenge_wins', label: 'Challenges won', description: 'Resolved challenges the player won.' },
   { key: 'challenge_losses', label: 'Challenges lost', description: 'Resolved challenges the player lost.' },

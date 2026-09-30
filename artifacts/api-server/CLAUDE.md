@@ -545,8 +545,8 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
 
 ## Challenges (`challengeRules.ts`, `challenges.ts`, `routes/challenges.ts`, migrate15, added 2026-09-26)
 - **Rules are pure** (`challengeRules.ts`, unit-tested); `challenges.ts` loads rows and applies them.
-  Tables: `challenges`, `challenge_participants` (creator included, accepted at creation; groups
-  later = more rows), `challenge_scores` (the lock). Friends only, checked at creation.
+  Tables: `challenges`, `challenge_participants` (creator included, accepted at creation; a group is
+  just more rows — up to 8), `challenge_scores` (the lock). Friends only, checked at creation.
 - **Every state change goes through `syncChallenge(id)`** (row-locked `FOR UPDATE`): expiry, writing
   the lock rows, and resolution (race won / forfeit / deadline). Three triggers call it: lazy reads
   (list, detail, record), `onScoreCreated()` in `POST /api/scores`, and the daily
@@ -581,15 +581,67 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   differ; the UI's void handling is left in place for that). The record (and each head-to-head
   row) counts `abandoned` on its own, not as W/L/T/no-show; abandoned **breaks** a win streak. `challenge_result` notifications carry `abandoned` too.
   The outcome CHECK is named `challenge_participants_outcome_check`; migrate15 drops and re-adds it.
-- `starts_at` null = starts at acceptance, stamped with the **DB clock** (same clock as
-  `scores.created_at`). `most_improved` baselines are frozen at acceptance.
+- `starts_at` null = starts once everyone has answered (or at "Start with who's in"), stamped with
+  the **DB clock** (same clock as `scores.created_at`). `most_improved` baselines are frozen then.
+- **Groups** (feature/group-challenges, migrate24, 2026-09-29): up to **8 players** (`MAX_PLAYERS`, the
+  challenger included); `POST /api/challenges` takes `friendIds` (the 1:1 `friendId` / `friendUsername`
+  still work); every invitee must be the challenger's friend (403 `not_friends`), not each other's;
+  400 `too_many_players` / `duplicate_invitee`. After every answer `settleAfterAnswer()` applies
+  `afterAnswer()` (pure): **L** = pending, no invitee pending, no proposal open, ≥ 1 invitee accepted
+  → active; **D** = no invitee pending or accepted, no proposal open → declined. A decline just drops
+  that player; an **accepted invitee may back out** while it's pending (`/decline`, recorded
+  `declined`, `challenge_declined.backedOut`). `POST /:id/start` = "Start with who's in" (challenger,
+  ≥ 1 accepted): pending players become **`missed`** (`challenge_missed`) and open proposals close
+  as `rejected` ('started'). A **fixed start** (`pendingDue()`): ≥ 1 accepted → it starts, the rest
+  `missed`, proposals `lapsed`; nobody → expired (pending → `missed` too). Groups send
+  `challenge_started` to the accepted players except the actor. `onScoreCreated` also syncs pending
+  rows whose fixed start has passed (they start on the upload and the score counts).
+  `challenge_result` carries `rank`, `playerCount`, `winners`; one unread `challenge_opponent_scored`
+  per challenge (the newest poster). `phaseOf()` maps the new statuses onto old phases (proposed →
+  pending, rejected → declined, lapsed → expired) because old cached clients' status line has no
+  default branch; new clients read `status`.
+- **Counter-offers are proposals — 1:1 too (behavior change, 2026-09-29).** `POST /:id/counter` no
+  longer ends the original: it writes a **proposal row** (status `proposed`, `creator_id` = the
+  challenger, `proposed_by_id` = the counterer, `countered_from_id` = the original; participants =
+  the proposer, accepted, and the challenger, pending) and a `challenge_countered` notice
+  (`proposal: true`) to the challenger. The counterer's row on the original is `countered` /
+  `cant_reach`. An open proposal **blocks L and D**, so the original waits. The challenger answers
+  with the existing endpoints on the proposal's id: **`/accept` = take it for everyone** — original
+  → `countered`, the proposal → an ordinary `pending` challenge (`proposal_decided_at`), everyone on
+  the original is re-invited (`reinvitees()`: not `no_thanks` decliners, not ex-friends of the
+  challenger; **everyone re-accepts**, including players who had accepted) with `challenge_moved`,
+  other open proposals → `rejected` ('superseded'), the proposer gets `challenge_counter_accepted`,
+  then L is checked (a 1:1 goes straight to active). The proposer's best is the race's "beat my
+  score" target (frozen into `target_score`). **`/decline` = keep mine** — the proposal → `rejected`,
+  the proposer stays out, the original is re-checked (a 1:1 then ends `declined`). Proposals also
+  close when the original starts / is cancelled / expires, or when their own window passes
+  (`lapsed`, `challenge_counter_rejected` with `reason`). No timer: the daily sweep re-raises
+  `challenge_countered` once (`reminder: true`) 24 h after an unanswered one
+  (`proposal_reminded_at`). Proposers can't withdraw in v1; the challenger can't counter a proposal.
+  **Lock order: the original first, then its proposals** (`lockForAction`, `syncChallenge`'s peek).
+  A proposal is visible to its two participants only; the original's `proposals` list goes to the
+  challenger (all) and each proposer (their own). **Legacy counter rows** (migrate22 model:
+  `countered_from_id` set, `proposed_by_id` null, created by the counterer) are ordinary pending
+  challenges. `challenges_proposal_check`: a proposal status needs `proposed_by_id` — deliberately
+  not `countered_from_id` (ON DELETE SET NULL); unique (`countered_from_id`, `proposed_by_id`).
+- **Records**: headline totals and streaks stay on the player's own `outcome` (below 1st in a group
+  is a loss); head-to-head is **pairwise by rank** (`pairOutcome`: my forfeit / no-show / abandoned
+  stays mine; their forfeit / no-show is my win; else the better rank wins) — identical to the old
+  result for 1:1. The record adds `bestLossStreak`.
+- **most_improved baselines**: a missing one only refuses the accept and "Start with who's in"
+  (`no_baseline` for the actor, `creator_no_baseline` for the challenger). A decline, a rejected or
+  lapsed proposal, or a fixed start that makes it start never fails — the baseline is stored null
+  (that player can't qualify).
 - The sweep also sends `challenge_ending_soon` once per participant (`ending_soon_notified_at`) and
   deletes **read** notifications older than 30 days; unread ones are kept.
   The same cron route then runs **daily housekeeping** (`lib/housekeeping.ts`, not inside
   `runChallengeSweep` so `test-challenges.ts` doesn't purge the dev log): activity-log retention and
   the weekly photo orphan sweep — see the two sections under "Admin area".
 - Tests: `npx tsx --test src/lib/challengeRules.test.ts`; `npx tsx test-challenges.ts` (dev branch
-  only; borrows 3 friendless users and throwaway `zz-challenge-test` machines, cleans up).
+  only; borrows **4** friendless users — dave is the true non-friend until the group section — and
+  throwaway `zz-challenge-test` machines; covers groups, proposals, lapse / supersede / re-invite,
+  the reminder, group records and recommendations, the DB CHECK and the badge facts; cleans up,
+  including the activity events about the borrowed users and their challenges).
 
 ## Challenge recommendations + counter-offers (`challengeReach.ts`, `challengeRecs.ts`, `routes/me.ts`, migrate22, added 2026-09-29)
 - **Three levels** of "machines this player can reach": 1 = "Challenge me on" (`user_challenge_machines`,
@@ -610,17 +662,27 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   friend's recommendations request. After that removals stick; new candidates are `suggestions`.
 - **Answers**: decline takes `{ reason: 'cant_reach' | 'no_thanks' }` (`challenge_participants.decline_reason`,
   in the `challenge_declined` payload and the `challenge.declined` event). `POST /api/challenges/:id/counter`
-  (create body; friend = the original creator) in one transaction: original → status `countered`, the
-  counterer's row → response `countered` / reason `cant_reach`, and a new challenge with
-  `countered_from_id`, created by the counterer. Its invitation is a `challenge_countered` notification
-  (not `challenge_received`), so accept/decline/cancel/expire/void settle both kinds (`settleInvitation`).
-  Counters of counters are allowed. `ChallengeView` has `counteredFromId` / `counteredToId`, `me.canCounter`
-  and each participant's `declineReason`. Every "declined" branch (audience, opponent, history, admin
-  void / list) treats `countered` the same (`saidNo`).
+  (create body; it always goes to the challenger) — **since 2026-09-29 a proposal, not a new challenge
+  that ends the original**; see "Counter-offers are proposals" under Challenges. (Under migrate22 it
+  ended the original `countered` and created a challenge by the counterer — those legacy rows still
+  work as ordinary challenges.) `settleInvitation` settles `challenge_received`, `challenge_moved`
+  and `challenge_countered`. `ChallengeView` has `counteredFromId` / `counteredToId` (the taken
+  proposal, or a legacy counter), `isProposal`, `proposedBy`, `proposals`, `me.canCounter` /
+  `canStart` / `canDecideProposal` and each participant's `declineReason`. Every "out" branch
+  (audience, opponent, history, admin void / list) treats `declined`, `countered` and `missed` the
+  same (`saidNo`).
+- **Group recommendations** (`GET /api/challenges/recommendations?users=a,b`, feature/group-challenges):
+  `mergeGroupRecommendations` (pure) ranks by how many of the friends can reach the machine, then
+  whether the viewer can, then the lowest level any of them has it at, then the viewer's score; caps
+  at 16. Each item adds `reachedBy` / `coverage`; a friend's own private venue becomes `atHomeOf`
+  (never 'at home' or the venue's name). One user = exactly the `/recommendations/:username` list
+  (kept). Every target must be a friend (403), ≤ 7, no repeats. Reuses `reachOf` — still **zero**
+  Pinball Map calls; `challengeRecs.ts` imports nothing.
 - Tests: `npx tsx --test src/lib/challengeRecs.test.ts` (+ challengeRules); `test-challenges.ts` covers
-  reasons, counters, prefs, recommendations and the profile field. Note: its "accept → window starts
-  now" check fails when this machine's clock runs behind Neon's (accept stamps the DB clock) — seen
-  2026-09-29 with Neon ~0.8 s ahead; that and the most-improved/record checks after it pass with the clock aligned.
+  reasons, counters, prefs, recommendations and the profile field. Clock skew: accept stamps the DB
+  clock and uploads send this machine's `played_at`, so with Neon ahead (~0.8 s on 2026-09-29) the
+  "accept → window starts now", most-improved and record checks used to fail; the test now measures
+  the skew (`SKEW_MS`) at start and allows for it.
 
 ## Full-size score photos (`src/lib/photoStore.ts`, `routes/scorePhotos.ts`, migrate17, added 2026-09-26)
 - **Storage:** Cloudflare R2, private buckets — `tilttrack-photos-dev` (local/dev) and `tilttrack-photos`

@@ -387,3 +387,19 @@
   AddScorePage already showed (`markBadgesShown`). Other notification kinds could reuse it.
 - `index.css` sets `color-scheme: dark` and explicit `select option` colors — native `<select>` popups
   were white-on-white. SignInPage's white inputs opt back into `[color-scheme:light]`.
+
+## Group challenges (`ChallengePage.tsx`, `ChallengesPage.tsx`, `NewChallengePage.tsx`, added 2026-09-29)
+- Up to 7 friends per challenge (`MAX_INVITEES` in `lib/challenges.ts`); the create form sends
+  `friendIds`. One friend → "Recommended for @friend" (`/recommendations/:username`); several →
+  "Recommended for the group" grouped by `coverage` (`/recommendations?users=`), a friend's own home
+  shown as "at @name's" (`atHomeOf`).
+- `isGroupChallenge(c)` = more than two participants and not a proposal. Groups get the ranked
+  `StandingsList` (one row per player — phone-friendly) and a `Roster`; 1:1 keeps the two cards.
+- **Counter-offers are proposals** to the challenger: `c.isProposal`, `c.proposedBy`, and the
+  original's `c.proposals`. The challenger decides with `act(id, 'accept' | 'decline')` on the
+  proposal's id ("Take it for everyone" / "Keep mine" — `me.canDecideProposal`). An accepted player
+  in a pending challenge sees "Back out" (a decline); the challenger sees "Start with who's in"
+  (`me.canStart`, `act(id, 'start')`). Both go through an inline confirm.
+- **Read `status`, not `phase`, for proposed / rejected / lapsed** — the server maps them onto old
+  phases for cached clients. `statusLine` has a `default` branch: never remove it (an unknown status
+  from a newer server must not crash the page).
