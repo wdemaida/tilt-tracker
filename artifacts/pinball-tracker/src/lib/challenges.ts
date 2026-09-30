@@ -65,6 +65,31 @@ export function historyOutcome(c: Challenge): ChallengeOutcome | 'void' | null {
   return c.me.outcome;
 }
 
+/** Up to 8 players, you included (the server's MAX_PLAYERS). */
+export const MAX_PLAYERS = 8;
+export const MAX_INVITEES = MAX_PLAYERS - 1;
+
+/** Out of it: declined, suggested another machine, or never answered before it started. */
+export function isOut(p: ChallengeParticipant) {
+  return p.response === 'declined' || p.response === 'countered' || p.response === 'missed';
+}
+
+/** More than two players (a proposal row is always two: the proposer and the challenger). */
+export function isGroupChallenge(c: Challenge) {
+  return !c.isProposal && c.participants.length > 2;
+}
+
+/** Everyone but you who's still in it — the "vs" list. */
+export function othersOf(c: Challenge, myId: number | null | undefined): ChallengeParticipant[] {
+  return c.participants.filter(p => p.user.id !== myId && !isOut(p));
+}
+
+/** 1st, 2nd, 3rd, 4th … */
+export function ordinal(n: number) {
+  const s = n % 100 >= 11 && n % 100 <= 13 ? 'th' : ({ 1: 'st', 2: 'nd', 3: 'rd' } as Record<number, string>)[n % 10] ?? 'th';
+  return `${n}${s}`;
+}
+
 export function meAndThem(c: Challenge, myId: number | null | undefined): { me: ChallengeParticipant | undefined; them: ChallengeParticipant | undefined } {
   const them = c.participants.find(p => (c.opponent ? p.user.id === c.opponent.id : p.user.id !== myId));
   const me = c.participants.find(p => p !== them && (myId == null || p.user.id === myId)) ?? c.participants.find(p => p !== them);
@@ -145,6 +170,9 @@ const ERROR_COPY: Record<string, string> = {
   too_many_machines: 'Pick at most 3 machines to be challenged on.',
   too_many_venues: 'That’s a lot of challenge locations — remove a few first.',
   invalid_prefs: 'Those challenge settings didn’t look right — try again.',
+  too_many_players: 'A challenge can have at most 8 players — you and 7 friends.',
+  duplicate_invitee: 'Each friend can only be invited once.',
+  cannot_start: 'It can’t be started now — someone has to accept first, and it has to still be waiting.',
 };
 
 /** Recommendation groups on the create form, most reliable first. */
@@ -156,6 +184,7 @@ export const REC_LEVEL_LABEL: Record<1 | 2 | 3, string> = {
 
 /** The query key for someone's recommendations, and your own challenge preferences. */
 export const recommendationsKey = (username: string) => ['challenges', 'recommendations', username.toLowerCase()];
+export const groupRecommendationsKey = (usernames: string[]) => ['challenges', 'recommendations', 'group', ...usernames.map(u => u.toLowerCase()).sort()];
 export const CHALLENGE_PREFS_KEY = ['challenges', 'prefs'];
 
 export function challengeErrorText(e: unknown, fallback = 'Something went wrong'): string {
@@ -176,7 +205,7 @@ export function useChallengeList(status: 'pending' | 'active' | 'history') {
   });
 }
 
-/** Pending challenges waiting on the viewer's answer — part of the Crew badge. */
+/** Pending challenges (and suggestions to decide) waiting on the viewer — part of the Crew badge. */
 export function useIncomingChallengeCount() {
   const { data } = useChallengeList('pending');
   return (data ?? []).filter(c => c.me.canAccept).length;

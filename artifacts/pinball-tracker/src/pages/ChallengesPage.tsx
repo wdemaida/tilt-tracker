@@ -10,7 +10,7 @@ import { useApi } from '../lib/useApi';
 import { useAppUser } from '../lib/useAppUser';
 import {
   useChallengeList, invalidateChallengeQueries, challengeErrorText, typeLabel, meAndThem, formatResult,
-  timingText, useNow, historyOutcome,
+  timingText, useNow, historyOutcome, isGroupChallenge, othersOf, ordinal,
 } from '../lib/challenges';
 import type { Challenge, ChallengeDeclineReason } from '../lib/api';
 
@@ -18,6 +18,9 @@ import type { Challenge, ChallengeDeclineReason } from '../lib/api';
 // Waiting on you · Live · Sent · History. Every row links to /challenges/:id; the inline buttons are
 // only the actions a row can take without opening it (accept / can't get to this one / no thanks,
 // cancel). "Can't get to this one" offers a counter-offer (/challenges/new?counterOf=) or a decline.
+// A counter-offer is a suggestion to the challenger: it sits under "Waiting on you" for her (Take it
+// for everyone / Keep mine) and under "Sent" for whoever suggested it. Groups read "vs @bob +2" and
+// the live line is your place ("2nd of 4").
 
 function Section({ title, count, children }: { title: string; count?: number; children: React.ReactNode }) {
   return (
@@ -37,7 +40,7 @@ function ChallengeRow({ c, myId, now }: { c: Challenge; myId: number | null; now
   const [error, setError] = useState<string | null>(null);
   const [cantReach, setCantReach] = useState(false);
   const act = useMutation({
-    mutationFn: ({ action, reason }: { action: 'accept' | 'decline' | 'cancel'; reason?: ChallengeDeclineReason }) =>
+    mutationFn: ({ action, reason }: { action: 'accept' | 'decline' | 'cancel' | 'start'; reason?: ChallengeDeclineReason }) =>
       api.challenges.act(c.id, action, reason ? { reason } : undefined),
     onSuccess: () => { setError(null); setCantReach(false); invalidateChallengeQueries(); },
     onError: e => { setError(challengeErrorText(e)); invalidateChallengeQueries(); },
@@ -45,9 +48,14 @@ function ChallengeRow({ c, myId, now }: { c: Challenge; myId: number | null; now
   const doing = (action: string, reason?: string) => act.isPending && act.variables?.action === action && act.variables?.reason === reason;
   const { me, them } = meAndThem(c, myId);
   const opponent = them?.user ?? c.opponent;
+  const group = isGroupChallenge(c);
+  const others = othersOf(c, myId);
   const timing = timingText(c, now);
   const outcome = historyOutcome(c);
-  const live = c.status === 'active' && me?.standing && them?.standing;
+  const live = !group && c.status === 'active' && me?.standing && them?.standing;
+  const groupLive = group && c.status === 'active' && me?.standing ? me.standing : null;
+  const inCount = c.participants.filter(p => p.response === 'accepted').length;
+  const deciding = !!c.me.canDecideProposal;
   const busy = act.isPending;
   const spin = <Loader2 className="w-3 h-3 animate-spin" aria-hidden />;
 
@@ -56,9 +64,12 @@ function ChallengeRow({ c, myId, now }: { c: Challenge; myId: number | null; now
     const reason = c.participants.find(p => p.response === 'declined')?.declineReason;
     historyNote = reason === 'cant_reach' ? 'Can’t get to it' : reason === 'no_thanks' ? 'Passed' : 'Declined';
   }
-  else if (c.status === 'countered') historyNote = 'Countered';
+  else if (c.status === 'countered') historyNote = c.counteredToId ? 'Moved' : 'Countered';
   else if (c.status === 'cancelled') historyNote = 'Cancelled';
   else if (c.status === 'expired') historyNote = 'Expired — never answered';
+  else if (c.status === 'rejected') historyNote = 'Suggestion not taken';
+  else if (c.status === 'lapsed') historyNote = 'Suggestion lapsed';
+  else if (c.status === 'proposed') historyNote = 'Suggestion';
 
   return (
     <div className="relative rounded-xl border border-white/10 bg-card px-3 py-3 sm:px-4 hover:border-white/20 transition-colors">
@@ -77,7 +88,11 @@ function ChallengeRow({ c, myId, now }: { c: Challenge; myId: number | null; now
           <p className="text-xs text-muted-foreground mt-0.5 flex flex-wrap items-center gap-x-1.5">
             <span className="text-white/80">{typeLabel(c)}</span>
             <span>· vs</span>
-            {opponent ? <span className="relative z-10"><UsernameLink username={opponent.username} className="text-friend hover:text-friend/80" /></span> : <span>—</span>}
+            {group ? (
+              others.length
+                ? <span className="relative z-10"><UsernameLink username={others[0].user.username} className="text-friend hover:text-friend/80" />{others.length > 1 && <span className="text-muted-foreground"> +{others.length - 1}</span>}</span>
+                : <span>—</span>
+            ) : opponent ? <span className="relative z-10"><UsernameLink username={opponent.username} className="text-friend hover:text-friend/80" /></span> : <span>—</span>}
             {c.venue && <span className="inline-flex items-center gap-0.5"><Lock className="w-3 h-3" aria-hidden /> <span className="text-venue truncate max-w-[10rem]">{c.venue.name}</span></span>}
           </p>
           {live && (
@@ -93,6 +108,17 @@ function ChallengeRow({ c, myId, now }: { c: Challenge; myId: number | null; now
               </span>
             </p>
           )}
+          {groupLive && (
+            <p className="text-xs mt-1 flex flex-wrap items-center gap-x-2">
+              <span>
+                <span className="text-username font-semibold">You</span>{' '}
+                <span className={`font-black ${groupLive.liveRank === 1 ? 'text-primary' : 'text-white/80'}`}>
+                  {groupLive.liveRank != null ? `${ordinal(groupLive.liveRank)} of ${inCount}` : `— of ${inCount}`}
+                </span>
+              </span>
+              {groupLive.resultValue != null && <span className="text-muted-foreground">· {formatResult(c.type, groupLive.resultValue)}</span>}
+            </p>
+          )}
           {timing && (
             <p className="text-[11px] text-muted-foreground mt-1 inline-flex items-center gap-1">
               <Timer className="w-3 h-3" aria-hidden /> {timing}
@@ -100,7 +126,15 @@ function ChallengeRow({ c, myId, now }: { c: Challenge; myId: number | null; now
           )}
           {c.status === 'pending' && (
             <p className="text-[11px] text-muted-foreground mt-1">
-              {c.me.canAccept ? 'Sent' : 'You sent it'} {formatDistanceToNow(new Date(c.createdAt), { addSuffix: true })}
+              {c.me.canAccept ? 'Sent' : c.me.canCancel ? 'You sent it' : 'You’re in'} {formatDistanceToNow(new Date(c.createdAt), { addSuffix: true })}
+              {group && ` · ${inCount} of ${c.participants.length} in`}
+            </p>
+          )}
+          {c.status === 'proposed' && (
+            <p className="text-[11px] text-amber-200 mt-1">
+              {deciding
+                ? <>{c.proposedBy ? `@${c.proposedBy.username}` : 'A friend'} suggested this instead of your challenge</>
+                : <>Your suggestion — waiting for them to take it or keep theirs</>}
             </p>
           )}
           {c.status === 'resolved' && c.resolvedAt && (
@@ -115,6 +149,16 @@ function ChallengeRow({ c, myId, now }: { c: Challenge; myId: number | null; now
             </p>
           )}
 
+          {deciding && (
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              <button type="button" disabled={busy} onClick={() => act.mutate({ action: 'accept' })} className={`${btn} bg-friend text-zinc-950 hover:opacity-90`}>
+                {doing('accept') ? spin : <Check className="w-3 h-3" aria-hidden />} Take it for everyone
+              </button>
+              <button type="button" disabled={busy} onClick={() => act.mutate({ action: 'decline' })} className={`${btn} border border-white/15 text-muted-foreground hover:text-white hover:border-white/30`}>
+                {doing('decline') ? spin : <X className="w-3 h-3" aria-hidden />} Keep mine
+              </button>
+            </div>
+          )}
           {(c.me.canAccept || c.me.canCancel) && c.status === 'pending' && (
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
               {c.me.canAccept && !cantReach && (
@@ -179,7 +223,7 @@ export default function ChallengesPage() {
     <div className="max-w-3xl">
       <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
         <p className="text-sm text-muted-foreground min-w-0 flex-1">
-          Head-to-head on one machine against a <span className="text-friend font-semibold">Friend</span>. Only the two of you can see it.
+          One machine, you against up to 7 <span className="text-friend font-semibold">Friends</span>. Only the players can see it.
         </p>
         <Link
           href="/challenges/new"

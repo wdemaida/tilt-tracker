@@ -3,7 +3,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'wouter';
 import { useAuth } from '@clerk/clerk-react';
 import { format } from 'date-fns';
-import { ArrowLeft, Check, Clock, CornerDownRight, Crown, Flag, Loader2, Lock, MapPin, MapPinOff, Swords, Target, Timer, X } from 'lucide-react';
+import { ArrowLeft, Check, Clock, CornerDownRight, Crown, Flag, Lightbulb, Loader2, Lock, LogOut, MapPin, MapPinOff, Play, Swords, Target, Timer, Users, X } from 'lucide-react';
 import UsernameLink from '../components/UsernameLink';
 import { MachineThumb, OutcomeChip } from '../components/ChallengeParts';
 import { FullPhotoButton } from '../components/PhotoViewer';
@@ -12,14 +12,20 @@ import { useAppUser } from '../lib/useAppUser';
 import { formatScoreTime, zoneAbbreviation } from '../lib/scoreTime';
 import {
   TYPE_META, SCORE_RULES, challengeKey, invalidateChallengeQueries, challengeErrorText, meAndThem, formatScore,
-  formatResult, formatDuration, useNow, isAbandoned, historyOutcome, outcomeMeta,
+  formatResult, formatDuration, useNow, isAbandoned, historyOutcome, outcomeMeta, isGroupChallenge, isOut, othersOf, ordinal, typeLabel,
 } from '../lib/challenges';
-import type { Challenge, ChallengeDeclineReason, ChallengeParticipant } from '../lib/api';
+import type { Challenge, ChallengeDeclineReason, ChallengeParticipant, ChallengeProposal } from '../lib/api';
 
 // /challenges/:id — one challenge, for its participants. Machine + rules up top, a live countdown,
 // the standings (you in username yellow, them in friend aqua), each side's counting scores, and the
 // actions the server says you may take (me.can*). Resolution happens server-side on read, so a
 // refetch after the deadline is what flips it to the outcome banner.
+//
+// Groups (up to 8 players): a ranked StandingsList instead of side-by-side cards, the roster with
+// who has answered, "Start with who's in" for the challenger. Counter-offers are PROPOSALS to the
+// challenger: the original lists them (ProposalsPanel — "Take it for everyone" / "Keep mine"), and a
+// proposal's own page says whose suggestion it is. statusLine has a default branch on purpose: an
+// unknown status from a newer server must never crash the page.
 
 function rulesLine(c: Challenge) {
   switch (c.type) {
@@ -30,9 +36,28 @@ function rulesLine(c: Challenge) {
   }
 }
 
+const MUTED = 'text-muted-foreground';
+
 function statusLine(c: Challenge, now: number): { text: string; tone: string } {
+  // The proposal statuses first — the server maps them onto old phases for old clients.
+  switch (c.status) {
+    case 'proposed':
+      return c.me.canDecideProposal
+        ? { text: 'A suggestion for you — take it for everyone, or keep yours', tone: 'text-amber-200' }
+        : { text: 'Suggested — waiting for an answer', tone: 'text-amber-200' };
+    case 'rejected': return { text: 'Not taken', tone: MUTED };
+    case 'lapsed': return { text: 'Lapsed — the original closed first', tone: MUTED };
+  }
   switch (c.phase) {
-    case 'pending': return { text: 'Waiting for an answer', tone: 'text-amber-200' };
+    case 'pending': {
+      const invitees = c.participants.filter(p => !p.isCreator && !isOut(p));
+      const waiting = invitees.filter(p => p.response === 'pending').length;
+      if (isGroupChallenge(c)) {
+        if (waiting === 0 && (c.proposals ?? []).some(p => p.status === 'proposed')) return { text: 'Waiting on a suggestion to be answered', tone: 'text-amber-200' };
+        return { text: `Waiting on ${waiting} of ${invitees.length} to answer`, tone: 'text-amber-200' };
+      }
+      return { text: 'Waiting for an answer', tone: 'text-amber-200' };
+    }
     case 'scheduled': return { text: `Starts in ${formatDuration(+new Date(c.startsAt!) - now)}`, tone: 'text-friend' };
     case 'live': {
       const left = +new Date(c.endsAt) - now;
@@ -44,13 +69,14 @@ function statusLine(c: Challenge, now: number): { text: string; tone: string } {
       const reason = c.participants.find(p => p.response === 'declined')?.declineReason;
       return { text: reason === 'cant_reach' ? 'Declined — can’t get to this machine' : reason === 'no_thanks' ? 'Passed on' : 'Declined', tone: 'text-muted-foreground' };
     }
-    case 'countered': return { text: 'Countered — another machine was suggested', tone: 'text-muted-foreground' };
-    case 'cancelled': return { text: 'Cancelled', tone: 'text-muted-foreground' };
-    case 'expired': return { text: 'Expired — never accepted', tone: 'text-muted-foreground' };
+    case 'countered': return { text: c.counteredToId ? 'Moved to a suggested machine' : 'Countered — another machine was suggested', tone: MUTED };
+    case 'cancelled': return { text: 'Cancelled', tone: MUTED };
+    case 'expired': return { text: 'Expired — never started', tone: MUTED };
+    default: return { text: String(c.status), tone: MUTED };
   }
 }
 
-function OutcomeBanner({ c }: { c: Challenge }) {
+function OutcomeBanner({ c, myRank }: { c: Challenge; myRank: number | null }) {
   const o = historyOutcome(c);
   if (!o) return null;
   const m = outcomeMeta(o);
@@ -65,7 +91,9 @@ function OutcomeBanner({ c }: { c: Challenge }) {
       : 'Nobody played in time — no winner, no loser.')
     : o === 'no_show' ? 'You didn’t post a counting score.'
     : o === 'forfeit' ? 'You withdrew from this challenge.'
-    : o === 'win' && c.opponent && c.participants.find(p => p.user.id === c.opponent!.id)?.outcome === 'forfeit' ? 'They forfeited.'
+    : o === 'win' && !isGroupChallenge(c) && c.opponent && c.participants.find(p => p.user.id === c.opponent!.id)?.outcome === 'forfeit' ? 'They forfeited.'
+    : isGroupChallenge(c) && (o === 'loss' || o === 'tie' || o === 'win') && myRank != null
+      ? `You placed ${ordinal(myRank)} of ${c.participants.filter(p => p.response === 'accepted').length}.`
     : null;
   return (
     <div className={`rounded-xl border p-4 mb-6 flex items-center gap-3 ${m.tone}`}>
@@ -83,13 +111,10 @@ function valueOf(p: ChallengeParticipant) {
   return p.standing?.resultValue ?? p.resultValue;
 }
 
-function StandingCard({ c, p, isMe, leader }: { c: Challenge; p: ChallengeParticipant; isMe: boolean; leader: boolean }) {
+/** The type-specific line under a player's value: race progress, baseline, plays, counting scores. */
+function standingDetail(c: Challenge, p: ChallengeParticipant): React.ReactNode {
   const st = p.standing;
-  const value = valueOf(p);
   const resolved = c.status === 'resolved';
-  const nameColor = isMe ? 'text-username hover:text-username/80' : 'text-friend hover:text-friend/80';
-  const outcome = resolved ? (c.void ? 'void' : p.outcome) : p.outcome === 'forfeit' ? 'forfeit' : null;
-
   let detail: React.ReactNode = null;
   if (c.type === 'race' && c.targetScore) {
     const best = st?.bestScore ?? (resolved ? p.resultValue : null);
@@ -123,6 +148,25 @@ function StandingCard({ c, p, isMe, leader }: { c: Challenge; p: ChallengePartic
   } else if (st) {
     detail = <p className="text-[11px] text-muted-foreground mt-1">{st.countingCount} counting {st.countingCount === 1 ? 'score' : 'scores'}</p>;
   }
+  return detail;
+}
+
+/** Why a player isn't in it (or hasn't said yet) — the roster's and the cards' small print. */
+function responseNote(p: ChallengeParticipant): React.ReactNode {
+  if (p.response === 'pending') return <span className="text-amber-200">Hasn’t answered</span>;
+  if (p.response === 'missed') return 'Missed it — didn’t answer in time';
+  if (p.response === 'countered') return 'Suggested another machine';
+  if (p.response === 'declined') return p.declineReason === 'cant_reach' ? 'Can’t get to it' : p.declineReason === 'no_thanks' ? 'Passed' : 'Declined';
+  return null;
+}
+
+function StandingCard({ c, p, isMe, leader }: { c: Challenge; p: ChallengeParticipant; isMe: boolean; leader: boolean }) {
+  const value = valueOf(p);
+  const resolved = c.status === 'resolved';
+  const nameColor = isMe ? 'text-username hover:text-username/80' : 'text-friend hover:text-friend/80';
+  const outcome = resolved ? (c.void ? 'void' : p.outcome) : p.outcome === 'forfeit' ? 'forfeit' : null;
+  const detail = standingDetail(c, p);
+  const note = responseNote(p);
 
   return (
     <div className={`flex-1 min-w-0 rounded-xl border p-3 sm:p-4 ${leader ? 'border-primary/50 bg-primary/10' : 'border-white/10 bg-card'}`}>
@@ -139,14 +183,71 @@ function StandingCard({ c, p, isMe, leader }: { c: Challenge; p: ChallengePartic
       </p>
       {c.type === 'average' && value != null && <p className="text-[11px] text-muted-foreground -mt-0.5">average</p>}
       {detail}
-      {p.response === 'pending' && <p className="text-[11px] text-amber-200 mt-1">Hasn’t answered</p>}
-      {p.response === 'declined' && (
-        <p className="text-[11px] text-muted-foreground mt-1">
-          {p.declineReason === 'cant_reach' ? 'Can’t get to it' : p.declineReason === 'no_thanks' ? 'Passed' : 'Declined'}
-        </p>
-      )}
-      {p.response === 'countered' && <p className="text-[11px] text-muted-foreground mt-1">Suggested another machine</p>}
+      {note && <p className="text-[11px] text-muted-foreground mt-1">{note}</p>}
     </div>
+  );
+}
+
+/**
+ * Groups: one ranked row per player who's in — phone-friendly (a row, not a card per player). The
+ * rank is the final one once resolved, the live one while it runs; ties share a rank.
+ */
+function StandingsList({ c, myId, leaderId }: { c: Challenge; myId: number | null; leaderId: number | null }) {
+  const resolved = c.status === 'resolved';
+  const players = c.participants.filter(p => p.response === 'accepted');
+  const rankOf = (p: ChallengeParticipant) => (resolved ? p.rank : p.standing?.liveRank) ?? null;
+  const sorted = [...players].sort((a, b) => (rankOf(a) ?? 99) - (rankOf(b) ?? 99) || (valueOf(b) ?? -Infinity) - (valueOf(a) ?? -Infinity));
+  return (
+    <ol className="flex flex-col gap-1.5">
+      {sorted.map(p => {
+        const isMe = p.user.id === myId;
+        const value = valueOf(p);
+        const rank = rankOf(p);
+        const outcome = resolved ? (c.void ? 'void' : p.outcome) : p.outcome === 'forfeit' ? 'forfeit' : null;
+        const leader = leaderId === p.user.id;
+        return (
+          <li key={p.user.id} className={`rounded-lg border px-3 py-2 flex items-start gap-3 ${leader ? 'border-primary/50 bg-primary/10' : isMe ? 'border-username/30 bg-card' : 'border-white/10 bg-card'}`}>
+            <span className={`w-8 flex-shrink-0 text-sm font-black ${rank === 1 ? 'text-primary' : 'text-white/70'}`}>{rank != null ? ordinal(rank) : '—'}</span>
+            <div className="flex-1 min-w-0">
+              <p className="text-xs font-semibold truncate">
+                {isMe && <span className="text-username">You </span>}
+                <UsernameLink username={p.user.username} className={isMe ? 'text-username hover:text-username/80' : 'text-friend hover:text-friend/80'} />
+              </p>
+              {standingDetail(c, p)}
+            </div>
+            <div className="flex flex-col items-end gap-1 flex-shrink-0">
+              <span className={`text-base sm:text-lg font-black whitespace-nowrap ${value != null ? 'text-primary' : 'text-muted-foreground'}`}>{formatResult(c.type, value)}</span>
+              {outcome ? <OutcomeChip outcome={outcome} /> : leader && <Crown className="w-4 h-4 text-primary" aria-label="Leading" />}
+            </div>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/** Who's in a group and who has answered — shown while it's waiting (and whoever didn't join, after). */
+function Roster({ c, myId }: { c: Challenge; myId: number | null }) {
+  const started = c.status !== 'pending' && c.status !== 'proposed';
+  const list = started ? c.participants.filter(p => p.response !== 'accepted') : c.participants;
+  if (!list.length) return null;
+  return (
+    <section className="mb-6">
+      <h2 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2 flex items-center gap-1.5">
+        <Users className="w-3.5 h-3.5" aria-hidden /> {started ? 'Didn’t join' : `Players · ${c.playerCount ?? list.filter(p => !isOut(p)).length} of ${c.maxPlayers ?? 8} max`}
+      </h2>
+      <ul className="flex flex-col gap-1">
+        {list.map(p => (
+          <li key={p.user.id} className="flex flex-wrap items-center gap-x-2 text-sm">
+            {p.user.id === myId && <span className="text-username font-semibold">You</span>}
+            <UsernameLink username={p.user.username} className={p.user.id === myId ? 'text-username hover:text-username/80' : 'text-friend hover:text-friend/80'} />
+            <span className="text-[11px] text-muted-foreground">
+              {p.isCreator ? 'challenger' : p.response === 'accepted' ? <span className="text-emerald-300">in</span> : responseNote(p)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -200,59 +301,178 @@ function ScoreList({ c, p, isMe }: { c: Challenge; p: ChallengeParticipant; isMe
   );
 }
 
-/** "This is a counter-offer to …" / "Countered with …" — each side of a counter links to the other. */
-function CounterLinks({ c }: { c: Challenge }) {
+/** Each side of a counter-offer links to the other: the suggestion ↔ the challenge it answers. */
+function CounterLinks({ c, myId }: { c: Challenge; myId: number | null }) {
   if (!c.counteredFromId && !c.counteredToId) return null;
+  const by = c.proposedBy;
+  const mine = by?.id === myId;
+  const earlier = c.counteredFromId ? <Link href={`/challenges/${c.counteredFromId}`} className="text-friend hover:underline">the original challenge</Link> : 'the original challenge';
   return (
     <div className="mb-6 rounded-lg border border-white/10 bg-card px-4 py-3 text-sm text-white/85 flex flex-col gap-1">
       {c.counteredFromId && (
-        <p className="flex items-center gap-1.5"><CornerDownRight className="w-4 h-4 text-friend flex-shrink-0" aria-hidden />
-          A counter-offer to <Link href={`/challenges/${c.counteredFromId}`} className="text-friend hover:underline">an earlier challenge</Link> that couldn’t be played.
+        <p className="flex items-start gap-1.5"><CornerDownRight className="w-4 h-4 mt-0.5 text-friend flex-shrink-0" aria-hidden />
+          <span>
+            {c.isProposal && by ? (
+              <>{mine ? 'Your suggestion' : <><span className="text-friend">@{by.username}</span>’s suggestion</>} instead of {earlier}.
+                {c.status === 'proposed' && (c.me.canDecideProposal
+                  ? ' Taking it moves everyone here — they’ll all be asked again.'
+                  : ' If it’s taken, everyone moves here.')}</>
+            ) : by ? (
+              <>Moved here from {earlier} — <span className="text-friend">@{by.username}</span>’s suggestion.</>
+            ) : (
+              <>A counter-offer to {earlier} that couldn’t be played.</>
+            )}
+          </span>
         </p>
       )}
       {c.counteredToId && (
         <p className="flex items-center gap-1.5"><CornerDownRight className="w-4 h-4 text-friend flex-shrink-0" aria-hidden />
-          Answered with <Link href={`/challenges/${c.counteredToId}`} className="text-friend hover:underline">a counter-offer on another machine</Link>.
+          <span>Everyone moved to <Link href={`/challenges/${c.counteredToId}`} className="text-friend hover:underline">a suggested machine</Link>.</span>
         </p>
       )}
     </div>
   );
 }
 
+const PROPOSAL_STATUS: Record<string, { label: string; tone: string }> = {
+  proposed: { label: 'Open', tone: 'text-amber-200' },
+  rejected: { label: 'Not taken', tone: 'text-muted-foreground' },
+  lapsed: { label: 'Lapsed', tone: 'text-muted-foreground' },
+};
+
+/**
+ * Suggestions on this challenge — every one for the challenger (with "Take it for everyone" / "Keep
+ * mine" on the open ones), just your own for a proposer. Anything else (pending/active/…) means it
+ * was taken and became the challenge everyone moved to.
+ */
+function ProposalsPanel({ c }: { c: Challenge }) {
+  const api = useApi();
+  const [error, setError] = useState<string | null>(null);
+  const decide = useMutation({
+    mutationFn: ({ id, action }: { id: number; action: 'accept' | 'decline' }) => api.challenges.act(id, action),
+    onSuccess: () => { setError(null); invalidateChallengeQueries(); },
+    onError: e => { setError(challengeErrorText(e)); invalidateChallengeQueries(); },
+  });
+  const list = c.proposals ?? [];
+  if (!list.length) return null;
+  // Only the challenger may decide, and only while her original is still waiting (canCancel).
+  const spin = <Loader2 className="w-3 h-3 animate-spin" aria-hidden />;
+  const btn = 'inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold uppercase tracking-wider transition-colors disabled:opacity-50';
+  return (
+    <section className="mb-6">
+      <h2 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2 flex items-center gap-1.5">
+        <Lightbulb className="w-3.5 h-3.5" aria-hidden /> Suggestions
+      </h2>
+      <ul className="flex flex-col gap-2">
+        {list.map((p: ChallengeProposal) => {
+          const st = PROPOSAL_STATUS[p.status] ?? { label: 'Taken', tone: 'text-emerald-300' };
+          const open = p.status === 'proposed';
+          const doing = (action: string) => decide.isPending && decide.variables?.id === p.id && decide.variables?.action === action;
+          return (
+            <li key={p.id} className="rounded-lg border border-white/10 bg-card px-3 py-2">
+              <div className="flex items-start gap-3">
+                <MachineThumb name={p.machine.name} imageUrl={p.machine.imageUrl} size="sm" />
+                <div className="flex-1 min-w-0">
+                  <Link href={`/challenges/${p.id}`} className="block text-sm font-semibold text-machine hover:text-machine/80 break-words">{p.machine.name}</Link>
+                  <p className="text-[11px] text-muted-foreground flex flex-wrap gap-x-1.5">
+                    <span>{typeLabel(p)}</span>
+                    {p.proposedBy && <span>· from <span className="text-friend">@{p.proposedBy.username}</span></span>}
+                    {p.venue && <span className="text-venue">· {p.venue.name}</span>}
+                  </p>
+                </div>
+                <span className={`flex-shrink-0 text-[11px] font-bold uppercase tracking-wider ${st.tone}`}>{st.label}</span>
+              </div>
+              {open && c.me.canCancel && (
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <button type="button" disabled={decide.isPending} onClick={() => decide.mutate({ id: p.id, action: 'accept' })} className={`${btn} bg-friend text-zinc-950 hover:opacity-90`}>
+                    {doing('accept') ? spin : <Check className="w-3 h-3" aria-hidden />} Take it for everyone
+                  </button>
+                  <button type="button" disabled={decide.isPending} onClick={() => decide.mutate({ id: p.id, action: 'decline' })} className={`${btn} border border-white/15 text-muted-foreground hover:text-white hover:border-white/30`}>
+                    {doing('decline') ? spin : <X className="w-3 h-3" aria-hidden />} Keep mine
+                  </button>
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {error && <p className="text-xs text-red-400 mt-2" role="alert">{error}</p>}
+    </section>
+  );
+}
+
 function Actions({ c }: { c: Challenge }) {
   const api = useApi();
   const [confirmForfeit, setConfirmForfeit] = useState(false);
+  const [confirmStart, setConfirmStart] = useState(false);
+  const [confirmBackOut, setConfirmBackOut] = useState(false);
   const [cantReach, setCantReach] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const act = useMutation({
-    mutationFn: ({ action, reason }: { action: 'accept' | 'decline' | 'cancel' | 'forfeit'; reason?: ChallengeDeclineReason }) =>
+    mutationFn: ({ action, reason }: { action: 'accept' | 'decline' | 'cancel' | 'forfeit' | 'start'; reason?: ChallengeDeclineReason }) =>
       api.challenges.act(c.id, action, reason ? { reason } : undefined),
-    onSuccess: () => { setError(null); setConfirmForfeit(false); setCantReach(false); invalidateChallengeQueries(); },
+    onSuccess: () => { setError(null); setConfirmForfeit(false); setConfirmStart(false); setConfirmBackOut(false); setCantReach(false); invalidateChallengeQueries(); },
     onError: e => { setError(challengeErrorText(e)); invalidateChallengeQueries(); },
   });
   const { canAccept, canDecline, canCancel, canForfeit } = c.me;
-  const canCounter = c.me.canCounter ?? canDecline;
-  if (!canAccept && !canDecline && !canCancel && !canForfeit) return null;
+  const canStart = !!c.me.canStart;
+  const deciding = !!c.me.canDecideProposal;
+  // An accepted player backing out while it's still waiting (a decline, server-side).
+  const backingOut = canDecline && !deciding && c.me.response === 'accepted';
+  const canCounter = c.me.canCounter ?? (canDecline && !backingOut);
+  const inCount = c.participants.filter(p => p.response === 'accepted').length;
+  const waitingCount = c.participants.filter(p => p.response === 'pending').length;
+  if (!canAccept && !canDecline && !canCancel && !canForfeit && !canStart) return null;
   const busy = act.isPending;
   const doing = (action: string, reason?: string) => busy && act.variables?.action === action && act.variables?.reason === reason;
   const spin = <Loader2 className="w-4 h-4 animate-spin" aria-hidden />;
   const base = 'inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition-colors disabled:opacity-50';
   const ghost = `${base} border border-white/15 text-muted-foreground hover:text-white hover:border-white/30`;
 
+  if (deciding) {
+    const by = c.proposedBy?.username;
+    return (
+      <div className="mb-6">
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" disabled={busy} onClick={() => act.mutate({ action: 'accept' })} className={`${base} bg-friend text-zinc-950 hover:opacity-90`}>
+            {doing('accept') ? spin : <Check className="w-4 h-4" aria-hidden />} Take it for everyone
+          </button>
+          <button type="button" disabled={busy} onClick={() => act.mutate({ action: 'decline' })} className={ghost}>
+            {doing('decline') ? spin : <X className="w-4 h-4" aria-hidden />} Keep mine
+          </button>
+        </div>
+        <p className="text-[11px] text-muted-foreground mt-2">
+          Taking it ends your original and asks everyone again on this machine. Keeping yours leaves {by ? `@${by}` : 'them'} out of it.
+        </p>
+        {error && <p className="text-xs text-red-400 mt-2" role="alert">{error}</p>}
+      </div>
+    );
+  }
+
   return (
     <div className="mb-6">
       <div className="flex flex-wrap items-center gap-2">
+        {canStart && !confirmStart && (
+          <button type="button" disabled={busy} onClick={() => setConfirmStart(true)} className={`${base} bg-friend text-zinc-950 hover:opacity-90`}>
+            <Play className="w-4 h-4" aria-hidden /> Start with who’s in
+          </button>
+        )}
+        {backingOut && !confirmBackOut && (
+          <button type="button" disabled={busy} onClick={() => setConfirmBackOut(true)} className={ghost}>
+            <LogOut className="w-4 h-4" aria-hidden /> Back out
+          </button>
+        )}
         {canAccept && (
           <button type="button" disabled={busy} onClick={() => act.mutate({ action: 'accept' })} className={`${base} bg-friend text-zinc-950 hover:opacity-90`}>
             {doing('accept') ? spin : <Check className="w-4 h-4" aria-hidden />} Accept
           </button>
         )}
-        {canDecline && !cantReach && (
+        {canDecline && !backingOut && !cantReach && (
           <button type="button" disabled={busy} onClick={() => setCantReach(true)} className={ghost}>
             <MapPinOff className="w-4 h-4" aria-hidden /> Can’t get to this one
           </button>
         )}
-        {canDecline && (
+        {canDecline && !backingOut && (
           <button type="button" disabled={busy} onClick={() => act.mutate({ action: 'decline', reason: 'no_thanks' })} className={ghost}>
             {doing('decline', 'no_thanks') ? spin : <X className="w-4 h-4" aria-hidden />} No thanks
           </button>
@@ -268,9 +488,34 @@ function Actions({ c }: { c: Challenge }) {
           </button>
         )}
       </div>
-      {cantReach && canDecline && (
+      {confirmStart && (
+        <div className="mt-3 rounded-lg border border-friend/30 bg-friend/5 p-3 flex flex-wrap items-center gap-2">
+          <p className="text-sm text-white/90 flex-1 min-w-[12rem]">
+            Start now with {inCount} {inCount === 1 ? 'player' : 'players'}?{waitingCount > 0 && ` ${waitingCount === 1 ? 'The one who hasn’t' : `The ${waitingCount} who haven’t`} answered will miss it.`}
+            {(c.proposals ?? []).some(p => p.status === 'proposed') && ' Open suggestions won’t be taken.'}
+          </p>
+          <button type="button" disabled={busy} onClick={() => act.mutate({ action: 'start' })} className={`${base} bg-friend text-zinc-950 hover:opacity-90`}>
+            {doing('start') ? spin : <Play className="w-4 h-4" aria-hidden />} Start
+          </button>
+          <button type="button" onClick={() => setConfirmStart(false)} className="px-2 py-2 text-xs font-bold uppercase tracking-wider text-muted-foreground hover:text-white">
+            Not yet
+          </button>
+        </div>
+      )}
+      {confirmBackOut && (
+        <div className="mt-3 rounded-lg border border-white/15 bg-white/5 p-3 flex flex-wrap items-center gap-2">
+          <p className="text-sm text-white/90 flex-1 min-w-[12rem]">Back out? You’ll be out of this challenge — it hasn’t started, so it isn’t a forfeit.</p>
+          <button type="button" disabled={busy} onClick={() => act.mutate({ action: 'decline' })} className={`${base} border border-white/25 text-white hover:border-white/40`}>
+            {doing('decline') ? spin : <LogOut className="w-4 h-4" aria-hidden />} Back out
+          </button>
+          <button type="button" onClick={() => setConfirmBackOut(false)} className="px-2 py-2 text-xs font-bold uppercase tracking-wider text-muted-foreground hover:text-white">
+            Stay in
+          </button>
+        </div>
+      )}
+      {cantReach && canDecline && !backingOut && (
         <div className="mt-3 rounded-lg border border-friend/30 bg-friend/5 p-3">
-          <p className="text-sm text-white/90 mb-2">Can’t get to {c.machine.name}? Suggest a machine you can both play — it goes back to them as a counter-offer, not a no.</p>
+          <p className="text-sm text-white/90 mb-2">Can’t get to {c.machine.name}? Suggest a machine instead — it goes to whoever challenged you, and if they take it, everyone moves to it. It’s not a no.</p>
           <div className="flex flex-wrap items-center gap-2">
             {canCounter && (
               <Link href={`/challenges/new?counterOf=${c.id}`} className={`${base} bg-friend text-zinc-950 hover:opacity-90`}>
@@ -288,7 +533,7 @@ function Actions({ c }: { c: Challenge }) {
       )}
       {confirmForfeit && (
         <div className="mt-3 rounded-lg border border-red-400/30 bg-red-400/5 p-3 flex flex-wrap items-center gap-2">
-          <p className="text-sm text-white/90 flex-1 min-w-[12rem]">Forfeit? It counts as a forfeit on your record and they win.</p>
+          <p className="text-sm text-white/90 flex-1 min-w-[12rem]">Forfeit? It counts as a forfeit on your record{isGroupChallenge(c) ? ' and you drop to last.' : ' and they win.'}</p>
           <button type="button" disabled={busy} onClick={() => act.mutate({ action: 'forfeit' })} className={`${base} bg-red-500/80 text-white hover:bg-red-500`}>
             {busy ? spin : 'Forfeit'}
           </button>
@@ -337,7 +582,10 @@ export default function ChallengePage() {
   if (isLoading) return <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</p>;
   if (error || !c) return <p className="text-sm text-red-400">{challengeErrorText(error, 'Could not load this challenge')}</p>;
 
-  const { me, them } = meAndThem(c, (appUser as any)?.id);
+  const myId: number | null = (appUser as any)?.id ?? null;
+  const { me, them } = meAndThem(c, myId);
+  const group = isGroupChallenge(c);
+  const others = othersOf(c, myId);
   const status = statusLine(c, now);
   const started = c.participants.some(p => p.standing);
   // Leader: live rank 1 alone while running; the winner once resolved. No crown on a tie.
@@ -368,7 +616,14 @@ export default function ChallengePage() {
           <p className="text-sm text-muted-foreground mt-1 flex flex-wrap items-center gap-x-1.5">
             {me && <span className="text-username">You</span>}
             <span>vs</span>
-            {them ? <UsernameLink username={them.user.username} className="text-friend hover:text-friend/80" /> : <span>—</span>}
+            {group ? (
+              others.length ? others.slice(0, 3).map((p, i) => (
+                <span key={p.user.id}>
+                  <UsernameLink username={p.user.username} className="text-friend hover:text-friend/80" />{i < Math.min(others.length, 3) - 1 ? ',' : ''}
+                </span>
+              )) : <span>—</span>
+            ) : them ? <UsernameLink username={them.user.username} className="text-friend hover:text-friend/80" /> : <span>—</span>}
+            {group && others.length > 3 && <span>+{others.length - 3}</span>}
           </p>
           <p className={`text-sm font-bold mt-1 flex items-center gap-1.5 ${status.tone}`}>
             <Timer className="w-4 h-4" aria-hidden /> {status.text}
@@ -376,9 +631,11 @@ export default function ChallengePage() {
         </div>
       </div>
 
-      <OutcomeBanner c={c} />
-      <CounterLinks c={c} />
+      <OutcomeBanner c={c} myRank={me?.rank ?? null} />
+      <CounterLinks c={c} myId={myId} />
       <Actions c={c} />
+      <ProposalsPanel c={c} />
+      {group && <Roster c={c} myId={myId} />}
 
       {/* terms */}
       <div className="rounded-xl border border-white/10 bg-card p-4 mb-6 text-sm">
@@ -419,6 +676,8 @@ export default function ChallengePage() {
           </h2>
           {!started && c.status === 'active' ? (
             <p className="text-sm text-muted-foreground">Standings appear once the challenge starts.</p>
+          ) : group ? (
+            <StandingsList c={c} myId={myId} leaderId={leaderId} />
           ) : (
             <div className="flex gap-2 sm:gap-3">
               {order.map(p => <StandingCard key={p.user.id} c={c} p={p} isMe={p === me} leader={leaderId === p.user.id} />)}
@@ -436,8 +695,8 @@ export default function ChallengePage() {
       {/* counting scores */}
       {showStandings && started && (
         <section className="mb-6">
-          <div className="flex flex-col sm:flex-row gap-4 sm:gap-6">
-            {order.map(p => <ScoreList key={p.user.id} c={c} p={p} isMe={p === me} />)}
+          <div className={group ? 'flex flex-col gap-4' : 'flex flex-col sm:flex-row gap-4 sm:gap-6'}>
+            {(group ? order.filter(p => p.response === 'accepted') : order).map(p => <ScoreList key={p.user.id} c={c} p={p} isMe={p === me} />)}
           </div>
           {c.status === 'active' && (
             <p className="text-[11px] text-muted-foreground mt-3">
@@ -448,7 +707,7 @@ export default function ChallengePage() {
         </section>
       )}
 
-      {c.type === 'most_improved' && c.status === 'pending' && (
+      {c.type === 'most_improved' && (c.status === 'pending' || c.status === 'proposed') && (
         <p className="text-xs text-muted-foreground">Accepting needs a score of yours on this machine from before the challenge starts.</p>
       )}
     </div>

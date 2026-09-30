@@ -223,7 +223,10 @@ const TYPE_TEXT: Record<string, string> = {
   'challenge.forfeited': 'forfeited a challenge',
   'challenge.resolved': 'Challenge resolved',
   'challenge.expired': 'Challenge expired unanswered',
-  'challenge.countered': 'answered a challenge with a counter-offer to',
+  'challenge.countered': 'suggested another machine to',
+  'challenge.started': 'Challenge started',
+  'challenge.counter_accepted': 'took a suggested machine from',
+  'challenge.counter_rejected': 'turned down a suggested machine from',
   'profile.challenge_prefs_updated': 'changed their challenge preferences',
   'notification.sent': 'Notification sent to',
   'pm.connected': 'connected their Pinball Map account',
@@ -308,7 +311,11 @@ function detail(ev: ActivityEvent): string | null {
     case 'challenge.declined':
       return [p.challengeType, p.machineName, p.reason === 'cant_reach' ? 'can’t get to it' : p.reason === 'no_thanks' ? 'no thanks' : null].filter(Boolean).join(' · ') || null;
     case 'challenge.countered':
-      return [`${p.machineName ?? '?'} → ${p.newMachineName ?? '?'}`, p.newChallengeId ? `new #${p.newChallengeId}` : null].filter(Boolean).join(' · ');
+      return [`${p.machineName ?? '?'} → ${p.newMachineName ?? '?'}`, p.newChallengeId ? `${p.proposal ? 'suggestion' : 'new'} #${p.newChallengeId}` : null].filter(Boolean).join(' · ');
+    case 'challenge.started':
+      return [p.challengeType, p.machineName, p.trigger, typeof p.players === 'number' ? `${p.players} players` : null, p.missed ? `${p.missed} missed` : null].filter(Boolean).join(' · ') || null;
+    case 'challenge.counter_accepted': case 'challenge.counter_rejected':
+      return [p.challengeType, p.machineName, p.reason, p.counteredFromId ? `instead of #${p.counteredFromId}` : null].filter(Boolean).join(' · ') || null;
     case 'challenge.created': case 'challenge.accepted': case 'challenge.cancelled': case 'challenge.forfeited':
       return [p.challengeType, p.machineName, p.counteredFromId ? `counter to #${p.counteredFromId}` : null].filter(Boolean).join(' · ') || null;
     case 'profile.challenge_prefs_updated':

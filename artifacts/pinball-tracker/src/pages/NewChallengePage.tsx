@@ -8,8 +8,8 @@ import { toLocalInput, localInputToIso } from '../lib/datetime';
 import { MachineThumb } from '../components/ChallengeParts';
 import MachinePicker, { nameMatches, pickerInputClass, type MachineOption } from '../components/MachinePicker';
 import {
-  TYPE_META, TYPE_ORDER, SCORE_RULES, REC_LEVEL_LABEL, challengeErrorText, challengeKey, recommendationsKey,
-  invalidateChallengeQueries, formatScore, formatDuration,
+  TYPE_META, TYPE_ORDER, SCORE_RULES, REC_LEVEL_LABEL, challengeErrorText, challengeKey, recommendationsKey, groupRecommendationsKey,
+  invalidateChallengeQueries, formatScore, formatDuration, MAX_INVITEES,
 } from '../lib/challenges';
 import type { ChallengeRecommendation, ChallengeType, ChallengeVenueOption as VenueOption, CreateChallengeBody, PodUser } from '../lib/api';
 
@@ -18,13 +18,15 @@ import type { ChallengeRecommendation, ChallengeType, ChallengeVenueOption as Ve
 // machine page link here). Everything is validated again on the server; its error codes map to
 // challengeErrorText().
 //
-// Once a friend is picked, "Recommended for @friend" lists machines they can reach (their "Challenge
-// me on" picks, machines at venues they can get to, machines they played lately) — picking one sets
-// the exact model, since a Pro and a Premium can play very differently.
+// Up to 7 friends (8 players with you). Once one is picked, "Recommended for @friend" lists machines
+// they can reach (their "Challenge me on" picks, machines at venues they can get to, machines they
+// played lately); with several, "Recommended for the group" ranks machines by how many of them can
+// reach it (GET /challenges/recommendations?users=). Picking one sets the exact model, since a Pro
+// and a Premium can play very differently.
 //
-// `?counterOf=<id>` — a counter-offer ("can't get to this one"): the friend is the original's
-// challenger (fixed), type and duration are prefilled from it, and sending goes to
-// POST /challenges/:id/counter, which ends the original as countered.
+// `?counterOf=<id>` — a counter-offer ("can't get to this one"): it goes to the original's challenger
+// (fixed) as a suggestion; type and duration are prefilled from the original, and sending goes to
+// POST /challenges/:id/counter. The original stays open until the challenger takes it or keeps hers.
 
 const DAY = 86_400_000;
 const END_PRESETS = [
@@ -73,8 +75,8 @@ function Segmented<T extends string>({ value, options, onChange, label }: {
 
 const inputClass = pickerInputClass;
 
-/** One recommendation row: pick it to challenge on that exact machine. */
-function RecommendationRow({ r, onPick }: { r: ChallengeRecommendation; onPick: () => void }) {
+/** One recommendation row: pick it to challenge on that exact machine. `who` = group: which friends can reach it. */
+function RecommendationRow({ r, onPick, who, homes }: { r: ChallengeRecommendation; onPick: () => void; who?: string[]; homes?: string[] }) {
   return (
     <button
       type="button"
@@ -90,6 +92,8 @@ function RecommendationRow({ r, onPick }: { r: ChallengeRecommendation; onPick: 
               ? <span className="inline-flex items-center gap-1"><Home className="w-3 h-3" aria-hidden /> at home</span>
               : <span className="inline-flex items-center gap-1 text-venue min-w-0"><MapPin className="w-3 h-3 flex-shrink-0" aria-hidden /><span className="truncate">{r.venueLabel}</span></span>
           )}
+          {homes?.map(h => <span key={h} className="inline-flex items-center gap-1"><Home className="w-3 h-3" aria-hidden /> at <span className="text-friend">@{h}</span>’s</span>)}
+          {who && who.length > 0 && <span className="text-friend/90 min-w-0 truncate">{who.map(u => `@${u}`).join(', ')}</span>}
           {r.viewerBest != null && <span>Your best <span className="text-primary font-semibold">{formatScore(r.viewerBest)}</span></span>}
         </span>
       </span>
@@ -129,7 +133,14 @@ export default function NewChallengePage() {
   });
 
   // ── form state ──
-  const [friend, setFriend] = useState<PodUser | null>(null);
+  // Invitees, in the order picked. `friend` (the first) is what the single-friend bits use.
+  const [picked, setPicked] = useState<PodUser[]>([]);
+  const friend = picked[0] ?? null;
+  const setFriend = (u: PodUser | null) => setPicked(u ? [u] : []);
+  const toggleFriend = (u: PodUser) => setPicked(list => (list.some(p => p.id === u.id)
+    ? list.filter(p => p.id !== u.id)
+    : list.length >= MAX_INVITEES ? list : [...list, u]));
+  const group = picked.length > 1;
   const [machineId, setMachineId] = useState<number | null>(prefillMachine);
   const [matchMode, setMatchMode] = useState<'game' | 'exact'>(prefillExact ? 'exact' : 'game');
   const [type, setType] = useState<ChallengeType | null>(null);
@@ -179,16 +190,29 @@ export default function NewChallengePage() {
   const counterBlocked = counterOf != null && (originalQuery.isError || (!!original && !(original.me.canCounter ?? original.me.canDecline)));
   const counterNotFriend = counterOf != null && !!original && !friendsLoading && !friends.some(x => x.user.id === originalCreator?.id);
 
-  // ── recommendations for the picked friend ──
-  const recsQuery = useQuery({
+  // ── recommendations for the picked friend(s) ──
+  const singleRecs = useQuery({
     queryKey: recommendationsKey(friend?.username ?? ''),
     queryFn: () => api.challenges.recommendations(friend!.username),
-    enabled: !!friend,
+    enabled: !!friend && !group,
     staleTime: 60_000,
     retry: false,
   });
+  const usernames = picked.map(p => p.username);
+  const groupRecs = useQuery({
+    queryKey: groupRecommendationsKey(usernames),
+    queryFn: () => api.challenges.groupRecommendations(usernames),
+    enabled: group,
+    staleTime: 60_000,
+    retry: false,
+  });
+  const recsQuery = group ? groupRecs : singleRecs;
   const recs = recsQuery.data?.recommendations ?? [];
   const recLevels = ([1, 2, 3] as const).map(level => ({ level, items: recs.filter(r => r.level === level) })).filter(g => g.items.length);
+  // Group: by how many of them can reach it, most first.
+  const nameOf = (id: number) => picked.find(p => p.id === id)?.username ?? null;
+  const coverageGroups = [...new Set(recs.map(r => r.coverage ?? 1))].sort((a, b) => b - a)
+    .map(n => ({ n, items: recs.filter(r => (r.coverage ?? 1) === n) }));
 
   const recPick = recs.find(r => r.machineId === machineId);
   const machine: MachineOption | null = allMachines.find(m => m.id === machineId)
@@ -229,12 +253,12 @@ export default function NewChallengePage() {
   const typeReady = type != null && (type !== 'race' || raceTarget === 'mine' || (Number.isInteger(targetNum) && targetNum > 0));
   const venueReady = !venueLocked || !!venue;
   const windowReady = Number.isFinite(endMs) && (startMode === 'accept' || (startMs != null && Number.isFinite(startMs)));
-  const ready = !!friend && !!machine && typeReady && venueReady && windowReady && !counterBlocked;
+  const ready = picked.length > 0 && !!machine && typeReady && venueReady && windowReady && !counterBlocked;
 
   const send = useMutation({
     mutationFn: async () => {
       const body: CreateChallengeBody = {
-        friendId: friend!.id,
+        friendIds: picked.map(p => p.id),
         type: type!,
         machineId: machine!.id,
         matchMode,
@@ -245,7 +269,7 @@ export default function NewChallengePage() {
       if (type === 'average') body.minPlays = minPlays;
       if (venueLocked && venue) body.venueId = venue.id;
       if (counterOf != null) {
-        const { friendId: _f, ...rest } = body;
+        const { friendIds: _f, ...rest } = body;
         return (await api.challenges.counter(counterOf, rest)).counter;
       }
       return api.challenges.create(body);
@@ -273,8 +297,8 @@ export default function NewChallengePage() {
           ) : original && (
             <p>
               Can’t get to <span className="text-machine font-semibold">{original.machine.name}</span>? Offer{' '}
-              {originalCreator ? <span className="text-friend font-semibold">@{originalCreator.username}</span> : 'them'} a machine you can both play.
-              Sending it answers their challenge — it shows as countered, not declined.
+              {originalCreator ? <span className="text-friend font-semibold">@{originalCreator.username}</span> : 'them'} a machine you can play instead.
+              It goes to them as a suggestion: if they take it, everyone in the challenge moves to it and is asked again; if they keep theirs, you’re out of that one. It isn’t a decline.
               {counterBlocked && <span className="block mt-1 text-amber-300">This challenge can’t be answered any more.</span>}
             </p>
           )}
@@ -282,7 +306,7 @@ export default function NewChallengePage() {
       )}
 
       {/* 1 — friend */}
-      <Step n={1} title="Who" hint={counterOf ? 'The counter-offer goes to whoever challenged you.' : 'Only your friends can be challenged.'}>
+      <Step n={1} title="Who" hint={counterOf ? 'The suggestion goes to whoever challenged you.' : `Up to ${MAX_INVITEES} friends. They don’t need to be friends with each other.`}>
         {counterOf ? (
           friend ? (
             <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-friend bg-friend/15 text-friend text-sm">
@@ -304,14 +328,16 @@ export default function NewChallengePage() {
         ) : (
           <div className="flex flex-wrap gap-2">
             {friends.map(({ user }) => {
-              const on = friend?.id === user.id;
+              const on = picked.some(p => p.id === user.id);
+              const full = !on && picked.length >= MAX_INVITEES;
               return (
                 <button
                   key={user.id}
                   type="button"
                   aria-pressed={on}
-                  onClick={() => setFriend(on ? null : user)}
-                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-sm transition-colors ${
+                  disabled={full}
+                  onClick={() => toggleFriend(user)}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-sm transition-colors disabled:opacity-40 ${
                     on ? 'border-friend bg-friend/15 text-friend' : 'border-white/15 text-white/80 hover:border-friend/50'
                   }`}
                 >
@@ -325,6 +351,12 @@ export default function NewChallengePage() {
         )}
         {prefillNotFriend && (
           <p className="text-xs text-amber-300 mt-2">@{prefillFriend} isn’t your friend yet — you can only challenge friends.</p>
+        )}
+        {!counterOf && picked.length > 0 && (
+          <p className="text-xs text-muted-foreground mt-2">
+            {picked.length + 1} players{picked.length >= MAX_INVITEES ? ' — that’s the most one challenge can have' : ''}.
+            {group && ' It goes ahead as soon as one of them accepts.'}
+          </p>
         )}
       </Step>
 
@@ -346,11 +378,31 @@ export default function NewChallengePage() {
           </div>
         ) : (
           <>
-            {friend && (recsQuery.isLoading || recLevels.length > 0) && (
+            {friend && (recsQuery.isLoading || recs.length > 0) && (
               <div className="mb-4 rounded-lg border border-friend/25 bg-friend/5 p-3">
-                <p className="text-[11px] font-bold uppercase tracking-widest text-friend mb-2">Recommended for @{friend.username}</p>
+                <p className="text-[11px] font-bold uppercase tracking-widest text-friend mb-2">{group ? 'Recommended for the group' : <>Recommended for @{friend.username}</>}</p>
                 {recsQuery.isLoading ? (
                   <p className="flex items-center gap-2 text-xs text-muted-foreground"><Loader2 className="w-3 h-3 animate-spin" /> Finding machines they can reach…</p>
+                ) : group ? (
+                  <div className="flex flex-col gap-3">
+                    {coverageGroups.map(g => (
+                      <div key={g.n}>
+                        <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">
+                          {g.n >= picked.length ? `All ${picked.length} can reach` : `${g.n} of ${picked.length} can reach`}
+                        </p>
+                        <div className="flex flex-col gap-1.5">
+                          {g.items.map(r => (
+                            <RecommendationRow
+                              key={r.machineId} r={r} onPick={() => pickRecommendation(r)}
+                              who={g.n >= picked.length ? undefined : (r.reachedBy ?? []).map(nameOf).filter((u): u is string => !!u)}
+                              homes={(r.atHomeOf ?? []).map(nameOf).filter((u): u is string => !!u)}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                    <p className="text-[11px] text-muted-foreground">Picking one challenges on that exact model.</p>
+                  </div>
                 ) : (
                   <div className="flex flex-col gap-3">
                     {recLevels.map(g => (
@@ -463,7 +515,7 @@ export default function NewChallengePage() {
         {type === 'most_improved' && (
           <p className="text-xs text-muted-foreground mt-3 flex items-start gap-1.5">
             <Info className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" aria-hidden />
-            You both need a score on this machine from before the challenge starts — that’s what improvement is measured from.
+            {group ? 'Everyone needs' : 'You both need'} a score on this machine from before the challenge starts — that’s what improvement is measured from.
           </p>
         )}
       </Step>
@@ -475,13 +527,18 @@ export default function NewChallengePage() {
           label="Starts"
           value={startMode}
           onChange={setStartMode}
-          options={[{ value: 'accept', label: 'When they accept' }, { value: 'date', label: 'Pick a time' }]}
+          options={[{ value: 'accept', label: group ? 'When everyone answers' : 'When they accept' }, { value: 'date', label: 'Pick a time' }]}
         />
+        {startMode === 'accept' && group && (
+          <p className="text-xs text-muted-foreground mt-1.5">Or start it yourself once someone’s in — “Start with who’s in” on the challenge.</p>
+        )}
         {startMode === 'date' && (
           <>
             <input type="datetime-local" value={startInput} onChange={e => setStartInput(e.target.value)} aria-label="Start time"
               className={`${inputClass} mt-2 max-w-xs [color-scheme:dark]`} />
-            <p className="text-xs text-muted-foreground mt-1.5">If they haven’t accepted by then, the challenge expires.</p>
+            <p className="text-xs text-muted-foreground mt-1.5">
+              {group ? 'It starts then with whoever has accepted — anyone who hasn’t answered misses it. If nobody has, it expires.' : 'If they haven’t accepted by then, the challenge expires.'}
+            </p>
           </>
         )}
         <p className="text-[11px] uppercase tracking-wider text-muted-foreground mt-4 mb-1.5">
@@ -561,7 +618,7 @@ export default function NewChallengePage() {
       <section className="rounded-xl border border-friend/30 bg-friend/5 p-4 mb-4">
         <h2 className="text-xs font-bold uppercase tracking-widest text-friend mb-2">Review</h2>
         <ul className="text-sm text-white/85 space-y-1">
-          <li>{friend ? <>vs <span className="text-friend font-semibold">@{friend.username}</span></> : <span className="text-muted-foreground">Pick a friend</span>}</li>
+          <li>{picked.length ? <>vs {picked.map((p, i) => <span key={p.id}><span className="text-friend font-semibold">@{p.username}</span>{i < picked.length - 1 ? ', ' : ''}</span>)}</> : <span className="text-muted-foreground">Pick a friend</span>}</li>
           <li>{machine ? <><span className="text-machine font-semibold">{machine.name}</span> · {matchMode === 'game' ? 'any model' : 'exact model'}</> : <span className="text-muted-foreground">Pick a machine</span>}</li>
           <li>
             {type ? <>

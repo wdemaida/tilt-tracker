@@ -69,7 +69,8 @@ export interface AppNotification {
     | 'friend_request' | 'friend_accepted'
     | 'challenge_received' | 'challenge_accepted' | 'challenge_declined' | 'challenge_cancelled'
     | 'challenge_opponent_scored' | 'challenge_ending_soon' | 'challenge_result' | 'challenge_voided'
-    | 'challenge_countered'
+    | 'challenge_countered' | 'challenge_counter_accepted' | 'challenge_counter_rejected' | 'challenge_moved'
+    | 'challenge_started' | 'challenge_missed'
     | (string & {});
   /** Challenge kinds add challengeId, challengeType, machineName (+ score / outcome / void per kind). */
   payload: {
@@ -132,10 +133,17 @@ export interface VenueMergeResult {
 // ── Challenges (lib/challenges.ts + challengeRules.ts on the api-server) ──────────────────────
 
 export type ChallengeType = 'high_score' | 'race' | 'most_improved' | 'average';
-/** `countered`: the invitee couldn't get to the machine and answered with a counter-offer (a new challenge). */
-export type ChallengeStatus = 'pending' | 'active' | 'resolved' | 'declined' | 'cancelled' | 'expired' | 'countered';
+/**
+ * `countered`: a counter-offer on it was taken (everyone moved to the new machine) — or, for an older
+ * row, it was answered with one. `proposed` / `rejected` / `lapsed`: a counter-offer row — a
+ * suggestion to the challenger, open / not taken / closed on its own. The server maps those three
+ * onto the old phases (pending / declined / expired), so read `status` to tell them apart.
+ */
+export type ChallengeStatus = 'pending' | 'active' | 'resolved' | 'declined' | 'cancelled' | 'expired' | 'countered'
+  | 'proposed' | 'rejected' | 'lapsed';
 export type ChallengePhase = 'pending' | 'scheduled' | 'live' | 'ended' | 'resolved' | 'declined' | 'cancelled' | 'expired' | 'countered';
-export type ChallengeResponse = 'pending' | 'accepted' | 'declined' | 'countered';
+/** `missed`: never answered — it started (or expired) without them. */
+export type ChallengeResponse = 'pending' | 'accepted' | 'declined' | 'countered' | 'missed';
 /** Why an invitee said no. A counter-offer is always `cant_reach`; an older decline may have none. */
 export type ChallengeDeclineReason = 'cant_reach' | 'no_thanks';
 /** `abandoned`: a race nobody beat, or an average nobody qualified for — no winner, no loser. */
@@ -192,11 +200,43 @@ export interface Challenge {
   counteredFromId?: number | null;
   /** This one was countered: the counter-offer's id. Newer servers only. */
   counteredToId?: number | null;
+  /** A counter-offer row (status proposed / rejected / lapsed) the challenger decides. Group servers only. */
+  isProposal?: boolean;
+  /** Who suggested it (a proposal, or a challenge that started as one). */
+  proposedBy?: PodUser | null;
+  /** Counter-offers on this challenge you may see: all of them for the challenger, your own for a proposer. */
+  proposals?: ChallengeProposal[];
+  /** Players still in it (accepted + not yet answered); once started, those who accepted. */
+  playerCount?: number;
+  maxPlayers?: number;
   timeLeftMs: number | null;
   startsInMs: number | null;
-  me: { response: ChallengeResponse; outcome: ChallengeOutcome | null; canAccept: boolean; canDecline: boolean; canCounter?: boolean; canCancel: boolean; canForfeit: boolean };
+  me: {
+    response: ChallengeResponse; outcome: ChallengeOutcome | null; canAccept: boolean; canDecline: boolean; canCounter?: boolean; canCancel: boolean; canForfeit: boolean;
+    /** "Start with who's in" — the challenger, once someone accepted. */
+    canStart?: boolean;
+    /** A proposal waiting on you: accept = take it for everyone, decline = keep yours. */
+    canDecideProposal?: boolean;
+  };
   opponent: PodUser | null;
   participants: ChallengeParticipant[];
+}
+
+/** A counter-offer on a challenge (Challenge.proposals). */
+export interface ChallengeProposal {
+  id: number;
+  status: ChallengeStatus;
+  proposedBy: PodUser | null;
+  type: ChallengeType;
+  matchMode: 'game' | 'exact';
+  machine: { id: number; name: string; imageUrl: string | null };
+  venue: { id: number; name: string } | null;
+  targetScore: number | null;
+  minPlays: number | null;
+  startsAt: string | null;
+  endsAt: string;
+  createdAt: string;
+  decidedAt: string | null;
 }
 
 /** One machine the create form recommends for a friend (GET /api/challenges/recommendations/:username). */
@@ -213,6 +253,11 @@ export interface ChallengeRecommendation {
   viewerCanReach: boolean;
   /** Your best score on this exact machine. */
   viewerBest?: number;
+  /** Group recommendations only: which of the friends can reach it, and how many. */
+  reachedBy?: number[];
+  coverage?: number;
+  /** Group recommendations only: it's at these friends' own homes ("at @name's"). */
+  atHomeOf?: number[];
 }
 
 /** A machine on someone's "Challenge me on" list (profile + prefs). */
@@ -248,11 +293,15 @@ export interface ChallengeRecord extends RecordCounts {
   voids: number;
   currentStreak: number;
   bestStreak: number;
-  /** Your own record: every opponent. Someone else's: only their record against you. */
+  /** Longest run of losses. Newer servers only. */
+  bestLossStreak?: number;
+  /** Your own record: every opponent. Someone else's: only their record against you. Pairwise by rank in groups. */
   headToHead: Array<RecordCounts & { opponent: PodUser }>;
 }
 
 export interface CreateChallengeBody {
+  /** Up to 7 friends (8 players with you). */
+  friendIds?: number[];
   friendId?: number;
   friendUsername?: string;
   type: ChallengeType;
@@ -408,17 +457,24 @@ export function createApi(getToken: () => Promise<string | null>) {
       venueOptions: async (machineId: number, matchMode: 'game' | 'exact') =>
         request<ChallengeVenueOption[]>(`/challenges/venue-options?machineId=${machineId}&matchMode=${matchMode}`, undefined, await tok()),
       // `decline` may say why ('cant_reach' | 'no_thanks') — stored, and passed on to the challenger.
-      act: async (id: number, action: 'accept' | 'decline' | 'cancel' | 'forfeit', body?: { reason?: ChallengeDeclineReason }) =>
+      // On a proposal (you're the challenger): accept = take it for everyone, decline = keep yours.
+      // `start` = "Start with who's in" (the challenger, once someone accepted).
+      act: async (id: number, action: 'accept' | 'decline' | 'cancel' | 'forfeit' | 'start', body?: { reason?: ChallengeDeclineReason }) =>
         request<Challenge>(`/challenges/${id}/${action}`, { method: 'POST', body: body ? JSON.stringify(body) : undefined }, await tok()),
       // "Can't get to this one — how about this instead": a create body (no friend: it goes to the
-      // original's creator). The original ends `countered`; the answer is a new pending challenge.
-      counter: async (id: number, body: Omit<CreateChallengeBody, 'friendId' | 'friendUsername'>) =>
+      // original's creator). It's a suggestion to them: the original stays open until they take it
+      // (then everyone moves to it) or keep theirs. The response's `counter` is that proposal.
+      counter: async (id: number, body: Omit<CreateChallengeBody, 'friendId' | 'friendUsername' | 'friendIds'>) =>
         request<{ original: Challenge; counter: Challenge }>(`/challenges/${id}/counter`, { method: 'POST', body: JSON.stringify(body) }, await tok()),
       // Machines to challenge this friend on, levels 1–3, each flagged when you can reach it too.
       // Friends only (403 not_friends). Never calls Pinball Map.
       recommendations: async (username: string) =>
         request<{ user: PodUser; recommendations: ChallengeRecommendation[] }>(
           `/challenges/recommendations/${encodeURIComponent(username)}`, undefined, await tok()),
+      // Machines to challenge several friends on at once, ranked by how many of them can reach it.
+      groupRecommendations: async (usernames: string[]) =>
+        request<{ users: PodUser[]; recommendations: ChallengeRecommendation[] }>(
+          `/challenges/recommendations?users=${usernames.map(encodeURIComponent).join(',')}`, undefined, await tok()),
       // Your own "Challenge me on" machines (max 3) and challenge locations. PUT replaces whichever
       // list is sent.
       prefs: async () => request<ChallengePrefs>('/me/challenge-prefs', undefined, await tok()),
