@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'wouter';
 import { format } from 'date-fns';
@@ -54,6 +55,67 @@ export function BadgeDetail({ badge, earnedAt, earnedCount, locked = false, extr
   );
 }
 
+const TIP_GAP = 8;
+const EDGE = 8;
+
+/** One shelf badge. A mouse hover (or keyboard focus) shows a small tooltip — name on top, description
+ *  under it, both centered — and a tap/click opens BadgeDetail as before. Touch never triggers the
+ *  tooltip (pointerType check), so a tap goes straight to the detail. The tooltip is portaled and
+ *  fixed-positioned above the badge (below if there's no room), clamped inside the viewport. */
+function ShelfItem({ badge, onOpen }: { badge: ShelfBadge; onOpen: () => void }) {
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const tipRef = useRef<HTMLDivElement>(null);
+  const descId = useId();
+  const [show, setShow] = useState(false);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!show) { setPos(null); return; }
+    const btn = btnRef.current, tip = tipRef.current;
+    if (!btn || !tip) return;
+    const r = btn.getBoundingClientRect();
+    const w = tip.offsetWidth, h = tip.offsetHeight;
+    const vw = document.documentElement.clientWidth, vh = window.innerHeight;
+    const left = Math.min(Math.max(r.left + r.width / 2 - w / 2, EDGE), Math.max(EDGE, vw - w - EDGE));
+    let top = r.top - h - TIP_GAP;
+    if (top < EDGE) top = Math.min(r.bottom + TIP_GAP, vh - h - EDGE);
+    setPos({ left, top });
+  }, [show]);
+
+  // A scroll or resize would strand the fixed tooltip away from its badge; just hide it.
+  useEffect(() => {
+    if (!show) return;
+    const hide = () => setShow(false);
+    window.addEventListener('scroll', hide, true);
+    window.addEventListener('resize', hide);
+    return () => { window.removeEventListener('scroll', hide, true); window.removeEventListener('resize', hide); };
+  }, [show]);
+
+  return (
+    <>
+      <button ref={btnRef} type="button" aria-label={badge.name} aria-describedby={badge.description ? descId : undefined}
+        onClick={() => { setShow(false); onOpen(); }}
+        onPointerEnter={e => { if (e.pointerType === 'mouse') setShow(true); }}
+        onPointerLeave={() => setShow(false)}
+        onFocus={e => { if (e.currentTarget.matches(':focus-visible')) setShow(true); }}
+        onBlur={() => setShow(false)}
+        className="flex items-center justify-center p-1 rounded-xl hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+        <BadgeImage badge={badge} size={48} />
+        {badge.description && <span id={descId} className="sr-only">{badge.description}</span>}
+      </button>
+      {show && createPortal(
+        <div ref={tipRef} role="tooltip" aria-hidden
+          className="fixed z-40 pointer-events-none w-max max-w-[min(240px,calc(100vw-16px))] rounded-lg border border-white/10 bg-[#1a1a2e] px-3 py-2 shadow-xl text-center"
+          style={pos ? { left: pos.left, top: pos.top } : { left: 0, top: 0, visibility: 'hidden' }}>
+          <p className="text-xs font-black uppercase tracking-widest text-white [overflow-wrap:anywhere]">{badge.name}</p>
+          {badge.description && <p className="mt-1 text-xs text-muted-foreground leading-snug">{badge.description}</p>}
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
+
 export default function BadgeShelf({ username }: { username: string }) {
   const api = useBadgesApi();
   const { data } = useQuery({
@@ -93,10 +155,7 @@ export default function BadgeShelf({ username }: { username: string }) {
       </div>
       <div className="grid grid-cols-[repeat(auto-fill,minmax(56px,1fr))] gap-2">
         {shown.map(b => (
-          <button key={b.id} type="button" onClick={() => setOpen(b)} title={b.name}
-            className="flex items-center justify-center p-1 rounded-xl hover:bg-white/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">
-            <BadgeImage badge={b} size={48} />
-          </button>
+          <ShelfItem key={b.id} badge={b} onOpen={() => setOpen(b)} />
         ))}
       </div>
       {open && (
