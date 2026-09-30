@@ -1,7 +1,7 @@
 // Run: npx tsx --test src/lib/challengeRecs.test.ts   (from artifacts/api-server)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeRecommendations, rankRecentPlay, reachIds, REC_CAPS, type ReachItem, type Reach } from './challengeRecs.js';
+import { mergeRecommendations, mergeGroupRecommendations, rankRecentPlay, reachIds, REC_CAPS, GROUP_REC_CAP, type ReachItem, type Reach, type GroupRecommendation } from './challengeRecs.js';
 
 const m = (machineId: number, venueLabel?: string | null): ReachItem => ({
   machineId, name: `M${machineId}`, variant: null, imageUrl: null, ...(venueLabel !== undefined ? { venueLabel } : {}),
@@ -72,4 +72,46 @@ test('rankRecentPlay: visits, then most recent', () => {
     { id: 'd', visits: 3, lastPlayedAt: d('2026-09-01') },
   ];
   assert.deepEqual(rankRecentPlay(rows).map(r => r.id), ['d', 'b', 'c', 'a']);
+});
+
+// ── groups (feature/group-challenges) ────────────────────────────────────────
+
+test('group merge with ONE target is exactly the single-friend list', () => {
+  const reach: Reach = { level1: [m(1)], level2: [m(2, 'Logan Arcade'), m(3, 'at home')], level3: [m(4), m(1)] };
+  const viewerReach = new Set([3]);
+  const best = new Map([[4, 1000]]);
+  assert.deepEqual(mergeGroupRecommendations([{ userId: 9, reach }], viewerReach, best), mergeRecommendations(reach, viewerReach, best));
+});
+
+test('group merge: coverage first, then viewer can reach it, then lowest level, then viewer best, then first seen', () => {
+  const bob: Reach = { level1: [m(10)], level2: [m(20, 'Logan Arcade'), m(30)], level3: [m(40), m(50)] };
+  const carol: Reach = { level1: [], level2: [m(30)], level3: [m(20), m(60), m(50)] };
+  const dave: Reach = { level1: [], level2: [], level3: [m(30), m(70)] };
+  const recs = mergeGroupRecommendations(
+    [{ userId: 2, reach: bob }, { userId: 3, reach: carol }, { userId: 4, reach: dave }],
+    new Set([50]), new Map([[60, 5], [70, 7]]),
+  ) as GroupRecommendation[];
+  assert.deepEqual(recs.map(r => r.machineId), [30, 50, 20, 10, 60, 70, 40]);
+  const by = new Map(recs.map(r => [r.machineId, r]));
+  assert.deepEqual([by.get(30)!.coverage, by.get(30)!.reachedBy], [3, [2, 3, 4]]);
+  assert.equal(by.get(30)!.level, 2, 'the lowest level anyone has it at');
+  assert.equal(by.get(50)!.viewerCanReach, true);
+  assert.equal(by.get(20)!.venueLabel, 'Logan Arcade', 'a public venue keeps its name');
+  assert.equal(by.get(20)!.level, 2);
+  assert.equal(by.get(60)!.viewerBest, 5);
+});
+
+test('group merge: a target’s own home becomes atHomeOf, never "at home"; capped', () => {
+  const bob: Reach = { level1: [], level2: [m(1, 'at home'), m(2, null)], level3: [] };
+  const carol: Reach = { level1: [], level2: [m(1, 'at home')], level3: [] };
+  const recs = mergeGroupRecommendations([{ userId: 2, reach: bob }, { userId: 3, reach: carol }], new Set(), new Map()) as GroupRecommendation[];
+  const one = recs.find(r => r.machineId === 1)!;
+  assert.deepEqual(one.atHomeOf, [2, 3]);
+  assert.equal('venueLabel' in one, false);
+  assert.equal('venueLabel' in recs.find(r => r.machineId === 2)!, false, 'someone else’s private venue: no label');
+  assert.ok(!JSON.stringify(recs).includes('at home'));
+  const many = (from: number) => Array.from({ length: 30 }, (_, i) => m(from + i));
+  const big = mergeGroupRecommendations([{ userId: 2, reach: { ...empty, level3: many(100) } }, { userId: 3, reach: { ...empty, level3: many(100) } }], none, noBest);
+  assert.equal(big.length, GROUP_REC_CAP);
+  assert.equal(GROUP_REC_CAP, 16);
 });

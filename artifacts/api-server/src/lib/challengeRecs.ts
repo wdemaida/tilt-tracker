@@ -104,3 +104,68 @@ export function mergeRecommendations(
 export function rankRecentPlay<T extends { visits: number; lastPlayedAt: Date }>(rows: T[]): T[] {
   return [...rows].sort((a, b) => b.visits - a.visits || +b.lastPlayedAt - +a.lastPlayedAt);
 }
+
+// ── groups (feature/group-challenges) ────────────────────────────────────────
+
+/** A group recommendation: which of the invited players can reach it, and how many. */
+export interface GroupRecommendation extends Recommendation {
+  /** User ids of the targets who can reach this machine (any of their three levels). */
+  reachedBy: number[];
+  /** reachedBy.length — the create form groups by it ("all 3 can reach", "2 of 3"…). */
+  coverage: number;
+  /** Targets whose own private venue has it — shown as "at @name's", never the venue's name. */
+  atHomeOf?: number[];
+}
+
+/** The overall cap for a group's list (the three per-level caps together). */
+export const GROUP_REC_CAP = REC_CAPS[1] + REC_CAPS[2] + REC_CAPS[3];
+
+/**
+ * Recommendations for challenging several friends at once. Ranked by how many of them can reach the
+ * machine, then whether the viewer can too, then the lowest (most reliable) level any of them has it
+ * at, then whether the viewer has a score on it, then first-seen order (targets in the order given,
+ * each level by level). A machine keeps the lowest level anyone has it at; `venueLabel` is only ever
+ * a public venue's name, and a target's own private venue becomes `atHomeOf` instead of 'at home'
+ * (whose home would be ambiguous in a group). Capped at GROUP_REC_CAP. With ONE target the output is
+ * exactly mergeRecommendations() — today's single-friend list.
+ */
+export function mergeGroupRecommendations(
+  targets: Array<{ userId: number; reach: Reach }>, viewerReach: Set<number>, viewerBest: Map<number, number>,
+  cap = GROUP_REC_CAP,
+): Recommendation[] | GroupRecommendation[] {
+  if (targets.length === 1) return mergeRecommendations(targets[0].reach, viewerReach, viewerBest);
+  interface Acc { item: ReachItem; level: RecLevel; reachedBy: Set<number>; atHomeOf: Set<number>; label?: string; order: number }
+  const acc = new Map<number, Acc>();
+  let order = 0;
+  for (const t of targets) {
+    const levels: Array<[RecLevel, ReachItem[]]> = [[1, t.reach.level1], [2, t.reach.level2], [3, t.reach.level3]];
+    for (const [level, items] of levels) {
+      for (const m of items) {
+        const a = acc.get(m.machineId) ?? { item: m, level, reachedBy: new Set<number>(), atHomeOf: new Set<number>(), order: order++ };
+        a.reachedBy.add(t.userId);
+        if (level < a.level) a.level = level;
+        if (level === 2 && m.venueLabel === 'at home') a.atHomeOf.add(t.userId);
+        else if (level === 2 && m.venueLabel && !a.label) a.label = m.venueLabel;
+        acc.set(m.machineId, a);
+      }
+    }
+  }
+  const ranked = [...acc.values()].sort((a, b) =>
+    b.reachedBy.size - a.reachedBy.size
+    || Number(viewerReach.has(b.item.machineId)) - Number(viewerReach.has(a.item.machineId))
+    || a.level - b.level
+    || Number(viewerBest.has(b.item.machineId)) - Number(viewerBest.has(a.item.machineId))
+    || a.order - b.order);
+  return ranked.slice(0, cap).map(a => {
+    const rec: GroupRecommendation = {
+      machineId: a.item.machineId, name: a.item.name, variant: a.item.variant, imageUrl: a.item.imageUrl, level: a.level,
+      viewerCanReach: viewerReach.has(a.item.machineId),
+      reachedBy: [...a.reachedBy], coverage: a.reachedBy.size,
+    };
+    if (a.label) rec.venueLabel = a.label;
+    if (a.atHomeOf.size) rec.atHomeOf = [...a.atHomeOf];
+    const best = viewerBest.get(a.item.machineId);
+    if (best != null) rec.viewerBest = best;
+    return rec;
+  });
+}

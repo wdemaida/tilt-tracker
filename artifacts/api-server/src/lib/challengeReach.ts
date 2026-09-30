@@ -8,7 +8,11 @@ import { isPrivateVenue, type PrivacyFlags } from './venueAddress.js';
 import { matchScore, queryLength, MIN_QUERY_CHARS } from './venueSearch.js';
 import { acceptedPairSql } from './friendships.js';
 import { countVisits } from './statsCalc.js';
-import { mergeRecommendations, rankRecentPlay, reachIds, type Reach, type ReachItem, type Recommendation } from './challengeRecs.js';
+import {
+  mergeRecommendations, mergeGroupRecommendations, rankRecentPlay, reachIds,
+  type Reach, type ReachItem, type Recommendation, type GroupRecommendation,
+} from './challengeRecs.js';
+import { MAX_INVITEES } from './challengeRules.js';
 import { ChallengeError, type UserRef } from './challenges.js';
 import type { PmLocationMachineXref } from './pinballmapApi.js';
 
@@ -397,24 +401,64 @@ export interface RecommendationsView {
   recommendations: Recommendation[];
 }
 
-/** GET /api/challenges/recommendations/:username — friends only (403 not_friends). */
-export async function recommendationsFor(viewer: AppUser, username: string, now = new Date()): Promise<RecommendationsView> {
+/** A friend to recommend for: exists, isn't the viewer, and is an accepted friend (403 not_friends). */
+async function recTarget(viewer: AppUser, username: string): Promise<UserRef> {
   const [target] = await db.select({ id: users.id, username: users.username, displayName: users.displayName })
     .from(users).where(eq(users.username, username)).limit(1);
   if (!target) throw new ChallengeError(404, 'user_not_found', 'User not found');
   if (target.id === viewer.id) throw new ChallengeError(400, 'cannot_challenge_self', 'You can’t challenge yourself');
   if (!(await areFriends(viewer.id, target.id))) throw new ChallengeError(403, 'not_friends', 'You can only challenge your friends');
+  return target;
+}
 
+/** The viewer's best score per machine id (whole numbers), for the machines in `ids`. */
+async function viewerBests(viewerId: number, ids: number[]): Promise<Map<number, number>> {
+  const best = new Map<number, number>();
+  if (!ids.length) return best;
+  const rows = await db.select({ machineId: scores.machineId, best: sql<number>`max(${scores.score})::float8` }).from(scores)
+    .where(and(eq(scores.userId, viewerId), inArray(scores.machineId, ids)))
+    .groupBy(scores.machineId);
+  for (const r of rows) best.set(r.machineId, Math.round(Number(r.best)));
+  return best;
+}
+
+/** GET /api/challenges/recommendations/:username — friends only (403 not_friends). */
+export async function recommendationsFor(viewer: AppUser, username: string, now = new Date()): Promise<RecommendationsView> {
+  const target = await recTarget(viewer, username);
   await Promise.all([ensureSeeded(target.id, now), ensureSeeded(viewer.id, now)]);
   const v: Viewer = { id: viewer.id, role: viewer.role };
   const [theirs, mine] = await Promise.all([reachOf(target.id, v, now), reachOf(viewer.id, v, now)]);
-  const ids = [...reachIds(theirs)];
-  const best = new Map<number, number>();
-  if (ids.length) {
-    const rows = await db.select({ machineId: scores.machineId, best: sql<number>`max(${scores.score})::float8` }).from(scores)
-      .where(and(eq(scores.userId, viewer.id), inArray(scores.machineId, ids)))
-      .groupBy(scores.machineId);
-    for (const r of rows) best.set(r.machineId, Math.round(Number(r.best)));
-  }
+  const best = await viewerBests(viewer.id, [...reachIds(theirs)]);
   return { user: target, recommendations: mergeRecommendations(theirs, reachIds(mine), best) };
+}
+
+export interface GroupRecommendationsView {
+  users: UserRef[];
+  /** Exactly the single-friend list when there's one user; GroupRecommendation items otherwise. */
+  recommendations: Recommendation[] | GroupRecommendation[];
+}
+
+/**
+ * GET /api/challenges/recommendations?users=a,b — machines to challenge several friends on at once
+ * (mergeGroupRecommendations). Every target must be the viewer's accepted friend (403 not_friends);
+ * at most MAX_INVITEES, no repeats. Same sources and privacy as the single-friend list — ZERO Pinball
+ * Map calls (reachOf reads pm_location_cache directly).
+ */
+export async function groupRecommendationsFor(viewer: AppUser, usernames: string[], now = new Date()): Promise<GroupRecommendationsView> {
+  const names = usernames.map(u => u.trim()).filter(Boolean);
+  if (!names.length) throw new ChallengeError(400, 'invalid_user', 'users is required (comma-separated usernames)');
+  if (names.length > MAX_INVITEES) throw new ChallengeError(400, 'too_many_players', `At most ${MAX_INVITEES} friends at once`);
+  if (new Set(names.map(n => n.toLowerCase())).size !== names.length) throw new ChallengeError(400, 'duplicate_invitee', 'Each friend can only be listed once');
+  const targets: UserRef[] = [];
+  for (const n of names) targets.push(await recTarget(viewer, n));
+
+  await Promise.all([viewer.id, ...targets.map(t => t.id)].map(id => ensureSeeded(id, now)));
+  const v: Viewer = { id: viewer.id, role: viewer.role };
+  const [mine, ...theirs] = await Promise.all([reachOf(viewer.id, v, now), ...targets.map(t => reachOf(t.id, v, now))]);
+  const ids = [...new Set(theirs.flatMap(r => [...reachIds(r)]))];
+  const best = await viewerBests(viewer.id, ids);
+  return {
+    users: targets,
+    recommendations: mergeGroupRecommendations(targets.map((t, i) => ({ userId: t.id, reach: theirs[i] })), reachIds(mine), best),
+  };
 }
