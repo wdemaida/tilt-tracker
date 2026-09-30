@@ -1,6 +1,10 @@
 import { pgTable, serial, bigserial, text, bigint, timestamp, real, integer, pgEnum, uniqueIndex, index, primaryKey, date, boolean, jsonb, varchar, numeric, customType, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
+// Every timestamp column is `timestamptz` (`withTimezone: true`) and holds an instant — migrate26
+// converted the original naive-UTC columns. New ones must be too: schema.test.ts fails on a
+// `timestamp(...)` without it. The only calendar value is stat_history.period_date, a `date`.
+
 export const scoreTypeEnum = pgEnum('score_type', ['casual', 'tournament']);
 export const userRoleEnum = pgEnum('user_role', ['admin', 'user']);
 export const venuePrivacyEnum = pgEnum('venue_privacy', ['full', 'city_state', 'hidden']);
@@ -18,13 +22,13 @@ export const users = pgTable('users', {
   pinballMapEmail: text('pinball_map_email'),
   // Admin "disable account" (migrate19). Set = requireAppUser answers 403 account_disabled and the
   // user is banned in Clerk so they can't sign in; null = active. Admins can't be disabled.
-  disabledAt: timestamp('disabled_at'),
+  disabledAt: timestamp('disabled_at', { withTimezone: true }),
   disabledReason: text('disabled_reason'),
   disabledById: integer('disabled_by_id'),
   // When "Challenge locations" were first seeded from this user's history (migrate22). Seeding runs
   // once: after that a removed venue stays removed, and new candidates are only suggested.
-  challengeVenuesSeededAt: timestamp('challenge_venues_seeded_at'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  challengeVenuesSeededAt: timestamp('challenge_venues_seeded_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const machines = pgTable('machines', {
@@ -36,7 +40,7 @@ export const machines = pgTable('machines', {
   manufacturer: text('manufacturer'),
   year: integer('year'),
   imageUrl: text('image_url'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const venues = pgTable('venues', {
@@ -71,7 +75,7 @@ export const venues = pgTable('venues', {
   // nobody but the owner, admins and each score's own author sees the venue's machine inventory or
   // the scores logged there. A public venue's scores are never hideable by whoever created its row.
   showMachinesAndScores: boolean('show_machines_and_scores').default(true).notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const scores = pgTable('scores', {
@@ -79,7 +83,7 @@ export const scores = pgTable('scores', {
   userId: integer('user_id').references(() => users.id).notNull(),
   machineId: integer('machine_id').references(() => machines.id).notNull(),
   score: bigint('score', { mode: 'number' }).notNull(),
-  playedAt: timestamp('played_at').notNull(),
+  playedAt: timestamp('played_at', { withTimezone: true }).notNull(),
   type: scoreTypeEnum('type').default('casual').notNull(),
   venueId: integer('venue_id').references(() => venues.id),
   venueName: text('venue_name'),
@@ -99,17 +103,17 @@ export const scores = pgTable('scores', {
   // the two columns below and keeps the source (so the lock survives the correction).
   playedAtSource: text('played_at_source'),
   playedAtCorrectedById: integer('played_at_corrected_by_id').references(() => users.id, { onDelete: 'set null' }),
-  playedAtCorrectedAt: timestamp('played_at_corrected_at'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  playedAtCorrectedAt: timestamp('played_at_corrected_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const venueMachineHistory = pgTable('venue_machine_history', {
   id: serial('id').primaryKey(),
   venueId: integer('venue_id').references(() => venues.id).notNull(),
   machineId: integer('machine_id').references(() => machines.id).notNull(),
-  firstSeenAt: timestamp('first_seen_at').defaultNow().notNull(),
-  lastSeenAt: timestamp('last_seen_at').defaultNow().notNull(),
-  removedAt: timestamp('removed_at'),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).defaultNow().notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).defaultNow().notNull(),
+  removedAt: timestamp('removed_at', { withTimezone: true }),
 }, (table) => ({
   venueMachineUnique: uniqueIndex('venue_machine_history_venue_machine_idx').on(table.venueId, table.machineId),
 }));
@@ -124,9 +128,9 @@ export const venueInventory = pgTable('venue_inventory', {
   id: serial('id').primaryKey(),
   venueId: integer('venue_id').references(() => venues.id).notNull(),
   machineId: integer('machine_id').references(() => machines.id).notNull(),
-  addedAt: timestamp('added_at').defaultNow().notNull(),
+  addedAt: timestamp('added_at', { withTimezone: true }).defaultNow().notNull(),
   addedById: integer('added_by_id').references(() => users.id),
-  removedAt: timestamp('removed_at'),
+  removedAt: timestamp('removed_at', { withTimezone: true }),
   removedById: integer('removed_by_id').references(() => users.id),
 }, (table) => ({
   venueMachineUnique: uniqueIndex('venue_inventory_venue_machine_idx').on(table.venueId, table.machineId),
@@ -152,7 +156,7 @@ export const pmLocationCache = pgTable('pm_location_cache', {
   // Location fields (id, name, lat, lon, street, city, state, zip, country) from the same
   // /locations/:id.json response as the roster (migrate20). Null on rows cached before it existed.
   location: jsonb('location'),
-  fetchedAt: timestamp('fetched_at').defaultNow().notNull(),
+  fetchedAt: timestamp('fetched_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export type PmLocationCache = typeof pmLocationCache.$inferSelect;
@@ -163,9 +167,9 @@ export type PmLocationCache = typeof pmLocationCache.$inferSelect;
 export const pmCatalogCache = pgTable('pm_catalog_cache', {
   key: text('key').primaryKey(),
   data: jsonb('data'),
-  fetchedAt: timestamp('fetched_at'),
+  fetchedAt: timestamp('fetched_at', { withTimezone: true }),
   lastError: text('last_error'),
-  lastErrorAt: timestamp('last_error_at'),
+  lastErrorAt: timestamp('last_error_at', { withTimezone: true }),
 });
 
 export type VenueMachineHistory = typeof venueMachineHistory.$inferSelect;
@@ -178,7 +182,7 @@ export const stats = pgTable('stats', {
   key: text('key').unique().notNull(),
   label: text('label').notNull(),
   description: text('description'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 // One row per stat per calendar day (site-wide, not per-user) — written by the 1am ET daily
@@ -188,7 +192,7 @@ export const statHistory = pgTable('stat_history', {
   statId: integer('stat_id').references(() => stats.id).notNull(),
   value: integer('value').notNull(),
   periodDate: date('period_date').notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   statDateUnique: uniqueIndex('stat_history_stat_id_period_date_idx').on(table.statId, table.periodDate),
 }));
@@ -204,8 +208,8 @@ export const pods = pgTable('pods', {
   ownerId: integer('owner_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
   name: text('name').notNull(),
   color: varchar('color', { length: 7 }).notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   ownerIdx: index('pods_owner_id_idx').on(table.ownerId),
   ownerNameUnique: uniqueIndex('pods_owner_lower_name_idx').on(table.ownerId, sql`lower(${table.name})`),
@@ -215,7 +219,7 @@ export const pods = pgTable('pods', {
 export const podMembers = pgTable('pod_members', {
   podId: integer('pod_id').references(() => pods.id, { onDelete: 'cascade' }).notNull(),
   userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
-  addedAt: timestamp('added_at').defaultNow().notNull(),
+  addedAt: timestamp('added_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   pk: primaryKey({ name: 'pod_members_pkey', columns: [table.podId, table.userId] }),
   userIdx: index('pod_members_user_id_idx').on(table.userId),
@@ -234,8 +238,8 @@ export const friendships = pgTable('friendships', {
   addresseeId: integer('addressee_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
   status: text('status').$type<'pending' | 'accepted' | 'declined'>().notNull(),
   declineCount: integer('decline_count').default(0).notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  respondedAt: timestamp('responded_at'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  respondedAt: timestamp('responded_at', { withTimezone: true }),
 }, (table) => ({
   pairUnique: uniqueIndex('friendships_pair_idx').on(
     sql`least(${table.requesterId}, ${table.addresseeId})`,
@@ -253,8 +257,8 @@ export const notifications = pgTable('notifications', {
   userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
   kind: text('kind').notNull(),
   payload: jsonb('payload').$type<Record<string, unknown>>().default({}).notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  readAt: timestamp('read_at'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  readAt: timestamp('read_at', { withTimezone: true }),
 }, (table) => ({
   userReadIdx: index('notifications_user_id_read_at_idx').on(table.userId, table.readAt),
 }));
@@ -292,17 +296,17 @@ export const challenges = pgTable('challenges', {
   venueId: integer('venue_id').references(() => venues.id),
   targetScore: bigint('target_score', { mode: 'number' }),
   minPlays: integer('min_plays'),
-  startsAt: timestamp('starts_at'),
-  endsAt: timestamp('ends_at').notNull(),
+  startsAt: timestamp('starts_at', { withTimezone: true }),
+  endsAt: timestamp('ends_at', { withTimezone: true }).notNull(),
   status: text('status').$type<ChallengeStatus>().default('pending').notNull(),
   void: boolean('void').default(false).notNull(),
   visibility: text('visibility').default('participants').notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  resolvedAt: timestamp('resolved_at'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
   // Admin override (migrate19): an admin voided this challenge. status is then 'cancelled', every
   // participant's outcome/rank/result is cleared (so it drops out of records) and its score locks
   // are released. The pre-void state is kept in the admin.challenge_voided activity event.
-  adminCancelledAt: timestamp('admin_cancelled_at'),
+  adminCancelledAt: timestamp('admin_cancelled_at', { withTimezone: true }),
   adminCancelledById: integer('admin_cancelled_by_id'),
   adminCancelReason: text('admin_cancel_reason'),
   // A counter-offer's original (migrate22). The original's status is then 'countered'; chains of
@@ -313,9 +317,9 @@ export const challenges = pgTable('challenges', {
   // unique index allows one proposal per player per original. Legacy counters have it null.
   proposedById: integer('proposed_by_id').references(() => users.id, { onDelete: 'set null' }),
   // When the challenger took it, or it was rejected / lapsed.
-  proposalDecidedAt: timestamp('proposal_decided_at'),
+  proposalDecidedAt: timestamp('proposal_decided_at', { withTimezone: true }),
   // The daily sweep's one reminder to the challenger about an unanswered suggestion (after 24 h).
-  proposalRemindedAt: timestamp('proposal_reminded_at'),
+  proposalRemindedAt: timestamp('proposal_reminded_at', { withTimezone: true }),
 }, (table) => ({
   statusEndsIdx: index('challenges_status_ends_at_idx').on(table.status, table.endsAt),
   creatorIdx: index('challenges_creator_id_idx').on(table.creatorId),
@@ -336,8 +340,8 @@ export const challengeParticipants = pgTable('challenge_participants', {
   baselineScore: bigint('baseline_score', { mode: 'number' }),
   resultValue: numeric('result_value'),
   rank: integer('rank'),
-  respondedAt: timestamp('responded_at'),
-  endingSoonNotifiedAt: timestamp('ending_soon_notified_at'),
+  respondedAt: timestamp('responded_at', { withTimezone: true }),
+  endingSoonNotifiedAt: timestamp('ending_soon_notified_at', { withTimezone: true }),
 }, (table) => ({
   pk: primaryKey({ name: 'challenge_participants_pkey', columns: [table.challengeId, table.userId] }),
   userIdx: index('challenge_participants_user_id_idx').on(table.userId),
@@ -349,7 +353,7 @@ export const challengeParticipants = pgTable('challenge_participants', {
 export const challengeScores = pgTable('challenge_scores', {
   challengeId: integer('challenge_id').references(() => challenges.id, { onDelete: 'cascade' }).notNull(),
   scoreId: integer('score_id').references(() => scores.id).notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   pk: primaryKey({ name: 'challenge_scores_pkey', columns: [table.challengeId, table.scoreId] }),
   scoreIdx: index('challenge_scores_score_id_idx').on(table.scoreId),
@@ -361,7 +365,7 @@ export const userChallengeMachines = pgTable('user_challenge_machines', {
   userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
   machineId: integer('machine_id').references(() => machines.id, { onDelete: 'cascade' }).notNull(),
   position: integer('position').default(0).notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   pk: primaryKey({ name: 'user_challenge_machines_pkey', columns: [table.userId, table.machineId] }),
 }));
@@ -373,7 +377,7 @@ export const userChallengeVenues = pgTable('user_challenge_venues', {
   userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
   venueId: integer('venue_id').references(() => venues.id, { onDelete: 'cascade' }).notNull(),
   source: text('source').$type<'auto' | 'added'>().default('added').notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   pk: primaryKey({ name: 'user_challenge_venues_pkey', columns: [table.userId, table.venueId] }),
 }));
@@ -387,7 +391,7 @@ export const userChallengeVenues = pgTable('user_challenge_venues', {
 // makes Clerk webhook deliveries idempotent (unique; NULLs don't collide). No secrets in `payload`.
 export const activityEvents = pgTable('activity_events', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   actorUserId: integer('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
   type: text('type').notNull(),
   subjectUserId: integer('subject_user_id').references(() => users.id, { onDelete: 'set null' }),
@@ -413,7 +417,7 @@ export const activityEvents = pgTable('activity_events', {
 export const appSettings = pgTable('app_settings', {
   key: text('key').primaryKey(),
   value: jsonb('value').$type<unknown>().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
   updatedById: integer('updated_by_id').references(() => users.id, { onDelete: 'set null' }),
 });
 
@@ -432,7 +436,7 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () =>
 // upload and never reset, so `?v=` URLs never collide. No image = the lucide `icon` in `color`.
 // `status`: draft → live (activateBadge, which backfills when `retroactive`) → retired (no new awards;
 // earned ones stay). `activatedAt` is stamped on first activation: a forward-only rule badge counts
-// only scores posted after it. `availableFrom`/`availableTo` (naive UTC, like every timestamp here)
+// only scores posted after it. `availableFrom`/`availableTo` (instants, like every timestamp here)
 // bound when it can be earned. migrate23 also adds CHECKs (kind/status values, metric needs a
 // threshold, rule needs a rule) that Drizzle doesn't model here.
 export type BadgeKind = 'metric' | 'rule' | 'manual';
@@ -454,8 +458,8 @@ export const badgeSeries = pgTable('badge_series', {
   // prefills a new tier's description from it, and the editor keeps an untouched description in step
   // with N. null = none (Add tier copies the top tier's description).
   descriptionTemplate: text('description_template'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
 export const badges = pgTable('badges', {
@@ -473,15 +477,15 @@ export const badges = pgTable('badges', {
   rule: jsonb('rule').$type<Record<string, unknown>>(),
   retroactive: boolean('retroactive').default(false).notNull(),
   status: text('status').$type<BadgeStatus>().default('draft').notNull(),
-  availableFrom: timestamp('available_from'),
-  availableTo: timestamp('available_to'),
-  activatedAt: timestamp('activated_at'),
+  availableFrom: timestamp('available_from', { withTimezone: true }),
+  availableTo: timestamp('available_to', { withTimezone: true }),
+  activatedAt: timestamp('activated_at', { withTimezone: true }),
   sortOrder: integer('sort_order').default(0).notNull(),
   // migrate25: the series this badge is a tier of (null = a single badge).
   seriesId: integer('series_id').references(() => badgeSeries.id, { onDelete: 'set null' }),
   createdById: integer('created_by_id').references(() => users.id, { onDelete: 'set null' }),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   statusIdx: index('badges_status_idx').on(table.status),
   seriesIdx: index('badges_series_id_idx').on(table.seriesId),
@@ -493,7 +497,7 @@ export const badges = pgTable('badges', {
 export const userBadges = pgTable('user_badges', {
   userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
   badgeId: integer('badge_id').references(() => badges.id, { onDelete: 'cascade' }).notNull(),
-  earnedAt: timestamp('earned_at').defaultNow().notNull(),
+  earnedAt: timestamp('earned_at', { withTimezone: true }).defaultNow().notNull(),
   sourceScoreId: integer('source_score_id').references(() => scores.id, { onDelete: 'set null' }),
   sourceChallengeId: integer('source_challenge_id').references(() => challenges.id, { onDelete: 'set null' }),
   grantedById: integer('granted_by_id').references(() => users.id, { onDelete: 'set null' }),
@@ -511,7 +515,7 @@ export const userMetricMarks = pgTable('user_metric_marks', {
   userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
   metric: text('metric').notNull(),
   ref: text('ref').notNull(),
-  at: timestamp('at').defaultNow().notNull(),
+  at: timestamp('at', { withTimezone: true }).defaultNow().notNull(),
 }, (table) => ({
   pk: primaryKey({ name: 'user_metric_marks_pkey', columns: [table.userId, table.metric, table.ref] }),
   metricIdx: index('user_metric_marks_metric_idx').on(table.metric, table.userId),
