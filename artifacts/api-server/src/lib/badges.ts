@@ -497,7 +497,7 @@ async function earnedCounts(badgeIds?: number[]): Promise<Map<number, number>> {
 
 /** Every series, for ordering and the public `series` field. */
 export async function loadSeries(): Promise<SeriesRef[]> {
-  return db.select({ id: badgeSeries.id, key: badgeSeries.key, name: badgeSeries.name, color: badgeSeries.color, sortOrder: badgeSeries.sortOrder })
+  return db.select({ id: badgeSeries.id, key: badgeSeries.key, name: badgeSeries.name, color: badgeSeries.color, sortOrder: badgeSeries.sortOrder, descriptionTemplate: badgeSeries.descriptionTemplate })
     .from(badgeSeries).orderBy(asc(badgeSeries.sortOrder), asc(badgeSeries.id));
 }
 
@@ -510,8 +510,8 @@ function seriesField(b: Pick<BadgeRow, 'id' | 'seriesId'>, byId: Map<number, Ser
 }
 
 /**
- * GET /api/badges — the live catalog in the shared order (series as a unit, tiers consecutive, then
- * by threshold), with how many players have each and the viewer's own earn dates. Still a flat
+ * GET /api/badges — the live catalog in the shared order (series as a unit, tiers consecutive, in
+ * tier order), with how many players have each and the viewer’s own earn dates. Still a flat
  * array: a tier carries `series` (tier N of the series' live tiers), so the page groups consecutive
  * tiers into a ladder and an older client just lists them.
  */

@@ -352,16 +352,24 @@
   actions also invalidate `['notifications']` — they can award the admin themself.
 - `/admin/badges` **series + order** (feature/badge-series): the list is the shared order from the
   server's `order` — series rows (header in the series color → inline `SeriesEditor`: rename,
-  recolor every tier, delete only when empty) with their tiers indented beneath (not draggable),
-  and singles. Reorder a top-level row by dragging its grip handle (HTML5 drag, armed only from the
+  recolor every tier, the `{N}` "Tier description" template, delete only when empty) with their
+  tiers indented beneath, and singles. **Inside a series**, a tier with a threshold has no controls
+  (the server seats it by N); a rule/manual tier has its own grip + ▲/▼ and can go anywhere in the
+  ladder — `moveTier` is optimistic and PUTs the series' full tier list (`reorderSeriesTiers`); its
+  drag events `stopPropagation` so the series row's drag doesn't fire. Each series ends with the
+  one-line ordering hint and **Add tier**: `GET /badge-series/:id/new-tier` → the editor opens
+  under that series (`Editing = … | { prefill }`, `draftOfPrefill`), title "New tier · <series>",
+  with a "Suggested: the next step after …" hint on N. The description follows the series
+  template while it still reads as the template's text or is empty (`descLinked` /
+  `descFollowsTemplate`): changing N, series or kind rewrites it (`setFollowing`); typing your
+  own stops that, and "Use the series wording" restores it. Reorder a top-level row by dragging its grip handle (HTML5 drag, armed only from the
   handle, `sm:` and up) or the ▲/▼ buttons (keyboard + phones; an `aria-live` line announces the
   move). Each move is optimistic and PUTs the full order (`reorderBadges`); a failure restores and
   toasts. Reordering is off unless the status filter is All. Editor: **Series** select (None /
   existing / "New series…"); in a series the badge's own Color is hidden and "Series color" (+ name)
   shows instead — saving PATCHes the series first (dirty-tracked like the rest); a new metric badge
-  preselects its metric's series until the admin touches the select. The old Order field is now
-  "Tier order", shown only for a rule/manual tier (singles are placed by the list, metric tiers by
-  threshold).
+  preselects its metric's series until the admin touches the select. There's no order field any
+  more (the old "Tier order" is gone): singles are placed by the list, tiers by N or the in-series drag.
 - **Toasts** (`lib/toast.ts` + `components/Toaster.tsx`, mounted in `Layout`): `toast({ title, body,
   tone, icon, href })` for confirmations and passive news; errors that need fixing stay inline.
   `lib/badgeToasts.tsx` toasts new unread `badge_earned` notifications off the bell's 30 s unread-count

@@ -418,14 +418,19 @@ export type BadgeStatus = 'draft' | 'live' | 'retired';
 // Badge series (migrate25) — a ladder of tiers ("Scores": First Ball → Regular → Centurion → Wizard
 // Mode). A series has ONE color: every tier renders in `color` (a tier's own badges.color is ignored
 // while it's in a series), so the tiers can't drift. `sortOrder` places the whole series in the same
-// ordering space as single badges' badges.sort_order. Within a series, metric tiers are ordered by
-// threshold, rule/manual tiers by their own sort_order (src/lib/badgeSeries.ts).
+// ordering space as single badges' badges.sort_order. Within a series the tiers order by their own
+// badges.sort_order — one key; a tier with a threshold is placed by its N on write, rule/manual tiers
+// wherever the admin drags them (src/lib/badgeSeries.ts).
 export const badgeSeries = pgTable('badge_series', {
   id: serial('id').primaryKey(),
   key: text('key').unique().notNull(),
   name: text('name').notNull(),
   color: varchar('color', { length: 7 }).default('#f59e0b').notNull(),
   sortOrder: integer('sort_order').default(0).notNull(),
+  // How the tiers' descriptions read, with {N} for the threshold ("Posted {N} scores."): "Add tier"
+  // prefills a new tier's description from it, and the editor keeps an untouched description in step
+  // with N. null = none (Add tier copies the top tier's description).
+  descriptionTemplate: text('description_template'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

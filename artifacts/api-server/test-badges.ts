@@ -18,6 +18,9 @@
 // series, and the reorder endpoint validates + persists. The reorder touches every badge's and
 // series' sort_order, so the script snapshots (sort_order, updated_at) first and restores them
 // exactly at the end — Will's dev badges keep their numbers.
+// Series follow-ups: migrate25's description_template seeding, series template validation, a mixed
+// `zz-badge-test-mixed` series (metric tiers seated by N on create / N edit, a rule tier moved by
+// PUT /badge-series/:id/order, which refuses N-tiers out of order), and the "Add tier" prefill.
 // TODO(phase 3): "challenge resolution awards streak and tie badges".
 //
 //   cd artifacts/api-server && npx tsx test-badges.ts
@@ -557,6 +560,101 @@ try {
   const wantKeys = reversed.map(o => `${o.type}:${o.id}`).filter(k => shelfKeys.includes(k));
   check('alice’s shelf follows the new order', JSON.stringify(shelfKeys) === JSON.stringify(wantKeys), { shelfKeys, wantKeys });
   void seriesPos;
+
+  // ── series: templates, in-series order, Add tier ────────────────────────────
+  // migrate25 seeded a template for the starter ladders (from their lowest tier with a clean match).
+  const seededTpl = await db.execute(sql`SELECT key, description_template AS t FROM badge_series WHERE key IN ('scores', 'venues', 'machines')`) as unknown as Array<{ key: string; t: string | null }>;
+  check('migrate25 seeded templates with {N} (scores / venues / machines, where present)',
+    seededTpl.length > 0 && seededTpl.every(x => x.t == null || x.t.includes('{N}')) && seededTpl.some(x => x.t != null), seededTpl);
+  r = await call(alice, 'POST', '/admin/badge-series', { name: 'ZZ Badge Test Mixed', color: '#246810', descriptionTemplate: 'Declined {N} requests.' });
+  const mixed = r.body.series?.id as number;
+  if (mixed) seriesIds.push(mixed);
+  check('create a series with a template → 201, stored', r.status === 201 && r.body.series?.descriptionTemplate === 'Declined {N} requests.', r.body);
+  r = await call(alice, 'PATCH', `/admin/badge-series/${mixed}`, { descriptionTemplate: 'Declined requests.' });
+  check('a template without {N} → 400 invalid_series', r.status === 400 && r.body.code === 'invalid_series' && r.body.errors?.descriptionTemplate, r.body);
+  r = await call(alice, 'PATCH', `/admin/badge-series/${mixed}`, { descriptionTemplate: '' });
+  check('an empty template clears it (null)', r.status === 200 && r.body.series?.descriptionTemplate === null, r.body);
+  r = await call(alice, 'PATCH', `/admin/badge-series/${mixed}`, { descriptionTemplate: 'Declined {N} requests.' });
+  check('…and it can be set again', r.status === 200 && r.body.series?.descriptionTemplate === 'Declined {N} requests.', r.body);
+  r = await call(alice, 'GET', '/admin/badges');
+  check('GET /admin/badges carries each series’ descriptionTemplate', r.body.series.find((x: any) => x.id === mixed)?.descriptionTemplate === 'Declined {N} requests.');
+
+  // Mixed ladder: metric N=900,100 and N=900,010 (created high first — seated by N, not creation
+  // order), then a rule tier (joins at the end).
+  const mTier = (n: number, extra: Record<string, unknown> = {}) => createBadge({
+    key: `zz-badge-test-mix-${n}`, name: `ZZ Mix ${n}`, kind: 'metric', metric: mKey, threshold: n, seriesId: mixed,
+    description: `Declined ${n.toLocaleString('en-US')} requests.`, icon: 'star', ...extra,
+  });
+  const mHigh = await mTier(900_100);
+  const mLow = await mTier(900_010, { icon: 'circle' });
+  const mRule = await createBadge({ key: 'zz-badge-test-mix-rule', name: 'ZZ Mix rule', kind: 'rule', rule: anyRule, seriesId: mixed, icon: 'gift' });
+  const mixedOrder = async () => {
+    const x = await call(alice, 'GET', '/admin/badges');
+    return (x.body.items as any[]).filter(b => b.seriesId === mixed).map(b => b.id as number);
+  };
+  check('metric tiers seat by N (the lower one first although created second); a rule tier joins at the end',
+    JSON.stringify(await mixedOrder()) === JSON.stringify([mLow, mHigh, mRule]), await mixedOrder());
+  r = await call(alice, 'PUT', `/admin/badge-series/${mixed}/order`, { ids: [mHigh, mLow, mRule] });
+  check('in-series reorder putting a higher N first → 400 threshold_order', r.status === 400 && r.body.code === 'threshold_order', r.body);
+  r = await call(alice, 'PUT', `/admin/badge-series/${mixed}/order`, { ids: [mLow, mRule] });
+  check('in-series reorder missing a tier → 409 order_stale', r.status === 409 && r.body.code === 'order_stale', r.body);
+  r = await call(alice, 'PUT', `/admin/badge-series/${mixed}/order`, { ids: [mLow, mHigh, mRule, tier1] });
+  check('in-series reorder naming another series’ tier → 400 unknown_item', r.status === 400 && r.body.code === 'unknown_item', r.body);
+  r = await call(alice, 'PUT', `/admin/badge-series/${999_999_999}/order`, { ids: [] });
+  check('in-series reorder of an unknown series → 404', r.status === 404 && r.body.code === 'series_not_found', r.body);
+  const [{ n: tierEvBefore }] = await db.select({ n: sql<number>`count(*)::int` }).from(activityEvents).where(and(eq(activityEvents.type, 'admin.badge_order_changed'), eq(activityEvents.targetType, 'badge_series'), eq(activityEvents.targetId, String(mixed))));
+  r = await call(alice, 'PUT', `/admin/badge-series/${mixed}/order`, { ids: [mLow, mRule, mHigh] });
+  check('in-series reorder: the rule tier between the metric tiers → 200, changed', r.status === 200 && r.body.changed > 0, r.body);
+  check('…persisted: the mixed ladder reads low → rule → high', JSON.stringify(await mixedOrder()) === JSON.stringify([mLow, mRule, mHigh]), await mixedOrder());
+  r = await call(alice, 'GET', '/admin/badges');
+  check('…tier sort_orders are 10, 20, 30', [mLow, mRule, mHigh].map(id => r.body.items.find((b: any) => b.id === id)?.sortOrder).join() === '10,20,30');
+  const [{ n: tierEvAfter }] = await db.select({ n: sql<number>`count(*)::int` }).from(activityEvents).where(and(eq(activityEvents.type, 'admin.badge_order_changed'), eq(activityEvents.targetType, 'badge_series'), eq(activityEvents.targetId, String(mixed))));
+  check('…logged once as admin.badge_order_changed on the series', tierEvAfter === tierEvBefore + 1, { tierEvBefore, tierEvAfter });
+  r = await call(alice, 'PUT', `/admin/badge-series/${mixed}/order`, { ids: [mLow, mRule, mHigh] });
+  check('the same tier order again → changed 0', r.status === 200 && r.body.changed === 0, r.body);
+  r = await call(alice, 'PUT', `/admin/badge-series/${mixed}/order`, { ids: [mRule, mLow, mHigh] });
+  check('a rule tier can go first', r.status === 200 && JSON.stringify(await mixedOrder()) === JSON.stringify([mRule, mLow, mHigh]), await mixedOrder());
+  await call(alice, 'PUT', `/admin/badge-series/${mixed}/order`, { ids: [mLow, mRule, mHigh] });
+
+  // A new N between the two lands just before the first higher N — after the rule tier.
+  const mMid = await mTier(900_050);
+  check('a new metric tier seats before the first higher N (low → rule → mid → high)', JSON.stringify(await mixedOrder()) === JSON.stringify([mLow, mRule, mMid, mHigh]), await mixedOrder());
+  r = await call(alice, 'PATCH', `/admin/badges/${mLow}`, { threshold: 900_500 });
+  check('changing a tier’s N re-seats it (low → the top)', r.status === 200 && JSON.stringify(await mixedOrder()) === JSON.stringify([mRule, mMid, mHigh, mLow]), await mixedOrder());
+  r = await call(alice, 'PATCH', `/admin/badges/${mLow}`, { name: 'ZZ Mix renamed', sortOrder: 1 });
+  check('an edit that doesn’t change N leaves the order alone (a tier ignores sortOrder)', r.status === 200 && JSON.stringify(await mixedOrder()) === JSON.stringify([mRule, mMid, mHigh, mLow]), await mixedOrder());
+  r = await call(alice, 'PATCH', `/admin/badges/${mLow}`, { threshold: 900_010 });
+  check('…back down to the lowest N → just before the first higher N (the rule tier stays first)',
+    r.status === 200 && JSON.stringify(await mixedOrder()) === JSON.stringify([mRule, mLow, mMid, mHigh]), await mixedOrder());
+  r = await call(alice, 'GET', `/admin/badges`);
+  const adminIdx = [mRule, mLow, mMid, mHigh].map(id => r.body.items.findIndex((b: any) => b.id === id));
+  check('admin list: the mixed tiers consecutive in that order', adminIdx.every((x, i) => i === 0 || x === adminIdx[i - 1] + 1), adminIdx);
+
+  // "Add tier": prefill from the series — metric + next N (900,010 / 900,050 / 900,100 → ×2 = 200,200
+  // → capped at the 1,000,000 max), template description, icon from the top tier, series color.
+  r = await call(alice, 'GET', `/admin/badge-series/${mixed}/new-tier`);
+  const draft = r.body?.draft;
+  check('Add tier prefill → 200 with kind/metric/series/color', r.status === 200 && draft?.seriesId === mixed && draft?.kind === 'metric' && draft?.metric === mKey && draft?.color === '#246810', draft);
+  check('…next N above the highest (capped at the max)', draft?.threshold === 1_000_000 && JSON.stringify(draft?.basedOn) === JSON.stringify([900_010, 900_050, 900_100]), draft);
+  check('…description from the template with the new N (1,000,000)', draft?.description === 'Declined 1,000,000 requests.' && draft?.descriptionFrom === 'template', draft);
+  check('…icon from the top tier (the highest in tier order)', draft?.icon === 'star', draft);
+  check('…key suggested from the top metric tier’s key', draft?.key === 'zz-badge-test-mix-1000000', draft);
+  // A realistic ladder: the seeded Venues series (if present on this DB) prefills a sensible N.
+  const [venuesSeries] = await db.select({ id: badgeSeries.id }).from(badgeSeries).where(eq(badgeSeries.key, 'venues'));
+  if (venuesSeries) {
+    r = await call(alice, 'GET', `/admin/badge-series/${venuesSeries.id}/new-tier`);
+    check('Add tier on Venues → a metric tier above its top N, description rendered', r.status === 200 && r.body.draft?.kind === 'metric'
+      && r.body.draft.threshold > Math.max(...r.body.draft.basedOn) && (r.body.draft.descriptionFrom !== 'template' || !r.body.draft.description.includes('{N}')), r.body.draft);
+    console.log(`      (Venues prefill: N=${r.body.draft?.threshold} from [${r.body.draft?.basedOn}], “${r.body.draft?.description}”)`);
+  }
+  r = await call(alice, 'GET', '/admin/badge-series/999999999/new-tier');
+  check('Add tier on an unknown series → 404', r.status === 404, r.body);
+  r = await call(alice, 'GET', `/admin/badge-series/${ladder}/new-tier`);
+  check('Add tier on a rule ladder → kind rule, rule shape + description copied from the top tier',
+    r.status === 200 && r.body.draft?.kind === 'rule' && r.body.draft?.rule?.machine?.machineId === machineId && r.body.draft?.description === 'Tier 4 desc' && r.body.draft?.threshold === null, r.body.draft);
+  // The prefill round-trips through create (name typed by the admin): it seats at the top.
+  const added = await createBadge({ key: draft.key, name: 'ZZ Mix added', kind: draft.kind, metric: draft.metric, threshold: draft.threshold, description: draft.description, icon: draft.icon, seriesId: draft.seriesId });
+  check('creating from the prefill → a draft tier at the top of the ladder', JSON.stringify(await mixedOrder()) === JSON.stringify([mRule, mLow, mMid, mHigh, added]), await mixedOrder());
 
   // ── retire; the sweep ──────────────────────────────────────────────────────
   r = await call(alice, 'POST', `/admin/badges/${big}/retire`);

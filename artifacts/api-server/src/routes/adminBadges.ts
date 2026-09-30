@@ -12,6 +12,7 @@ import {
 } from '../lib/badges.js';
 import {
   orderBadges, topLevelOrder, validateOrder, sortOrdersFor, nextSortOrder, normalizeSeriesInput, seriesKeyFor, SERIES_LIMITS,
+  hasThreshold, placeTier, validateTierOrder, tierSortOrders, newTierDraft, type SeriesValues,
 } from '../lib/badgeSeries.js';
 import type { Executor } from '../lib/activity.js';
 import type { BadgeRule } from '../lib/badgeRules.js';
@@ -35,14 +36,19 @@ import type { BadgeRule } from '../lib/badgeRules.js';
 //   DELETE /badges/:id/grants      ?userId= (or body { userId, reason }) revoke — by hand only
 //   PUT    /badges/order           { items: [{ type: 'series' | 'badge', id }] } — the full top-level
 //                                  order (every series + every single, once each); tiers follow their series
-//   POST   /badge-series           { name, color } create an (empty) series at the end
-//   PATCH  /badge-series/:id       { name?, color? } — the color applies to every tier
+//   POST   /badge-series           { name, color, descriptionTemplate? } create an (empty) series at the end
+//   PATCH  /badge-series/:id       { name?, color?, descriptionTemplate? } — the color applies to every tier
 //   DELETE /badge-series/:id       only an empty series (409 series_not_empty)
+//   PUT    /badge-series/:id/order { ids } every tier of the series, in the new order; tiers with a
+//                                  threshold must stay in ascending N (400 threshold_order)
+//   GET    /badge-series/:id/new-tier  "Add tier": the prefill for a new tier (badgeSeries.newTierDraft)
 //
 // Series (feature/badge-series): a badge's `seriesId` puts it in a ladder. POST /badges with no
 // `seriesId` joins the metric's series when that metric has exactly one; `seriesId: null` = a single;
-// `newSeries: { name, color }` creates one. New singles go after the last item; a new rule/manual
-// tier goes after its series' last tier (metric tiers order by threshold).
+// `newSeries: { name, color }` creates one. New singles go after the last item. Inside a series the
+// one ordering key is each tier's sort_order: a tier with a threshold is seated by its N whenever it
+// joins a series or its N changes (placeTier); a rule/manual tier joins at the end and is then moved
+// with PUT /badge-series/:id/order. `sortOrder` in a body only places a single — a tier ignores it.
 
 const router = Router();
 
@@ -68,11 +74,27 @@ async function maxTopOrder(ex: Executor): Promise<number | null> {
   const [r] = await ex.execute(sql`SELECT greatest((SELECT max(sort_order) FROM badge_series), (SELECT max(sort_order) FROM badges WHERE series_id IS NULL)) AS m`) as unknown as Array<{ m: number | null }>;
   return r?.m == null ? null : Number(r.m);
 }
-/** The highest sort_order among a series' tiers (rule/manual tiers order by it). */
-async function maxTierOrder(ex: Executor, seriesId: number, exceptBadgeId?: number): Promise<number | null> {
-  const [r] = await ex.select({ m: sql<number | null>`max(${badges.sortOrder})` }).from(badges)
-    .where(and(eq(badges.seriesId, seriesId), exceptBadgeId ? sql`${badges.id} <> ${exceptBadgeId}` : undefined));
-  return r?.m == null ? null : Number(r.m);
+/** A series' tiers — what the in-series order is computed from. */
+async function seriesTiers(ex: Executor, seriesId: number) {
+  return ex.select({ id: badges.id, seriesId: badges.seriesId, sortOrder: badges.sortOrder, kind: badges.kind, threshold: badges.threshold, name: badges.name })
+    .from(badges).where(eq(badges.seriesId, seriesId));
+}
+/** Write a series' tier order as sort_order 10, 20, 30, … (only the rows that change). Returns how many. */
+async function renumberTiers(ex: Executor, seriesId: number, ids: number[]): Promise<number> {
+  const placed = tierSortOrders(ids);
+  if (!placed.length) return 0;
+  const rows = await ex.execute(sql`UPDATE badges b SET sort_order = v.o, updated_at = now()
+    FROM (VALUES ${sql.join(placed.map(p => sql`(${p.id}::int, ${p.sortOrder}::int)`), sql`, `)}) AS v(id, o)
+    WHERE b.id = v.id AND b.series_id = ${seriesId} AND b.sort_order IS DISTINCT FROM v.o RETURNING b.id`) as unknown as unknown[];
+  return rows.length;
+}
+/**
+ * Seat a tier that just joined `seriesId` or changed its N: by N when it has a threshold, else last
+ * (placeTier), then renumber the series. The series row is locked so two edits can't interleave.
+ */
+async function seatTier(ex: Executor, seriesId: number, badge: { id: number; kind: string; threshold: number | null }) {
+  await ex.execute(sql`SELECT id FROM badge_series WHERE id = ${seriesId} FOR UPDATE`);
+  await renumberTiers(ex, seriesId, placeTier(await seriesTiers(ex, seriesId), badge));
 }
 /** The series a metric's badges are in, when there's exactly one — a new tier on it joins that ladder. */
 async function seriesOfMetric(ex: Executor, metric: string): Promise<number | null> {
@@ -84,16 +106,17 @@ async function seriesExists(ex: Executor, id: number): Promise<boolean> {
   return (await ex.select({ id: badgeSeries.id }).from(badgeSeries).where(eq(badgeSeries.id, id)).limit(1)).length > 0;
 }
 /** A new series at the end of the shared order, keyed from its name. */
-async function createSeries(ex: Executor, v: { name: string; color: string }) {
+async function createSeries(ex: Executor, v: { name: string; color: string; descriptionTemplate?: string | null }) {
   const taken = new Set((await ex.select({ key: badgeSeries.key }).from(badgeSeries)).map(r => r.key));
   const [row] = await ex.insert(badgeSeries).values({
-    key: seriesKeyFor(v.name, taken), name: v.name, color: v.color, sortOrder: nextSortOrder(await maxTopOrder(ex)),
+    key: seriesKeyFor(v.name, taken), name: v.name, color: v.color, descriptionTemplate: v.descriptionTemplate ?? null,
+    sortOrder: nextSortOrder(await maxTopOrder(ex)),
   }).returning();
   return row;
 }
-/** Where `seriesId` (or null = a single) puts a badge that's joining it: after the last tier / item. */
-async function placement(ex: Executor, seriesId: number | null, badgeId?: number): Promise<number> {
-  return nextSortOrder(seriesId != null ? await maxTierOrder(ex, seriesId, badgeId) : await maxTopOrder(ex));
+/** Where a single (a badge not in a series) goes: after the last top-level item. */
+async function topPlacement(ex: Executor): Promise<number> {
+  return nextSortOrder(await maxTopOrder(ex));
 }
 function refused(res: any, err: unknown): boolean {
   if (err instanceof Refusal) { res.status(err.status).json(err.body); return true; }
@@ -201,10 +224,11 @@ router.post('/badges', async (req, res) => {
         kind: v.kind!, metric: v.kind === 'metric' ? v.metric! : null, threshold: v.kind === 'metric' ? v.threshold! : null,
         rule: rule as Record<string, unknown> | null, retroactive: v.retroactive ?? false,
         availableFrom: v.availableFrom ?? null, availableTo: v.availableTo ?? null,
-        // Auto-placed: a single after the last item, a tier after its series' last tier.
-        sortOrder: v.sortOrder ?? await placement(tx, seriesId),
+        // Auto-placed: a single after the last item (or at its sortOrder); a tier is seated below.
+        sortOrder: seriesId != null ? 0 : v.sortOrder ?? await topPlacement(tx),
         seriesId, status: 'draft', createdById: (req as any).appUser.id,
       }).returning({ id: badges.id });
+      if (seriesId != null) await seatTier(tx, seriesId, { id: inserted.id, kind: v.kind!, threshold: v.kind === 'metric' ? v.threshold! : null });
       if (created) {
         await logActivity({ type: 'admin.badge_updated', ...fromReq(req), targetType: 'badge_series', targetId: created.id, payload: { action: 'series_created', seriesKey: created.key, name: created.name, viaBadge: v.key } }, { tx });
       }
@@ -265,7 +289,7 @@ router.patch('/badges/:id', async (req, res) => {
     }
 
     const set: Record<string, unknown> = { updatedAt: sql`now()` };
-    for (const k of ['key', 'name', 'description', 'icon', 'color', 'retroactive', 'sortOrder'] as const) if (v[k] !== undefined) set[k] = v[k];
+    for (const k of ['key', 'name', 'description', 'icon', 'color', 'retroactive'] as const) if (v[k] !== undefined) set[k] = v[k];
     if (v.availableFrom !== undefined) set.availableFrom = v.availableFrom;
     if (v.availableTo !== undefined) set.availableTo = v.availableTo;
     Object.assign(set, merged);
@@ -280,13 +304,18 @@ router.patch('/badges/:id', async (req, res) => {
         if (v.seriesId != null && !(await seriesExists(tx, v.seriesId))) throw unknownSeries();
         target = v.seriesId;
       }
-      if (target !== (b.seriesId ?? null)) {
-        set.seriesId = target;
-        // Re-placed where it lands: after the series' last tier, or (leaving a series) after the last item.
-        if (v.sortOrder === undefined) set.sortOrder = await placement(tx, target, id);
+      const moved = target !== (b.seriesId ?? null);
+      if (moved) set.seriesId = target;
+      // A single takes an explicit sortOrder, or (leaving a series) goes after the last item. A tier
+      // ignores sortOrder: it's seated by N (below) or moved with PUT /badge-series/:id/order.
+      if (target == null) {
+        if (v.sortOrder !== undefined) set.sortOrder = v.sortOrder;
+        else if (moved) set.sortOrder = await topPlacement(tx);
       }
       await tx.update(badges).set(set as any).where(eq(badges.id, id));
-      const changes = [...new Set([...Object.keys(req.body ?? {}).filter(k => k in set || k === 'rule' || k === 'newSeries'), ...('seriesId' in set ? ['seriesId'] : [])])];
+      const nChanged = hasThreshold(merged) && (!hasThreshold(b) || merged.threshold !== b.threshold);
+      if (target != null && (moved || nChanged)) await seatTier(tx, target, { id, kind: merged.kind, threshold: merged.threshold });
+      const changes = [...new Set([...Object.keys(req.body ?? {}).filter(k => k in set || k === 'rule' || k === 'newSeries'), ...(moved ? ['seriesId'] : [])])];
       await logActivity({
         type: 'admin.badge_updated', ...fromReq(req), targetType: 'badge', targetId: id,
         payload: { action: 'edited', badgeKey: (v.key ?? b.key), name: v.name ?? b.name, fields: changes, ...('seriesId' in set ? { seriesFrom: b.seriesId ?? null, seriesTo: set.seriesId } : {}) },
@@ -366,7 +395,7 @@ router.post('/badge-series', async (req, res) => {
   if ('errors' in parsed) return void res.status(400).json({ error: 'Check the highlighted fields', code: 'invalid_series', errors: parsed.errors });
   try {
     const row = await db.transaction(async tx => {
-      const created = await createSeries(tx, parsed.values as { name: string; color: string });
+      const created = await createSeries(tx, parsed.values as SeriesValues & { name: string; color: string });
       await logActivity({ type: 'admin.badge_updated', ...fromReq(req), targetType: 'badge_series', targetId: created.id, payload: { action: 'series_created', seriesKey: created.key, name: created.name } }, { tx });
       return created;
     });
@@ -386,7 +415,7 @@ router.patch('/badge-series/:id', async (req, res) => {
     const [before] = await db.select().from(badgeSeries).where(eq(badgeSeries.id, id)).limit(1);
     if (!before) return void res.status(404).json({ error: 'Series not found', code: 'series_not_found' });
     const [row] = await db.update(badgeSeries).set({ ...parsed.values, updatedAt: sql`now()` as any }).where(eq(badgeSeries.id, id)).returning();
-    const fields = (Object.keys(parsed.values) as Array<'name' | 'color'>).filter(k => parsed.values[k] !== before[k]);
+    const fields = (Object.keys(parsed.values) as Array<keyof SeriesValues>).filter(k => (parsed.values[k] ?? null) !== (before[k] ?? null));
     if (fields.length) {
       await logActivity({
         type: 'admin.badge_updated', ...fromReq(req), targetType: 'badge_series', targetId: id,
@@ -397,6 +426,54 @@ router.patch('/badge-series/:id', async (req, res) => {
     res.json({ series: { ...row, badgeCount: Number(n?.n ?? 0) } });
   } catch (err) {
     fail500(res, 'update series', err);
+  }
+});
+
+// "Add tier": the new tier's prefill, from the series' tiers and template (badgeSeries.newTierDraft).
+// Read-only — the editor opens with it and the admin still names and saves the badge.
+router.get('/badge-series/:id/new-tier', async (req, res) => {
+  const id = intParam(req.params.id);
+  if (!id) return void res.status(400).json({ error: 'Invalid series id' });
+  try {
+    const [s] = await db.select({ id: badgeSeries.id, color: badgeSeries.color, descriptionTemplate: badgeSeries.descriptionTemplate })
+      .from(badgeSeries).where(eq(badgeSeries.id, id)).limit(1);
+    if (!s) return void res.status(404).json({ error: 'Series not found', code: 'series_not_found' });
+    const tiers = await db.select({
+      id: badges.id, seriesId: badges.seriesId, sortOrder: badges.sortOrder, kind: badges.kind, threshold: badges.threshold,
+      key: badges.key, metric: badges.metric, rule: badges.rule, icon: badges.icon, description: badges.description,
+    }).from(badges).where(eq(badges.seriesId, id));
+    const taken = new Set((await db.select({ key: badges.key }).from(badges)).map(r => r.key));
+    res.json({ draft: newTierDraft(s, tiers, taken, BADGE_LIMITS.threshold) });
+  } catch (err) {
+    fail500(res, 'prefill a new tier', err);
+  }
+});
+
+// The order of one series' tiers (drag / move buttons inside a series). Every tier once; tiers with a
+// threshold must stay in ascending N — only rule/manual tiers really move. One transaction with the
+// series row locked; sort_orders become 10, 20, 30, …
+router.put('/badge-series/:id/order', async (req, res) => {
+  const id = intParam(req.params.id);
+  if (!id) return void res.status(400).json({ error: 'Invalid series id' });
+  try {
+    const out = await db.transaction(async tx => {
+      const [s] = await tx.select({ id: badgeSeries.id, key: badgeSeries.key, name: badgeSeries.name }).from(badgeSeries).where(eq(badgeSeries.id, id)).limit(1).for('update');
+      if (!s) throw new Refusal(404, { error: 'Series not found', code: 'series_not_found' });
+      const check = validateTierOrder(req.body, await seriesTiers(tx, id));
+      if (!check.ok) throw new Refusal(check.code === 'order_stale' ? 409 : 400, { error: check.error, code: check.code });
+      const changed = await renumberTiers(tx, id, check.ids);
+      if (changed) {
+        await logActivity({
+          type: 'admin.badge_order_changed', ...fromReq(req), targetType: 'badge_series', targetId: id,
+          payload: { seriesKey: s.key, name: s.name, items: check.ids.length, changed, order: check.ids.map(i => `b${i}`).join(' ') },
+        }, { tx });
+      }
+      return { ids: check.ids, changed };
+    });
+    res.json(out);
+  } catch (err) {
+    if (refused(res, err)) return;
+    fail500(res, 'reorder tiers', err);
   }
 });
 

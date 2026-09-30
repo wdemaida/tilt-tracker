@@ -1,7 +1,8 @@
 // Run: DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/badgeSeries.test.ts   (from artifacts/api-server)
 //
-// Badge series, the pure rules: tier order, the shared shelf/catalog order, the reorder body's
-// validation, collapsing a profile to one item per series with pips, series input and keys.
+// Badge series, the pure rules: tier order (one key, N-tiers seated by threshold), the shared
+// shelf/catalog order, both reorder bodies' validation, collapsing a profile to one item per series
+// with pips, description templates, "Add tier" prefill, series input and keys.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -9,7 +10,8 @@ process.env.DATABASE_URL ??= 'postgres://unit-test@127.0.0.1:1/never-connected';
 
 const {
   tierCompare, orderBadges, topLevelOrder, tierNumbers, validateOrder, sortOrdersFor, nextSortOrder, collapseShelf, ladderOf,
-  normalizeSeriesInput, seriesKeyFor,
+  normalizeSeriesInput, seriesKeyFor, placeTier, validateTierOrder, tierSortOrders, hasThreshold,
+  formatN, renderTemplate, deriveTemplate, deriveSeriesTemplate, nextThreshold, newTierDraft,
 } = await import('./badgeSeries.js');
 const { normalizeBadgeInput } = await import('./badges.js');
 
@@ -22,21 +24,63 @@ const B = (id: number, o: Partial<{ seriesId: number | null; sortOrder: number; 
 // Scores series (1 / 10 / 100 / 1000) at 10; singles at 5 and 20; a Venues series at 30.
 const scores = S(1, 10, { key: 'scores', name: 'Scores', color: '#22c55e' });
 const venues = S(2, 30, { key: 'venues', name: 'Venues', color: '#14b8a6' });
-const t1 = B(11, { seriesId: 1, threshold: 1, sortOrder: 99 });
-const t10 = B(12, { seriesId: 1, threshold: 10, sortOrder: 1 });
-const t100 = B(13, { seriesId: 1, threshold: 100 });
-const t1000 = B(14, { seriesId: 1, threshold: 1000 });
-const v5 = B(21, { seriesId: 2, threshold: 5 });
-const v25 = B(22, { seriesId: 2, threshold: 25 });
+const t1 = B(11, { seriesId: 1, threshold: 1, sortOrder: 10 });
+const t10 = B(12, { seriesId: 1, threshold: 10, sortOrder: 20 });
+const t100 = B(13, { seriesId: 1, threshold: 100, sortOrder: 30 });
+const t1000 = B(14, { seriesId: 1, threshold: 1000, sortOrder: 40 });
+const v5 = B(21, { seriesId: 2, threshold: 5, sortOrder: 10 });
+const v25 = B(22, { seriesId: 2, threshold: 25, sortOrder: 20 });
 const singleA = B(31, { kind: 'manual', threshold: null, sortOrder: 5 });
 const singleB = B(32, { kind: 'rule', threshold: null, sortOrder: 20 });
 const all = [t1000, singleB, v25, t10, singleA, t100, v5, t1];
 
-test('tierCompare: metric tiers by threshold (not sort_order), then rule/manual tiers by sort_order', () => {
+test('tierCompare: one key — sort_order, then id — for every kind of tier', () => {
   assert.deepEqual([t1000, t10, t1, t100].sort(tierCompare).map(b => b.id), [11, 12, 13, 14]);
-  const rule2 = B(41, { seriesId: 1, kind: 'rule', threshold: null, sortOrder: 20 });
-  const rule1 = B(42, { seriesId: 1, kind: 'manual', threshold: null, sortOrder: 10 });
-  assert.deepEqual([rule2, t100, rule1, t1].sort(tierCompare).map(b => b.id), [11, 13, 42, 41]);
+  // A rule tier dragged between 10 and 100 stays there: the mixed ladder reads 1 → 10 → rule → 100.
+  const rule = B(41, { seriesId: 1, kind: 'rule', threshold: null, sortOrder: 25 });
+  const manual = B(42, { seriesId: 1, kind: 'manual', threshold: null, sortOrder: 5 });
+  assert.deepEqual([rule, t100, manual, t1, t10].sort(tierCompare).map(b => b.id), [42, 11, 12, 41, 13]);
+  assert.deepEqual([B(2, { sortOrder: 10 }), B(1, { sortOrder: 10 })].sort(tierCompare).map(b => b.id), [1, 2], 'tie → id');
+  assert.equal(hasThreshold({ kind: 'metric', threshold: 5 }), true);
+  assert.equal(hasThreshold({ kind: 'metric', threshold: null }), false);
+  assert.equal(hasThreshold({ kind: 'rule', threshold: 5 }), false);
+});
+
+test('placeTier: an N-tier seats before the first higher N; no threshold (or nothing higher) → last', () => {
+  const rule = B(41, { seriesId: 1, kind: 'rule', threshold: null, sortOrder: 25 });
+  const ladder = [t1, t10, rule, t100, t1000]; // 1, 10, rule, 100, 1000
+  assert.deepEqual(placeTier(ladder, { id: 50, kind: 'metric', threshold: 50 }), [11, 12, 41, 50, 13, 14], 'before 100 — after the rule tier between');
+  assert.deepEqual(placeTier(ladder, { id: 50, kind: 'metric', threshold: 5 }), [11, 50, 12, 41, 13, 14]);
+  assert.deepEqual(placeTier(ladder, { id: 50, kind: 'metric', threshold: 10 }), [11, 12, 41, 50, 13, 14], 'equal N → after it, just before the next higher N');
+  assert.deepEqual(placeTier(ladder, { id: 50, kind: 'metric', threshold: 5000 }), [11, 12, 41, 13, 14, 50]);
+  assert.deepEqual(placeTier(ladder, { id: 50, kind: 'rule', threshold: null }), [11, 12, 41, 13, 14, 50], 'a rule tier joins at the end');
+  assert.deepEqual(placeTier([], { id: 50, kind: 'metric', threshold: 3 }), [50]);
+  // Re-seating an existing tier whose N changed (it's in siblings already): moved, not duplicated.
+  assert.deepEqual(placeTier(ladder, { id: 12, kind: 'metric', threshold: 500 }), [11, 41, 13, 12, 14]);
+  // Unsorted input is fine — siblings are read in tier order.
+  assert.deepEqual(placeTier([t1000, rule, t1], { id: 50, kind: 'metric', threshold: 100 }), [11, 41, 50, 14]);
+  assert.deepEqual(tierSortOrders([11, 41, 50]), [{ id: 11, sortOrder: 10 }, { id: 41, sortOrder: 20 }, { id: 50, sortOrder: 30 }]);
+});
+
+test('validateTierOrder: every tier once; rule/manual anywhere; N-tiers must stay ascending', () => {
+  const rule = { ...B(41, { seriesId: 1, kind: 'rule', threshold: null }), name: 'Holiday' };
+  const tiers = [{ ...t1, name: 'Ball 1' }, { ...t10, name: 'Regular' }, rule, { ...t100, name: 'Centurion' }];
+  const code = (ids: unknown) => { const r = validateTierOrder({ ids }, tiers); return r.ok ? 'ok' : r.code; };
+  assert.equal(code([41, 11, 12, 13]), 'ok', 'a rule tier first');
+  assert.equal(code([11, 12, 13, 41]), 'ok', 'a rule tier last');
+  assert.equal(code([11, 41, 12, 13]), 'ok');
+  assert.equal(code([12, 11, 41, 13]), 'threshold_order');
+  const r = validateTierOrder({ ids: [11, 13, 41, 12] }, tiers);
+  assert.ok(!r.ok && /Regular/.test(r.error) && /Centurion/.test(r.error) && /100/.test(r.error), 'names the tiers');
+  assert.equal(code([11, 12, 13]), 'order_stale');
+  assert.equal(code([11, 12, 13, 41, 41]), 'duplicate_item');
+  assert.equal(code([11, 12, 13, 41, 99]), 'unknown_item');
+  assert.equal(code('x'), 'invalid_order');
+  assert.equal(code([11, 12, 13, 1.5]), 'invalid_order');
+  assert.equal(validateTierOrder(null, tiers).ok, false);
+  // Two tiers at the same N may swap.
+  const twin = { ...B(15, { seriesId: 1, threshold: 10, sortOrder: 21 }), name: 'Twin' };
+  assert.equal(validateTierOrder({ ids: [11, 15, 12, 41, 13] }, [...tiers, twin]).ok, true);
 });
 
 test('orderBadges: one shared order — series as a unit at its sort_order, singles at theirs, tiers consecutive', () => {
@@ -137,11 +181,108 @@ test('ladderOf: live tiers plus the retired ones this viewer earned', () => {
   assert.deepEqual(ladderOf(1, [t10, r, t1], new Set([13])).map(b => b.id), [11, 12, 13]);
 });
 
+test('renderTemplate / deriveTemplate: {N} with thousands separators; one clean match or null', () => {
+  assert.equal(formatN(1000), '1,000');
+  assert.equal(renderTemplate('Posted {N} scores.', 1000), 'Posted 1,000 scores.');
+  assert.equal(renderTemplate('Posted scores at {N} venues.', 50), 'Posted scores at 50 venues.');
+  assert.equal(renderTemplate('{N} of {N}', 2500), '2,500 of 2,500');
+  assert.equal(deriveTemplate('Posted scores at 5 venues.', 5), 'Posted scores at {N} venues.');
+  assert.equal(deriveTemplate('Posted 1,000 scores.', 1000), 'Posted {N} scores.');
+  assert.equal(deriveTemplate('Posted 1000 scores.', 1000), 'Posted {N} scores.');
+  assert.equal(deriveTemplate('Posted your first score.', 1), null, 'no number');
+  assert.equal(deriveTemplate('Posted 10 scores.', 1), null, '1 inside 10 is not a match');
+  assert.equal(deriveTemplate('Posted 10 scores.', 0), null);
+  assert.equal(deriveTemplate('10 scores at 10 venues', 10), null, 'ambiguous');
+  assert.equal(deriveTemplate('Won 5.5 games', 5), null, 'part of a decimal');
+  assert.equal(deriveTemplate('Hit 25.', 25), 'Hit {N}.', 'a full stop after the number is fine');
+  assert.equal(deriveTemplate('Lost 10 challenges in a row — and came back.', 10), 'Lost {N} challenges in a row — and came back.');
+  assert.equal(deriveTemplate('Already {N} and 5', 5), null, 'already a template');
+  const tiers = [
+    { kind: 'metric', threshold: 10, description: 'Posted 10 scores.' },
+    { kind: 'metric', threshold: 1, description: 'Posted your first score.' },
+    { kind: 'rule', threshold: null, description: 'Posted 3 on Christmas' },
+  ];
+  assert.equal(deriveSeriesTemplate(tiers), 'Posted {N} scores.', 'the lowest tier with a clean match');
+  assert.equal(deriveSeriesTemplate([{ kind: 'metric', threshold: 5, description: 'Posted scores at 5 venues.' }, { kind: 'metric', threshold: 25, description: 'Globetrotter: 25 venues' }]), 'Posted scores at {N} venues.', 'the lowest wins');
+  assert.equal(deriveSeriesTemplate([{ kind: 'rule', threshold: null, description: 'x 5' }]), null);
+});
+
+test('nextThreshold: keep the ladder’s last step, rounded to a nice number above the top', () => {
+  assert.equal(nextThreshold([1, 10, 100, 1000]), 10_000);
+  assert.equal(nextThreshold([5, 25]), 100, '×5 = 125 → 100');
+  assert.equal(nextThreshold([10, 50, 100]), 200);
+  assert.equal(nextThreshold([3, 10, 25]), 50, '×2.5 = 62.5 → 50');
+  assert.equal(nextThreshold([7, 30, 100]), 250);
+  assert.equal(nextThreshold([1]), 10, 'one tier at 1 → ×10');
+  assert.equal(nextThreshold([25]), 50, 'one tier → ×2');
+  assert.equal(nextThreshold([99, 100]), 200, 'a tiny step is clamped to ×1.5 → 150 ≈ 200');
+  assert.equal(nextThreshold([1, 1000]), 10_000, 'a huge step is clamped to ×10');
+  assert.equal(nextThreshold([2]), 5, 'whole numbers only (no 2.5)');
+  assert.equal(nextThreshold([]), null);
+  assert.equal(nextThreshold([500_000, 1_000_000]), null, 'nothing above the max');
+  assert.equal(nextThreshold([100_000, 600_000]), 1_000_000, 'capped at the max');
+  assert.equal(nextThreshold([10, 10, 5]), 20, 'duplicates and order don’t matter');
+});
+
+test('newTierDraft: metric series → next N, template description, key; icon from the top tier; rule series → copy', () => {
+  const T = (id: number, o: Record<string, any>) => ({ id, seriesId: 3, sortOrder: id * 10, kind: 'metric', threshold: null, key: 'k' + id, metric: 'distinct_venues', rule: null, icon: 'award', description: '', ...o });
+  const venuesSeries = { id: 3, color: '#14b8a6', descriptionTemplate: 'Posted scores at {N} venues.' };
+  const tiers = [
+    T(1, { threshold: 5, key: 'venues-5', icon: 'map-pin', description: 'Posted scores at 5 venues.' }),
+    T(2, { threshold: 12, key: 'venues-12', metric: 'scores_posted', description: 'Custom' }), // an odd one out
+    T(3, { threshold: 25, key: 'venues-25', icon: 'globe', description: 'Posted scores at 25 venues.' }),
+  ];
+  const d = newTierDraft(venuesSeries, tiers, new Set(['venues-5', 'venues-25']));
+  assert.equal(d.kind, 'metric');
+  assert.equal(d.metric, 'distinct_venues', 'the metric most tiers use');
+  assert.deepEqual(d.basedOn, [5, 25]);
+  assert.equal(d.threshold, 100);
+  assert.equal(d.description, 'Posted scores at 100 venues.');
+  assert.equal(d.descriptionFrom, 'template');
+  assert.equal(d.key, 'venues-100');
+  assert.equal(d.icon, 'globe', 'the top tier’s icon');
+  assert.equal(d.color, '#14b8a6');
+  assert.equal(newTierDraft(venuesSeries, tiers, new Set(['venues-100'])).key, '', 'a taken key is left blank');
+  // No template → the base top tier's description, copied.
+  const noTpl = newTierDraft({ ...venuesSeries, descriptionTemplate: null }, tiers, new Set());
+  assert.equal(noTpl.description, 'Posted scores at 25 venues.');
+  assert.equal(noTpl.descriptionFrom, 'copied');
+  // A thousands N renders with separators.
+  const scores = newTierDraft({ id: 3, color: '#000000', descriptionTemplate: 'Posted {N} scores.' },
+    [T(1, { threshold: 100, metric: 'scores_posted', key: 'scores-100' }), T(2, { threshold: 1000, metric: 'scores_posted', key: 'scores-1000' })], new Set());
+  assert.equal(scores.threshold, 10_000);
+  assert.equal(scores.description, 'Posted 10,000 scores.');
+  assert.equal(scores.key, 'scores-10000');
+  // A rule series: kind + rule shape + description from its top tier.
+  const rule = { machine: { machineId: 7, matchMode: 'group' }, count: 3 };
+  const r = newTierDraft({ id: 3, color: '#123456', descriptionTemplate: null },
+    [T(1, { kind: 'rule', rule: { count: 1 }, icon: 'gift', description: 'One' }), T(2, { kind: 'rule', rule, icon: 'star', description: 'Three on it' })], new Set());
+  assert.deepEqual([r.kind, r.rule, r.icon, r.description, r.threshold, r.metric], ['rule', rule, 'star', 'Three on it', null, null]);
+  // A mixed series with a rule tier on top: the metric tiers set kind/N, the top tier the icon.
+  const mixed = newTierDraft(venuesSeries, [...tiers, T(9, { kind: 'rule', rule: {}, icon: 'gift', description: 'Holiday' })], new Set());
+  assert.equal(mixed.kind, 'metric');
+  assert.equal(mixed.icon, 'gift');
+  // An empty series: nothing to copy.
+  const empty = newTierDraft(venuesSeries, [], new Set());
+  assert.deepEqual([empty.kind, empty.icon, empty.description, empty.color], [null, null, '', '#14b8a6']);
+  // Tiers of another series passed in are ignored.
+  assert.equal(newTierDraft({ ...venuesSeries, id: 4 }, tiers, new Set()).kind, null);
+});
+
 test('normalizeSeriesInput and seriesKeyFor', () => {
   assert.deepEqual(normalizeSeriesInput({ name: ' Win streaks ', color: '#EF4444' }, false), { values: { name: 'Win streaks', color: '#ef4444' } });
   const bad = normalizeSeriesInput({ name: '', color: 'red' }, false);
   assert.ok('errors' in bad && bad.errors.name && bad.errors.color);
   assert.deepEqual(normalizeSeriesInput({ color: '#000000' }, true), { values: { color: '#000000' } });
+  assert.deepEqual(normalizeSeriesInput({ descriptionTemplate: ' Posted {N} scores. ' }, true), { values: { descriptionTemplate: 'Posted {N} scores.' } });
+  assert.deepEqual(normalizeSeriesInput({ descriptionTemplate: '' }, true), { values: { descriptionTemplate: null } }, 'empty clears it');
+  assert.deepEqual(normalizeSeriesInput({ descriptionTemplate: null }, true), { values: { descriptionTemplate: null } });
+  const noN = normalizeSeriesInput({ descriptionTemplate: 'Posted scores.' }, true);
+  assert.ok('errors' in noN && /\{N\}/.test(noN.errors.descriptionTemplate));
+  const long = normalizeSeriesInput({ descriptionTemplate: '{N}' + 'x'.repeat(300) }, true);
+  assert.ok('errors' in long && long.errors.descriptionTemplate);
+  const nonString = normalizeSeriesInput({ descriptionTemplate: 5 }, true);
+  assert.ok('errors' in nonString && nonString.errors.descriptionTemplate);
   assert.equal(seriesKeyFor('Win streaks', new Set()), 'win-streaks');
   assert.equal(seriesKeyFor('Win streaks', new Set(['win-streaks', 'win-streaks-2'])), 'win-streaks-3');
   assert.equal(seriesKeyFor('Pokémon!', new Set()), 'pokemon');

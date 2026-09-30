@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Plus, Upload, Trash2, Eye, Rocket, Archive, Loader2, UserPlus, X, ChevronDown, ChevronUp, Search, History, GripVertical, Layers } from 'lucide-react';
 import {
   useAdminApi, type AdminBadge, type AdminBadgeSeries, type BadgeOrderItem, type BadgeInput, type BadgeKind, type BadgeRule, type BadgePreview,
-  type BadgeBackfillResult, type UserRef,
+  type BadgeBackfillResult, type UserRef, type NewTierDraft,
 } from '../lib/adminApi';
 import { useApi } from '../lib/useApi';
 import { toLocalInput, localInputToIso } from '../lib/datetime';
@@ -31,8 +31,16 @@ import { BADGES_KEY } from '../lib/badges';
 // series has ONE color — a tier shows the series color control (it recolors every tier) instead of
 // its own. Creating a metric badge whose metric already has a series preselects it. The list is in
 // the shared order (series as a unit, singles between them): drag a row by its handle, or use the
-// move up/down buttons (keyboard and phones). Tiers inside a series aren't draggable — metric tiers
-// follow their threshold, rule/manual ones their "Tier order". Every move PUTs the full order.
+// move up/down buttons (keyboard and phones). Every move PUTs the full order.
+//
+// Inside a series there's one ordering key (the tier's sort_order): a tier with a threshold is placed
+// by its N (server-side, on create / N change) and has no handle; a rule/manual tier has its own
+// handle + ▲/▼ and goes anywhere in the ladder (PUT /badge-series/:id/order — the server refuses an
+// order that puts a higher N first, which the UI can't produce since only N-less tiers move).
+// "Add tier" on a series opens the editor prefilled from GET /badge-series/:id/new-tier (kind,
+// metric, next N, icon, series color, description from the series' {N} template). While a tier's
+// description still equals the template's text (`descLinked`), editing N rewrites it; once the
+// admin edits the description by hand it stays theirs.
 
 const STATUS_TONE = { draft: 'muted', live: 'ok', retired: 'warn' } as const;
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -177,7 +185,7 @@ function IconPicker({ value, color, onChange }: { value: string; color: string; 
 interface Draft {
   key: string; name: string; description: string; icon: string; color: string; kind: BadgeKind;
   metric: string; threshold: string; rule: BadgeRule; retroactive: boolean;
-  availableFrom: string; availableTo: string; sortOrder: string;
+  availableFrom: string; availableTo: string;
   /** '' = no series (a single), 'new' = create one, else the series id. */
   seriesId: string;
   /** The chosen series' name and color (a new one's, or edits to an existing one's — every tier). */
@@ -186,8 +194,32 @@ interface Draft {
 
 const EMPTY: Draft = {
   key: '', name: '', description: '', icon: 'award', color: '#f59e0b', kind: 'metric', metric: 'scores_posted', threshold: '10',
-  rule: {}, retroactive: false, availableFrom: '', availableTo: '', sortOrder: '0', seriesId: '', seriesName: '', seriesColor: '#f59e0b',
+  rule: {}, retroactive: false, availableFrom: '', availableTo: '', seriesId: '', seriesName: '', seriesColor: '#f59e0b',
 };
+
+/** Same rules as the server's badgeSeries.ts: {N} → the threshold with thousands separators. */
+const N_TOKEN = '{N}';
+const renderTemplate = (template: string, n: number) => template.split(N_TOKEN).join(n.toLocaleString('en-US'));
+/** A tier placed by its N (a metric badge with a threshold); rule/manual tiers are placed by hand. */
+const hasThreshold = (b: Pick<AdminBadge, 'kind' | 'threshold'>) => b.kind === 'metric' && b.threshold != null;
+/** The threshold a draft's N field holds, or null while it isn't a positive whole number. */
+function draftN(d: Pick<Draft, 'threshold'>): number | null {
+  const n = Number(d.threshold);
+  return d.threshold.trim() !== '' && Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+/** The draft built from "Add tier": the server's prefill over the defaults, in the series. */
+function draftOfPrefill(p: NewTierDraft, series: AdminBadgeSeries[]): Draft {
+  const s = series.find(x => x.id === p.seriesId);
+  return {
+    ...EMPTY,
+    key: p.key, description: p.description, icon: p.icon ?? EMPTY.icon, color: p.color,
+    kind: p.kind ?? EMPTY.kind, metric: p.metric ?? EMPTY.metric,
+    threshold: p.threshold != null ? String(p.threshold) : p.kind ? '' : EMPTY.threshold,
+    rule: p.rule ?? {},
+    seriesId: String(p.seriesId), seriesName: s?.name ?? '', seriesColor: s?.color ?? p.color,
+  };
+}
 
 function draftOf(b: AdminBadge, series: AdminBadgeSeries[]): Draft {
   const s = b.seriesId != null ? series.find(x => x.id === b.seriesId) : undefined;
@@ -196,7 +228,6 @@ function draftOf(b: AdminBadge, series: AdminBadgeSeries[]): Draft {
     metric: b.metric ?? 'scores_posted', threshold: b.threshold != null ? String(b.threshold) : '',
     rule: b.rule ?? {}, retroactive: b.retroactive,
     availableFrom: b.availableFrom ? toLocalInput(b.availableFrom) : '', availableTo: b.availableTo ? toLocalInput(b.availableTo) : '',
-    sortOrder: String(b.sortOrder),
     seriesId: s ? String(s.id) : '', seriesName: s?.name ?? '', seriesColor: s?.color ?? (b.ownColor ?? b.color),
   };
 }
@@ -206,9 +237,6 @@ function seriesOfMetric(items: AdminBadge[], metric: string, series: AdminBadgeS
   const ids = new Set(items.filter(b => b.kind === 'metric' && b.metric === metric && b.seriesId != null).map(b => b.seriesId!));
   return ids.size === 1 ? series.find(s => ids.has(s.id)) ?? null : null;
 }
-
-/** A tier that isn't a metric orders by its own sort_order inside the series ("Tier order"). */
-const hasTierOrder = (d: Pick<Draft, 'seriesId' | 'kind'>) => d.seriesId !== '' && d.kind !== 'metric';
 
 /** The PATCH for an existing series' name/color that this draft would send, or null. */
 function seriesPatchOf(d: Draft, series: AdminBadgeSeries[]): { id: number; body: { name?: string; color?: string } } | null {
@@ -246,9 +274,8 @@ function bodyOf(d: Draft, locked: boolean): BadgeInput {
     availableFrom: d.availableFrom ? localInputToIso(d.availableFrom) : null,
     availableTo: d.availableTo ? localInputToIso(d.availableTo) : null,
   };
-  // Singles and metric tiers are placed by the list (drag / move buttons) and by threshold, so only a
-  // rule/manual tier carries its order here. The server auto-places everything else.
-  if (hasTierOrder(d)) body.sortOrder = Number(d.sortOrder) || 0;
+  // No sortOrder: singles are placed by the list's drag / move buttons, tiers by their N (server-side)
+  // or the in-series drag. The server auto-places a badge wherever it lands.
   if (d.seriesId === 'new') body.newSeries = { name: d.seriesName.trim(), color: d.seriesColor.toLowerCase() };
   else body.seriesId = d.seriesId === '' ? null : Number(d.seriesId);
   if (!locked) { body.key = d.key; body.kind = d.kind; }
@@ -503,8 +530,23 @@ function PreviewList({ p }: { p: BadgePreview }) {
   );
 }
 
-function BadgeEditor({ badge, series, allBadges, onSaved, onClose }: {
+/** The {N} template that drives a draft's description: its series' template, for a metric tier. */
+function templateFor(d: Pick<Draft, 'seriesId' | 'kind'>, series: AdminBadgeSeries[]): string | null {
+  if (d.kind !== 'metric' || d.seriesId === '' || d.seriesId === 'new') return null;
+  const t = series.find(s => String(s.id) === d.seriesId)?.descriptionTemplate;
+  return t && t.includes(N_TOKEN) ? t : null;
+}
+/** Whether a draft's description is still the template's text for its N (or empty) — then N edits rewrite it. */
+function descFollowsTemplate(d: Draft, series: AdminBadgeSeries[]): boolean {
+  const t = templateFor(d, series);
+  const n = draftN(d);
+  return !!t && (d.description.trim() === '' || (n != null && d.description === renderTemplate(t, n)));
+}
+
+function BadgeEditor({ badge, prefill, series, allBadges, onSaved, onClose }: {
   badge: AdminBadge | null; series: AdminBadgeSeries[]; allBadges: AdminBadge[];
+  /** "Add tier": a new badge prefilled from its series. */
+  prefill?: NewTierDraft;
   onSaved: (b: AdminBadge, created: boolean) => void; onClose: () => void;
 }) {
   const admin = useAdminApi();
@@ -514,20 +556,26 @@ function BadgeEditor({ badge, series, allBadges, onSaved, onClose }: {
   const live = detail.data?.badge ?? badge;
   const initial = (): Draft => {
     if (badge) return draftOf(badge, series);
+    if (prefill) return draftOfPrefill(prefill, series);
     // A new metric badge on a metric that already has a series joins it by default.
     const s = seriesOfMetric(allBadges, EMPTY.metric, series);
     return s ? { ...EMPTY, seriesId: String(s.id), seriesName: s.name, seriesColor: s.color } : EMPTY;
   };
   const [d, setD] = useState<Draft>(initial);
-  // Once the admin picks a series themself, changing the metric stops re-picking it.
-  const [seriesTouched, setSeriesTouched] = useState(false);
+  // Once the admin picks a series themself (or came from "Add tier"), changing the metric stops re-picking it.
+  const [seriesTouched, setSeriesTouched] = useState(!!prefill);
+  // The description follows the series template while it still reads as the template's text.
+  const [descLinked, setDescLinked] = useState(() => descFollowsTemplate(initial(), series));
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<unknown>(null);
   const [saving, setSaving] = useState(false);
   const [preview, setPreview] = useState<BadgePreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
   const [confirm, setConfirm] = useState<null | 'activate' | 'retire' | 'backfill' | 'save-backfill' | { revoke: UserRef }>(null);
-  useEffect(() => { setD(initial()); setSeriesTouched(false); setErrors({}); setError(null); setPreview(null); }, [badge?.id]);
+  useEffect(() => {
+    const init = initial();
+    setD(init); setSeriesTouched(!!prefill); setDescLinked(descFollowsTemplate(init, series)); setErrors({}); setError(null); setPreview(null);
+  }, [badge?.id]);
 
   const locked = (live?.earnedCount ?? 0) > 0;
   const set = (patch: Partial<Draft>) => setD(x => ({ ...x, ...patch }));
@@ -538,10 +586,30 @@ function BadgeEditor({ badge, series, allBadges, onSaved, onClose }: {
   const pickedSeries = d.seriesId !== '' && d.seriesId !== 'new' ? series.find(s => String(s.id) === d.seriesId) ?? null : null;
   const inSeries = d.seriesId !== '';
   const drawColor = inSeries ? d.seriesColor : d.color;
+  // A change to N / series / kind rewrites a description that still follows the series template
+  // (or is empty); a hand-written one is left alone.
+  const template = templateFor(d, series);
+  const linked = descLinked || d.description.trim() === '';
+  function setFollowing(patch: Partial<Draft>) {
+    const next = { ...d, ...patch };
+    const t = templateFor(next, series), n = draftN(next);
+    if (linked && t && n != null) next.description = renderTemplate(t, n);
+    setD(next);
+  }
+  function setDescription(description: string) {
+    set({ description });
+    setDescLinked(descFollowsTemplate({ ...d, description }, series));
+  }
+  function applyTemplate() {
+    const n = draftN(d);
+    if (!template || n == null) return;
+    set({ description: renderTemplate(template, n) });
+    setDescLinked(true);
+  }
   function pickSeries(v: string) {
     setSeriesTouched(true);
     const s = series.find(x => String(x.id) === v);
-    set(v === 'new'
+    setFollowing(v === 'new'
       ? { seriesId: 'new', seriesName: '', seriesColor: d.color }
       : { seriesId: v, seriesName: s?.name ?? '', seriesColor: s?.color ?? d.color });
   }
@@ -551,7 +619,7 @@ function BadgeEditor({ badge, series, allBadges, onSaved, onClose }: {
       const s = seriesOfMetric(allBadges, metric, series);
       Object.assign(patch, s ? { seriesId: String(s.id), seriesName: s.name, seriesColor: s.color } : { seriesId: '', seriesName: '' });
     }
-    set(patch);
+    setFollowing(patch);
   }
   const isLive = live?.status === 'live';
   // Saving this turns retroactive on for a live badge → the server backfills on save.
@@ -618,7 +686,7 @@ function BadgeEditor({ badge, series, allBadges, onSaved, onClose }: {
         <div className="flex items-center gap-3 min-w-0">
           <BadgeImage badge={faceForPreview} size={48} />
           <div className="min-w-0">
-            <h2 className="text-base font-black uppercase tracking-widest text-white [overflow-wrap:anywhere]">{badge ? d.name || badge.name : 'New badge'}</h2>
+            <h2 className="text-base font-black uppercase tracking-widest text-white [overflow-wrap:anywhere]">{badge ? d.name || badge.name : prefill ? `New tier · ${d.seriesName}` : 'New badge'}</h2>
             {live && <p className="text-xs text-muted-foreground flex flex-wrap items-center gap-2"><Pill tone={STATUS_TONE[live.status]}>{live.status}</Pill>{live.earnedCount.toLocaleString()} earned{live.activatedAt && <> · live since <When at={live.activatedAt} /></>}</p>}
           </div>
         </div>
@@ -630,10 +698,14 @@ function BadgeEditor({ badge, series, allBadges, onSaved, onClose }: {
         <Field label="Key (permanent slug)" error={errors.key} hint={locked ? 'Frozen — players have this badge' : 'e.g. holiday-champion-2026'}>
           <input className={input} disabled={locked} value={d.key} onChange={e => set({ key: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-') })} />
         </Field>
-        <Field label="Description" error={errors.description}>
-          <textarea className={input} rows={2} maxLength={300} value={d.description} onChange={e => set({ description: e.target.value })} />
+        <Field label="Description" error={errors.description}
+          hint={template ? (linked
+            ? <>Follows the series wording “{template}” — changing N updates it; edit it to write your own.</>
+            : <>Your own wording.{draftN(d) != null && <> <button type="button" onClick={applyTemplate} className="underline hover:text-white">Use the series wording</button></>}</>)
+            : undefined}>
+          <textarea className={input} rows={2} maxLength={300} value={d.description} onChange={e => setDescription(e.target.value)} />
         </Field>
-        <div className={`grid gap-3 items-start ${inSeries ? (hasTierOrder(d) ? 'grid-cols-[1fr_6rem]' : 'grid-cols-1') : 'grid-cols-[1fr_auto]'}`}>
+        <div className={`grid gap-3 items-start ${inSeries ? 'grid-cols-1' : 'grid-cols-[1fr_auto]'}`}>
           <Field group label="Icon (when no image)" error={errors.icon}>
             <IconPicker value={d.icon} color={drawColor} onChange={icon => set({ icon })} />
           </Field>
@@ -642,16 +714,13 @@ function BadgeEditor({ badge, series, allBadges, onSaved, onClose }: {
               <input type="color" className="h-[38px] w-12 rounded border border-white/20 bg-transparent" value={d.color} onChange={e => set({ color: e.target.value })} />
             </Field>
           )}
-          {hasTierOrder(d) && (
-            <Field label="Tier order" error={errors.sortOrder} hint="Lower = earlier tier">
-              <input type="number" className={input} value={d.sortOrder} onChange={e => set({ sortOrder: e.target.value })} />
-            </Field>
-          )}
         </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-3 items-start rounded-xl border border-white/10 p-3">
-        <Field label="Series" error={errors.seriesId} hint={inSeries ? (d.kind === 'metric' ? 'Tiers order by their threshold' : 'Tiers order by Tier order') : 'A single badge — placed in the list by drag or the move buttons'}>
+        <Field label="Series" error={errors.seriesId} hint={inSeries
+          ? (d.kind === 'metric' ? 'Placed in the ladder by its N' : 'Joins the end of the ladder — drag it in the list to move it')
+          : 'A single badge — placed in the list by drag or the move buttons'}>
           <select className={input} value={d.seriesId} onChange={e => pickSeries(e.target.value)}>
             <option value="">None — a single badge</option>
             {series.map(s => <option key={s.id} value={s.id}>{s.name} ({s.badgeCount} {s.badgeCount === 1 ? 'tier' : 'tiers'})</option>)}
@@ -678,7 +747,7 @@ function BadgeEditor({ badge, series, allBadges, onSaved, onClose }: {
         <div className="flex flex-wrap items-center gap-3">
           <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Kind</span>
           {locked ? <Pill>{d.kind}</Pill> : (
-            <Segmented<BadgeKind> value={d.kind} onChange={k => set({ kind: k })} options={[
+            <Segmented<BadgeKind> value={d.kind} onChange={k => setFollowing({ kind: k })} options={[
               { value: 'metric', label: 'Metric' }, { value: 'rule', label: 'Rule' }, { value: 'manual', label: 'Manual' },
             ]} />
           )}
@@ -690,8 +759,11 @@ function BadgeEditor({ badge, series, allBadges, onSaved, onClose }: {
                 {(metrics.data ?? []).map(m => <option key={m.key} value={m.key}>{m.label}{m.available ? '' : ' — phase 3, not yet'}</option>)}
               </select>
             </Field>
-            <Field label="At least (N)" error={errors.threshold}>
-              <input type="number" min={1} className={input} value={d.threshold} onChange={e => set({ threshold: e.target.value })} />
+            <Field label="At least (N)" error={errors.threshold}
+              hint={prefill && !badge && prefill.threshold != null && prefill.basedOn.length > 0
+                ? `Suggested: the next step after ${prefill.basedOn.map(n => n.toLocaleString('en-US')).join(' → ')}`
+                : undefined}>
+              <input type="number" min={1} className={input} value={d.threshold} onChange={e => setFollowing({ threshold: e.target.value })} />
             </Field>
           </div>
         )}
@@ -859,21 +931,26 @@ function SeriesEditor({ series, onClose }: { series: AdminBadgeSeries; onClose: 
   const qc = useQueryClient();
   const [name, setName] = useState(series.name);
   const [color, setColor] = useState(series.color);
+  const [template, setTemplate] = useState(series.descriptionTemplate ?? '');
   const [error, setError] = useState<unknown>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const refresh = () => Promise.all([
     qc.invalidateQueries({ queryKey: ['admin'] }), qc.invalidateQueries({ queryKey: BADGES_KEY }), qc.invalidateQueries({ queryKey: ['user-badges'] }),
   ]);
-  const changed = name.trim() !== series.name || color.toLowerCase() !== series.color;
+  const tpl = template.trim();
+  const changed = name.trim() !== series.name || color.toLowerCase() !== series.color || (tpl || null) !== series.descriptionTemplate;
+  const tplMissingN = tpl !== '' && !tpl.includes(N_TOKEN);
   async function save() {
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setErrors({});
     try {
-      await admin.updateBadgeSeries(series.id, { name: name.trim(), color: color.toLowerCase() });
+      await admin.updateBadgeSeries(series.id, { name: name.trim(), color: color.toLowerCase(), descriptionTemplate: tpl || null });
       await refresh();
       toast({ title: 'Series saved', body: `“${name.trim()}”${color.toLowerCase() !== series.color ? ' — every tier recolored' : ''}` });
+      setErrors({});
       onClose();
-    } catch (e) { setError(e); } finally { setBusy(false); }
+    } catch (e: any) { setErrors(e?.body?.errors ?? {}); setError(e); } finally { setBusy(false); }
   }
   return (
     <Card className="p-4 flex flex-col gap-3">
@@ -882,12 +959,18 @@ function SeriesEditor({ series, onClose }: { series: AdminBadgeSeries; onClose: 
         <button type="button" onClick={onClose} className="text-muted-foreground hover:text-white" aria-label="Close series editor"><X className="w-5 h-5" /></button>
       </div>
       <div className="grid grid-cols-[1fr_auto] gap-3 items-start">
-        <Field label="Name"><input className={input} maxLength={60} value={name} onChange={e => setName(e.target.value)} /></Field>
-        <Field label="Color" hint="Every tier"><input type="color" className="h-[38px] w-12 rounded border border-white/20 bg-transparent" value={color} onChange={e => setColor(e.target.value)} /></Field>
+        <Field label="Name" error={errors.name}><input className={input} maxLength={60} value={name} onChange={e => setName(e.target.value)} /></Field>
+        <Field label="Color" hint="Every tier" error={errors.color}><input type="color" className="h-[38px] w-12 rounded border border-white/20 bg-transparent" value={color} onChange={e => setColor(e.target.value)} /></Field>
       </div>
+      <Field label="Tier description" error={errors.descriptionTemplate ?? (tplMissingN ? `Put ${N_TOKEN} where the tier’s number goes` : undefined)}
+        hint={tpl
+          ? <>Add tier writes e.g. “{renderTemplate(tpl, 1000)}”; a tier whose description still matches follows its N. Existing descriptions aren’t changed.</>
+          : <>Optional. Use {N_TOKEN} for the tier’s number, e.g. “Posted {N_TOKEN} scores.” Without it, Add tier copies the top tier’s description.</>}>
+        <input className={input} maxLength={300} value={template} placeholder={`e.g. Posted ${N_TOKEN} scores.`} onChange={e => setTemplate(e.target.value)} />
+      </Field>
       <ErrorNote error={error} />
       <div className="flex flex-wrap gap-2">
-        <button type="button" onClick={save} disabled={busy || !changed || !name.trim()} className={`${btn} bg-primary text-white hover:bg-primary/90`}>
+        <button type="button" onClick={save} disabled={busy || !changed || !name.trim() || tplMissingN} className={`${btn} bg-primary text-white hover:bg-primary/90`}>
           {busy && <Loader2 className="w-3.5 h-3.5 animate-spin" />}Save series
         </button>
         <button type="button" onClick={() => setConfirmDelete(true)} disabled={series.badgeCount > 0}
@@ -909,7 +992,7 @@ function SeriesEditor({ series, onClose }: { series: AdminBadgeSeries; onClose: 
 function BadgeListRow({ b, current, indent = false, onClick }: { b: AdminBadge; current: boolean; indent?: boolean; onClick: () => void }) {
   return (
     <button type="button" aria-expanded={current} onClick={onClick}
-      className={`w-full text-left py-3 flex items-center gap-3 hover:bg-white/[0.03] ${indent ? 'pl-10 pr-4' : 'px-2'} ${current ? 'bg-white/[0.05]' : ''}`}>
+      className={`w-full text-left py-3 flex items-center gap-3 hover:bg-white/[0.03] ${indent ? 'pl-1 pr-2' : 'px-2'} ${current ? 'bg-white/[0.05]' : ''}`}>
       <BadgeImage badge={b} size={indent ? 32 : 40} locked={b.status !== 'live'} />
       <span className="min-w-0 flex-1">
         <span className="flex flex-wrap items-center gap-2">
@@ -925,17 +1008,28 @@ function BadgeListRow({ b, current, indent = false, onClick }: { b: AdminBadge; 
   );
 }
 
+/** What the editor is open on: a saved badge, a blank new one, or a new tier from "Add tier". */
+type Editing = AdminBadge | 'new' | { prefill: NewTierDraft; n: number };
+const prefillOf = (e: Editing | null) => (e && e !== 'new' && 'prefill' in e ? e : null);
+
+const arrowBtn = 'p-0.5 rounded text-muted-foreground hover:text-white disabled:opacity-25 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary';
+
 export default function AdminBadgesPage() {
   const admin = useAdminApi();
   const qc = useQueryClient();
   const q = useQuery({ queryKey: ['admin', 'badges'], queryFn: admin.badges });
-  const [editing, setEditing] = useState<AdminBadge | 'new' | null>(null);
+  const [editing, setEditing] = useState<Editing | null>(null);
   const [editingSeries, setEditingSeries] = useState<number | null>(null);
   const [status, setStatus] = useState<'all' | 'draft' | 'live' | 'retired'>('all');
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [armedKey, setArmedKey] = useState<string | null>(null);
   const [overIdx, setOverIdx] = useState<number | null>(null);
+  // Dragging a rule/manual tier inside its series (separate from the top-level drag).
+  const [tierDrag, setTierDrag] = useState<{ seriesId: number; id: number } | null>(null);
+  const [tierArmed, setTierArmed] = useState<number | null>(null);
+  const [tierOver, setTierOver] = useState<{ seriesId: number; idx: number } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [addingTier, setAddingTier] = useState<number | null>(null);
   const [announce, setAnnounce] = useState('');
   const all = q.data?.items ?? [];
   const series = q.data?.series ?? [];
@@ -951,14 +1045,20 @@ export default function AdminBadgesPage() {
   });
   const visible = groups.filter(g => g.type === 'badge' ? matches(g.badge) : status === 'all' || g.tiers.some(matches));
   const canReorder = status === 'all' && !saving;
+  const prefill = prefillOf(editing);
   // Keep the open editor pointed at the refreshed row after saves.
-  const current = editing && editing !== 'new' ? all.find(b => b.id === editing.id) ?? editing : null;
+  const saved = editing && editing !== 'new' && !prefill ? editing as AdminBadge : null;
+  const current = saved ? all.find(b => b.id === saved.id) ?? saved : null;
   const inlineId = current && all.some(b => b.id === current.id && matches(b)) ? current.id : null;
+  // A new tier's editor opens under its series (when that series is on screen).
+  const prefillInline = prefill != null && visible.some(g => g.type === 'series' && g.series.id === prefill.prefill.seriesId);
   const editor = editing && (
-    <BadgeEditor key={editing === 'new' ? 'new' : editing.id} badge={editing === 'new' ? null : current} series={series} allBadges={all}
+    <BadgeEditor key={editing === 'new' ? 'new' : prefill ? `tier-${prefill.prefill.seriesId}-${prefill.n}` : current!.id}
+      badge={editing === 'new' || prefill ? null : current} prefill={prefill?.prefill} series={series} allBadges={all}
       onSaved={(b, created) => setEditing(created ? b : null)} onClose={() => setEditing(null)} />
   );
 
+  const refreshOrder = () => Promise.all([qc.invalidateQueries({ queryKey: ['admin', 'badges'] }), qc.invalidateQueries({ queryKey: BADGES_KEY }), qc.invalidateQueries({ queryKey: ['user-badges'] })]);
   const label = (g: Group) => (g.type === 'badge' ? g.badge.name : `the ${g.series.name} series`);
   /** Move the top-level row at `from` to `to` and save the whole order (optimistically). */
   async function move(from: number, to: number) {
@@ -972,7 +1072,7 @@ export default function AdminBadgesPage() {
     setSaving(true);
     try {
       await admin.reorderBadges(next);
-      await Promise.all([qc.invalidateQueries({ queryKey: ['admin', 'badges'] }), qc.invalidateQueries({ queryKey: BADGES_KEY }), qc.invalidateQueries({ queryKey: ['user-badges'] })]);
+      await refreshOrder();
     } catch (e: any) {
       qc.setQueryData(['admin', 'badges'], prev);
       await qc.invalidateQueries({ queryKey: ['admin', 'badges'] });
@@ -985,12 +1085,50 @@ export default function AdminBadgesPage() {
     if (from >= 0) void move(from, to > from ? to - 1 : to);
   }
 
+  /**
+   * Move a tier inside its series (only rule/manual tiers have controls, so tiers with a threshold
+   * keep their N order) and save the series' whole tier order (optimistically).
+   */
+  async function moveTier(s: AdminBadgeSeries, tiers: AdminBadge[], from: number, to: number) {
+    if (!q.data || from === to || to < 0 || to >= tiers.length) return;
+    const ids = tiers.map(t => t.id);
+    const [id] = ids.splice(from, 1);
+    ids.splice(to, 0, id);
+    const prev = q.data;
+    const reordered = ids.map(x => byId.get(x)!);
+    let k = 0;
+    qc.setQueryData(['admin', 'badges'], { ...prev, items: prev.items.map(b => (b.seriesId === s.id ? reordered[k++] : b)) });
+    setAnnounce(`Moved ${tiers[from].name} to tier ${to + 1} of ${tiers.length} in ${s.name}`);
+    setSaving(true);
+    try {
+      await admin.reorderSeriesTiers(s.id, ids);
+      await refreshOrder();
+    } catch (e: any) {
+      qc.setQueryData(['admin', 'badges'], prev);
+      await qc.invalidateQueries({ queryKey: ['admin', 'badges'] });
+      toast({ tone: 'error', title: 'Couldn’t save the tier order', body: e?.message ?? 'Try again.' });
+    } finally { setSaving(false); }
+  }
+  function dropTier(s: AdminBadgeSeries, tiers: AdminBadge[], to: number) {
+    const from = tierDrag?.seriesId === s.id ? tiers.findIndex(t => t.id === tierDrag.id) : -1;
+    setTierDrag(null); setTierOver(null); setTierArmed(null);
+    if (from >= 0) void moveTier(s, tiers, from, to > from ? to - 1 : to);
+  }
+
+  async function addTier(s: AdminBadgeSeries) {
+    setAddingTier(s.id);
+    try {
+      const { draft } = await admin.newTierDraft(s.id);
+      setEditing({ prefill: draft, n: Date.now() });
+    } catch (e: any) {
+      toast({ tone: 'error', title: 'Couldn’t start a new tier', body: e?.message ?? 'Try again.' });
+    } finally { setAddingTier(null); }
+  }
+
   const moveButtons = (g: Group, i: number) => (
     <span className="flex flex-col flex-shrink-0">
-      <button type="button" disabled={!canReorder || i === 0} onClick={() => move(i, i - 1)} aria-label={`Move ${label(g)} up`}
-        className="p-0.5 rounded text-muted-foreground hover:text-white disabled:opacity-25 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"><ChevronUp className="w-4 h-4" /></button>
-      <button type="button" disabled={!canReorder || i === groups.length - 1} onClick={() => move(i, i + 1)} aria-label={`Move ${label(g)} down`}
-        className="p-0.5 rounded text-muted-foreground hover:text-white disabled:opacity-25 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"><ChevronDown className="w-4 h-4" /></button>
+      <button type="button" disabled={!canReorder || i === 0} onClick={() => move(i, i - 1)} aria-label={`Move ${label(g)} up`} className={arrowBtn}><ChevronUp className="w-4 h-4" /></button>
+      <button type="button" disabled={!canReorder || i === groups.length - 1} onClick={() => move(i, i + 1)} aria-label={`Move ${label(g)} down`} className={arrowBtn}><ChevronDown className="w-4 h-4" /></button>
     </span>
   );
   const handle = (g: Group) => (
@@ -1000,6 +1138,67 @@ export default function AdminBadgesPage() {
       <GripVertical className="w-4 h-4" />
     </span>
   );
+
+  /** A series' tier rows: N-tiers fixed (placed by their threshold), rule/manual tiers draggable + ▲/▼. */
+  function tierList(s: AdminBadgeSeries, allTiers: AdminBadge[]) {
+    const shown = allTiers.filter(matches);
+    if (!shown.length) return <p className="pl-12 pb-2 pt-1 text-xs text-muted-foreground">No badges in this series.</p>;
+    return (
+      <ol className="border-t border-white/5 divide-y divide-white/5" aria-label={`${s.name} tiers`} style={{ borderLeft: `3px solid ${s.color}55` }}>
+        {shown.map(b => {
+          const ti = allTiers.indexOf(b);
+          const fixed = hasThreshold(b);
+          const dragging = tierDrag?.seriesId === s.id;
+          const tierDropProps = {
+            draggable: canReorder && !fixed && tierArmed === b.id,
+            onDragStart: (e: React.DragEvent) => {
+              e.stopPropagation();
+              setTierDrag({ seriesId: s.id, id: b.id }); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', `tier:${b.id}`);
+            },
+            onDragEnd: (e: React.DragEvent) => { e.stopPropagation(); setTierDrag(null); setTierOver(null); setTierArmed(null); },
+            onDragOver: (e: React.DragEvent) => {
+              if (!dragging) return;
+              e.preventDefault(); e.stopPropagation();
+              const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+              setTierOver({ seriesId: s.id, idx: e.clientY < r.top + r.height / 2 ? ti : ti + 1 });
+            },
+            onDrop: (e: React.DragEvent) => {
+              if (!dragging) return;
+              e.preventDefault(); e.stopPropagation();
+              if (tierOver?.seriesId === s.id) dropTier(s, allTiers, tierOver.idx);
+            },
+          };
+          const over = dragging && tierOver?.seriesId === s.id;
+          const line = over && tierOver!.idx === ti ? 'shadow-[inset_0_2px_0_0_hsl(var(--primary))]'
+            : over && tierOver!.idx === ti + 1 && ti === allTiers.length - 1 ? 'shadow-[inset_0_-2px_0_0_hsl(var(--primary))]' : '';
+          return (
+            <li key={b.id} {...tierDropProps} className={`${line} ${tierDrag?.id === b.id ? 'opacity-50' : ''}`}>
+              <div className="flex items-center gap-1 pl-4 pr-2">
+                {fixed ? (
+                  // Same width as the handle + arrows, so every tier's image lines up.
+                  <span className="w-5 sm:w-11 flex-shrink-0" title="Placed by its threshold (N)" />
+                ) : (
+                  <>
+                    <span aria-hidden title={canReorder ? 'Drag to place this tier in the ladder' : undefined}
+                      onPointerDown={() => canReorder && setTierArmed(b.id)} onPointerUp={() => setTierArmed(null)}
+                      className={`hidden sm:flex items-center self-stretch px-1 flex-shrink-0 ${canReorder ? 'cursor-grab text-muted-foreground hover:text-white' : 'text-white/15'}`}>
+                      <GripVertical className="w-4 h-4" />
+                    </span>
+                    <span className="flex flex-col flex-shrink-0">
+                      <button type="button" disabled={!canReorder || ti === 0} onClick={() => moveTier(s, allTiers, ti, ti - 1)} aria-label={`Move ${b.name} up in ${s.name}`} className={arrowBtn}><ChevronUp className="w-4 h-4" /></button>
+                      <button type="button" disabled={!canReorder || ti === allTiers.length - 1} onClick={() => moveTier(s, allTiers, ti, ti + 1)} aria-label={`Move ${b.name} down in ${s.name}`} className={arrowBtn}><ChevronDown className="w-4 h-4" /></button>
+                    </span>
+                  </>
+                )}
+                <div className="flex-1 min-w-0"><BadgeListRow b={b} indent current={current?.id === b.id} onClick={() => setEditing(inlineId === b.id ? null : b)} /></div>
+              </div>
+              {inlineId === b.id && <div className="px-2 pb-3 sm:px-3 bg-black/20">{editor}</div>}
+            </li>
+          );
+        })}
+      </ol>
+    );
+  }
 
   return (
     <AdminShell>
@@ -1013,11 +1212,11 @@ export default function AdminBadgesPage() {
       </div>
       <p className="text-[11px] text-muted-foreground mb-3">
         This is the order of the profile shelf and the /badges catalog. {status === 'all'
-          ? 'Drag a row by its handle or use the arrows; a series moves as a unit and its tiers follow their threshold.'
+          ? 'Drag a row by its handle or use the arrows; a series moves as a unit.'
           : 'Switch to All to reorder.'}
       </p>
       <p className="sr-only" aria-live="polite">{announce}</p>
-      {editing && inlineId == null && <div className="mb-6">{editor}</div>}
+      {editing && inlineId == null && !prefillInline && <div className="mb-6">{editor}</div>}
       <ErrorNote error={q.error} />
       {q.isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : visible.length === 0 ? <p className="text-sm text-muted-foreground">No badges.</p> : (
         <Card>
@@ -1035,7 +1234,7 @@ export default function AdminBadgesPage() {
                   const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
                   setOverIdx(e.clientY < r.top + r.height / 2 ? i : i + 1);
                 },
-                onDrop: (e: React.DragEvent) => { e.preventDefault(); if (overIdx != null) drop(overIdx); },
+                onDrop: (e: React.DragEvent) => { if (!dragKey) return; e.preventDefault(); if (overIdx != null) drop(overIdx); },
               };
               const line = dragKey && overIdx === i ? 'shadow-[inset_0_2px_0_0_hsl(var(--primary))]' : dragKey && overIdx === i + 1 && i === groups.length - 1 ? 'shadow-[inset_0_-2px_0_0_hsl(var(--primary))]' : '';
               if (g.type === 'badge') {
@@ -1052,7 +1251,7 @@ export default function AdminBadgesPage() {
                 );
               }
               const s = g.series;
-              const tiers = g.tiers.filter(matches);
+              const tplHint = s.descriptionTemplate ? ` · “${s.descriptionTemplate}”` : '';
               return (
                 <li key={g.key} {...dropProps} className={`${line} ${dragKey === g.key ? 'opacity-50' : ''}`}>
                   <div className="flex items-center gap-1 pl-1 pr-2">
@@ -1065,21 +1264,20 @@ export default function AdminBadgesPage() {
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="block text-sm font-black uppercase tracking-widest [overflow-wrap:anywhere]" style={{ color: s.color }}>{s.name}</span>
-                        <span className="block text-xs text-muted-foreground">Series · {s.badgeCount} {s.badgeCount === 1 ? 'tier' : 'tiers'} · edit name or color</span>
+                        <span className="block text-xs text-muted-foreground truncate">Series · {s.badgeCount} {s.badgeCount === 1 ? 'tier' : 'tiers'}{tplHint} · edit name, color or wording</span>
                       </span>
                     </button>
                   </div>
                   {editingSeries === s.id && <div className="px-2 pb-3 sm:px-3 bg-black/20"><SeriesEditor series={s} onClose={() => setEditingSeries(null)} /></div>}
-                  {tiers.length > 0 ? (
-                    <ol className="border-t border-white/5 divide-y divide-white/5" aria-label={`${s.name} tiers`} style={{ borderLeft: `3px solid ${s.color}55` }}>
-                      {tiers.map(b => (
-                        <li key={b.id}>
-                          <BadgeListRow b={b} indent current={current?.id === b.id} onClick={() => setEditing(inlineId === b.id ? null : b)} />
-                          {inlineId === b.id && <div className="px-2 pb-3 sm:px-3 bg-black/20">{editor}</div>}
-                        </li>
-                      ))}
-                    </ol>
-                  ) : <p className="pl-12 pb-3 text-xs text-muted-foreground">No badges in this series.</p>}
+                  {tierList(s, g.tiers)}
+                  {prefillInline && prefill!.prefill.seriesId === s.id && <div className="px-2 pb-3 pt-2 sm:px-3 bg-black/20">{editor}</div>}
+                  <div className="flex flex-wrap items-center justify-between gap-2 pl-12 pr-3 py-2 border-t border-white/5" style={{ borderLeft: `3px solid ${s.color}55` }}>
+                    <p className="text-[11px] text-muted-foreground">Tiers with a threshold sort by N; drag rule/manual tiers anywhere in the ladder.</p>
+                    <button type="button" onClick={() => addTier(s)} disabled={addingTier === s.id}
+                      className={`${btn} border border-white/15 text-white/80 hover:text-white`}>
+                      {addingTier === s.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />} Add tier
+                    </button>
+                  </div>
                 </li>
               );
             })}

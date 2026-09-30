@@ -927,9 +927,14 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   color)` via a subquery, so every read (catalog, shelf, `newBadges`, the `badge_earned` payload,
   admin) draws a tier in its series' color and tiers can't drift; `ownColor` is the badge's own
   column (the editor's value for a single). **Ordering:** one shared space — a whole series at
-  `badge_series.sort_order`, singles at `badges.sort_order` (tie: series first, then id); inside a
-  series metric tiers by threshold, then rule/manual tiers by their own sort_order (`tierCompare`).
-  Shelf and catalog use it, **not** newest-first.
+  `badge_series.sort_order`, singles at `badges.sort_order` (tie: series first, then id). **Inside a
+  series there is one key too — each tier's own `badges.sort_order`** (`tierCompare`: sort_order,
+  then id; 10, 20, 30… within the series). A tier with a threshold (metric) is *seated by its N*
+  whenever it's created in, moved into, or has its N changed in a series (`placeTier`: just before
+  the first sibling with a higher N, else last; then `seatTier` renumbers the series under a row
+  lock). Rule/manual tiers join at the end and go wherever the admin drags them, so a mixed ladder
+  can read 1 → 10 → Holiday → 100. `sortOrder` in a create/PATCH body only places a *single*; a tier
+  ignores it. Shelf and catalog use it, **not** newest-first.
   - `GET /api/users/:username/badges` keeps the flat `badges` (now in that order, each tier with
     `series {id,key,name,color,tier,tierCount}`) and adds `items` — `collapseShelf()`: a series
     once, as its **highest earned tier** (`top`), `tier`/`tierCount`, `earnedCount` (filled pips),
@@ -947,11 +952,37 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
     `target_type 'badge_series'`. Badge create/PATCH take `seriesId` (null = single) or `newSeries
     {name, color}`; a create **without** `seriesId` joins the metric's series when that metric's
     badges are in exactly one. Placement is automatic: a new single (or series) after the last item,
-    a new/moved rule/manual tier after its series' last tier, a badge leaving a series after the last item.
+    a tier seated as above, a badge leaving a series after the last item.
+  - **`PUT /badge-series/:id/order {ids}`** — the in-series order: every tier of that series once
+    (400 `invalid_order` / `duplicate_item` / `unknown_item`, 409 `order_stale`), and tiers with a
+    threshold must stay in ascending N (400 **`threshold_order`**, naming both tiers) —
+    `validateTierOrder`. One transaction, series row `FOR UPDATE`, sort_orders 10, 20, 30…, logged
+    `admin.badge_order_changed` with `target_type 'badge_series'` only when something moved.
+  - **`badge_series.description_template`** (text, null = none) — the tiers' wording with `{N}` for
+    the threshold ("Posted {N} scores."), rendered with en-US thousands separators (`renderTemplate`:
+    1,000). POST/PATCH `/badge-series` take `descriptionTemplate` (≤ 300 chars, must contain `{N}`,
+    '' or null clears it → 400 `invalid_series` otherwise). It never rewrites existing descriptions;
+    the admin editor uses it to keep an untouched description in step with N.
+  - **`GET /badge-series/:id/new-tier`** — "Add tier" prefill, read-only (`newTierDraft`): if the
+    series has tiers with a threshold → kind metric on the metric most of them use (tie → the highest
+    tier's), N = `nextThreshold` of that metric's Ns, description = template with the new N (else the
+    base top tier's description, `descriptionFrom: 'copied'`), key = the top tier's key with its N
+    swapped ("venues-25" → "venues-100") when free; otherwise the top tier's kind + rule shape +
+    description. Icon from the top tier (last in tier order), color = series color, name left blank.
+    **`nextThreshold`**: keep the ladder's last step — ratio = highest / second-highest clamped to
+    1.5×–10× (one tier: ×10 above 1, else ×2), aim for highest × ratio, round on a log scale to the
+    nearest nice number (1, 2, 2.5, 5 × 10ⁿ, whole numbers) above the highest, capped at the 1,000,000
+    threshold limit. 1/10/100/1,000 → 10,000; 5/25 → 100; 10/50/100 → 200; 3/10/25 → 50.
   - migrate25 seeded Scores / Machines / Venues / Challenge wins / Win streaks / Loss streaks /
     Sign-ins from migrate23's keys, only when that series key doesn't exist yet (a re-run never
     re-attaches a badge moved out), color = the lowest tier's color on that DB, sort_order = the
-    lowest tier sort_order. It's dev-guarded — remove the guard deliberately at ship time.
+    lowest tier sort_order. Then, **on the run that adds `description_template`** (the column's
+    absence is the marker — later runs never touch these again): each series' template from the
+    lowest tier with a threshold whose description holds that number exactly once ("1,000" or
+    "1000" → `{N}`; `deriveSeriesTemplate` — "Posted your first score." has none, so Scores takes
+    "Posted 10 scores."), and each series' tiers renumbered 10, 20, 30… into the order they showed
+    before the one-key rule (metric by threshold, then rule/manual by sort_order). It imports only
+    the pure `badgeSeries.ts`. It's dev-guarded — remove the guard deliberately at ship time.
 - Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/badgeRules.test.ts
   src/lib/badgeMetrics.test.ts src/lib/badges.test.ts src/lib/badgeSeries.test.ts` (metrics SQL runs in PGlite);
   `npx tsx test-badges.ts` (dev branch only — borrows 3 friendless users, zz-badge-test machine /

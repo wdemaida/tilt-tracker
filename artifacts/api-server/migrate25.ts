@@ -6,8 +6,23 @@
 //                        space as single badges (badges.sort_order) — the profile shelf, the /badges
 //                        catalog and /admin/badges all read that one order.
 //  badges.series_id    — nullable FK, ON DELETE SET NULL (deleting a series turns its tiers back into
-//                        singles). Within a series, metric tiers are ordered by threshold; rule/manual
-//                        tiers by their own sort_order.
+//                        singles). Within a series the tiers order by their own badges.sort_order —
+//                        one key; a tier with a threshold is seated by its N on every write, rule/manual
+//                        tiers wherever the admin drags them.
+//  badge_series.description_template
+//                      — how the tiers' descriptions read, with {N} for the threshold ("Posted {N}
+//                        scores."). "Add tier" fills a new tier's description from it.
+//
+// First run of the description_template step (the column didn't exist before this run) also:
+//   - seeds each series' template from its tiers (deriveSeriesTemplate: the lowest tier with a
+//     threshold whose description contains that number exactly once, "1,000" or "1000" → {N}; the
+//     lowest usually, the next one when it's worded "your first …"; none → null, and Add tier copies
+//     the top tier's description instead), and
+//   - renumbers each series' tiers 10, 20, 30, … in the order they showed until now (metric tiers by
+//     threshold, then rule/manual tiers by sort_order), so the one-key order starts out identical.
+// The column's existence is the marker: later runs never touch templates or tier order again (an
+// admin's cleared template or dragged tier stays put). A series this script creates on a later run
+// (its badges appeared since) gets both steps too.
 //
 // Seeds the series for the starter metric ladders (migrate23's keys) and assigns them — but only when
 // the series doesn't exist yet, so a re-run never re-attaches a badge an admin has since moved out of
@@ -24,6 +39,7 @@
 
 import 'dotenv/config';
 import postgres from 'postgres';
+import { deriveSeriesTemplate } from './src/lib/badgeSeries.js'; // pure — no DB, no other imports
 
 // DEV-BRANCH GUARD — deliberately refuses to run against anything but the Neon dev branch
 // (endpoint ep-late-mouse-at8antth) while this is still on feature/badge-series. Production is a
@@ -51,7 +67,12 @@ const SERIES: Array<[string, string, string[]]> = [
 ];
 
 const report: string[] = [];
+const [{ had }] = await sql`
+  SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                 WHERE table_schema = current_schema() AND table_name = 'badge_series' AND column_name = 'description_template') AS had`;
+const firstTemplateRun = !had;
 await sql.begin(async tx => {
+  const created: number[] = [];
   await tx`
     CREATE TABLE IF NOT EXISTS badge_series (
       id          serial PRIMARY KEY,
@@ -81,7 +102,37 @@ await sql.begin(async tx => {
       ON CONFLICT (key) DO NOTHING RETURNING id`;
     if (!s) { report.push(`${key}: created concurrently, left alone`); continue; }
     await tx`UPDATE badges SET series_id = ${s.id} WHERE id IN ${tx(tiers.map(t => t.id))} AND series_id IS NULL`;
+    created.push(s.id);
     report.push(`${key}: #${s.id} ${lowest.color} order ${sortOrder} ← ${tiers.map(t => t.key).join(', ')}`);
+  }
+
+  await tx`ALTER TABLE badge_series ADD COLUMN IF NOT EXISTS description_template text`;
+  const targets = firstTemplateRun
+    ? (await tx`SELECT id FROM badge_series ORDER BY id`).map(r => Number(r.id))
+    : created;
+  if (!targets.length) report.push('description_template: already set up — templates and tier order left alone');
+  for (const id of targets) {
+    const [s] = await tx`SELECT key, description_template FROM badge_series WHERE id = ${id}`;
+    const tiers = await tx`SELECT id, key, kind, threshold, description, sort_order FROM badges WHERE series_id = ${id}`;
+    // The order these tiers showed before the one-key rule: metric tiers by threshold, then the rest
+    // by sort_order, then id.
+    const hasN = (t: any) => t.kind === 'metric' && t.threshold != null;
+    const legacy = [...tiers].sort((a, b) =>
+      (hasN(a) === hasN(b) ? 0 : hasN(a) ? -1 : 1)
+      || (hasN(a) && hasN(b) ? Number(a.threshold) - Number(b.threshold) : 0)
+      || Number(a.sort_order) - Number(b.sort_order) || Number(a.id) - Number(b.id));
+    let renumbered = 0;
+    for (const [i, t] of legacy.entries()) {
+      if (Number(t.sort_order) === (i + 1) * 10) continue;
+      await tx`UPDATE badges SET sort_order = ${(i + 1) * 10} WHERE id = ${t.id}`;
+      renumbered++;
+    }
+    let tpl: string | null = s.description_template;
+    if (tpl == null) {
+      tpl = deriveSeriesTemplate(tiers.map(t => ({ kind: t.kind, threshold: t.threshold == null ? null : Number(t.threshold), description: t.description })));
+      if (tpl) await tx`UPDATE badge_series SET description_template = ${tpl} WHERE id = ${id}`;
+    }
+    report.push(`${s.key}: tiers ${legacy.map(t => t.key).join(' → ')} (${renumbered} renumbered); template ${tpl ? JSON.stringify(tpl) : 'none (Add tier copies the top tier’s description)'}`);
   }
 });
 

@@ -3,9 +3,19 @@
 //
 // A series is a ladder of tiers ("Scores": First Ball 1 → Regular 10 → Centurion 100 → Wizard Mode
 // 1,000). One ordering space holds whole series (badge_series.sort_order) and single badges
-// (badges.sort_order); the profile shelf, the /badges catalog and /admin/badges all read it. Within a
-// series the tiers order themselves: metric tiers by threshold, then rule/manual tiers by their own
-// sort_order — never by the admin's drag (tiers aren't draggable).
+// (badges.sort_order); the profile shelf, the /badges catalog and /admin/badges all read it.
+//
+// Inside a series there is ONE ordering key too: each tier's badges.sort_order (10, 20, 30, … within
+// the series). A tier with a threshold (a metric tier) is *placed* by it — creating it, changing its
+// N or moving it into a series slots it just before the first sibling with a higher N (placeTier) —
+// and the in-series reorder refuses any order that puts a higher N before a lower one
+// (validateTierOrder). A tier without one (rule/manual) goes wherever the admin drags it, so a mixed
+// ladder can read "1 → 10 → Holiday special → 100". migrate25 renumbered the existing series once,
+// into the order they showed before this rule (metric tiers by threshold, then the rest).
+//
+//   placeTier / validateTierOrder / tierSortOrders   the in-series order (above)
+//   renderTemplate / deriveTemplate                  badge_series.description_template ("Posted {N} scores.")
+//   nextThreshold / newTierDraft                     "Add tier": the new tier's prefill
 //
 //   orderBadges        every badge in the shared order, each series' tiers together (catalog, admin list)
 //   topLevelOrder      the draggable items: every series (even an empty one) and every single badge
@@ -13,7 +23,7 @@
 //   collapseShelf      a profile: one item per series (its highest earned tier + pips) and each single
 //   ladderOf           a series' tiers for one viewer: live tiers + any retired one they earned
 
-export interface SeriesRef { id: number; key: string; name: string; color: string; sortOrder: number }
+export interface SeriesRef { id: number; key: string; name: string; color: string; sortOrder: number; descriptionTemplate?: string | null }
 
 export interface OrderableBadge {
   id: number;
@@ -25,12 +35,69 @@ export interface OrderableBadge {
 
 export type TopItem = { type: 'series'; id: number } | { type: 'badge'; id: number };
 
-/** Tier order inside one series: metric tiers by threshold, then the rest by sort_order, then id. */
+/** A tier ordered by its N: a metric badge with a threshold. Rule/manual tiers are placed by hand. */
+export const hasThreshold = (b: Pick<OrderableBadge, 'kind' | 'threshold'>): boolean => b.kind === 'metric' && b.threshold != null;
+
+/** Tier order inside one series: the one key, sort_order (then id). Writes keep N-tiers ascending. */
 export function tierCompare(a: OrderableBadge, b: OrderableBadge): number {
-  const am = a.kind === 'metric' && a.threshold != null, bm = b.kind === 'metric' && b.threshold != null;
-  if (am !== bm) return am ? -1 : 1;
-  if (am && bm && a.threshold !== b.threshold) return a.threshold! - b.threshold!;
   return a.sortOrder - b.sortOrder || a.id - b.id;
+}
+
+/**
+ * Where a tier goes when it joins a series or its N changes: the series' tier ids in their new order.
+ * A tier with a threshold goes just before the first sibling with a higher N (so after any equal
+ * one); with no higher sibling, or no threshold, it goes last. The caller renumbers 10, 20, 30, …
+ */
+export function placeTier(siblings: OrderableBadge[], badge: Pick<OrderableBadge, 'id' | 'kind' | 'threshold'>): number[] {
+  const rest = siblings.filter(t => t.id !== badge.id).sort(tierCompare);
+  let at = rest.length;
+  if (hasThreshold(badge)) {
+    const i = rest.findIndex(t => hasThreshold(t) && t.threshold! > badge.threshold!);
+    if (i >= 0) at = i;
+  }
+  const ids = rest.map(t => t.id);
+  ids.splice(at, 0, badge.id);
+  return ids;
+}
+
+export type TierOrderCheck = { ok: true; ids: number[] } | { ok: false; code: string; error: string };
+
+/**
+ * The body of PUT /badge-series/:id/order: `{ ids }`, every tier of the series exactly once, and the
+ * tiers with a threshold still in ascending N (the others can go anywhere).
+ */
+export function validateTierOrder(body: unknown, tiers: Array<Pick<OrderableBadge, 'id' | 'kind' | 'threshold'> & { name?: string }>): TierOrderCheck {
+  const raw = (body && typeof body === 'object' ? (body as any).ids : undefined) as unknown;
+  if (!Array.isArray(raw) || raw.length > 1000 || !raw.every(id => Number.isSafeInteger(id) && id > 0)) {
+    return { ok: false, code: 'invalid_order', error: 'Send { ids: [badgeId, …] } — every tier of the series, in the new order' };
+  }
+  const ids = raw as number[];
+  const byId = new Map(tiers.map(t => [t.id, t]));
+  const seen = new Set<number>();
+  for (const id of ids) {
+    if (seen.has(id)) return { ok: false, code: 'duplicate_item', error: `Badge ${id} is listed twice` };
+    seen.add(id);
+    if (!byId.has(id)) return { ok: false, code: 'unknown_item', error: `Badge ${id} isn’t a tier of this series` };
+  }
+  if (seen.size !== byId.size) return { ok: false, code: 'order_stale', error: 'The list is missing tiers — reload and try again' };
+  let last: { threshold: number; name?: string } | null = null;
+  for (const id of ids) {
+    const t = byId.get(id)!;
+    if (!hasThreshold(t)) continue;
+    if (last && t.threshold! < last.threshold) {
+      return {
+        ok: false, code: 'threshold_order',
+        error: `Tiers with a threshold stay in N order — “${t.name ?? `badge ${t.id}`}” (${formatN(t.threshold!)}) can’t come after “${last.name ?? 'a tier'}” (${formatN(last.threshold)})`,
+      };
+    }
+    last = { threshold: t.threshold!, name: t.name };
+  }
+  return { ok: true, ids };
+}
+
+/** sort_order values for a series' tiers, in order: 10, 20, 30, … */
+export function tierSortOrders(ids: number[]): Array<{ id: number; sortOrder: number }> {
+  return ids.map((id, i) => ({ id, sortOrder: (i + 1) * 10 }));
 }
 
 interface Slot { type: 'series' | 'badge'; id: number; sortOrder: number }
@@ -201,16 +268,167 @@ export function collapseShelf<E extends OrderableBadge, B extends LadderBadge>(e
   return slots.sort((a, b) => slotCompare(a.slot, b.slot)).map(x => x.item);
 }
 
+// ── description templates + "Add tier" ──────────────────────────────────────
+
+/** The placeholder in badge_series.description_template. */
+export const N_TOKEN = '{N}';
+
+/** A tier's N as descriptions write it: 1,000 (en-US thousands separators). */
+export const formatN = (n: number): string => n.toLocaleString('en-US');
+
+/** "Posted {N} scores." + 1000 → "Posted 1,000 scores." */
+export function renderTemplate(template: string, n: number): string {
+  return template.split(N_TOKEN).join(formatN(n));
+}
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * A template from one tier's description: its threshold, written "1,000" or "1000", replaced by {N}
+ * — only when the number appears exactly once as a whole number ("Posted 10 scores." at N=1 has no
+ * match; "10 of 10" is ambiguous). null = no clean match.
+ */
+export function deriveTemplate(description: string, threshold: number): string | null {
+  if (!description || description.includes(N_TOKEN) || !Number.isSafeInteger(threshold) || threshold < 1) return null;
+  const forms = [...new Set([formatN(threshold), String(threshold)])].map(escapeRe).join('|');
+  const re = new RegExp(`(?<![\\d.,])(?:${forms})(?![\\d]|[.,]\\d)`, 'g');
+  const hits = description.match(re);
+  return hits?.length === 1 ? description.replace(re, N_TOKEN) : null;
+}
+
+/**
+ * A series' template from its tiers: the lowest tier with a threshold whose description yields one
+ * (deriveTemplate). The lowest usually does; "Posted your first score." (N=1) doesn't, so the next
+ * one ("Posted 10 scores.") is used. null = none of them do.
+ */
+export function deriveSeriesTemplate(tiers: Array<Pick<OrderableBadge, 'kind' | 'threshold'> & { description: string }>): string | null {
+  const byN = tiers.filter(hasThreshold).sort((a, b) => a.threshold! - b.threshold!);
+  for (const t of byN) {
+    const tpl = deriveTemplate(t.description, t.threshold!);
+    if (tpl) return tpl;
+  }
+  return null;
+}
+
+const NICE_MANTISSAS = [1, 2, 2.5, 5];
+
+/**
+ * A suggested N for the next tier above `thresholds` (a ladder's Ns). Keep the ladder's last step:
+ * ratio = highest / second-highest, clamped to 1.5×–10× (one tier: ×10 above 1, else ×2); aim for
+ * highest × ratio, rounded to the nearest "nice" number (1, 2, 2.5 or 5 × a power of ten, whole
+ * numbers only) on a log scale, always above the highest. 1/10/100/1,000 → 10,000; 5/25 → 100
+ * (×5 = 125 ≈ 100); 10/50/100 → 200; 3/10/25 → 50; 7/30/100 → 250. null = nothing above `max`.
+ */
+export function nextThreshold(thresholds: number[], max = 1_000_000): number | null {
+  const t = [...new Set(thresholds.filter(n => Number.isSafeInteger(n) && n > 0))].sort((a, b) => a - b);
+  if (!t.length) return null;
+  const top = t[t.length - 1];
+  if (top >= max) return null;
+  const prev = t.length > 1 ? t[t.length - 2] : null;
+  const ratio = Math.min(10, Math.max(1.5, prev ? top / prev : top === 1 ? 10 : 2));
+  const target = top * ratio;
+  const nice: number[] = [];
+  for (let p = 1; p <= max * 10; p *= 10) {
+    for (const m of NICE_MANTISSAS) {
+      const v = m * p;
+      if (Number.isInteger(v) && v > top && v <= max) nice.push(v);
+    }
+  }
+  if (!nice.length) return max;
+  return nice.reduce((best, v) => (Math.abs(Math.log(v / target)) < Math.abs(Math.log(best / target)) ? v : best));
+}
+
+export interface TierBasis extends OrderableBadge {
+  key: string; metric: string | null; rule: unknown; icon: string; description: string;
+}
+
+export interface NewTierDraft {
+  seriesId: number;
+  /** null = an empty series: nothing to copy, the editor keeps its defaults. */
+  kind: 'metric' | 'rule' | 'manual' | null;
+  metric: string | null;
+  threshold: number | null;
+  rule: unknown;
+  icon: string | null;
+  color: string;
+  description: string;
+  /** Where `description` came from: the series template with the new N, a tier's copy, or nothing. */
+  descriptionFrom: 'template' | 'copied' | 'none';
+  /** Suggested from the base tier's key ("venues-25" → "venues-100") when free; else ''. */
+  key: string;
+  /** The N the suggestion stepped up from (the base metric's tiers), for the editor's hint. */
+  basedOn: number[];
+}
+
+/**
+ * "Add tier" on a series: the new badge's prefill. Kind + metric from the series' tiers — when it has
+ * tiers with a threshold, a metric tier on the metric most of them use (a tie → the highest tier's),
+ * N = nextThreshold of that metric's Ns; otherwise its top tier's kind (+ rule shape for a rule). Icon
+ * from the top tier (the last in tier order), color = the series color, description = the template
+ * with the new N, else the base tier's description copied. Name is left for the admin.
+ */
+export function newTierDraft(
+  series: { id: number; color: string; descriptionTemplate: string | null },
+  tiers: TierBasis[],
+  takenKeys: Set<string>,
+  maxThreshold = 1_000_000,
+): NewTierDraft {
+  const ordered = tiers.filter(t => t.seriesId === series.id).sort(tierCompare);
+  const top = ordered[ordered.length - 1];
+  const draft: NewTierDraft = {
+    seriesId: series.id, kind: null, metric: null, threshold: null, rule: null, icon: top?.icon ?? null, color: series.color,
+    description: '', descriptionFrom: 'none', key: '', basedOn: [],
+  };
+  if (!top) return draft;
+  const withN = ordered.filter(hasThreshold);
+  if (withN.length) {
+    const count = new Map<string, number>();
+    for (const t of withN) if (t.metric) count.set(t.metric, (count.get(t.metric) ?? 0) + 1);
+    const most = Math.max(...count.values());
+    const metric = [...withN].reverse().find(t => t.metric && count.get(t.metric) === most)!.metric!;
+    const base = withN.filter(t => t.metric === metric);
+    const baseTop = base.reduce((a, b) => (b.threshold! >= a.threshold! ? b : a));
+    const n = nextThreshold(base.map(t => t.threshold!), maxThreshold);
+    Object.assign(draft, { kind: 'metric', metric, threshold: n, basedOn: base.map(t => t.threshold!).sort((a, b) => a - b) });
+    if (n != null && series.descriptionTemplate?.includes(N_TOKEN)) {
+      Object.assign(draft, { description: renderTemplate(series.descriptionTemplate, n), descriptionFrom: 'template' });
+    } else if (baseTop.description) {
+      Object.assign(draft, { description: baseTop.description, descriptionFrom: 'copied' });
+    }
+    const suffix = `-${baseTop.threshold}`;
+    if (n != null && baseTop.key.endsWith(suffix)) {
+      const key = `${baseTop.key.slice(0, -suffix.length)}-${n}`;
+      if (!takenKeys.has(key)) draft.key = key;
+    }
+    return draft;
+  }
+  Object.assign(draft, {
+    kind: top.kind as NewTierDraft['kind'], rule: top.kind === 'rule' ? top.rule ?? null : null,
+    description: top.description, descriptionFrom: top.description ? 'copied' : 'none',
+  });
+  return draft;
+}
+
 // ── admin input ──────────────────────────────────────────────────────────────
 
-export const SERIES_LIMITS = { name: 60 } as const;
+/** Matches BADGE_LIMITS.description — a template renders into a badge description. */
+export const SERIES_LIMITS = { name: 60, descriptionTemplate: 300 } as const;
 const COLOR_RE = /^#[0-9a-f]{6}$/;
 
-/** Validate a series create (`partial` false) or PATCH body. */
-export function normalizeSeriesInput(body: unknown, partial: boolean): { values: { name?: string; color?: string } } | { errors: Record<string, string> } {
+export interface SeriesValues { name?: string; color?: string; descriptionTemplate?: string | null }
+
+/** Validate a series create (`partial` false) or PATCH body. `descriptionTemplate` is optional on both. */
+export function normalizeSeriesInput(body: unknown, partial: boolean): { values: SeriesValues } | { errors: Record<string, string> } {
   const b = (body && typeof body === 'object' ? body : {}) as Record<string, any>;
-  const v: { name?: string; color?: string } = {};
+  const v: SeriesValues = {};
   const errors: Record<string, string> = {};
+  if (b.descriptionTemplate !== undefined) {
+    const t = b.descriptionTemplate === null ? '' : typeof b.descriptionTemplate === 'string' ? b.descriptionTemplate.trim() : null;
+    if (t === null) errors.descriptionTemplate = 'Description template: text with {N}';
+    else if (t.length > SERIES_LIMITS.descriptionTemplate) errors.descriptionTemplate = `Description template: up to ${SERIES_LIMITS.descriptionTemplate} characters`;
+    else if (t && !t.includes(N_TOKEN)) errors.descriptionTemplate = `Put ${N_TOKEN} where the tier’s number goes (e.g. “Posted ${N_TOKEN} scores.”)`;
+    else v.descriptionTemplate = t || null;
+  }
   if (b.name !== undefined || !partial) {
     const name = typeof b.name === 'string' ? b.name.trim() : '';
     if (!name || name.length > SERIES_LIMITS.name) errors.name = `Series name: 1–${SERIES_LIMITS.name} characters`;

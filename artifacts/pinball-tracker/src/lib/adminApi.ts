@@ -195,7 +195,24 @@ export interface AdminBadge {
 /** A badge series (ladder). One color for every tier; `sortOrder` shares the top-level order with singles. */
 export interface AdminBadgeSeries {
   id: number; key: string; name: string; color: string; sortOrder: number; badgeCount: number;
+  /** How the tiers' descriptions read, with {N} for the threshold ("Posted {N} scores."); null = none. */
+  descriptionTemplate: string | null;
 }
+
+/** "Add tier" on a series: the new badge's prefill (GET /admin/badge-series/:id/new-tier). */
+export interface NewTierDraft {
+  seriesId: number;
+  /** null = an empty series — keep the editor's defaults. */
+  kind: BadgeKind | null;
+  metric: string | null; threshold: number | null; rule: BadgeRule | null; icon: string | null; color: string;
+  description: string; descriptionFrom: 'template' | 'copied' | 'none';
+  /** Suggested from the top tier's key when free, else ''. */
+  key: string;
+  /** The Ns the suggested threshold stepped up from. */
+  basedOn: number[];
+}
+
+export type BadgeSeriesInput = { name?: string; color?: string; descriptionTemplate?: string | null };
 
 /** One draggable row of /admin/badges: a whole series or a single badge. */
 export type BadgeOrderItem = { type: 'series' | 'badge'; id: number };
@@ -270,9 +287,12 @@ export function createAdminApi(getToken: () => Promise<string | null>) {
     runPhotoOrphans: (dryRun: boolean) => post<PhotoOrphanRunResult>('/admin/photo-orphans/run', { dryRun }),
     badges: () => get<{ items: AdminBadge[]; series: AdminBadgeSeries[]; order: BadgeOrderItem[]; limits: Record<string, number>; image: { maxBytes: number; size: number; types: string[] } }>('/admin/badges'),
     reorderBadges: (items: BadgeOrderItem[]) => put<{ order: BadgeOrderItem[]; changed: number }>('/admin/badges/order', { items }),
-    createBadgeSeries: (body: { name: string; color: string }) => post<{ series: AdminBadgeSeries }>('/admin/badge-series', body),
-    updateBadgeSeries: async (id: number, body: { name?: string; color?: string }) =>
+    createBadgeSeries: (body: BadgeSeriesInput & { name: string; color: string }) => post<{ series: AdminBadgeSeries }>('/admin/badge-series', body),
+    updateBadgeSeries: async (id: number, body: BadgeSeriesInput) =>
       request<{ series: AdminBadgeSeries }>(`/admin/badge-series/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, await tok()),
+    /** Every tier of the series in the new order; tiers with a threshold must stay in ascending N. */
+    reorderSeriesTiers: (id: number, ids: number[]) => put<{ ids: number[]; changed: number }>(`/admin/badge-series/${id}/order`, { ids }),
+    newTierDraft: (id: number) => get<{ draft: NewTierDraft }>(`/admin/badge-series/${id}/new-tier`),
     deleteBadgeSeries: (id: number) => del<{ ok: true }>(`/admin/badge-series/${id}`),
     badge: (id: number) => get<{ badge: AdminBadge; holders: BadgeHolder[] }>(`/admin/badges/${id}`),
     badgeMetrics: () => get<BadgeMetricInfo[]>('/admin/badges/metrics'),
