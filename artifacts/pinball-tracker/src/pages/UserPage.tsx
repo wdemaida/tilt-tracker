@@ -63,9 +63,6 @@ export default function UserPage() {
         )}
       </div>
 
-      {/* Public — anyone who can see the profile sees the badges. */}
-      <BadgeShelf username={user.username} />
-
       {/* Signed-in only; hidden until they've finished a challenge. */}
       {isSignedIn && friendship && (
         <ChallengeRecordCard username={user.username} self={friendship.relationship === 'self'} />
@@ -77,6 +74,9 @@ export default function UserPage() {
       {isSignedIn && friendship?.relationship === 'friends' && data.challengeMe && (
         <ChallengeMeChips username={user.username} machines={data.challengeMe} />
       )}
+
+      {/* Public — anyone who can see the profile sees the badges. */}
+      <BadgeShelf username={user.username} />
 
       <div className="flex flex-col gap-3">
         {scores.map((s: any) => {

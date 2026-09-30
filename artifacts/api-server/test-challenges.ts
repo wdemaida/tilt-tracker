@@ -42,7 +42,7 @@ const { runChallengeSweep } = await import('./src/lib/challenges.js');
 const { pmClient } = await import('./src/lib/pmClient.js');
 const {
   db, users, friendships, notifications, challenges, challengeParticipants, challengeScores, scores, machines, venues, venueMachineHistory,
-  pmLocationCache, venueInventory, userChallengeMachines, userChallengeVenues, activityEvents,
+  pmLocationCache, venueInventory, userChallengeMachines, userChallengeVenues, activityEvents, userBadges,
 } = await import('@workspace/db');
 const { and, desc, eq, inArray, or, sql } = await import('drizzle-orm');
 
@@ -56,6 +56,11 @@ const people = await db.select().from(users)
 if (people.length < 3) throw new Error('Need at least 3 users with no friendships or challenges in the dev DB');
 const [alice, bob, carol] = people;
 const ids = people.map(p => p.id);
+// DB clock at start — cleanup removes badge awards this run's scores triggered (see the end).
+const [{ startedAt }] = await db.select({ startedAt: sql<string>`now()::timestamp::text` }).from(users).limit(1);
+// The borrowed users' existing notifications — the "clear all" check empties carol's inbox, so any
+// she already had (e.g. a badge an admin awarded while testing) are put back at the end.
+const notificationsBefore = await db.select().from(notifications).where(inArray(notifications.userId, ids));
 
 // Refuse to run the sweep's retention step over anyone else's data.
 const [{ foreign }] = await db.select({ foreign: sql<number>`count(*)::int` }).from(notifications)
@@ -778,6 +783,21 @@ try {
       sql`${notifications.payload} ->> 'challengeId' = '-1'`,
     ),
   ));
+  // Posting scores runs the badge engine, so any live badge on dev (e.g. an admin's manual-testing
+  // "first score" badge) gets awarded to the borrowed users. Remove those awards, their
+  // notifications and their events — only what this run created.
+  await db.delete(userBadges).where(and(inArray(userBadges.userId, ids), sql`${userBadges.earnedAt} >= ${startedAt}::timestamp`));
+  await db.delete(notifications).where(and(
+    inArray(notifications.userId, ids), eq(notifications.kind, 'badge_earned'), sql`${notifications.createdAt} >= ${startedAt}::timestamp`,
+  ));
+  await db.delete(activityEvents).where(and(
+    sql`${activityEvents.createdAt} >= ${startedAt}::timestamp`,
+    or(
+      and(eq(activityEvents.type, 'badge.earned'), inArray(activityEvents.actorUserId, ids)),
+      and(eq(activityEvents.type, 'notification.sent'), inArray(activityEvents.subjectUserId, ids), sql`${activityEvents.payload} ->> 'kind' = 'badge_earned'`),
+    ),
+  ));
+  if (notificationsBefore.length) await db.insert(notifications).values(notificationsBefore).onConflictDoNothing();
   server.close();
   console.log(`\n${passes} passed, ${failures} failed`);
   process.exit(failures ? 1 : 0);
