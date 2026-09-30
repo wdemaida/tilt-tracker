@@ -69,7 +69,7 @@ export default function UserPage() {
 
       {/* Yours: edit what friends get recommended. A friend's: their "Challenge me on" machines (the
           server only sends challengeMe to accepted friends). */}
-      {isSignedIn && friendship?.relationship === 'self' && <ChallengeMeEditor />}
+      {isSignedIn && friendship?.relationship === 'self' && <ChallengeMeEditor where="profile" />}
       {isSignedIn && friendship?.relationship === 'friends' && data.challengeMe && (
         <ChallengeMeChips username={user.username} machines={data.challengeMe} />
       )}

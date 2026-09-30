@@ -221,6 +221,9 @@ export interface ChallengeMeMachine { id: number; name: string; variant: string 
 /** A venue in your own challenge-locations list or its suggestions. Only ever your own. */
 export interface ChallengePrefVenue { id: number; name: string; isPrivate: boolean; isHome: boolean; source?: 'auto' | 'added' }
 
+/** GET /api/me/challenge-venue-search — TiltTrack venues you could add (public, yours, or scored at). */
+export interface ChallengeVenueHit { id: number; name: string; city: string | null; state: string | null; isPrivate: boolean; isHome: boolean }
+
 /** GET/PUT /api/me/challenge-prefs */
 export interface ChallengePrefs {
   machines: Array<ChallengeMeMachine & { manufacturer: string | null; year: number | null }>;
@@ -421,6 +424,8 @@ export function createApi(getToken: () => Promise<string | null>) {
       prefs: async () => request<ChallengePrefs>('/me/challenge-prefs', undefined, await tok()),
       savePrefs: async (body: { machineIds?: number[]; venueIds?: number[] }) =>
         request<ChallengePrefs>('/me/challenge-prefs', { method: 'PUT', body: JSON.stringify(body) }, await tok()),
+      searchVenues: async (q: string) =>
+        request<ChallengeVenueHit[]>(`/me/challenge-venue-search?q=${encodeURIComponent(q)}`, undefined, await tok()),
       // No username = your own record (head-to-head vs everyone).
       record: async (username?: string) =>
         request<ChallengeRecord>(username ? `/challenges/record/${encodeURIComponent(username)}` : '/challenges/record', undefined, await tok()),

@@ -4,6 +4,7 @@ import { Link } from 'wouter';
 import { formatDistanceToNow } from 'date-fns';
 import { Check, CornerDownRight, Loader2, Lock, MapPinOff, Swords, Timer, X } from 'lucide-react';
 import UsernameLink from '../components/UsernameLink';
+import { ChallengeMeEditor } from '../components/ChallengeMeCard';
 import { OutcomeChip, MachineThumb } from '../components/ChallengeParts';
 import { useApi } from '../lib/useApi';
 import { useAppUser } from '../lib/useAppUser';
@@ -187,6 +188,9 @@ export default function ChallengesPage() {
           <Swords className="w-4 h-4" aria-hidden /> Challenge a friend
         </Link>
       </div>
+
+      {/* Your "Challenge me" settings — the same card as on your profile, collapsed once set up. */}
+      {myId != null && <ChallengeMeEditor where="challenges" />}
 
       {error && <p className="text-sm text-red-400 mb-4">{challengeErrorText(error, 'Could not load challenges')}</p>}
 

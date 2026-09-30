@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { ChallengeError } from '../lib/challenges.js';
-import { getChallengePrefs, updateChallengePrefs } from '../lib/challengeReach.js';
+import { getChallengePrefs, updateChallengePrefs, searchChallengeVenues } from '../lib/challengeReach.js';
+import { SlidingRateLimiter } from '../lib/nearbyLookup.js';
+import { SEARCH_RATE_WINDOWS } from '../lib/venueSearch.js';
 import { logActivity, actorOf } from '../lib/activity.js';
 
 // The caller's own settings that aren't the profile itself (feature/challenge-recs). Mounted behind
@@ -33,6 +35,25 @@ router.put('/challenge-prefs', async (req, res) => {
     });
     res.json(prefs);
   } catch (err) { fail(res, err, 'Save challenge preferences'); }
+});
+
+// GET /api/me/challenge-venue-search?q= — venues you could add as a challenge location, from
+// TiltTrack's own venues table only (zero Pinball Map / HERE calls). Public venues, your own, or one
+// you've scored at — never a stranger's private venue. Same per-user limit as the Add Score search.
+const venueSearchLimiter = new SlidingRateLimiter(SEARCH_RATE_WINDOWS);
+setInterval(() => venueSearchLimiter.sweep(), 10 * 60_000).unref();
+
+router.get('/challenge-venue-search', async (req, res) => {
+  const userId = (req as any).appUser.id as number;
+  const q = typeof req.query.q === 'string' ? req.query.q.slice(0, 100) : '';
+  const decision = venueSearchLimiter.take(String(userId));
+  if (!decision.ok) {
+    res.setHeader('Retry-After', String(Math.ceil(decision.retryAfterMs / 1000)));
+    return res.status(429).json({ error: 'Too many venue searches — wait a moment and try again', code: 'rate_limited' });
+  }
+  try {
+    res.json(await searchChallengeVenues(userId, q));
+  } catch (err) { fail(res, err, 'Search venues'); }
 });
 
 export default router;

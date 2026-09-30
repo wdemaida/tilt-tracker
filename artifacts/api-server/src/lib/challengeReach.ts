@@ -5,6 +5,7 @@ import {
 import { and, asc, eq, gte, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { canSeeVenueActivity, visibleScoreSql, type Viewer } from './venueActivity.js';
 import { isPrivateVenue } from './venueAddress.js';
+import { matchScore, queryLength, MIN_QUERY_CHARS } from './venueSearch.js';
 import { acceptedPairSql } from './friendships.js';
 import { countVisits } from './statsCalc.js';
 import { mergeRecommendations, rankRecentPlay, reachIds, type Reach, type ReachItem, type Recommendation } from './challengeRecs.js';
@@ -307,6 +308,45 @@ export async function updateChallengePrefs(userId: number, body: Record<string, 
     prefs: await getChallengePrefs(userId, now),
     changed: { ...(hasMachines ? { machineIds } : {}), ...(hasVenues ? { venueIds } : {}) },
   };
+}
+
+/** A venue search hit for the challenge-locations editor. */
+export interface ChallengeVenueHit { id: number; name: string; city: string | null; state: string | null; isPrivate: boolean; isHome: boolean }
+export const CHALLENGE_VENUE_SEARCH_LIMIT = 8;
+
+/**
+ * GET /api/me/challenge-venue-search?q= — any TiltTrack venue you could add as a challenge location,
+ * matched on name (or address) words like the Add Score search. Reads our own venues table only: no
+ * Pinball Map, no HERE. Only venues PUT would accept — public, your own, or one you've scored at —
+ * so a stranger's private venue never appears. City/state only for a public venue or your own; a
+ * private venue you merely scored at shows its name alone (as its chip already does). Venues already
+ * in your list are left out.
+ */
+export async function searchChallengeVenues(userId: number, q: string): Promise<ChallengeVenueHit[]> {
+  if (queryLength(q) < MIN_QUERY_CHARS) return [];
+  const rows = await db.select({
+    id: venues.id, name: venues.name, address: venues.address, city: venues.city, state: venues.state,
+    ownerId: venues.ownerId, isResidence: venues.isResidence, privacyTier: venues.privacyTier,
+  }).from(venues).where(and(
+    sql`((${venues.isResidence} = false AND ${venues.privacyTier} = 'full') OR ${venues.ownerId} = ${userId}
+      OR EXISTS (SELECT 1 FROM scores s WHERE s.venue_id = ${venues.id} AND s.user_id = ${userId}))`,
+    sql`NOT EXISTS (SELECT 1 FROM user_challenge_venues ucv WHERE ucv.user_id = ${userId} AND ucv.venue_id = ${venues.id})`,
+  ));
+  return rows
+    .map(v => {
+      const priv = isPrivateVenue(v);
+      const own = v.ownerId === userId;
+      // Match a private venue on its name only — its address is not ours to search by.
+      return { v, priv, own, score: matchScore(q, v.name, priv && !own ? null : v.address) };
+    })
+    .filter((r): r is typeof r & { score: number } => r.score != null)
+    .sort((a, b) => b.score - a.score || a.v.name.localeCompare(b.v.name))
+    .slice(0, CHALLENGE_VENUE_SEARCH_LIMIT)
+    .map(({ v, priv, own }) => ({
+      id: v.id, name: v.name,
+      city: !priv || own ? v.city : null, state: !priv || own ? v.state : null,
+      isPrivate: priv, isHome: own && v.isResidence,
+    }));
 }
 
 // ── recommendations ──────────────────────────────────────────────────────────

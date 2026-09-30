@@ -606,6 +606,43 @@ try {
   check('a hand-added venue is source added; a seeded one it kept stays auto', srcOf(PMV.id) === 'added' && (wasSeeded || srcOf(BOB_HOME.id) === 'auto'), r.body?.venues);
   check('profile.challenge_prefs_updated logged for the saved PUT', (await prefEventCount()) === prefEventsBefore + 1);
 
+  // Challenge-location search (GET /api/me/challenge-venue-search): our venues table only, the PUT rule.
+  const searchVenues = await db.insert(venues).values([
+    { name: 'zz-challenge-test searchable arcade', city: 'Zzton', state: 'ZZ' },
+    { name: 'zz-challenge-test carol cabin', isResidence: true, ownerId: carol.id, city: 'Zzville', state: 'ZZ' },
+  ]).returning({ id: venues.id, name: venues.name });
+  venueIds.push(...searchVenues.map(v => v.id));
+  const [ARCADE, CABIN] = searchVenues;
+  await db.update(venues).set({ city: 'Zzburg', state: 'ZZ' }).where(eq(venues.id, CAROL_HOME.id));
+  const pmBeforeSearch = pmClient().stats().liveCallsToday;
+  const hitIds = (body: any) => (Array.isArray(body) ? body : []).map((h: any) => h.id as number);
+  r = await call(bob, 'GET', `/me/challenge-venue-search?q=${encodeURIComponent('zz challenge test searchable')}`);
+  const arcadeHit = (r.body ?? []).find?.((h: any) => h.id === ARCADE.id);
+  check('venue search → 200, finds a public venue by name words, with city/state', r.status === 200
+    && arcadeHit?.city === 'Zzton' && arcadeHit?.state === 'ZZ' && arcadeHit?.isPrivate === false, r.body);
+  r = await call(bob, 'GET', `/me/challenge-venue-search?q=${encodeURIComponent('zz challenge test cabin')}`);
+  check("venue search never returns a stranger's residence (never played there)", r.status === 200 && !hitIds(r.body).includes(CABIN.id)
+    && !JSON.stringify(r.body).includes(CABIN.name), r.body);
+  r = await call(alice, 'GET', `/me/challenge-venue-search?q=${encodeURIComponent('zz challenge test residence')}`);
+  check("venue search: alice gets neither bob's nor carol's residence", r.status === 200
+    && !hitIds(r.body).includes(BOB_HOME.id) && !hitIds(r.body).includes(CAROL_HOME.id), r.body);
+  r = await call(carol, 'GET', `/me/challenge-venue-search?q=${encodeURIComponent('zz challenge test cabin')}`);
+  const cabinHit = (r.body ?? []).find?.((h: any) => h.id === CABIN.id);
+  check('venue search: your own residence is found, marked home, with its city', cabinHit?.isHome === true && cabinHit?.city === 'Zzville', r.body);
+  await db.delete(userChallengeVenues).where(and(eq(userChallengeVenues.userId, bob.id), eq(userChallengeVenues.venueId, CAROL_HOME.id)));
+  r = await call(bob, 'GET', `/me/challenge-venue-search?q=${encodeURIComponent('zz challenge test carol residence')}`);
+  const playedHit = (r.body ?? []).find?.((h: any) => h.id === CAROL_HOME.id);
+  check("venue search: a private venue you've scored at is found by name only — no city/state", playedHit
+    && playedHit.city === null && playedHit.state === null && playedHit.isPrivate === true && playedHit.isHome === false, r.body);
+  r = await call(bob, 'GET', '/me/challenge-venue-search?q=z');
+  check('venue search: under 2 letters → empty', r.status === 200 && Array.isArray(r.body) && r.body.length === 0, r.body);
+  r = await call(bob, 'PUT', '/me/challenge-prefs', { venueIds: [PMV.id, BOB_HOME.id, CAROL_HOME.id, ARCADE.id] });
+  check('PUT adds a searched (never-suggested) public venue → 200, source added', r.status === 200
+    && r.body?.venues?.find((v: any) => v.id === ARCADE.id)?.source === 'added' && r.body?.venues?.length === 4, r.body?.venues);
+  r = await call(bob, 'GET', `/me/challenge-venue-search?q=${encodeURIComponent('zz challenge test searchable')}`);
+  check('venue search leaves out venues already in your list', r.status === 200 && !hitIds(r.body).includes(ARCADE.id), r.body);
+  check('venue search: zero Pinball Map calls', pmClient().stats().liveCallsToday === pmBeforeSearch);
+
   r = await call(carol, 'GET', `/challenges/recommendations/${encodeURIComponent(bob.username)}`);
   check('recommendations for a non-friend → 403 not_friends', r.status === 403 && r.body?.code === 'not_friends', r);
   r = await call(alice, 'GET', `/challenges/recommendations/${encodeURIComponent(alice.username)}`);
