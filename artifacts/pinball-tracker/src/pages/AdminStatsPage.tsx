@@ -1,8 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useApi } from '../lib/useApi';
-import { ShieldCheck, X, RefreshCw } from 'lucide-react';
-import AdminNav from '../components/AdminNav';
+import { X, RefreshCw } from 'lucide-react';
 
 type StatDef = {
   id: number;
@@ -138,7 +137,8 @@ function EditStatModal({ stat, onClose }: { stat: StatDef; onClose: () => void }
   );
 }
 
-export default function AdminStatsPage() {
+// The Stats tab of /admin/config (no page of its own any more — /admin/stats redirects there).
+export function AdminStatsPanel() {
   const api = useApi();
   const qc = useQueryClient();
   const [editingStat, setEditingStat] = useState<StatDef | null>(null);
@@ -151,7 +151,7 @@ export default function AdminStatsPage() {
 
   const { data: history = [], isLoading: historyLoading } = useQuery({
     queryKey: ['admin-stats-history'],
-    queryFn: () => api.admin.statHistory(60),
+    queryFn: () => api.admin.statHistory(),
   });
 
   const snapshotMutation = useMutation({
@@ -164,14 +164,7 @@ export default function AdminStatsPage() {
   });
 
   return (
-    <div className="max-w-4xl mx-auto">
-      <div className="flex items-center gap-3 mb-6">
-        <ShieldCheck className="w-7 h-7 text-primary" />
-        <h1 className="text-3xl font-black uppercase tracking-widest text-white">Admin</h1>
-      </div>
-
-      <AdminNav />
-
+    <div>
       <section className="mb-10">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">
@@ -211,7 +204,7 @@ export default function AdminStatsPage() {
       <section>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">
-            Recent History <span className="normal-case font-normal text-white/40">— written daily at 1am ET</span>
+            Recent History <span className="normal-case font-normal text-white/40">— last 7 days, written daily at 1am ET</span>
           </h2>
           <button
             onClick={() => { setSnapshotMsg(''); snapshotMutation.mutate(); }}

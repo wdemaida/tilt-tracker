@@ -1,7 +1,9 @@
-import { ShieldCheck, RotateCcw } from 'lucide-react';
-import AdminNav from '../components/AdminNav';
+import { RotateCcw } from 'lucide-react';
+import { useLocation, useSearch } from 'wouter';
 import { useTheme, hslToHex, DEFAULT_COLORS, type ColorKey } from '../lib/theme';
 import { RetentionSettingsCard, PhotoOrphansCard } from '../components/admin/MaintenanceSettings';
+import { AdminShell, Segmented } from '../components/admin/AdminParts';
+import { AdminStatsPanel } from './AdminStatsPage';
 
 const COLOR_CONFIG: { key: ColorKey; label: string; description: string }[] = [
   { key: 'primary',  label: 'Scores',   description: 'Score numbers, buttons, and primary accents' },
@@ -52,55 +54,71 @@ function ColorRow({ item }: { item: typeof COLOR_CONFIG[number] }) {
   );
 }
 
-export default function AdminConfigPage() {
+function ThemeSettingsCard() {
   const { resetColors, colors } = useTheme();
   const allDefault = Object.entries(DEFAULT_COLORS).every(
     ([k, v]) => colors[k as ColorKey] === v
   );
 
   return (
-    <div className="max-w-4xl mx-auto">
-      <div className="flex items-center gap-3 mb-6">
-        <ShieldCheck className="w-7 h-7 text-primary" />
-        <h1 className="text-3xl font-black uppercase tracking-widest text-white">Admin</h1>
+    <div className="rounded-xl border border-white/10 bg-card p-6">
+      <div className="flex items-center justify-between mb-1">
+        <h3 className="text-base font-black uppercase tracking-wider text-white">App Theme</h3>
+        {!allDefault && (
+          <button
+            onClick={resetColors}
+            className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-white transition-colors"
+          >
+            <RotateCcw className="w-3 h-3" />
+            Reset all
+          </button>
+        )}
       </div>
-
-      <AdminNav />
-
-      <section className="flex flex-col gap-6">
-        <h2 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">
-          Configuration Settings
-        </h2>
-
-        <div className="rounded-xl border border-white/10 bg-card p-6">
-          <div className="flex items-center justify-between mb-1">
-            <h3 className="text-base font-black uppercase tracking-wider text-white">App Theme</h3>
-            {!allDefault && (
-              <button
-                onClick={resetColors}
-                className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-white transition-colors"
-              >
-                <RotateCcw className="w-3 h-3" />
-                Reset all
-              </button>
-            )}
-          </div>
-          <p className="text-xs text-muted-foreground mb-5">
-            Changes apply instantly across the app and persist across sessions.
-          </p>
-          <div>
-            {COLOR_CONFIG.map(item => (
-              <ColorRow key={item.key} item={item} />
-            ))}
-          </div>
-        </div>
-
-        <h2 className="text-sm font-bold uppercase tracking-widest text-muted-foreground mt-2">
-          Data &amp; Storage
-        </h2>
-        <RetentionSettingsCard />
-        <PhotoOrphansCard />
-      </section>
+      <p className="text-xs text-muted-foreground mb-5">
+        Changes apply instantly across the app and persist across sessions.
+      </p>
+      <div>
+        {COLOR_CONFIG.map(item => (
+          <ColorRow key={item.key} item={item} />
+        ))}
+      </div>
     </div>
+  );
+}
+
+// Config is one page of tabs. The tab lives in the URL (`/admin/config?tab=stats`) so links (the
+// Overview's System card) and a reload land on the right one; the first tab is the bare URL.
+// /admin/stats redirects to the Stats tab. Add a tab by adding an entry.
+export const CONFIG_TABS = [
+  { key: 'theme',     label: 'Theme',          Component: ThemeSettingsCard },
+  { key: 'retention', label: 'Data retention', Component: RetentionSettingsCard },
+  { key: 'photos',    label: 'Photo storage',  Component: PhotoOrphansCard },
+  { key: 'stats',     label: 'Stats',          Component: AdminStatsPanel },
+] as const;
+
+export type ConfigTab = typeof CONFIG_TABS[number]['key'];
+
+export function configHref(tab: ConfigTab) {
+  return tab === CONFIG_TABS[0].key ? '/admin/config' : `/admin/config?tab=${tab}`;
+}
+
+export default function AdminConfigPage() {
+  const [, navigate] = useLocation();
+  const requested = new URLSearchParams(useSearch()).get('tab');
+  const active = CONFIG_TABS.find(t => t.key === requested) ?? CONFIG_TABS[0];
+  const { Component } = active;
+
+  return (
+    <AdminShell>
+      {/* Segmented scrolls sideways on a phone rather than wrapping. */}
+      <div className="mb-6">
+        <Segmented<ConfigTab>
+          value={active.key}
+          onChange={t => navigate(configHref(t), { replace: true })}
+          options={CONFIG_TABS.map(t => ({ value: t.key, label: t.label }))}
+        />
+      </div>
+      <Component />
+    </AdminShell>
   );
 }

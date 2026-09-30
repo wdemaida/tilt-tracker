@@ -573,7 +573,8 @@ export function createApi(getToken: () => Promise<string | null>) {
       updateUser: async (id: number, data: { role?: string; displayName?: string; username?: string }) =>
         request<any>(`/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) }, await tok()),
       stats: async () => request<any[]>('/admin/stats', undefined, await tok()),
-      statHistory: async (days = 60) => request<any[]>(`/admin/stats/history?days=${days}`, undefined, await tok()),
+      // Last 7 days only — the window is fixed server-side.
+      statHistory: async () => request<any[]>('/admin/stats/history', undefined, await tok()),
       updateStat: async (id: number, body: { label?: string; description?: string }) =>
         request<any>(`/admin/stats/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, await tok()),
       deleteStat: async (id: number) =>

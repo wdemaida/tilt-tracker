@@ -299,8 +299,12 @@
 ## Admin area (`src/pages/Admin*.tsx`, `components/admin/`, `lib/adminApi.ts`, added 2026-09-26)
 - Routes: `/admin` (Overview), `/admin/users`, `/admin/users/:id`, `/admin/activity` (`?userId=`,
   `?category=`, `?type=`), `/admin/crew` (`?tab=friendships|challenges|notifications`),
-  `/admin/scores` (`?userId=`), plus the existing Health / Stats / Config. `AdminNav` scrolls sideways
-  on phones rather than wrapping.
+  `/admin/scores` (`?userId=`), `/admin/health`, and `/admin/config` (`?tab=retention|photos|stats`;
+  no param = Theme). `AdminNav` scrolls sideways on phones rather than wrapping.
+- **Config is tabs** (`CONFIG_TABS` in `AdminConfigPage.tsx`, added 2026-09-29): Theme, Data
+  retention, Photo storage, Stats. Stats is `AdminStatsPanel` from `AdminStatsPage.tsx`; `/admin/stats`
+  is only a redirect to `?tab=stats` now, and isn't in `AdminNav`. Its Recent History is the last 7
+  New York calendar days, fixed server-side in `GET /api/admin/stats/history`.
 - `AdminGate` renders nothing until `/api/users/me` says admin, so admin pages never fire requests
   for guests or users (the server refuses them regardless).
 - Admin calls live in `lib/adminApi.ts` (`useAdminApi()`), built on the `request` helper exported from

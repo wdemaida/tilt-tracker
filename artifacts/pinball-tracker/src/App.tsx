@@ -26,7 +26,6 @@ import NotFoundPage from './pages/NotFoundPage';
 import AdminPage from './pages/AdminPage';
 import AdminHealthPage from './pages/AdminHealthPage';
 import AdminConfigPage from './pages/AdminConfigPage';
-import AdminStatsPage from './pages/AdminStatsPage';
 import AdminUsersPage from './pages/AdminUsersPage';
 import AdminUserPage from './pages/AdminUserPage';
 import AdminActivityPage from './pages/AdminActivityPage';
@@ -178,9 +177,8 @@ export default function App() {
         <Route path="/admin/config">
           <AdminGate><AdminConfigPage /></AdminGate>
         </Route>
-        <Route path="/admin/stats">
-          <AdminGate><AdminStatsPage /></AdminGate>
-        </Route>
+        {/* Stats is a tab of Config now; old links and bookmarks land there (Config is gated). */}
+        <Route path="/admin/stats"><Redirect replace to="/admin/config?tab=stats" /></Route>
         <Route component={NotFoundPage} />
       </Switch>
       </AccessGate>

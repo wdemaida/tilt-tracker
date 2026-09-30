@@ -299,9 +299,12 @@ router.get('/stats', async (_req, res) => {
   }
 });
 
-// GET /api/admin/stats/history?days=60 — recent stat_history rows, most recent first
-router.get('/stats/history', async (req, res) => {
-  const days = Math.min(Number(req.query.days) || 60, 365);
+// GET /api/admin/stats/history — the last 7 days of stat_history rows, most recent first. Feeds only
+// the admin Config → Stats "Recent History" table (the public Stats page charts use
+// /api/stats/history/:key). period_date is an America/New_York calendar date, so the window is
+// "today in New York and the 6 days before" on the DB clock — not a row count.
+const ADMIN_STAT_HISTORY_DAYS = 7;
+router.get('/stats/history', async (_req, res) => {
   try {
     const rows = await db
       .select({
@@ -314,8 +317,8 @@ router.get('/stats/history', async (req, res) => {
       })
       .from(statHistory)
       .innerJoin(stats, eq(statHistory.statId, stats.id))
-      .orderBy(desc(statHistory.periodDate))
-      .limit(days * 10); // generous cap regardless of how many stat definitions exist
+      .where(sql`${statHistory.periodDate} > (now() at time zone 'America/New_York')::date - ${ADMIN_STAT_HISTORY_DAYS}::int`)
+      .orderBy(desc(statHistory.periodDate), asc(stats.id));
     res.json(rows);
   } catch (err) {
     console.error('admin/stats/history GET error:', err);
