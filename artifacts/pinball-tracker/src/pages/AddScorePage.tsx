@@ -23,6 +23,7 @@ import { MissingLocationNotice, type CurrentLocationState } from '../components/
 import BadgeImage from '../components/BadgeImage';
 import ChallengeFitSummary from '../components/ChallengeFitSummary';
 import EditScoreDialog, { type EditScoreTarget } from '../components/EditScoreDialog';
+import DuplicateVenuePrompt, { duplicateCandidates, type DuplicateCandidate } from '../components/DuplicateVenuePrompt';
 import type { ChallengeFit } from '../lib/api';
 import { invalidateChallengeQueries } from '../lib/challenges';
 import { BADGES_KEY, type Badge } from '../lib/badges';
@@ -149,9 +150,7 @@ export default function AddScorePage() {
   // Existing venues the server matched when it rejected a create as a likely duplicate.
   // Someone's private venue arrives as a name-only `isPrivate` candidate (exact name match, never a
   // location match): loggable like any other, but with no address or distance to show.
-  const [venueDuplicates, setVenueDuplicates] = useState<
-    Array<{ id: number; name: string; address: string | null; distance: number | null; isPrivate?: true }> | null
-  >(null);
+  const [venueDuplicates, setVenueDuplicates] = useState<DuplicateCandidate[] | null>(null);
   const [machineSearch, setMachineSearch] = useState('');
   const [selectedMachine, setSelectedMachine] = useState('');
   // "Not listed?" under a venue's machine list: type any machine (catalog search) instead.
@@ -790,7 +789,7 @@ export default function AddScorePage() {
     // A 409 here isn't a failure to explain in red text — it's the server saying "you already have
     // this one". Show the matches so the obvious action (pick the existing venue) is one click.
     onError: (e: any) => {
-      setVenueDuplicates(e.code === 'duplicate_venue' ? (e.body?.candidates ?? null) : null);
+      setVenueDuplicates(duplicateCandidates(e));
     },
   });
 
@@ -1573,59 +1572,25 @@ export default function AddScorePage() {
                 </div>
               )}
               {venueDuplicates && venueDuplicates.length > 0 && (
-                <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 flex flex-col gap-2">
-                  <p className="text-xs text-amber-400">
-                    {venueDuplicates.length === 1 && venueDuplicates[0].isPrivate ? (
-                      <>A private venue named “{venueDuplicates[0].name}” exists — log here, or create your own.</>
-                    ) : (
-                      <>
-                        {venueDuplicates.length === 1 ? 'You already have this venue' : 'You already have venues with this name nearby'}.
-                        Use the existing one, unless this really is a different place.
-                      </>
-                    )}
-                  </p>
-                  <ul className="flex flex-col gap-1.5">
-                    {venueDuplicates.map(d => (
-                      <li key={d.id}>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setValue('venueName', d.name);
-                            setVenueSearch(d.name);
-                            setSelectedVenue({ venueId: d.id, address: d.address ?? undefined });
-                            setVenueDuplicates(null);
-                            setShowAddVenueForm(false);
-                            setStep(3);
-                          }}
-                          className="w-full text-left rounded border border-white/10 bg-card px-2.5 py-1.5 hover:bg-white/10 transition-colors"
-                        >
-                          <span className="block text-sm font-bold text-venue truncate">{d.name}</span>
-                          <span className="block text-[0.65rem] text-muted-foreground truncate">
-                            {d.isPrivate ? 'Private venue' : (
-                              <>
-                                {d.distance != null ? `${d.distance}m away` : 'same name'}
-                                {d.address ? ` · ${d.address}` : ''}
-                              </>
-                            )}
-                          </span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                  <button
-                    type="button"
-                    onClick={() => createVenueMutation.mutate({
-                      name: newVenueName.trim(),
-                      address: newVenueAddress.trim(),
-                      isResidence: newVenueIsResidence,
-                      privacyTier: newVenuePrivacyTier,
-                      allowDuplicate: true,
-                    })}
-                    className="self-start text-xs text-muted-foreground hover:text-white underline transition-colors"
-                  >
-                    {venueDuplicates.length === 1 && venueDuplicates[0].isPrivate ? 'Create my own venue' : 'No, this is a different venue — create it anyway'}
-                  </button>
-                </div>
+                <DuplicateVenuePrompt
+                  candidates={venueDuplicates}
+                  busy={createVenueMutation.isPending}
+                  onUse={d => {
+                    setValue('venueName', d.name);
+                    setVenueSearch(d.name);
+                    setSelectedVenue({ venueId: d.id, address: d.address ?? undefined });
+                    setVenueDuplicates(null);
+                    setShowAddVenueForm(false);
+                    setStep(3);
+                  }}
+                  onCreateAnyway={() => createVenueMutation.mutate({
+                    name: newVenueName.trim(),
+                    address: newVenueAddress.trim(),
+                    isResidence: newVenueIsResidence,
+                    privacyTier: newVenuePrivacyTier,
+                    allowDuplicate: true,
+                  })}
+                />
               )}
               {createVenueMutation.isError && !venueDuplicates && (
                 <p className="text-xs text-red-400">{(createVenueMutation.error as any)?.message ?? 'Failed to create venue'}</p>

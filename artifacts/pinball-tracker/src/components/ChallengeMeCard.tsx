@@ -1,19 +1,25 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Link } from 'wouter';
-import { ChevronDown, Home, Loader2, MapPin, Plus, Search, Swords, X } from 'lucide-react';
+import { ChevronDown, Home, Loader2, LocateFixed, MapPin, Plus, Search, Swords, X } from 'lucide-react';
 import { useApi } from '../lib/useApi';
 import { queryClient } from '../lib/queryClient';
 import { CHALLENGE_PREFS_KEY, challengeErrorText } from '../lib/challenges';
+import { useVenueSearch, MIN_PLACE_SEARCH_CHARS } from '../lib/venueSearch';
+import { getCurrentPosition, geoFailureMessage, CurrentPositionError } from '../lib/photoLocation';
 import MachinePicker, { type MachineOption } from './MachinePicker';
 import { MachineThumb } from './ChallengeParts';
+import DuplicateVenuePrompt, { duplicateCandidates, type DuplicateCandidate } from './DuplicateVenuePrompt';
 import type { ChallengeMeMachine, ChallengePrefs, ChallengePrefVenue, ChallengeVenueHit } from '../lib/api';
 
 // "Challenge me" (feature/challenge-recs).
 //  - Yours (on your profile and the Challenges page, collapsible): the machines you want to be
 //    challenged on (max 3) and your challenge locations — venues you can get to, pre-filled once
-//    from where you've played, with suggestions to add and a search over TiltTrack's own venues
-//    (never Pinball Map / HERE). Friends' create forms recommend from these. Saved on every change.
+//    from where you've played, with suggestions to add and a search over TiltTrack's own venues.
+//    A place that isn't on TiltTrack yet (a friend's regular bar nobody has logged at) can be added
+//    too, from "Near me" or the search's Places fallback — the Add Score venue step's own endpoints
+//    (feature/pm-challenge-locations, see AddLocation). Friends' create forms recommend from these.
+//    Saved on every change.
 //  - A friend's profile: their "Challenge me on" machines as chips that open the create form on
 //    that exact model. (Challenge locations never show on a profile — only in the create flow.)
 
@@ -54,11 +60,52 @@ function plural(n: number, one: string) { return `${n} ${one}${n === 1 ? '' : 's
 const searchable = (q: string) => q.replace(/[^\p{L}\p{N}]/gu, '').length >= 2;
 
 /**
+ * A place that isn't a TiltTrack venue yet — a HERE result from "Near me" or the search's Places
+ * fallback. Adding one creates the venue (POST /api/venues), links its Pinball Map listing, then adds it.
+ */
+interface PlacePick {
+  name: string;
+  address: string;
+  lat: number | null;
+  lng: number | null;
+  /** The nearby lookup already matched Pinball Map (`pmChecked`); a search place still needs pm-match. */
+  pinballMapId: number | null;
+  pmChecked: boolean;
+}
+
+/** One row of POST /api/upload/nearby-venues (hereApi.ts `Venue`): a TiltTrack venue (`venueId`) or a HERE place. */
+interface NearbyVenue {
+  venueId?: number; name: string; address: string; distance: number; hereId: string | null;
+  venueLat?: number; venueLng?: number; pinballMapId?: number;
+}
+
+type Point = { lat: number; lng: number };
+
+function PlaceRow({ name, detail, busy, onPick }: { name: string; detail: string; busy: boolean; onPick: () => void }) {
+  return (
+    <button type="button" disabled={busy} onClick={onPick}
+      className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/5 disabled:opacity-50">
+      <MapPin className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" aria-hidden />
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm text-white/90 truncate">{name}</span>
+        {detail && <span className="block text-[11px] text-muted-foreground truncate">{detail}</span>}
+      </span>
+      <span className="text-[10px] uppercase tracking-wide text-muted-foreground flex-shrink-0">New</span>
+      <Plus className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" aria-hidden />
+    </button>
+  );
+}
+
+/**
  * Type-ahead over TiltTrack's own venues (public, yours, or ones you've scored at) to add any location.
  * Focused with nothing typed, it offers the venues you've most recently played at ("Recently played",
- * the same endpoint with an empty q); typing switches to search results.
+ * the same endpoint with an empty q); typing switches to search results. When no TiltTrack venue
+ * matches, it falls back to the Add Score search's HERE "Places" (GET /api/venues/search) — a place
+ * picked there becomes a new venue (`onPickPlace`).
  */
-function VenueSearch({ onPick, busy }: { onPick: (id: number) => void; busy: boolean }) {
+function VenueSearch({ onPick, onPickPlace, at, busy }: {
+  onPick: (id: number) => void; onPickPlace: (p: PlacePick) => void; at: Point | null; busy: boolean;
+}) {
   const api = useApi();
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
@@ -78,7 +125,13 @@ function VenueSearch({ onPick, busy }: { onPick: (id: number) => void; busy: boo
     staleTime: 30_000,
   });
   const results = (recentMode ? recent.data : hits.data) ?? [];
+  // Places only once TiltTrack has nothing for this text (the HERE half costs a request), from 3
+  // letters like the Add Score box. Same hook, endpoint, cache and rate limit as that box.
+  const wantPlaces = open && active && hits.isSuccess && results.length === 0 && dq.replace(/[^\p{L}\p{N}]/gu, '').length >= MIN_PLACE_SEARCH_CHARS;
+  const placeSearch = useVenueSearch(wantPlaces ? dq : '', at);
+  const places = wantPlaces ? (placeSearch.result?.places ?? []) : [];
   const pick = (id: number) => { onPick(id); setQ(''); setOpen(false); };
+  const pickPlace = (p: PlacePick) => { onPickPlace(p); setQ(''); setOpen(false); };
   // Recently played: nothing until it has loaded (no spinner flash), a quiet line if there are none.
   const showRecent = open && recentMode && recent.isSuccess;
   const showSearch = open && active;
@@ -94,7 +147,7 @@ function VenueSearch({ onPick, busy }: { onPick: (id: number) => void; busy: boo
     </button>
   );
   return (
-    <div className="mt-2">
+    <div>
       <div className="relative">
         <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" aria-hidden />
         <input
@@ -105,7 +158,7 @@ function VenueSearch({ onPick, busy }: { onPick: (id: number) => void; busy: boo
           onClick={() => setOpen(true)}
           onBlur={() => setOpen(false)}
           onKeyDown={e => { if (e.key === 'Escape' && open) { e.preventDefault(); setOpen(false); } }}
-          placeholder="Search TiltTrack venues to add…"
+          placeholder="Search venues or places to add…"
           aria-label="Search venues to add as a challenge location"
           aria-expanded={showRecent || showSearch}
           className="w-full rounded-lg border border-white/10 bg-card pl-8 pr-3 py-2 text-sm text-white placeholder:text-muted-foreground focus:outline-none focus:border-venue/50"
@@ -120,11 +173,176 @@ function VenueSearch({ onPick, busy }: { onPick: (id: number) => void; busy: boo
           {showSearch && hits.isLoading && <p className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground"><Loader2 className="w-3 h-3 animate-spin" aria-hidden /> Searching…</p>}
           {showSearch && hits.isError && <p className="px-3 py-2 text-xs text-red-400">{challengeErrorText(hits.error, 'Search failed')}</p>}
           {showSearch && !hits.isLoading && !hits.isError && results.length === 0 && (
-            <p className="px-3 py-2 text-xs text-muted-foreground">No TiltTrack venue matches. A venue shows up here once someone has logged a score there.</p>
+            <p className="px-3 py-2 text-xs text-muted-foreground">
+              No TiltTrack venue matches.{wantPlaces ? '' : ' Type a few more letters to search places too.'}
+            </p>
           )}
           {results.map(venueRow)}
+          {wantPlaces && placeSearch.pending && <p className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground"><Loader2 className="w-3 h-3 animate-spin" aria-hidden /> Searching places…</p>}
+          {wantPlaces && placeSearch.failed && <p className="px-3 py-2 text-xs text-red-400">Place search failed</p>}
+          {wantPlaces && placeSearch.result && places.length === 0 && <p className="px-3 py-2 text-xs text-muted-foreground">No places match either.</p>}
+          {places.length > 0 && <p className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wide text-muted-foreground">Places — not on TiltTrack yet; adding one creates it</p>}
+          {places.map(p => (
+            <PlaceRow key={p.hereId} name={p.name} busy={busy}
+              detail={[p.address, p.distance != null ? `${(p.distance / 1609.34).toFixed(1)} mi` : ''].filter(Boolean).join(' · ')}
+              onPick={() => pickPlace({ name: p.name, address: p.address, lat: p.venueLat, lng: p.venueLng, pinballMapId: null, pmChecked: false })} />
+          ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Everything under the chips that adds a location: "Near me" (the Add Score "Use my current location"
+ * lookup, only ever on a tap), the search, and turning a picked place into a venue. A place is created
+ * through the same POST /api/venues as every other "add a venue" form (its 409 duplicate prompt
+ * included), then matched to Pinball Map once (skipped when the nearby lookup already did) and linked
+ * through the venue repair pm-link — which reads the roster once into pm_location_cache, where
+ * recommendations find it without ever calling Pinball Map. Then it's added like any other venue.
+ */
+function AddLocation({ listedIds, onAddId, busy }: { listedIds: number[]; onAddId: (id: number) => void; busy: boolean }) {
+  const api = useApi();
+  const [at, setAt] = useState<Point | null>(null);
+  const [near, setNear] = useState<{ status: 'idle' | 'locating' | 'done' | 'error'; venues: NearbyVenue[]; message?: string }>({ status: 'idle', venues: [] });
+  const [working, setWorking] = useState<string | null>(null);
+  const [dup, setDup] = useState<{ place: PlacePick; candidates: DuplicateCandidate[] } | null>(null);
+  const [notice, setNotice] = useState<{ text: string; venueId: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const disabled = busy || working != null;
+
+  async function nearMe() {
+    setNear({ status: 'locating', venues: [] });
+    try {
+      const pos = await getCurrentPosition();
+      setAt({ lat: pos.latitude, lng: pos.longitude });
+      const { venues } = await api.venues.nearby(pos.latitude, pos.longitude);
+      setNear({ status: 'done', venues: (venues ?? []) as NearbyVenue[] });
+    } catch (err: any) {
+      setNear({
+        status: 'error', venues: [],
+        message: err instanceof CurrentPositionError ? geoFailureMessage(err.reason) : challengeErrorText(err, "Couldn't look up venues near you"),
+      });
+    }
+  }
+
+  /** Pinball Map for a just-created venue: one pm-match (unless nearby already matched), then pm-link. */
+  async function linkPinballMap(venueId: number, place: PlacePick): Promise<{ machines: number } | 'none' | 'failed'> {
+    try {
+      let pmId = place.pinballMapId;
+      if (pmId == null && !place.pmChecked) {
+        setWorking(`Checking Pinball Map for “${place.name}”…`);
+        const m = await api.venues.pmMatch(place.lat != null && place.lng != null
+          ? { lat: place.lat, lng: place.lng, name: place.name }
+          : { venueId });
+        pmId = m.pinballMapId;
+      }
+      if (pmId == null) return 'none';
+      setWorking(`Linking “${place.name}” to Pinball Map…`);
+      const linked = await api.venues.repair.pmLink(venueId, pmId);
+      return { machines: Number(linked?.machineCount ?? 0) };
+    } catch {
+      return 'failed';
+    }
+  }
+
+  async function addPlace(place: PlacePick, allowDuplicate = false) {
+    setDup(null); setNotice(null); setError(null);
+    if (!place.address.trim()) {
+      setError(`There's no address for “${place.name}” — add it from Add Score instead.`);
+      return;
+    }
+    setWorking(`Adding “${place.name}” to TiltTrack…`);
+    let venue: { id: number; name: string };
+    try {
+      venue = await api.venues.create({ name: place.name, address: place.address, allowDuplicate });
+    } catch (e) {
+      setWorking(null);
+      const candidates = duplicateCandidates(e);
+      if (candidates) setDup({ place, candidates });
+      else setError(challengeErrorText(e, 'Could not add that venue'));
+      return;
+    }
+    queryClient.invalidateQueries({ queryKey: ['venues'] });
+    const pm = await linkPinballMap(venue.id, place);
+    setWorking(null);
+    onAddId(venue.id);
+    setNear(n => ({ ...n, venues: n.venues.filter(v => !(v.venueId == null && v.name === place.name)) }));
+    setNotice({
+      venueId: venue.id,
+      text: pm === 'none'
+        ? `Added “${venue.name}”. It isn’t on Pinball Map, so its machines will come from scores logged there.`
+        : pm === 'failed'
+          ? `Added “${venue.name}”, but Pinball Map couldn’t be checked just now — you can link it from the venue page.`
+          : `Added “${venue.name}” — linked to Pinball Map (${plural(pm.machines, 'machine')}).`,
+    });
+  }
+
+  const nearbyRows = near.venues.slice(0, 10);
+  return (
+    <div className="mt-2">
+      <div className="flex items-start gap-2">
+        <div className="flex-1 min-w-0">
+          <VenueSearch onPick={id => { setNotice(null); onAddId(id); }} onPickPlace={p => addPlace(p)} at={at} busy={disabled} />
+        </div>
+        <button type="button" onClick={nearMe} disabled={disabled || near.status === 'locating'}
+          className="flex-shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-card px-3 py-2 text-xs text-white/80 hover:border-venue/50 disabled:opacity-50">
+          {near.status === 'locating' ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden /> : <LocateFixed className="w-3.5 h-3.5" aria-hidden />}
+          Near me
+        </button>
+      </div>
+      {near.status === 'error' && <p className="text-xs text-red-400 mt-1.5">{near.message}</p>}
+      {near.status === 'done' && (
+        <div className="mt-1.5 rounded-lg border border-white/10 bg-card divide-y divide-white/5">
+          <div className="flex items-center justify-between px-3 pt-2 pb-1">
+            <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Near you</p>
+            <button type="button" onClick={() => setNear({ status: 'idle', venues: [] })} aria-label="Close nearby venues" className="text-muted-foreground hover:text-white">
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+          {nearbyRows.length === 0 && <p className="px-3 py-2 text-xs text-muted-foreground">Nothing found near you — try the search.</p>}
+          {nearbyRows.map(v => {
+            const detail = [v.address, v.distance != null ? `${v.distance}m` : ''].filter(Boolean).join(' · ');
+            if (v.venueId == null) {
+              return (
+                <PlaceRow key={`here-${v.hereId ?? v.name}`} name={v.name} detail={detail} busy={disabled}
+                  onPick={() => addPlace({ name: v.name, address: v.address, lat: v.venueLat ?? null, lng: v.venueLng ?? null, pinballMapId: v.pinballMapId ?? null, pmChecked: true })} />
+              );
+            }
+            const listed = listedIds.includes(v.venueId);
+            return (
+              <button key={`tt-${v.venueId}`} type="button" disabled={disabled || listed} onClick={() => { setNotice(null); onAddId(v.venueId!); }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/5 disabled:opacity-50">
+                <MapPin className="w-3.5 h-3.5 text-venue flex-shrink-0" aria-hidden />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm text-venue truncate">{v.name}</span>
+                  {detail && <span className="block text-[11px] text-muted-foreground truncate">{detail}</span>}
+                </span>
+                {listed ? <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Added</span> : <Plus className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" aria-hidden />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {working && <p className="flex items-center gap-2 text-xs text-muted-foreground mt-2" role="status"><Loader2 className="w-3 h-3 animate-spin" aria-hidden /> {working}</p>}
+      {dup && (
+        <div className="mt-2">
+          <DuplicateVenuePrompt
+            candidates={dup.candidates}
+            busy={disabled}
+            // Someone's private venue (name-only candidate) can't be a challenge location — the PUT refuses it.
+            usable={c => !c.isPrivate}
+            onUse={c => { setDup(null); onAddId(c.id); }}
+            onCreateAnyway={() => addPlace(dup.place, true)}
+          />
+        </div>
+      )}
+      {notice && (
+        <p className="text-xs text-white/80 mt-2" role="status">
+          {notice.text} <Link href={`/venues/${notice.venueId}`} className="text-venue hover:underline">View venue</Link>
+        </p>
+      )}
+      {error && <p className="text-xs text-red-400 mt-2" role="alert">{error}</p>}
     </div>
   );
 }
@@ -174,7 +392,11 @@ export function ChallengeMeEditor({ where }: { where: 'profile' | 'challenges' }
   const open = openPref ?? !setUp;
   const toggle = () => { setOpenPref(!open); writeOpen(where, !open); };
   const summary = setUp ? `${plural(machines.length, 'machine')} · ${plural(venues.length, 'location')}` : 'Not set up yet';
-  const addVenue = (id: number) => { if (!venueIds.includes(id) && !venuesFull) save.mutate({ venueIds: [...venueIds, id] }); };
+  // Reads the cached prefs, not this render's list: a place add finishes seconds after its tap.
+  const addVenue = (id: number) => {
+    const current = queryClient.getQueryData<ChallengePrefs>(CHALLENGE_PREFS_KEY)?.venues.map(v => v.id) ?? venueIds;
+    if (!current.includes(id) && current.length < limits.venues) save.mutate({ venueIds: [...current, id] });
+  };
 
   return (
     <section className="rounded-xl border border-friend/25 bg-friend/5 mb-6">
@@ -250,7 +472,7 @@ export function ChallengeMeEditor({ where }: { where: 'profile' | 'challenges' }
           )}
           {venuesFull
             ? <p className="text-[11px] text-muted-foreground mt-2">That’s the limit of {limits.venues} — remove one to add another.</p>
-            : <VenueSearch onPick={addVenue} busy={busy} />}
+            : <AddLocation listedIds={venueIds} onAddId={addVenue} busy={busy} />}
           <p className="text-[11px] text-muted-foreground mt-3">Friends never see a home venue’s name — its machines just show as “at home”.</p>
           {error && <p className="text-xs text-red-400 mt-2" role="alert">{error}</p>}
         </div>

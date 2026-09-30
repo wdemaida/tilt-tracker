@@ -453,3 +453,18 @@
 - **Read `status`, not `phase`, for proposed / rejected / lapsed** — the server maps them onto old
   phases for cached clients. `statusLine` has a `default` branch: never remove it (an unknown status
   from a newer server must not crash the page).
+
+## Challenge locations from Pinball Map / HERE (`ChallengeMeCard.tsx` `AddLocation`, added 2026-09-30)
+- "Machines you can get to" can add a venue nobody has logged at yet (a friend's regular bar), reusing
+  the Add Score venue step's pieces rather than a new flow: **Near me** (`getCurrentPosition` +
+  `api.venues.nearby`, only on a tap — never auto-requested) and, when the TiltTrack search
+  (`/me/challenge-venue-search`) has no match for ≥ 3 letters, the **Places** half of `useVenueSearch`
+  (same hook, cache and rate limit as Add Score). TiltTrack venues in either list add directly.
+- Picking a place (marked "New"): `api.venues.create` (name + the place's address) → the shared
+  **`DuplicateVenuePrompt`** on 409 (a stranger's private candidate is shown but not usable — the prefs
+  PUT refuses it) → `api.venues.pmMatch` **once** (skipped when Near me already matched it) →
+  `api.venues.repair.pmLink` (reads the roster once into the server's cache) → the prefs PUT. A PM
+  failure still adds the venue, with a note to link it from the venue page. `addVenue` reads the
+  cached prefs, not the render's list, since a place add finishes seconds after the tap.
+- `DuplicateVenuePrompt.tsx` is now the one duplicate-venue prompt — `ScoreVenuePicker`, AddScorePage's
+  add-venue form and this card all render it (`duplicateCandidates(e)` reads the 409's candidates).

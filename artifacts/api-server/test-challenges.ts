@@ -38,6 +38,36 @@ if (!new URL(process.env.DATABASE_URL!).hostname.startsWith(DEV_ENDPOINT)) {
   process.exit(1);
 }
 
+// HERE test double (feature/pm-challenge-locations): every *.hereapi.com request made in this process
+// is answered here — this script never calls HERE live. Canned answers describe the one throwaway
+// place (`herePlace`) while that section runs; anything else gets an empty result. A Pinball Map
+// request that reaches fetch is refused outright (PM_MODE stays offline: fixtures answer them).
+// hereApi.ts reads HERE_API_KEY at import, so any value will do — it never leaves this process.
+process.env.HERE_API_KEY ||= 'zz-test-stub';
+const realFetch = globalThis.fetch;
+const hereHits: string[] = [];
+let herePlace: null | { id: string; title: string; lat: number; lng: number; label: string } = null;
+globalThis.fetch = (async (input: any, init?: any) => {
+  const url = new URL(typeof input === 'string' ? input : input?.url ?? String(input));
+  if (url.hostname.endsWith('pinballmap.com')) throw new Error(`test: refusing a live Pinball Map request (${url.pathname})`);
+  if (!url.hostname.endsWith('hereapi.com')) return realFetch(input, init);
+  const api = url.hostname.split('.')[0];
+  hereHits.push(api);
+  const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+  const p = herePlace;
+  if (!p) return json({ items: [] });
+  const position = { lat: p.lat, lng: p.lng };
+  const timeZone = { name: 'America/New_York' };
+  const poi = { id: p.id, title: p.title, distance: 2, position, address: { label: `${p.title}, ${p.label}` }, categories: [{ id: '200-2000-0011' }], timeZone };
+  switch (api) {
+    case 'geocode': return json({ items: [{ resultType: 'houseNumber', position, address: { label: p.label, city: 'Dennis', state: 'MA' }, timeZone }] });
+    case 'revgeocode': return json({ items: [{ timeZone }] });
+    case 'browse': case 'discover': return json({ items: [poi] });
+    case 'autosuggest': return json({ items: [{ ...poi, resultType: 'place' }] });
+    default: return json({ items: [] });
+  }
+}) as typeof fetch;
+
 const { default: express } = await import('express');
 const { readFileSync } = await import('node:fs');
 const { default: challengesRouter } = await import('./src/routes/challenges.js');
@@ -45,12 +75,14 @@ const { default: notificationsRouter } = await import('./src/routes/notification
 const { default: scoresRouter } = await import('./src/routes/scores.js');
 const { default: meRouter } = await import('./src/routes/me.js');
 const { default: usersRouter } = await import('./src/routes/users.js');
+const { default: venuesRouter } = await import('./src/routes/venues.js');
+const { default: uploadRouter } = await import('./src/routes/upload.js');
 const { runChallengeSweep, scoreChallengeSummary } = await import('./src/lib/challenges.js');
 const { pmClient } = await import('./src/lib/pmClient.js');
 const { readMetric } = await import('./src/lib/badgeMetrics.js');
 const {
   db, users, friendships, notifications, challenges, challengeParticipants, challengeScores, scores, machines, venues, venueMachineHistory,
-  pmLocationCache, venueInventory, userChallengeMachines, userChallengeVenues, activityEvents, userBadges,
+  pmLocationCache, pmCatalogCache, venueInventory, userChallengeMachines, userChallengeVenues, activityEvents, userBadges,
 } = await import('@workspace/db');
 const { and, desc, eq, inArray, or, sql } = await import('drizzle-orm');
 
@@ -104,6 +136,8 @@ app.use('/api/notifications', stub, notificationsRouter);
 app.use('/api/scores', stub, scoresRouter);
 app.use('/api/me', stub, meRouter);
 app.use('/api/users', stub, usersRouter);
+app.use('/api/venues', stub, venuesRouter);
+app.use('/api/upload', stub, uploadRouter);
 const server = app.listen(0);
 const port = (server.address() as any).port;
 
@@ -135,6 +169,29 @@ let venueIds: number[] = [];
 let friendshipId: number | null = null;
 // A Pinball Map location id no real venue uses (checked below), for the planted roster.
 const FAKE_PM_ID = 2_147_000_000 + Math.floor(Math.random() * 400_000);
+
+/** Counts every request through pmClient (fixture, cache or live) until stop(). */
+function countPmRequests() {
+  const client = pmClient() as any;
+  const original = client.get;
+  const counter = { count: 0, stop: () => { client.get = original; } };
+  client.get = (...args: unknown[]) => { counter.count++; return original(...args); };
+  return counter;
+}
+// What the Pinball Map-only place section's pm-link may touch on dev, put back in `finally`.
+const pmRestore: {
+  location?: typeof pmLocationCache.$inferSelect | null;
+  catalog?: Array<typeof pmCatalogCache.$inferSelect>;
+  machines?: Array<typeof machines.$inferSelect>;
+  maxMachineId?: number;
+  names?: string[];
+  locationHash?: string;
+  catalogHash?: string;
+} = {};
+async function pmRowHash(table: 'pm_location_cache' | 'pm_catalog_cache', where: string): Promise<string> {
+  const rows = await db.execute(sql.raw(`SELECT md5(coalesce(string_agg(x::text, '|' ORDER BY x::text), '')) AS h FROM ${table} x WHERE ${where}`));
+  return String((rows as unknown as Array<{ h: string }>)[0]?.h ?? '');
+}
 
 try {
   // ── fixtures ───────────────────────────────────────────────────────────────
@@ -1263,6 +1320,98 @@ try {
   r = await call(bob, 'GET', '/me/challenge-prefs');
   check('…no re-seeding on the next read', r.body?.venues?.length === 1, r.body?.venues);
 
+  // ── a Pinball Map-only place as a challenge location (feature/pm-challenge-locations) ──
+  // The card's flow, route by route: Near me (POST /upload/nearby-venues) / the search's Places
+  // fallback (GET /venues/search) → POST /venues (409 duplicate) → GET /venues/pm-match →
+  // POST /venues/:id/repair/pm-link (the one roster read, into pm_location_cache) → PUT prefs →
+  // recommendations read that cached roster with zero Pinball Map requests. HERE is the test double
+  // above; Pinball Map answers from the offline fixtures for Red Nun Bar & Grill (#20676, Dennis MA).
+  {
+    const PM_FIXTURE_ID = 20676;
+    const at = { lat: 41.66778, lng: -70.12377 }; // exactly the recorded closest_by_lat_lon fixture's point
+    const PLACE = `zz-challenge-test red nun ${Date.now()}`;
+    herePlace = { id: `here:zz-challenge-test:${Date.now()}`, title: PLACE, ...at, label: '673 Main St, Dennis, MA 02639, United States' };
+    const rosterNames: string[] = JSON.parse(readFileSync(new URL('./fixtures/pm/locations_20676.json__20a9c95d.json', import.meta.url), 'utf8'))
+      .body.location_machine_xrefs.map((x: any) => String(x.name ?? x.machine?.name ?? ''));
+    // Rows pm-link may write or touch, put back exactly as they were at the end.
+    pmRestore.location = (await db.select().from(pmLocationCache).where(eq(pmLocationCache.pmLocationId, PM_FIXTURE_ID)))[0] ?? null;
+    pmRestore.locationHash = await pmRowHash('pm_location_cache', `pm_location_id = ${PM_FIXTURE_ID}`);
+    pmRestore.catalog = await db.select().from(pmCatalogCache);
+    pmRestore.catalogHash = await pmRowHash('pm_catalog_cache', 'true');
+    pmRestore.machines = await db.select().from(machines).where(inArray(sql`lower(${machines.name})`, rosterNames.map(n => n.toLowerCase())));
+    pmRestore.maxMachineId = (await db.select({ m: sql<number>`coalesce(max(${machines.id}), 0)::int` }).from(machines))[0].m;
+    pmRestore.names = rosterNames;
+    // A stranger's hidden residence at the very same spot: must never surface to bob.
+    const [LAIR] = await db.insert(venues).values({
+      name: 'zz-challenge-test carol lair', isResidence: true, privacyTier: 'hidden', ownerId: carol.id, createdById: carol.id,
+      latitude: at.lat, longitude: at.lng, city: 'Dennis', state: 'MA',
+    }).returning({ id: venues.id, name: venues.name });
+    venueIds.push(LAIR.id);
+    const pmRequests = countPmRequests();
+
+    r = await call(bob, 'POST', '/upload/nearby-venues', at);
+    const nearPlace = (r.body?.venues ?? []).find((v: any) => v.name === PLACE);
+    check('Near me → 200: the Pinball Map-only place is offered as a place (no venueId) with its Pinball Map id already matched',
+      r.status === 200 && nearPlace && nearPlace.venueId == null && nearPlace.pinballMapId === PM_FIXTURE_ID, r.body);
+    check("Near me never offers a stranger's private venue at the same spot", !(r.body?.venues ?? []).some((v: any) => v.venueId === LAIR.id)
+      && !JSON.stringify(r.body).includes(LAIR.name), r.body);
+    r = await call(carol, 'POST', '/upload/nearby-venues', at);
+    check('…while its owner does get it (so the filter is what kept it from bob)', (r.body?.venues ?? []).some((v: any) => v.venueId === LAIR.id), r.body);
+
+    r = await call(bob, 'GET', `/me/challenge-venue-search?q=${encodeURIComponent(PLACE)}`);
+    check('challenge-venue search has no TiltTrack match for it yet', r.status === 200 && Array.isArray(r.body) && r.body.length === 0, r.body);
+    r = await call(bob, 'GET', `/venues/search?q=${encodeURIComponent(PLACE)}&lat=${at.lat}&lng=${at.lng}`);
+    check('Places fallback (GET /venues/search) offers it as a HERE place', r.status === 200 && r.body?.places?.some((p: any) => p.name === PLACE)
+      && !r.body?.tiltTrack?.some((v: any) => v.name === PLACE), r.body);
+    r = await call(bob, 'GET', `/venues/search?q=${encodeURIComponent('zz challenge test carol lair')}&lat=${at.lat}&lng=${at.lng}`);
+    check("Places fallback never returns a stranger's private venue", r.status === 200 && !r.body?.tiltTrack?.some((v: any) => v.id === LAIR.id)
+      && !JSON.stringify(r.body).includes(LAIR.name), r.body);
+    r = await call(bob, 'GET', `/me/challenge-venue-search?q=${encodeURIComponent('zz challenge test carol lair')}`);
+    check("…nor does the challenge-venue search", r.status === 200 && !hitIds(r.body).includes(LAIR.id), r.body);
+
+    r = await call(bob, 'POST', '/venues', { name: PLACE, address: nearPlace?.address ?? herePlace.label });
+    const NEW = r.body;
+    if (NEW?.id) venueIds.push(NEW.id);
+    check('POST /venues creates it: public, owned and created by bob, placed, HERE id adopted', r.status === 201 && NEW?.ownerId === bob.id
+      && NEW?.createdById === bob.id && NEW?.isResidence === false && NEW?.privacyTier === 'full' && NEW?.latitude === at.lat && NEW?.hereId === herePlace.id, r.body);
+    r = await call(bob, 'POST', '/venues', { name: PLACE, address: herePlace.label });
+    check('a second add of the same place → 409 duplicate_venue naming the new venue (the card offers "use this one")',
+      r.status === 409 && r.body?.code === 'duplicate_venue' && r.body?.candidates?.some((c: any) => c.id === NEW?.id), r.body);
+
+    r = await call(bob, 'GET', `/venues/pm-match?lat=${at.lat}&lng=${at.lng}&name=${encodeURIComponent(PLACE)}`);
+    check('pm-match (a search pick, once) → the Pinball Map listing', r.status === 200 && r.body?.pinballMapId === PM_FIXTURE_ID && r.body?.linked === false, r.body);
+    r = await call(bob, 'POST', `/venues/${NEW?.id}/repair/pm-link`, { pinballMapId: PM_FIXTURE_ID });
+    check('pm-link by its creator → 200, roster read (fixture: 1 machine)', r.status === 200 && r.body?.venue?.pinballMapId === PM_FIXTURE_ID && r.body?.machineCount === rosterNames.length, r.body);
+    const [cachedRoster] = await db.select().from(pmLocationCache).where(eq(pmLocationCache.pmLocationId, PM_FIXTURE_ID));
+    check('…and the roster is in pm_location_cache', !!cachedRoster && (cachedRoster.machines as any[]).length === rosterNames.length, cachedRoster);
+    r = await call(alice, 'POST', `/venues/${NEW?.id}/repair/pm-link`, { pinballMapId: PM_FIXTURE_ID });
+    check("pm-link by someone who didn't add it → 403", r.status === 403, r);
+    const addFlowPmRequests = pmRequests.count;
+    check(`the whole add flow made at most 3 Pinball Map requests (closest_by_lat_lon, roster, catalog) — made ${addFlowPmRequests}`, addFlowPmRequests <= 3, addFlowPmRequests);
+
+    r = await call(bob, 'PUT', '/me/challenge-prefs', { venueIds: [BOB_HOME.id, NEW?.id] });
+    check('PUT prefs accepts the venue bob just created (his own: owner_id) → 200, source added', r.status === 200
+      && r.body?.venues?.find((v: any) => v.id === NEW?.id)?.source === 'added', r.body);
+    r = await call(alice, 'PUT', '/me/challenge-prefs', { venueIds: [LAIR.id] });
+    check("PUT refuses a stranger's private venue for alice too → 400 venue_not_found", r.status === 400 && r.body?.code === 'venue_not_found', r);
+
+    // Prove level 2 comes from the cached roster: drop the machine history pm-link seeded.
+    await db.delete(venueMachineHistory).where(eq(venueMachineHistory.venueId, NEW?.id));
+    const rosterMachines = await db.select({ id: machines.id, name: machines.name }).from(machines)
+      .where(inArray(sql`lower(${machines.name})`, rosterNames.map(n => n.toLowerCase())));
+    const before = pmRequests.count;
+    r = await call(alice, 'GET', `/challenges/recommendations/${encodeURIComponent(bob.username)}`);
+    const fromRoster = rosterMachines.map(m => r.body?.recommendations?.find((x: any) => x.machineId === m.id)).filter(Boolean);
+    check('recommendations: the cached roster’s machine shows up at level 2, labelled with the new venue', r.status === 200 && rosterMachines.length > 0
+      && fromRoster.some((x: any) => x.level === 2 && x.venueLabel === PLACE), { rosterMachines, recs: r.body?.recommendations });
+    r = await call(alice, 'GET', `/challenges/recommendations?users=${encodeURIComponent(bob.username)},${encodeURIComponent(carol.username)}`);
+    check('…and in group recommendations', r.status === 200 && rosterMachines.some(m => r.body?.recommendations?.some((x: any) => x.machineId === m.id)), r.body);
+    check('recommendations made zero Pinball Map requests (fixture or live)', pmRequests.count === before, { before, after: pmRequests.count });
+    check(`HERE was only ever the test double (${hereHits.length} requests: ${[...new Set(hereHits)].join(', ')})`, hereHits.length > 0, hereHits);
+    pmRequests.stop();
+    herePlace = null;
+  }
+
   // ── how a score fared: POST / PATCH /api/scores `challenges` (2026-09-30) ──
   // Will's #1276: an old photo's EXIF played_at fell before his challenges started, so it (rightly)
   // didn't count — and nothing said so. Every upload / edit now reports it per matching challenge.
@@ -1378,6 +1527,31 @@ try {
     await db.delete(venues).where(inArray(venues.id, venueIds));
   }
   await db.delete(pmLocationCache).where(eq(pmLocationCache.pmLocationId, FAKE_PM_ID));
+  // The Pinball Map-only place section: its pm-link wrote the fixture's roster row, may have
+  // refreshed the catalog row from the fixture, and upserted the roster's machines. Put all back.
+  // Rows are only rewritten when they actually changed (a Date round trip drops microseconds).
+  if (pmRestore.location !== undefined && await pmRowHash('pm_location_cache', 'pm_location_id = 20676') !== pmRestore.locationHash) {
+    await db.delete(pmLocationCache).where(eq(pmLocationCache.pmLocationId, 20676));
+    if (pmRestore.location) await db.insert(pmLocationCache).values(pmRestore.location);
+  }
+  if (pmRestore.catalog && await pmRowHash('pm_catalog_cache', 'true') !== pmRestore.catalogHash) {
+    await db.delete(pmCatalogCache);
+    if (pmRestore.catalog.length) await db.insert(pmCatalogCache).values(pmRestore.catalog);
+  }
+  if (pmRestore.names?.length && pmRestore.maxMachineId != null) {
+    await db.delete(machines).where(and(
+      sql`${machines.id} > ${pmRestore.maxMachineId}`,
+      inArray(sql`lower(${machines.name})`, pmRestore.names.map(n => n.toLowerCase())),
+      sql`NOT EXISTS (SELECT 1 FROM scores s WHERE s.machine_id = ${machines.id})`,
+      sql`NOT EXISTS (SELECT 1 FROM venue_machine_history h WHERE h.machine_id = ${machines.id})`,
+    ));
+    // upsertMachineByName only fills blanks in these columns — put back just those.
+    for (const m of pmRestore.machines ?? []) {
+      await db.update(machines).set({ opdbId: m.opdbId, manufacturer: m.manufacturer, year: m.year, imageUrl: m.imageUrl })
+        .where(and(eq(machines.id, m.id), sql`(${machines.opdbId}, ${machines.manufacturer}, ${machines.year}, ${machines.imageUrl})
+          IS DISTINCT FROM (${m.opdbId}::text, ${m.manufacturer}::text, ${m.year}::int, ${m.imageUrl}::text)`));
+    }
+  }
   if (machineIds.length) {
     await db.delete(venueMachineHistory).where(inArray(venueMachineHistory.machineId, machineIds));
     await db.delete(machines).where(inArray(machines.id, machineIds));

@@ -3,16 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { MapPin, Plus, AlertTriangle } from 'lucide-react';
 import { useApi } from '../lib/useApi';
 import { useExactPrivateVenues, isOthersPrivateVenue } from '../lib/useExactPrivateVenues';
-
-interface DuplicateCandidate {
-  id: number;
-  name: string;
-  address: string | null;
-  /** Null when the new venue couldn't be geocoded — matched on name alone. */
-  distance: number | null;
-  /** Someone's private venue matched by exact name — name only, no address or distance. */
-  isPrivate?: true;
-}
+import DuplicateVenuePrompt, { duplicateCandidates, type DuplicateCandidate } from './DuplicateVenuePrompt';
 
 interface Props {
   scoreId: number;
@@ -83,11 +74,12 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
     // fixed, so chain rather than reporting success off the create.
     onSuccess: (venue: any) => { setDuplicates(null); attach.mutate({ id: venue.id, name: venue.name, timezone: venue.timezone }); },
     onError: (e: any) => {
-      if (e.code === 'duplicate_venue' && e.body?.candidates?.length) {
+      const candidates = duplicateCandidates(e);
+      if (candidates) {
         // Not an error the user should have to re-read as prose — show the matches and let them pick.
         // Someone's private venue arrives as a name-only `isPrivate` candidate (exact name match,
         // never a location match) — loggable, but with nothing to show about where it is.
-        setDuplicates(e.body.candidates);
+        setDuplicates(candidates);
         setError(null);
       } else {
         setError(e.message ?? 'Could not create that venue');
@@ -256,52 +248,12 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
           )}
 
           {duplicates && (
-            <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 flex flex-col gap-2">
-              <p className="flex items-start gap-2 text-xs text-amber-400">
-                <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                {duplicates.length === 1 && duplicates[0].isPrivate ? (
-                  <span>A private venue named “{duplicates[0].name}” exists — log here, or create your own.</span>
-                ) : (
-                  <span>
-                    {duplicates.length === 1 ? 'This venue looks like one you already have' : 'These venues look like the one you’re adding'}.
-                    Use the existing one, unless this really is a different place.
-                  </span>
-                )}
-              </p>
-              <ul className="flex flex-col gap-1.5">
-                {duplicates.map(d => (
-                  <li key={d.id}>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => { setError(null); attach.mutate({ id: d.id, name: d.name }); }}
-                      className="w-full flex items-center gap-2 text-left rounded border border-white/10 bg-card px-2.5 py-1.5 hover:bg-white/10 disabled:opacity-40 transition-colors"
-                    >
-                      <MapPin className="w-3.5 h-3.5 text-venue flex-shrink-0" />
-                      <span className="min-w-0">
-                        <span className="block text-sm font-bold text-venue truncate">{d.name}</span>
-                        <span className="block text-[0.65rem] text-muted-foreground truncate">
-                          {d.isPrivate ? 'Private venue' : (
-                            <>
-                              {d.distance != null ? `${d.distance}m away` : 'same name'}
-                              {d.address ? ` · ${d.address}` : ''}
-                            </>
-                          )}
-                        </span>
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => { setError(null); createVenue.mutate(true); }}
-                className="self-start text-xs text-muted-foreground hover:text-white underline disabled:opacity-40 transition-colors"
-              >
-                {duplicates.length === 1 && duplicates[0].isPrivate ? 'Create my own venue' : 'No, this is a different venue — create it anyway'}
-              </button>
-            </div>
+            <DuplicateVenuePrompt
+              candidates={duplicates}
+              busy={busy}
+              onUse={d => { setError(null); attach.mutate({ id: d.id, name: d.name }); }}
+              onCreateAnyway={() => { setError(null); createVenue.mutate(true); }}
+            />
           )}
 
           <div className="flex gap-2">

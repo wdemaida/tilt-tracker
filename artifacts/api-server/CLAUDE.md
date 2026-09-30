@@ -757,6 +757,26 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   `visibleScoreSql(viewer)`. Recommendations are friends only (403 `not_friends`). `GET /api/users/:username`
   adds `challengeMe` (level 1) for accepted friends only. `PUT /api/me/challenge-prefs` only accepts a
   venue that's public, yours, or one you've scored at — so an id can't reveal a stranger's home's name.
+- **A place that's only on Pinball Map / HERE** (feature/pm-challenge-locations, 2026-09-30): the card
+  adds it with **no new route and no new Pinball Map call pattern** — only the Add Score venue step's
+  endpoints, called by the client: `POST /api/upload/nearby-venues` ("Near me", a tap) and/or
+  `GET /api/venues/search` (its `places`, only when the TiltTrack search has no match) → `POST
+  /api/venues` (its 409 `duplicate_venue` included; HERE geocode + `findVenueByName`, no PM) →
+  `GET /api/venues/pm-match` once per pick (skipped for a Near-me place, which already carries its
+  matched id) → `POST /api/venues/:id/repair/pm-link` → `PUT /api/me/challenge-prefs`. **The roster
+  is cached by pm-link itself** (`getVenueRoster(force)`, one roster read into `pm_location_cache`,
+  0 if it was read in the last 5 min); level 2 then reads that row like any other. The PUT rule needs
+  no change: `POST /api/venues` sets `owner_id` (and `created_by_id`) to the creator, so "yours"
+  covers a venue you just made, and `canRepairVenue` lets its creator pm-link it. A place is always
+  created public (never residence/restricted), so linking it is allowed.
+- **Worst-case Pinball Map calls/day for that flow**, per user: an add = ≤ 1 `closest_by_lat_lon`
+  (pm-match; the per-~110m-cell cache `pmLocationsNear` shares with nearby-venues, so 0 after a Near
+  me tap there) + ≤ 1 roster (pm-link) ≈ **≤ 2 per added place**, and the 20-location cap means
+  building a full list from scratch is ≤ 40. A Near-me tap = ≤ 1 (same cell cache, 10 min). Hard
+  ceilings are the existing per-user limiters, shared with Add Score / the repair panel (nothing new
+  was added): nearby-venues 10/min + 100/day, pm-match 30/min + 500/day, pm-link (`repairPmLimiter`)
+  20/hour — all under pmClient's global 1 req/s. **Recommendations stay at 0.** Verified in
+  test-challenges.ts: the add flow made 2 PM requests (fixtures), recommendations 0.
 - **Seeding** (`ensureSeeded`, once — `users.challenge_venues_seeded_at`): up to 5 venues with ≥ 2 visits
   in 180 days, plus your own residence if it has an inventory. Runs on the first prefs read, yours or a
   friend's recommendations request. After that removals stick; new candidates are `suggestions`.
@@ -783,7 +803,12 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   reasons, counters, prefs, recommendations and the profile field. Clock skew: accept stamps the DB
   clock and uploads send this machine's `played_at`, so with Neon ahead (~0.8 s on 2026-09-29) the
   "accept → window starts now", most-improved and record checks used to fail; the test now measures
-  the skew (`SKEW_MS`) at start and allows for it.
+  the skew (`SKEW_MS`) at start and allows for it. The Pinball Map-only place section runs that whole
+  flow through the real venues/upload routers with **HERE replaced by an in-process fetch double**
+  (every `*.hereapi.com` request; a `pinballmap.com` fetch is refused) and PM from the offline
+  fixtures for Red Nun Bar & Grill (#20676) — the nearby call must send the fixture's exact 5-decimal
+  point, since the key is the raw `lat`/`lon`. It restores the `pm_location_cache` / `pm_catalog_cache`
+  rows and machine fields pm-link touched, only when they changed.
 
 ## Full-size score photos (`src/lib/photoStore.ts`, `routes/scorePhotos.ts`, migrate17, added 2026-09-26)
 - **Storage:** Cloudflare R2, private buckets — `tilttrack-photos-dev` (local/dev) and `tilttrack-photos`
