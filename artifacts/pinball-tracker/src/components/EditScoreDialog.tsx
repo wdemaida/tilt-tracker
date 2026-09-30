@@ -10,12 +10,18 @@ import ScoreRepairSection from './ScoreRepairSection';
 import ScoreVenuePicker from './ScoreVenuePicker';
 import { FullPhotoUploadButton } from './FullPhotoUpload';
 import ChallengeFitSummary from './ChallengeFitSummary';
-import { toLocalInput, localInputToIso } from '../lib/datetime';
+import { toLocalInput, localInputToIso, formatWallClock } from '../lib/datetime';
+import { isLockedPlayedAt, lockedFromLabel, type PlayedAtSource } from '../lib/captureTime';
+import { useAppUser } from '../lib/useAppUser';
 
 // The one edit-score dialog: Home's score cards open it, and so does Add Score's "Edit played time"
 // (a score that missed its challenges because of an old photo's EXIF time). PATCH /api/scores/:id
 // returns how the score now fares in its author's challenges (`challenges`); when there are any, the
 // dialog stays open on that summary instead of closing, so the player sees whether the fix worked.
+//
+// A camera-recorded played time (playedAtSource photo / video) is read-only here for the player, and
+// the dialog never sends it. An admin can change it, which is a correction: a reason is required and
+// goes up as `playedAtReason` (PATCH answers 403 played_at_locked / 400 reason_required otherwise).
 
 export interface EditScoreTarget {
   id: number;
@@ -30,6 +36,8 @@ export interface EditScoreTarget {
   hasFullPhoto: boolean;
   /** The server only lets a score's owner upload its photo — admins editing others' scores can't. */
   isOwn: boolean;
+  /** Where the played time came from; photo / video = locked to the player. Omitted/null = legacy (editable). */
+  playedAtSource?: PlayedAtSource;
 }
 
 /** What a save changed, for a caller showing the score (Add Score's step 4). */
@@ -42,6 +50,7 @@ export interface EditScoreSaved {
   venueId: number | null;
   venueName: string | null;
   venueTimezone: string | null;
+  playedAtSource: PlayedAtSource;
   challenges: ChallengeFit[];
 }
 
@@ -51,10 +60,15 @@ export default function EditScoreDialog({ score, onClose, onSaved }: {
   onSaved?: (saved: EditScoreSaved) => void;
 }) {
   const authApi = useApi();
+  const appUser = useAppUser();
+  const isAdmin = appUser?.role === 'admin';
   const [editScore, setEditScore] = useState<EditScoreTarget | null>(score);
   const [editScoreVal, setEditScoreVal] = useState('');
   const [editType, setEditType] = useState<'casual' | 'tournament'>('casual');
   const [editPlayedAt, setEditPlayedAt] = useState('');
+  // The field as loaded — an admin's change to a locked time is what needs a reason.
+  const [loadedPlayedAt, setLoadedPlayedAt] = useState('');
+  const [correctionReason, setCorrectionReason] = useState('');
   const [editMachineSearch, setEditMachineSearch] = useState('');
   /** Set after a save that reported challenges: the dialog shows the summary instead of the form. */
   const [saved, setSaved] = useState<EditScoreSaved | null>(null);
@@ -64,8 +78,15 @@ export default function EditScoreDialog({ score, onClose, onSaved }: {
     setEditScoreVal(Number(s.score).toLocaleString());
     setEditType(s.type);
     setEditPlayedAt(toLocalInput(s.playedAt, s.venueTimezone));
+    setLoadedPlayedAt(toLocalInput(s.playedAt, s.venueTimezone));
+    setCorrectionReason('');
     setEditMachineSearch(s.machineName);
   }
+
+  const lockedSource = isLockedPlayedAt(editScore?.playedAtSource) ? editScore!.playedAtSource as 'photo' | 'video' : null;
+  /** The player can't change a camera-recorded time; an admin can, with a reason. */
+  const playedAtReadOnly = !!lockedSource && !isAdmin;
+  const needsReason = !!lockedSource && isAdmin && editPlayedAt !== loadedPlayedAt;
 
   const { data: machineSuggestions = [] } = useQuery({
     queryKey: ['machine-search-edit', editMachineSearch],
@@ -86,11 +107,12 @@ export default function EditScoreDialog({ score, onClose, onSaved }: {
         machineName: editMachineSearch,
         score: body.score ?? editScore.score,
         type: body.type ?? editScore.type,
-        playedAt: typeof row?.playedAt === 'string' ? row.playedAt : body.playedAt,
+        playedAt: typeof row?.playedAt === 'string' ? row.playedAt : body.playedAt ?? editScore.playedAt,
+        playedAtSource: (row as any)?.playedAtSource !== undefined ? (row as any).playedAtSource as PlayedAtSource : editScore.playedAtSource,
       };
       onSaved?.({
         machineId: next.machineId, machineName: next.machineName, score: next.score, type: next.type, playedAt: next.playedAt,
-        venueId: next.venueId, venueName: next.venueName, venueTimezone: next.venueTimezone, challenges,
+        venueId: next.venueId, venueName: next.venueName, venueTimezone: next.venueTimezone, playedAtSource: next.playedAtSource ?? null, challenges,
       });
       if (!challenges.length) { onClose(); return; }
       // An edit can make it count (and lock it) — the challenge pages and the bell may have changed.
@@ -98,7 +120,7 @@ export default function EditScoreDialog({ score, onClose, onSaved }: {
       setEditScore(next);
       setSaved({
         machineId: next.machineId, machineName: next.machineName, score: next.score, type: next.type, playedAt: next.playedAt,
-        venueId: next.venueId, venueName: next.venueName, venueTimezone: next.venueTimezone, challenges,
+        venueId: next.venueId, venueName: next.venueName, venueTimezone: next.venueTimezone, playedAtSource: next.playedAtSource ?? null, challenges,
       });
     },
   });
@@ -123,7 +145,9 @@ export default function EditScoreDialog({ score, onClose, onSaved }: {
       body: {
         score: Number(editScoreVal.replace(/,/g, '')),
         type: editType,
-        playedAt: localInputToIso(editPlayedAt, editScore.venueTimezone),
+        // A locked time isn't the player's to send. (Re-sending the same minute is a no-op server-side.)
+        ...(!playedAtReadOnly && { playedAt: localInputToIso(editPlayedAt, editScore.venueTimezone) }),
+        ...(needsReason && { playedAtReason: correctionReason.trim() }),
         ...(resolvedMachineId !== editScore.machineId && { machineId: resolvedMachineId }),
       },
     });
@@ -146,7 +170,8 @@ export default function EditScoreDialog({ score, onClose, onSaved }: {
                 fits={saved.challenges}
                 playedAt={saved.playedAt}
                 venueTimezone={saved.venueTimezone}
-                onEditPlayedTime={editScore ? () => { load(editScore); setSaved(null); } : undefined}
+                playedAtSource={saved.playedAtSource}
+                onEditPlayedTime={editScore && !playedAtReadOnly ? () => { load(editScore); setSaved(null); } : undefined}
               />
               <Dialog.Close className="w-full py-2.5 rounded-lg bg-primary text-white font-bold text-sm hover:opacity-90 transition-opacity">
                 Done
@@ -212,13 +237,38 @@ export default function EditScoreDialog({ score, onClose, onSaved }: {
             {/* Date & Time — in the venue's zone, like the card (frontend CLAUDE.md "Time zones"). */}
             <label className="flex flex-col gap-1.5">
               <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Date & Time</span>
-              <input
-                type="datetime-local"
-                value={editPlayedAt}
-                onChange={e => setEditPlayedAt(e.target.value)}
-                className="rounded-lg border border-white/10 bg-background px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50"
-              />
+              {playedAtReadOnly ? (
+                <>
+                  <div className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-background/40 px-3 py-2 text-sm text-white" aria-readonly="true">
+                    <span>{formatWallClock(editPlayedAt)}</span>
+                    <span className="text-xs text-muted-foreground whitespace-nowrap">From your {lockedFromLabel(lockedSource!)}</span>
+                  </div>
+                  <span className="text-xs text-muted-foreground">Wrong time? Ask an admin to correct it.</span>
+                </>
+              ) : (
+                <input
+                  type="datetime-local"
+                  value={editPlayedAt}
+                  onChange={e => setEditPlayedAt(e.target.value)}
+                  className="rounded-lg border border-white/10 bg-background px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50"
+                />
+              )}
+              {lockedSource && isAdmin && (
+                <span className="text-xs text-amber-300">
+                  Time from the {lockedFromLabel(lockedSource)}'s metadata — players can't change it. Changing it is an admin correction.
+                </span>
+              )}
             </label>
+            {needsReason && (
+              <label className="flex flex-col gap-1.5">
+                <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Reason for the correction</span>
+                <textarea
+                  value={correctionReason} onChange={e => setCorrectionReason(e.target.value)} rows={2} maxLength={500}
+                  placeholder="e.g. the camera clock was an hour off (required)"
+                  className="border border-white/20 rounded-lg px-3 py-2 text-sm text-white bg-white/5 focus:outline-none focus:ring-2 focus:ring-primary w-full"
+                />
+              </label>
+            )}
 
             {/* Venue + linkage. The modal used to drop the venue entirely, which made it
                 impossible to tell why a machine couldn't be verified. */}
@@ -268,7 +318,7 @@ export default function EditScoreDialog({ score, onClose, onSaved }: {
               </Dialog.Close>
               <button
                 onClick={handleSave}
-                disabled={patchMutation.isPending}
+                disabled={patchMutation.isPending || (needsReason && !correctionReason.trim())}
                 className="flex-1 py-2.5 rounded-lg bg-primary text-white font-bold text-sm hover:opacity-90 transition-opacity disabled:opacity-50"
               >
                 {patchMutation.isPending ? 'Saving...' : 'Save'}

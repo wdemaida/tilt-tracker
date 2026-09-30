@@ -20,6 +20,8 @@
 // converted/original blob is used as-is; the server's imageCompress.ts still keeps it under
 // Anthropic's size limit.
 
+import type { CaptureTimeSource } from './captureTime';
+
 export interface PreparedImage {
   file: Blob;
   filename: string;
@@ -33,6 +35,10 @@ export interface PreparedImage {
    * naive clock bakes in the *browser's* zone, and the form then re-reads it in the venue's zone.
    */
   capturedAt?: string | null;
+  /** Where `capturedAt` came from — inside the video file, or its modified time (captureTime.ts). */
+  capturedAtSource?: CaptureTimeSource | null;
+  /** 'video' for a video frame: its `exifDatetime` is Apple's creationdate, and the score's source is 'video'. */
+  timeKind?: 'photo' | 'video';
   /** True when a HEIC photo couldn't be converted and `file` is still the original HEIC. */
   heicFailed: boolean;
   /**

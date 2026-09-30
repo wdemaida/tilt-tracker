@@ -69,6 +69,7 @@ export default function HomePage() {
       type: s.type, playedAt: s.playedAt, venueId: s.venueId ?? null, venueName: s.venueName ?? null,
       venueTimezone: s.venueTimezone ?? null,
       hasFullPhoto: !!s.hasFullPhoto, isOwn: !!appUser && s.username === appUser.username,
+      playedAtSource: s.playedAtSource ?? null,
     });
   }
 

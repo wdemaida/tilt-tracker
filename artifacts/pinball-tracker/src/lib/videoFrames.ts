@@ -10,6 +10,7 @@
 // on Windows. That surfaces as a friendly VideoFrameError, never a broken wizard.
 
 import { drawToJpeg, fitWithin, FULL_MAX_EDGE, FULL_JPEG_QUALITY, type PreparedImage } from './prepareUploadImage';
+import { pickVideoCaptureTime, type CaptureTimeSource } from './captureTime';
 
 export const MAX_VIDEO_SECONDS = 10;
 export const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
@@ -42,6 +43,8 @@ interface VideoMeta {
   exifDatetime: string | null;
   /** An instant (ISO, UTC) — mvhd or file.lastModified. Rendered into the venue's zone later. */
   capturedAt: string | null;
+  /** Where capturedAt came from: inside the file (mvhd) or the file's modified time. See captureTime.ts. */
+  capturedAtSource: CaptureTimeSource | null;
 }
 
 const MAX_MOOV_BYTES = 16 * 1024 * 1024;
@@ -80,7 +83,7 @@ async function readMoov(file: Blob): Promise<Uint8Array | null> {
  * atom holding the same ISO 6709 string. `mvhd` creation time (UTC) is the fallback.
  */
 async function readQuickTimeMeta(file: Blob): Promise<VideoMeta> {
-  const out: VideoMeta = { latitude: null, longitude: null, exifDatetime: null, capturedAt: null };
+  const out: VideoMeta = { latitude: null, longitude: null, exifDatetime: null, capturedAt: null, capturedAtSource: null };
   const moov = await readMoov(file).catch(() => null);
   if (!moov) return out;
   // A single-byte decoding keeps one char per byte, so string indexes line up with the buffer.
@@ -116,7 +119,7 @@ async function readQuickTimeMeta(file: Blob): Promise<VideoMeta> {
 }
 
 async function readVideoMeta(file: File): Promise<VideoMeta> {
-  let meta: VideoMeta = { latitude: null, longitude: null, exifDatetime: null, capturedAt: null };
+  let meta: VideoMeta = { latitude: null, longitude: null, exifDatetime: null, capturedAt: null, capturedAtSource: null };
   // exifr first, in case a future version (or an unusual container) handles it; it currently
   // doesn't read QuickTime, which is what the moov scan below is for.
   try {
@@ -128,10 +131,10 @@ async function readVideoMeta(file: File): Promise<VideoMeta> {
   return {
     latitude: meta.latitude ?? qt.latitude,
     longitude: meta.longitude ?? qt.longitude,
-    exifDatetime: qt.exifDatetime,
-    // Last resort for the time: the file's own modified time — an instant, like mvhd. No GPS
+    // Last resort for the time: the file's own modified time — an instant, like mvhd, but not the
+    // recording's (a forwarded / re-saved video), so it never locks the played time. No GPS
     // fallback — the venue step already copes with none (search, or pick from your venues).
-    capturedAt: qt.exifDatetime ? null : (qt.capturedAt ?? (file.lastModified ? new Date(file.lastModified).toISOString() : null)),
+    ...pickVideoCaptureTime({ creationdate: qt.exifDatetime, mvhd: qt.capturedAt, lastModified: file.lastModified }),
   };
 }
 
@@ -283,6 +286,8 @@ export async function extractVideoFrames(file: File, onProgress?: (p: FrameProgr
         longitude: meta.longitude,
         exifDatetime: meta.exifDatetime,
         capturedAt: meta.capturedAt,
+        capturedAtSource: meta.capturedAtSource,
+        timeKind: 'video',
         heicFailed: false,
       });
       onProgress?.({ done: VIDEO_SAMPLE_FRAMES + k + 1, total });

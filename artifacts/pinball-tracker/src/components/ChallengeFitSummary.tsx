@@ -4,12 +4,17 @@ import { ChevronDown, Clock, Swords } from 'lucide-react';
 import type { ChallengeFit } from '../lib/api';
 import { formatScoreTime } from '../lib/scoreTime';
 import { typeLabel } from '../lib/challenges';
+import { isLockedPlayedAt, lockedFromLabel, type PlayedAtSource } from '../lib/captureTime';
 
 // "How did this score fare in my challenges?" — shown on Add Score's "Score saved" step and in the
 // edit-score dialog after a save (POST / PATCH /api/scores return `challenges`). The server decides
 // (challengeRules.ts scoreChallengeFits, the same rules as the standings); this only words it.
 // Challenges with the same outcome and reason share one line; tap a line for the challenges in it.
 // Nothing renders when the score's machine has no challenges.
+//
+// A camera-recorded played time (playedAtSource photo / video) can't be edited by the player, so its
+// played-time lines say where the time came from — "played May 2, before they started (time from your
+// photo)" — and the caller leaves out onEditPlayedTime (only an admin can correct it).
 
 /** The reasons an edit of the played time can fix — the only thing the "Edit played time" action offers. */
 const TIME_REASONS = new Set(['played_before_start', 'played_after_end']);
@@ -41,7 +46,10 @@ function playedDate(playedAt: string, timezone: string | null | undefined): stri
 }
 
 /** The line for one group. Exported for the copy's sake (see the frontend CLAUDE.md). */
-export function fitLine(g: Pick<Group, 'status' | 'reason' | 'fits'>, playedAt: string, timezone: string | null | undefined): string {
+export function fitLine(
+  g: Pick<Group, 'status' | 'reason' | 'fits'>, playedAt: string, timezone: string | null | undefined,
+  playedAtSource?: PlayedAtSource,
+): string {
   const n = g.fits.length;
   const one = n === 1;
   const it = one ? 'it' : 'they';
@@ -55,9 +63,10 @@ export function fitLine(g: Pick<Group, 'status' | 'reason' | 'fits'>, playedAt: 
   }
   const head = `Not counted in your ${noun}`;
   const played = playedDate(playedAt, timezone);
+  const from = isLockedPlayedAt(playedAtSource) ? ` (time from your ${lockedFromLabel(playedAtSource)})` : '';
   switch (g.reason) {
-    case 'played_before_start': return `${head} — played ${played}, before ${it} started`;
-    case 'played_after_end': return `${head} — played ${played}, after ${it} ended`;
+    case 'played_before_start': return `${head} — played ${played}, before ${it} started${from}`;
+    case 'played_after_end': return `${head} — played ${played}, after ${it} ended${from}`;
     case 'posted_before_start': return `${head} — logged before ${it} started`;
     case 'posted_after_end': return `${head} — logged after ${it} ended`;
     case 'no_photo': return `${head} — challenge scores need a photo`;
@@ -71,11 +80,14 @@ export function fitLine(g: Pick<Group, 'status' | 'reason' | 'fits'>, playedAt: 
   }
 }
 
-export default function ChallengeFitSummary({ fits, playedAt, venueTimezone, onEditPlayedTime }: {
+export default function ChallengeFitSummary({ fits, playedAt, venueTimezone, playedAtSource, onEditPlayedTime }: {
   fits: ChallengeFit[] | undefined;
   playedAt: string;
   venueTimezone: string | null | undefined;
-  /** Offered when a played-time fix could make it count (and nothing counted — a counted score is locked). */
+  /** Where the played time came from; photo / video reads "(time from your photo)" on played-time lines. */
+  playedAtSource?: PlayedAtSource;
+  /** Offered when a played-time fix could make it count (and nothing counted — a counted score is locked).
+   *  Callers omit it for a camera-recorded time the viewer can't change (anyone but an admin). */
   onEditPlayedTime?: () => void;
 }) {
   const [open, setOpen] = useState<string | null>(null);
@@ -90,7 +102,7 @@ export default function ChallengeFitSummary({ fits, playedAt, venueTimezone, onE
       {groups.map(g => {
         const tone = g.status === 'counted' ? 'text-emerald-300' : g.status === 'not_counted' ? 'text-amber-300' : 'text-muted-foreground';
         const Icon = g.status === 'not_started' ? Clock : Swords;
-        const line = allCounted && g.fits.length > 1 ? `Counts in ${g.fits.length} of your challenges` : fitLine(g, playedAt, venueTimezone);
+        const line = allCounted && g.fits.length > 1 ? `Counts in ${g.fits.length} of your challenges` : fitLine(g, playedAt, venueTimezone, playedAtSource);
         const expanded = open === g.key;
         return (
           <div key={g.key} className="flex flex-col gap-1.5">

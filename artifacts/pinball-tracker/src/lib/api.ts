@@ -368,7 +368,8 @@ export function createApi(getToken: () => Promise<string | null>) {
       create: async (body: Record<string, unknown>) =>
         request<any>('/scores', { method: 'POST', body: JSON.stringify(body) }, await tok()),
       // `venueId` attaches a venue to a score that was logged without one — see ScoreVenuePicker.
-      patch: async (id: number, body: { score?: number; type?: string; playedAt?: string; machineId?: number; venueId?: number | null }) =>
+      // playedAtReason: required when an admin changes a photo/video (camera-recorded) played time.
+      patch: async (id: number, body: { score?: number; type?: string; playedAt?: string; playedAtReason?: string; machineId?: number; venueId?: number | null }) =>
         request<{ id: number; playedAt: string; challenges?: ChallengeFit[] } & Record<string, unknown>>(`/scores/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, await tok()),
       delete: async (id: number) =>
         request(`/scores/${id}`, { method: 'DELETE' }, await tok()),
@@ -690,7 +691,7 @@ export function createApi(getToken: () => Promise<string | null>) {
     // in the JSON `meta` field, index-aligned with `photos` (see prepareUploadImage.ts) — HEIC
     // conversion and the client-side downscale both strip EXIF, so that data can't be recovered
     // server-side from the uploaded files. When absent the server tries its own extraction.
-    upload: async (images: Array<{ file: Blob; filename?: string; latitude?: number | null; longitude?: number | null; exifDatetime?: string | null; heicFailed?: boolean }>) => {
+    upload: async (images: Array<{ file: Blob; filename?: string; latitude?: number | null; longitude?: number | null; exifDatetime?: string | null; timeKind?: 'photo' | 'video'; heicFailed?: boolean }>) => {
       const token = await tok();
       const form = new FormData();
       // A lone HEIC the browser couldn't convert is the camera original — too big for the set path's
@@ -701,6 +702,8 @@ export function createApi(getToken: () => Promise<string | null>) {
         latitude: img.latitude ?? null,
         longitude: img.longitude ?? null,
         exifDatetime: img.exifDatetime ?? null,
+        // A video frame's exifDatetime is its creationdate: the server signs it as a 'video' time.
+        ...(img.timeKind === 'video' ? { timeKind: 'video' } : {}),
       }))));
 
       const headers: Record<string, string> = { 'X-App-Version': APP_BUILD_ID };

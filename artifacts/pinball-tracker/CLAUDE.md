@@ -160,6 +160,33 @@
   wrote that shift back to the database. `toLocalInput` / `localInputToIso` are the round trip;
   `naiveToLocalInput` is for the zone-less wall clock `/api/upload` returns for EXIF timestamps.
 
+## Camera-recorded played times are locked (`src/lib/captureTime.ts`, added 2026-09-30)
+- A score's played time from the photo's EXIF (or a video's own metadata) **can't be changed by the
+  player — only by an admin**. Server rules, token and the `played_at_source` column: api-server
+  CLAUDE.md, "Played-time provenance". Legacy scores (source null) and manual ones stay editable.
+- **Add Score:** `applyUploadResult` sets `playedTimeLock` via `playedTimeLockFor()`: `/api/upload`'s
+  `playedAtSource` + `playedAtToken` → locked (`photo`/`video`); a video's `mvhd` instant
+  (`capturedAtSource: 'container'`) → locked `video`, no token; a video's **`file.lastModified`**
+  (`capturedAtSource: 'file'` — forwarded/re-saved videos have no recording time) → **not** locked,
+  editable, with "Couldn't read when this video was recorded — check the time."; camera time the
+  server couldn't sign, AI-read or none → editable. Locked shows the time read-only with "From your
+  photo" / "From your video" and "Wrong time? Ask an admin to correct it after saving." Submit sends
+  `playedAtToken` and `playedAtSource`; a stale/tampered one comes back 400 (message shown).
+  `pickVideoCaptureTime()` (creationdate → mvhd → lastModified) is what `videoFrames.ts` uses; video
+  frames carry `timeKind: 'video'` so the upload `meta` tells the server a creationdate is a video's.
+- **Edit dialog:** for a locked score and a non-admin the Date & Time is read-only ("From your photo",
+  "Wrong time? Ask an admin to correct it.") and **`playedAt` is not sent**. An admin can edit it; a
+  changed value needs a reason (inline textarea, ConfirmDialog's style, 500 chars) sent as
+  `playedAtReason`, and Save stays disabled until it's filled. `EditScoreTarget.playedAtSource`
+  comes from the list row (`GET /api/scores`) or the POST row.
+- **Challenge summary:** `ChallengeFitSummary` takes `playedAtSource`; played-time lines on a locked
+  score end "(time from your photo)" — "Not counted in your Munsters challenges — played May 2,
+  before they started (time from your photo)". Callers leave out `onEditPlayedTime` (so no "Edit
+  played time" button) for a locked score unless the viewer is an admin.
+- `formatWallClock()` (datetime.ts) prints a datetime-local value read-only without re-zoning it.
+- Tests: `npx tsx --test src/lib/captureTime.test.ts` (from artifacts/pinball-tracker; `*.test.ts`
+  is excluded from `tsconfig.app.json`, since the app's types don't include node:test).
+
 ## Missing photo location (`MissingLocationNotice.tsx`, `src/lib/photoLocation.ts`, added 2026-09-25)
 - A page can't see whether the Camera app geotags photos — only whether the picked files carry GPS
   (`describePhotoLocation()` over the prepared images, plus the upload result's `latitude`, since

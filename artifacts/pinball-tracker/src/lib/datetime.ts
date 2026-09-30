@@ -88,3 +88,16 @@ export function localInputToIso(value: string, tz?: string | null): string {
 export function naiveToLocalInput(value: string): string {
   return value.slice(0, 16);
 }
+
+/**
+ * A datetime-local value ("2026-05-02T23:30") for reading, not editing: "May 2, 2026, 11:30 PM". The
+ * digits are built and formatted in the same (the browser's) zone, so they come out exactly as held —
+ * the value's zone was already decided (the venue's), this only prints it.
+ */
+export function formatWallClock(value: string): string {
+  const m = value?.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  if (!m) return value ?? '';
+  return new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).toLocaleString('en-US', {
+    month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit',
+  });
+}

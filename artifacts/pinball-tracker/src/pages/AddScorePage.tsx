@@ -10,12 +10,14 @@ import { useExactPrivateVenues } from '../lib/useExactPrivateVenues';
 import { useVenueSearch, venueMatches, MIN_PLACE_SEARCH_CHARS } from '../lib/venueSearch';
 import { queryClient } from '../lib/queryClient';
 import { PinballIcon } from '../components/PinballIcon';
-import { toLocalInput, localInputToIso, naiveToLocalInput } from '../lib/datetime';
+import { toLocalInput, localInputToIso, naiveToLocalInput, formatWallClock } from '../lib/datetime';
 import { prepareUploadImage, type PreparedImage } from '../lib/prepareUploadImage';
 import {
   FullPhotoEncoder, uploadFullSizePhoto, encodeFailMessage, reportFullPhotoFailure, uploadFailure,
 } from '../lib/fullSizePhoto';
 import { extractVideoFrames, isVideoFile, VideoFrameError, VIDEO_UNSUPPORTED_MESSAGE } from '../lib/videoFrames';
+import { playedTimeLockFor, isLockedPlayedAt, lockedFromLabel, type PlayedTimeLock, type PlayedAtSource } from '../lib/captureTime';
+import { useAppUser } from '../lib/useAppUser';
 import { ScoreDigitInput } from '../components/ScoreDigitInput';
 import { MissingLocationNotice, type CurrentLocationState } from '../components/MissingLocationNotice';
 import BadgeImage from '../components/BadgeImage';
@@ -97,11 +99,15 @@ interface SavedScore {
   machineId: number;
   type: 'casual' | 'tournament';
   playedAt: string;
+  /** Where the played time came from (POST `playedAtSource`); photo / video = locked to the player. */
+  playedAtSource: PlayedAtSource;
   venueName: string | null;
   venueTimezone: string | null;
 }
 
 export default function AddScorePage() {
+  const appUser = useAppUser();
+  const isAdmin = appUser?.role === 'admin';
   const [step, setStep] = useState<Step>(1);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState('');
@@ -163,6 +169,11 @@ export default function AddScorePage() {
   // derived from it on the venue's clock — and re-derived if the venue changes — until the user
   // edits the field themselves. See prepareUploadImage.ts `capturedAt`.
   const [playedAtInstant, setPlayedAtInstant] = useState<string | null>(null);
+  // A camera-recorded played time is read-only here and saved with the server's token (photo, or a
+  // video's creationdate) or as a video claim (mvhd) — the player can't change it later either; only an
+  // admin can. `unverified` = a video's file-modified time: editable, with a "check the time" note.
+  // See captureTime.ts and the api-server's lib/playedAtProvenance.ts.
+  const [playedTimeLock, setPlayedTimeLock] = useState<PlayedTimeLock>(null);
   // The score state as of the latest render — an upload's result lands after an await, and the user
   // may have kept typing while it ran, so reconciliation must not read a stale closure.
   const latestScoreRef = useRef<{
@@ -712,6 +723,10 @@ export default function AddScorePage() {
         // browser's — that's what makes uploading a Chicago photo after you've flown home store the
         // right instant instead of one shifted by the difference between the two zones.
         playedAt: localInputToIso(data.playedAt, selectedVenue?.timezone),
+        ...(playedTimeLock && playedTimeLock.kind !== 'unverified' && {
+          playedAtToken: playedTimeLock.token ?? undefined,
+          playedAtSource: playedTimeLock.kind,
+        }),
         machineId: machine.id,
         ...gps,
         venueId: selectedVenue?.venueId,
@@ -742,6 +757,7 @@ export default function AddScorePage() {
       setSavedScore({
         id: row.id, venueId: row.venueId, machineName: data.machineName, score: data.score, newBadges, challenges,
         machineId: row.machineId, type: row.type === 'tournament' ? 'tournament' : 'casual', playedAt: row.playedAt,
+        playedAtSource: row.playedAtSource ?? null,
         venueName: row.venueName ?? null, venueTimezone: selectedVenue?.timezone ?? null,
       });
       setStep(4);
@@ -933,17 +949,26 @@ export default function AddScorePage() {
     // the result is still good. Shown on the venue and score steps like any read failure.
     if (result.readNotice) setAiError(result.readNotice);
     // Already a zone-less camera wall clock (the earliest photo's) — the input wants it verbatim.
-    const instants = images.map(i => i.capturedAt).filter((t): t is string => !!t).sort();
+    // The server also says whether that clock is camera metadata (`playedAtSource`) and signs it
+    // (`playedAtToken`) — the lock below. Its `playedAt` can also be the AI reading a date off the
+    // screen (source null), which stays editable.
+    const serverLock = { serverSource: result.playedAtSource ?? null, serverToken: result.playedAtToken ?? null, instantSource: null };
+    const earliestInstant = images.filter(i => i.capturedAt).sort((a, b) => a.capturedAt!.localeCompare(b.capturedAt!))[0];
     if (images.some(i => i.exifDatetime) && result.playedAt) {
       setPlayedAtInstant(null);
       setValue('playedAt', naiveToLocalInput(result.playedAt));
-    } else if (instants.length) {
+      setPlayedTimeLock(playedTimeLockFor(serverLock));
+    } else if (earliestInstant) {
       // Only a container/file instant (video): show it on the venue's clock, not the browser's.
-      setPlayedAtInstant(instants[0]);
-      setValue('playedAt', toLocalInput(instants[0], selectedVenue?.timezone));
+      setPlayedAtInstant(earliestInstant.capturedAt!);
+      setValue('playedAt', toLocalInput(earliestInstant.capturedAt!, selectedVenue?.timezone));
+      setPlayedTimeLock(playedTimeLockFor({ serverSource: null, serverToken: null, instantSource: earliestInstant.capturedAtSource ?? 'file' }));
     } else if (result.playedAt) {
       setPlayedAtInstant(null);
       setValue('playedAt', naiveToLocalInput(result.playedAt));
+      setPlayedTimeLock(playedTimeLockFor(serverLock));
+    } else {
+      setPlayedTimeLock(null);
     }
     if (result.latitude != null && result.longitude != null && !(adding && gps)) {
       setGps({ latitude: result.latitude, longitude: result.longitude });
@@ -2009,10 +2034,25 @@ export default function AddScorePage() {
           )}
 
           {/* Date & Time */}
-          <div>
-            <label className="label">Date & Time</label>
-            <input {...register('playedAt', { onChange: () => setPlayedAtInstant(null) })} type="datetime-local" className="input" />
-          </div>
+          {playedTimeLock && playedTimeLock.kind !== 'unverified' ? (
+            // Camera-recorded: read-only. The form still holds the value (it's what gets saved).
+            <div>
+              <span className="label">Date & Time</span>
+              <div className="input flex items-center justify-between gap-3" aria-readonly="true">
+                <span>{formatWallClock(watch('playedAt'))}</span>
+                <span className="text-xs text-muted-foreground whitespace-nowrap">From your {lockedFromLabel(playedTimeLock.kind)}</span>
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">Wrong time? Ask an admin to correct it after saving.</p>
+            </div>
+          ) : (
+            <div>
+              <label className="label">Date & Time</label>
+              <input {...register('playedAt', { onChange: () => { setPlayedAtInstant(null); setPlayedTimeLock(null); } })} type="datetime-local" className="input" />
+              {playedTimeLock?.kind === 'unverified' && (
+                <p className="text-xs text-amber-300 mt-1">Couldn't read when this video was recorded — check the time.</p>
+              )}
+            </div>
+          )}
 
           {/* Type */}
           <div>
@@ -2103,10 +2143,13 @@ export default function AddScorePage() {
               fits={savedScore.challenges}
               playedAt={savedScore.playedAt}
               venueTimezone={savedScore.venueTimezone}
-              onEditPlayedTime={() => setEditSaved({
+              playedAtSource={savedScore.playedAtSource}
+              // A camera-recorded time is the player's to keep, not to edit (admins excepted).
+              onEditPlayedTime={isLockedPlayedAt(savedScore.playedAtSource) && !isAdmin ? undefined : () => setEditSaved({
                 id: savedScore.id, machineId: savedScore.machineId, machineName: savedScore.machineName, score: savedScore.score,
                 type: savedScore.type, playedAt: savedScore.playedAt, venueId: savedScore.venueId, venueName: savedScore.venueName,
                 venueTimezone: savedScore.venueTimezone, hasFullPhoto: fullPhoto.status === 'saved', isOwn: true,
+                playedAtSource: savedScore.playedAtSource,
               })}
             />
             <EditScoreDialog

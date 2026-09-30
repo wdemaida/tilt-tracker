@@ -236,6 +236,7 @@ const TYPE_TEXT: Record<string, string> = {
   'admin.user_disabled': 'disabled',
   'admin.user_enabled': 're-enabled',
   'admin.score_deleted': 'deleted a score by',
+  'admin.played_at_corrected': 'corrected the camera time of a score by',
   'admin.photo_deleted': 'deleted a full-size photo of',
   'admin.thumbnail_deleted': 'deleted a thumbnail of',
   'admin.challenge_voided': 'voided a challenge',
@@ -324,6 +325,7 @@ function detail(ev: ActivityEvent): string | null {
       return p.name ?? null;
     case 'pod.updated': return p.renamedFrom ? `“${p.renamedFrom}” → “${p.name}”` : p.color ? `color ${p.color}` : null;
     case 'admin.user_disabled': return [p.reason, p.clerkBanned === false ? `Clerk ban failed: ${p.clerkError ?? ''}` : null].filter(Boolean).join(' · ') || null;
+    case 'admin.played_at_corrected': return [p.from && p.to ? `${String(p.from).slice(0, 16)} → ${String(p.to).slice(0, 16)}` : null, p.source ? `from ${p.source}` : null, p.reason].filter(Boolean).join(' · ') || null;
     case 'admin.challenge_voided': return [p.previousStatus ? `was ${p.previousStatus}` : null, p.reason].filter(Boolean).join(' · ') || null;
     case 'pm.score_posted': case 'pm.score_post_failed':
       return [p.machineName, typeof p.score === 'number' ? p.score.toLocaleString() : null, ev.type === 'pm.score_post_failed' ? `HTTP ${p.status}` : null].filter(Boolean).join(' · ') || null;
