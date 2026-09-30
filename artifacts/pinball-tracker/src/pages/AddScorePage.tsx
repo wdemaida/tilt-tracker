@@ -16,6 +16,7 @@ import {
   FullPhotoEncoder, uploadFullSizePhoto, encodeFailMessage, reportFullPhotoFailure, uploadFailure,
 } from '../lib/fullSizePhoto';
 import { extractVideoFrames, isVideoFile, VideoFrameError, VIDEO_UNSUPPORTED_MESSAGE } from '../lib/videoFrames';
+import { pmLookupFor } from '../lib/pmLookup';
 import { playedTimeLockFor, isLockedPlayedAt, lockedFromLabel, type PlayedTimeLock, type PlayedAtSource } from '../lib/captureTime';
 import { useAppUser } from '../lib/useAppUser';
 import { ScoreDigitInput } from '../components/ScoreDigitInput';
@@ -74,13 +75,13 @@ interface SelectedVenue {
   address?: string;
   venueLat?: number;
   venueLng?: number;
-  pinballMapId?: number;
   /**
-   * True when a Pinball Map match was already attempted for this pick — the nearby suggestions
-   * (photo GPS / current location) come with it, by the same rule — so a HERE place from that list
-   * isn't looked up a second time.
+   * Set when the pick already carries its Pinball Map link (a linked venue, or a nearby place the
+   * lookup matched). Unset → one pm-match on pick (`pmLookupFor`) — including a nearby HERE place:
+   * the nearby lookup only asks Pinball Map for 1 mile around the photo / device point, while HERE's
+   * places reach further, so a nearby place with no id is not "already checked".
    */
-  pmChecked?: boolean;
+  pinballMapId?: number;
   /** A private venue: carries no Pinball Map link, so there's nothing to look up. */
   isPrivate?: boolean;
   /** IANA zone. The photo's EXIF wall clock is read in *this*, not the browser's — see below. */
@@ -379,19 +380,11 @@ export default function AddScorePage() {
   });
 
   // A pick with no Pinball Map link yet — a HERE "Places" result, or a TiltTrack venue nobody has
-  // linked — is matched to its Pinball Map listing now, once per pick (never per search result), so
-  // the machine step can offer what's there. The score POST then stores the link on the venue.
-  // No match (or Pinball Map down) leaves everything as it was: catalog search.
-  const pmLookup = useMemo(() => {
-    const v = selectedVenue;
-    if (!v || v.pinballMapId != null || v.isPrivate) return null;
-    // By id even for a nearby suggestion: history venues are matched by name only there, and the
-    // server answers from the venue's stored link without calling Pinball Map when it has one.
-    if (v.venueId != null) return { venueId: v.venueId };
-    if (v.pmChecked) return null;
-    if (v.venueLat != null && v.venueLng != null && v.name) return { lat: v.venueLat, lng: v.venueLng, name: v.name };
-    return null;
-  }, [selectedVenue]);
+  // linked, or a nearby place the 1-mile nearby lookup couldn't match — is matched to its Pinball
+  // Map listing now, once per pick (never per search result), so the machine step can offer what's
+  // there. The score POST then stores the link on the venue. No match (or Pinball Map down) leaves
+  // everything as it was: catalog search. The rule is `pmLookupFor` (src/lib/pmLookup.ts).
+  const pmLookup = useMemo(() => pmLookupFor(selectedVenue), [selectedVenue]);
   const { data: pmMatch, isLoading: pmMatchLoading } = useQuery({
     queryKey: ['pm-match', pmLookup],
     queryFn: () => api.venues.pmMatch(pmLookup!),
@@ -1014,7 +1007,6 @@ export default function AddScorePage() {
           venueLat: first.venueLat,
           venueLng: first.venueLng,
           pinballMapId: first.pinballMapId,
-          pmChecked: true,
           timezone: first.timezone,
         });
       }
@@ -1051,7 +1043,6 @@ export default function AddScorePage() {
             venueLat: first.venueLat,
             venueLng: first.venueLng,
             pinballMapId: first.pinballMapId,
-            pmChecked: true,
             timezone: first.timezone,
           };
           deviceAutoPickRef.current = pick;
@@ -1081,14 +1072,13 @@ export default function AddScorePage() {
    */
   function selectVenueCard(v: {
     id?: number; name: string; address?: string | null; hereId?: string | null; venueLat?: number; venueLng?: number;
-    pinballMapId?: number | null; timezone?: string | null; pmChecked?: boolean; isPrivate?: boolean;
+    pinballMapId?: number | null; timezone?: string | null; isPrivate?: boolean;
   }) {
     setValue('venueName', v.name);
     setVenueSearch(v.name);
     setSelectedVenue({
       venueId: v.id,
       name: v.name,
-      pmChecked: v.pmChecked,
       isPrivate: v.isPrivate,
       hereId: v.hereId ?? undefined,
       address: v.address ?? undefined,
@@ -1290,7 +1280,7 @@ export default function AddScorePage() {
                       <button
                         key={v.venueId ?? v.hereId ?? v.name}
                         type="button"
-                        onClick={() => selectVenueCard({ id: v.venueId, name: v.name, address: v.address, hereId: v.hereId, venueLat: v.venueLat, venueLng: v.venueLng, pinballMapId: v.pinballMapId, timezone: v.timezone, pmChecked: true })}
+                        onClick={() => selectVenueCard({ id: v.venueId, name: v.name, address: v.address, hereId: v.hereId, venueLat: v.venueLat, venueLng: v.venueLng, pinballMapId: v.pinballMapId, timezone: v.timezone })}
                         className={`text-left px-3 py-2.5 rounded-lg border transition-colors ${isSelected ? 'border-venue/60 bg-venue/10' : 'border-white/10 hover:border-venue/40 hover:bg-white/5'}`}
                       >
                         <div className="flex items-center gap-2">

@@ -89,8 +89,16 @@
   POST, which upserts on `here_id` — no new create path. `searchTokens()` here must stay in step
   with the api-server's `venueSearch.ts`.
 - **A pick with no Pinball Map link is matched on pick** (`pmLookup` → `api.venues.pmMatch`, once
-  per pick, never per result): a Place by its coordinates + name, a TiltTrack venue by id. Nearby
-  HERE places (`pmChecked`) and private venues (`isPrivate`) are skipped. `effectivePmId` (the
+  per pick, never per result): a Place by its coordinates + name, a TiltTrack venue by id. The rule
+  is `pmLookupFor()` (`src/lib/pmLookup.ts`, tested in `pmLookup.test.ts`): a pick that carries a
+  `pinballMapId` uses it; one without gets exactly one pm-match **whether it came from the search or
+  the nearby list** (photo GPS or "Use my current location"); private venues (`isPrivate`) are
+  skipped. There is no `pmChecked` any more (fixed 2026-09-30, same bug as ChallengeMeCard's Near
+  me): the nearby lookup asks Pinball Map for 1 mile around the photo / device point, while HERE's
+  nearby places reach further, so a nearby place a few miles out came back with no id, was treated as
+  already checked, and its venue was saved unlinked. PM cost per pick: 0 with an id; otherwise ≤ 1
+  `closest_by_lat_lon` at the place (0 inside a cached ~110m cell — the per-cell cache shared with
+  nearby-venues) — the per-pick ceiling is unchanged. `effectivePmId` (the
   venue's own link, else the resolved one) drives the roster (`/pm-machines/:pmId`, merged into a
   TiltTrack venue's payload when its link was only just resolved), `canPostToPm`, and the score
   POST's `venuePinballMapId`, which links the venue on save. No match → catalog search as before.
