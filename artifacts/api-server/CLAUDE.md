@@ -452,7 +452,7 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   (admin tier; payload from/to/reason/source/machineId) besides the usual `score.edited`. Other fields
   stay editable under the existing rules. `manual` and legacy null → editable as before. The
   challenge lock (409 `score_locked_by_challenge`) still applies first, admins included.
-- **Never in the future** (`lib/playedAtClock.ts`, `FUTURE_SKEW_MS` = 15 min, shared with badges):
+- **Never in the future** (`lib/playedAtClock.ts`, `FUTURE_SKEW_MS` = 15 min, shared with challenges and every badge):
   POST refuses a `playedAt` > server now + 15 min; PATCH refuses a *changed* one > the row's
   `created_at` + 15 min (you can't play after logging it; stricter than now) — both **400
   `played_at_in_future`**, admin corrections included. Server clock vs DB clock (created_at): ~1 s apart.
@@ -1037,12 +1037,19 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   answers 400 `metric_unavailable`) — see the `TODO(phase 3)` notes in `badgeMetrics.ts` and
   `badges.ts` for where they and the `applyResolution` / decline / counter triggers plug in.
 - **Rules** (`badgeRules.ts`, pure): localDate / daysOfWeek / localTime in the **venue's** zone
-  (fallback America/New_York), `postedWithinHours` (always on with a date, default 48; also refuses a
-  played_at > 15 min after posting), machine (group = OPDB group captured on save by
+  (fallback America/New_York), `postedWithinHours` (always on with a date, default 48), machine
+  (group = OPDB group captured on save by
   `resolveRuleRefs`, or exact), venue / city / state, minScore, scoreType, requiresPhoto, count +
   distinct. `loadRuleScores()` narrows candidates in SQL; `ruleSatisfied()` decides in TypeScript. A
   forward-only (`retroactive: false`) rule badge counts only scores posted after `activated_at`; a
   forward-only metric badge is simply not backfilled (it's earned at the next trigger).
+- **Never in the future — every badge** (Will, 2026-09-30, release/combined): no rule (posting window
+  or not) and no score metric (`scores_posted`, `distinct_machines`, `distinct_venues`) counts a score
+  whose `played_at` is more than `FUTURE_SKEW_MS` (15 min, `lib/playedAtClock.ts`) after its
+  `created_at` — the routes refuse new ones; this stops legacy future-dated rows earning anything.
+  One SQL fragment, `playedNotInFutureSql()` (badgeMetrics.ts), is in every score metric's query and
+  in `loadRuleScores()`; `scoreQualifies()` applies `playedAfter()` too — so live awards, preview and
+  the retroactive backfill agree. Nothing already awarded is revoked.
 - **Admin** (`/api/admin/badges*`, inside the admin router — adminAuth.test.ts enumerates it): list,
   metrics, detail + holders, create (draft), PATCH (`key`/`kind`/`metric` frozen once awarded → 409
   `locked_field`; a live badge can't be edited into an unactivatable state), image upload (multer

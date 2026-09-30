@@ -5,7 +5,7 @@ import { buildActivityRow, isActivityRecorded, logActivity, type Executor } from
 import { raiseNotificationsBulk } from './notify.js';
 import { canSeeScore, type Viewer } from './venueActivity.js';
 import {
-  METRICS, PENDING_METRICS, metricByKey, metricCounts, readMetric, describeMetric, recordMarks, friendMarks,
+  METRICS, PENDING_METRICS, metricByKey, metricCounts, readMetric, describeMetric, recordMarks, friendMarks, playedNotInFutureSql,
   loginMark, metricsFor, type FriendEvent,
 } from './badgeMetrics.js';
 import { normalizeRule, ruleSatisfied, describeRule, type BadgeRule, type RuleScore } from './badgeRules.js';
@@ -91,7 +91,8 @@ export function windowOpen(b: Pick<BadgeRow, 'availableFrom' | 'availableTo'>, n
  * posted at or after it (a forward-only badge's activation).
  */
 export async function loadRuleScores(ex: Executor, rule: BadgeRule, opts: { userIds?: number[]; since?: Date | null } = {}): Promise<Array<RuleScore & { userId: number }>> {
-  const conds: SQL[] = [];
+  // Never a score played in the future of its posting — scoreQualifies() refuses it too (every rule).
+  const conds: SQL[] = [playedNotInFutureSql(sql`${scores.playedAt}`, sql`${scores.createdAt}`)];
   if (opts.userIds) {
     if (!opts.userIds.length) return [];
     conds.push(inArray(scores.userId, opts.userIds));
@@ -123,7 +124,7 @@ export async function loadRuleScores(ex: Executor, rule: BadgeRule, opts: { user
     .from(scores)
     .innerJoin(machines, eq(machines.id, scores.machineId))
     .leftJoin(venues, eq(venues.id, scores.venueId))
-    .where(conds.length ? and(...conds) : undefined);
+    .where(and(...conds));
   return rows.map(r => ({ ...r, score: Number(r.score), hasPhoto: !!r.hasPhoto }));
 }
 

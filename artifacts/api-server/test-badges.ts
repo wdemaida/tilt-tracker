@@ -21,6 +21,10 @@
 // Series follow-ups: migrate25's description_template seeding, series template validation, a mixed
 // `zz-badge-test-mixed` series (metric tiers seated by N on create / N edit, a rule tier moved by
 // PUT /badge-series/:id/order, which refuses N-tiers out of order), and the "Add tier" prefill.
+// Never in the future (release/combined): a legacy score whose played_at is more than FUTURE_SKEW_MS
+// after its created_at (inserted directly — the routes refuse one) earns no rule badge (preview,
+// retroactive backfill and the live award path) and counts toward no score metric; one inside the
+// 15-minute skew still does.
 // TODO(phase 3): "challenge resolution awards streak and tie badges".
 //
 //   cd artifacts/api-server && npx tsx test-badges.ts
@@ -53,7 +57,8 @@ const { insertActivity, isActivityRecorded } = await import('./src/lib/activity.
 const { setRetentionLoaderForTests } = await import('./src/lib/activityRetention.js');
 const { awardBadges, onSignInBadges, runBadgeSweep, badgeCatalog } = await import('./src/lib/badges.js');
 const { raiseNotificationsBulk } = await import('./src/lib/notify.js');
-const { readMetric } = await import('./src/lib/badgeMetrics.js');
+const { readMetric, metricCounts } = await import('./src/lib/badgeMetrics.js');
+const { FUTURE_SKEW_MS } = await import('./src/lib/playedAtClock.js');
 
 const people = await db.select().from(users)
   .where(sql`NOT EXISTS (SELECT 1 FROM friendships f WHERE f.requester_id = ${users.id} OR f.addressee_id = ${users.id}) AND ${users.disabledAt} IS NULL`)
@@ -134,6 +139,7 @@ const orderSnapshot = {
   series: await db.execute(sql`SELECT id, sort_order, updated_at::text AS updated_at FROM badge_series`) as unknown as OrderRow[],
 };
 let machineId = 0;
+const extraMachineIds: number[] = [];
 const venueIds: number[] = [];
 const LOGIN_DAY = '2001-01-01';
 
@@ -710,6 +716,41 @@ try {
   check('fixing its metric to the series’ one → 200, conflict gone', r.status === 200
     && (await call(alice, 'GET', '/admin/badges')).body.series.find((x: any) => x.id === mixed)?.metricConflict === null, r.body);
 
+  // ── a played time in the future never counts toward a badge (every rule, every score metric) ──
+  {
+    const [fm] = await db.insert(machines).values({ name: `zz-badge-test future machine ${Date.now()}`, opdbId: 'Gzzbt-M0002' }).returning({ id: machines.id });
+    extraMachineIds.push(fm.id);
+    const [fv] = await db.insert(venues).values({ name: 'zz-badge-test future venue', timezone: 'America/New_York' }).returning({ id: venues.id });
+    venueIds.push(fv.id);
+    const metricKeys = ['scores_posted', 'distinct_machines', 'distinct_venues'];
+    const read = async (u: { id: number }) => Object.fromEntries(await Promise.all(metricKeys.map(async k => [k, await readMetric(db, k, u.id)]))) as Record<string, number>;
+    const carolBefore = await read(carol), bobBefore = await read(bob);
+    const plant = async (userId: number, playedAt: Date, createdAt: Date) => {
+      const [s] = await db.insert(scores).values({
+        userId, machineId: fm.id, score: 4_242_424, venueId: fv.id, venueName: 'zz', playedAt, createdAt, photoThumbnail: 'data:image/jpeg;base64,zz',
+      }).returning({ id: scores.id });
+      scoreIds.push(s.id);
+      return s.id;
+    };
+    const t0 = new Date(Math.floor(Date.now() / 1000) * 1000);
+    const futureId = await plant(carol.id, new Date(+t0 + 2 * 86_400_000), t0);        // "played" two days after it was logged
+    const edgeId = await plant(bob.id, new Date(+t0 + FUTURE_SKEW_MS - 60_000), t0);   // 14 min ahead: clock skew, still counts
+    const carolAfter = await read(carol), bobAfter = await read(bob);
+    check('future-dated legacy score counts toward no score metric (scores_posted / distinct_machines / distinct_venues)',
+      metricKeys.every(k => carolAfter[k] === carolBefore[k]), { carolBefore, carolAfter });
+    check('…while one 14 min ahead (inside the skew) counts toward each', metricKeys.every(k => bobAfter[k] === bobBefore[k] + 1), { bobBefore, bobAfter });
+    const backfillQuery = await metricCounts(db, 'scores_posted', { userIds: [carol.id], min: carolBefore.scores_posted + 1 });
+    check('…and the backfill form of the metric query (HAVING value >= N) agrees', !backfillQuery.has(carol.id), [...backfillQuery]);
+    const futureBadge = await createBadge({ key: 'zz-badge-test-future', name: 'ZZ Future', kind: 'rule', rule: { machine: { machineId: fm.id, matchMode: 'exact' } }, retroactive: true });
+    r = await call(alice, 'POST', `/admin/badges/${futureBadge}/preview`);
+    check('rule badge with no posting window: preview → only bob (carol’s future-dated score is ignored)',
+      r.status === 200 && r.body.total === 1 && r.body.qualifying[0]?.user?.id === bob.id && r.body.qualifying[0]?.sourceScoreId === edgeId, r.body);
+    r = await call(alice, 'POST', `/admin/badges/${futureBadge}/activate`);
+    check('…retroactive activation → awarded 1 (bob), carol gets nothing', r.status === 200 && r.body.awarded === 1 && await holds(bob.id, futureBadge) === 1 && await holds(carol.id, futureBadge) === 0, r.body);
+    const live = await awardBadges(carol.id, { score: { id: futureId }, metrics: ['scores_posted'] });
+    check('…the live award path (awardBadges on that score) agrees', !live.some(b => b.id === futureBadge) && await holds(carol.id, futureBadge) === 0, live);
+  }
+
   // ── retire; the sweep ──────────────────────────────────────────────────────
   r = await call(alice, 'POST', `/admin/badges/${big}/retire`);
   check('retire → ok; earned one stays', r.status === 200 && await holds(alice.id, big) === 1, r);
@@ -766,6 +807,10 @@ try {
   if (machineId) {
     await db.delete(scores).where(eq(scores.machineId, machineId));
     await db.delete(machines).where(eq(machines.id, machineId));
+  }
+  if (extraMachineIds.length) {
+    await db.delete(scores).where(inArray(scores.machineId, extraMachineIds));
+    await db.delete(machines).where(inArray(machines.id, extraMachineIds));
   }
   if (venueIds.length) await db.delete(venues).where(inArray(venues.id, venueIds));
   const [left] = await db.select({ n: sql<number>`count(*)::int` }).from(badges).where(like(badges.key, 'zz-badge-test-%'));

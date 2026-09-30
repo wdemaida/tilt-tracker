@@ -20,7 +20,8 @@ const pg = new PGlite();
 await pg.exec(`
   CREATE TABLE user_metric_marks (user_id integer NOT NULL, metric text NOT NULL, ref text NOT NULL,
     at timestamp NOT NULL DEFAULT now(), PRIMARY KEY (user_id, metric, ref));
-  CREATE TABLE scores (id serial PRIMARY KEY, user_id integer NOT NULL, machine_id integer NOT NULL, venue_id integer);
+  CREATE TABLE scores (id serial PRIMARY KEY, user_id integer NOT NULL, machine_id integer NOT NULL, venue_id integer,
+    played_at timestamp NOT NULL DEFAULT now(), created_at timestamp NOT NULL DEFAULT now());
 `);
 const dialect = new PgDialect();
 async function run(q: any): Promise<any[]> {
@@ -76,6 +77,21 @@ test('score metrics: counts, distinct, user filter and threshold', async () => {
   assert.equal((await count('distinct_venues')).has(2), false, 'no venue → not counted at all');
   assert.deepEqual([...await count('scores_posted', { userIds: [2] })], [[2, 1]]);
   assert.deepEqual([...await count('scores_posted', { min: 2 })], [[1, 4]], 'HAVING value >= threshold (the backfill query)');
+});
+
+test('score metrics never count a score played more than 15 min after it was posted', async () => {
+  // User 3: two ordinary scores, one at the skew boundary (counts), one a legacy future-dated row on
+  // another machine at another venue (doesn't count toward any score metric, backfill included).
+  await pg.exec(`INSERT INTO scores (user_id, machine_id, venue_id, played_at, created_at) VALUES
+    (3, 1, 10, '2026-09-30 12:00:00', '2026-09-30 12:05:00'),
+    (3, 1, 10, '2026-09-30 12:15:00', '2026-09-30 12:00:00'),
+    (3, 9, 19, '2026-10-02 12:00:00', '2026-09-30 12:00:00'),
+    (4, 9, 19, '2026-09-30 12:15:00.001', '2026-09-30 12:00:00')`);
+  assert.equal((await count('scores_posted')).get(3), 2);
+  assert.equal((await count('distinct_machines')).get(3), 1);
+  assert.equal((await count('distinct_venues')).get(3), 1);
+  assert.equal((await count('scores_posted')).has(4), false, '1 ms past the skew is out');
+  assert.equal((await count('scores_posted', { min: 3 })).has(3), false, 'the backfill query agrees');
 });
 
 test('registry: every metric has a trigger, phase-3 metrics are flagged, keys are unique', () => {

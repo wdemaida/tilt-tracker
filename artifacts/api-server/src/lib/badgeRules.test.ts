@@ -3,7 +3,7 @@
 // The badge rule vocabulary (badgeRules.ts) — pure, no database.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { scoreQualifies, ruleSatisfied, normalizeRule, describeRule, localParts, type BadgeRule, type RuleScore } from './badgeRules.js';
+import { scoreQualifies, ruleSatisfied, normalizeRule, describeRule, localParts, FUTURE_SKEW_MS, type BadgeRule, type RuleScore } from './badgeRules.js';
 
 let nextId = 1;
 function score(over: Partial<RuleScore> = {}): RuleScore {
@@ -47,6 +47,23 @@ test('a play date in the future of its posting is refused (beyond 15 min skew)',
   const s = score({ playedAt: new Date('2026-12-25T20:00:00Z'), createdAt: new Date('2026-12-24T20:00:00Z') });
   assert.equal(scoreQualifies(xmas, s), false);
   assert.equal(scoreQualifies(xmas, score({ playedAt: new Date('2026-12-25T20:00:00Z'), createdAt: new Date('2026-12-25T19:50:00Z') })), true);
+});
+
+test('every rule ignores a played time more than 15 min after posting — no posting window needed', () => {
+  // Legacy rows (before the routes refused them) can have played_at far after created_at.
+  const future = score({ playedAt: new Date('2026-12-25T20:00:00Z'), createdAt: new Date('2026-12-24T20:00:00Z') });
+  for (const rule of [{ minScore: 5 }, { requiresPhoto: true }, { venueId: 10 }, { daysOfWeek: [0, 1, 2, 3, 4, 5, 6] }, { localTime: { from: '00:00', to: '23:59' } }] as BadgeRule[]) {
+    assert.equal(scoreQualifies(rule, future), false, JSON.stringify(rule));
+  }
+  // The skew boundary is FUTURE_SKEW_MS exactly: 15 min after posting still counts, 15 min + 1 ms doesn't.
+  const at = new Date('2026-12-25T20:00:00Z');
+  assert.equal(scoreQualifies({ minScore: 5 }, score({ playedAt: new Date(+at + FUTURE_SKEW_MS), createdAt: at })), true);
+  assert.equal(scoreQualifies({ minScore: 5 }, score({ playedAt: new Date(+at + FUTURE_SKEW_MS + 1), createdAt: at })), false);
+  // …and a future-dated score never counts toward a count / distinct rule either.
+  const ok = score({ machineId: 1 });
+  const bad = score({ machineId: 2, playedAt: new Date('2027-01-01T00:00:00Z'), createdAt: new Date('2026-12-25T00:00:00Z') });
+  assert.deepEqual(ruleSatisfied({ minScore: 5, count: 2 }, [ok, bad]), { met: false, sourceScoreId: null, progress: 1 });
+  assert.deepEqual(ruleSatisfied({ minScore: 5, count: 2, distinct: 'machine' }, [ok, bad]), { met: false, sourceScoreId: null, progress: 1 });
 });
 
 test('without a date condition there is no grace window unless asked', () => {

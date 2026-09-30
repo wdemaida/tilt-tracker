@@ -1,6 +1,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import type { Executor } from './activity.js';
 import { localParts } from './badgeRules.js';
+import { FUTURE_SKEW_MS } from './playedAtClock.js';
 
 // Badges — the metric library (feature/badges). A metric badge is "metric ≥ N" with an admin-set N,
 // so "5 wins" and "50 wins" are two rows in `badges`, not two pieces of code. The admin form reads
@@ -55,14 +56,23 @@ function marksMetric(def: Omit<MetricDef, 'source' | 'countSql'>): MetricDef {
   };
 }
 
-/** A metric aggregated over `scores`. */
+/**
+ * `played` is not more than FUTURE_SKEW_MS after `created` — the SQL twin of
+ * `!playedAfter(playedAt, createdAt)` (playedAtClock.ts). Every score metric and loadRuleScores() use
+ * it, so a legacy future-dated score earns no badge anywhere (Will, 2026-09-30).
+ */
+export function playedNotInFutureSql(played: SQL = sql`played_at`, created: SQL = sql`created_at`): SQL {
+  return sql`${played} <= ${created} + (${FUTURE_SKEW_MS}::int * interval '1 millisecond')`;
+}
+
+/** A metric aggregated over `scores` — never counting a score played in the future of its posting. */
 function scoresMetric(def: Omit<MetricDef, 'source' | 'countSql' | 'triggers'>, agg: SQL, where: SQL = sql``): MetricDef {
   return {
     ...def,
     source: 'derived',
     triggers: ['score', 'sweep'],
     countSql: ({ userIds, min }) => sql`SELECT user_id, ${agg}::int AS value FROM scores
-      WHERE true${where}${userFilter(sql`user_id`, userIds)}
+      WHERE ${playedNotInFutureSql()}${where}${userFilter(sql`user_id`, userIds)}
       GROUP BY user_id${having(agg, min)}`,
   };
 }

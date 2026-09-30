@@ -8,9 +8,9 @@
 //                    (venues.timezone, else America/New_York)
 //   daysOfWeek       [0..6], 0 = Sunday, venue local
 //   localTime        {from, to} 'HH:MM', venue local; from > to wraps midnight (22:00–02:00)
-//   postedWithinHours  created_at − played_at must be ≤ N hours (and not in the future beyond
-//                    FUTURE_SKEW_MS). ALWAYS applied when localDate is set (default 48) — Will: a date
-//                    badge can't be earned by backdating a score. Optional otherwise.
+//   postedWithinHours  created_at − played_at must be ≤ N hours. ALWAYS applied when localDate is
+//                    set (default 48) — Will: a date badge can't be earned by backdating a score.
+//                    Optional otherwise.
 //   machine          {machineId, matchMode 'group'|'exact', matchGroup} — matchGroup is the OPDB group,
 //                    captured when the rule is saved (normalizeRule's caller fills it); reuses
 //                    challengeRules.machineMatches
@@ -20,9 +20,15 @@
 //
 // Timestamps: scores.played_at / created_at are naive columns holding UTC (see api-server CLAUDE.md);
 // drizzle reads them as UTC instants, which is what these functions expect.
+//
+// Never in the future (Will, 2026-09-30): EVERY rule — posting window or not — ignores a score whose
+// played_at is more than FUTURE_SKEW_MS after its created_at (playedAtClock.playedAfter), the same
+// rule challenges apply. The routes refuse new ones; this keeps legacy future-dated rows from earning
+// anything. loadRuleScores() applies the same cut in SQL (badgeMetrics.playedNotInFutureSql), and so
+// do the score metrics, so live evaluation and the retroactive backfill agree.
 
 import { machineMatches } from './challengeRules.js';
-import { FUTURE_SKEW_MS } from './playedAtClock.js';
+import { FUTURE_SKEW_MS, playedAfter } from './playedAtClock.js';
 
 export const DEFAULT_TZ = 'America/New_York';
 export const DEFAULT_POSTED_WITHIN_HOURS = 48;
@@ -122,11 +128,11 @@ export function scoreQualifies(rule: BadgeRule, score: RuleScore, venueTz: strin
   if (rule.scoreType && score.type !== rule.scoreType) return false;
   if (rule.requiresPhoto && !score.hasPhoto) return false;
 
+  // Every rule: a played time in the future of its posting never counts (see the header).
+  if (playedAfter(score.playedAt, score.createdAt)) return false;
+
   const grace = graceHours(rule);
-  if (grace != null) {
-    const lag = +score.createdAt - +score.playedAt;
-    if (lag > grace * 3_600_000 || lag < -FUTURE_SKEW_MS) return false;
-  }
+  if (grace != null && +score.createdAt - +score.playedAt > grace * 3_600_000) return false;
 
   if (rule.localDate || rule.daysOfWeek || rule.localTime) {
     const local = localParts(score.playedAt, venueTz);

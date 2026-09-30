@@ -6,7 +6,9 @@
 //  - Challenges (challengeRules.exclusionReason) don't count a score whose played_at is more than
 //    FUTURE_SKEW_MS after its created_at ('played_in_future') — legacy rows written before the
 //    routes refused them (dev score #1276, 2026-09-30) included.
-//  - Badges (badgeRules.ts) treat a played_at within FUTURE_SKEW_MS of created_at as "now".
+//  - Badges: no rule badge (badgeRules.scoreQualifies — every rule, posting window or not) and no
+//    score metric (badgeMetrics.playedNotInFutureSql, also in loadRuleScores) counts a score whose
+//    played_at is more than FUTURE_SKEW_MS after its created_at.
 //
 // Clock: the routes use the API server's clock; created_at is stamped by the DB clock. Neon's is
 // ~1 s off ours, which is noise next to 15 minutes. The slack itself is for a phone's clock being a
