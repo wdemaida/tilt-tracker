@@ -416,6 +416,55 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   for debugging, select `::text` — postgres.js parses them into a Date in *your* zone, so
   `new Date(row.created_at).toISOString()` prints times that don't match the column.
 
+## Played-time provenance and the photo-time lock (`src/lib/playedAtProvenance.ts`, migrate24, added 2026-09-30)
+- **Why:** Will edited an old May-2 photo score's played time to today and it then counted in four
+  challenges. Challenges compare `played_at` with their window, so a time the player can move freely
+  can be moved into any window. Decision: **a time that came from the photo's metadata can't be
+  changed by the player — only by an admin** (e.g. the camera clock was wrong).
+- **`scores.played_at_source`** text, CHECK `photo | video | manual`, nullable. `photo` = EXIF
+  `DateTimeOriginal`; `video` = metadata inside a video file (Apple `creationdate`, or the QuickTime
+  `mvhd` time); `manual` = typed, AI-read off the screen, a video's file-modified time, or nothing.
+  **null = legacy** (every score before migrate24) — provenance unknown, so it **stays editable**.
+  Plus `played_at_corrected_by_id` (→ users, ON DELETE SET NULL) / `played_at_corrected_at`: the last
+  admin correction. migrate24 adds all three (additive, idempotent, still dev-guarded).
+- **The token.** `/api/upload` returns, alongside the naive `playedAt`, `playedAtSource`
+  (`photo`/`video` when it's camera metadata, null when AI-read/none) and `playedAtToken`:
+  `base64url(JSON {v, u, t, s, e}).base64url(HMAC-SHA256)` — `u` the Clerk user id, `t` the naive
+  camera clock, `s` photo|video (the meta entry's `timeKind`, which the browser sets to `video` for
+  video frames), `e` expiry (24 h). Key: **`PLAYED_AT_TOKEN_SECRET` if set, else HMAC(CLERK_SECRET_KEY,
+  label)** — so **Render needs no new env var**. No key → no token → the score saves as `manual`.
+- **POST /api/scores** takes `playedAtToken` (and `playedAtSource: 'video'` for an mvhd claim).
+  A forged / other user's / malformed token → **400 `played_at_token_invalid`** before anything is
+  written. An expired token quietly downgrades to `manual`. With a valid token the submitted instant
+  must show the token's wall clock **to the minute** in the venue's zone (the browser converted it
+  with `localInputToIso(…, venue.timezone)`; seconds are dropped by the input) — else **400
+  `played_at_mismatch`**. The zone is the venue's DB timezone when the uploader can see it; else the
+  client's `venueTimezone` (only when the venue has none); else unknown (no venue, or a hidden-tier
+  home whose zone is redacted) — then any real UTC offset (−12…+14, quarter hours) passes: weaker, it
+  pins the time to within a day of the photo, not to any date. Spring-forward gap times accept the
+  hour either side. `claimed: 'photo'` without a token → `manual`; `video` without a token → `video`.
+- **PATCH /api/scores/:id** (`playedAtEditDecision`): only a *change* counts — re-sending the same
+  minute is a no-op (the field is then left alone, seconds included; an otherwise-empty PATCH answers
+  200 without writing). Changing the time on a `photo`/`video` score: non-admin (owner) → **403
+  `played_at_locked`**; admin → requires `playedAtReason` (trimmed, 1–500) else **400
+  `reason_required`**, then stamps `played_at_corrected_by_id/_at`, **keeps the source** (so the lock
+  survives — `manual` would hand the player the edit), and logs **`admin.played_at_corrected`**
+  (admin tier; payload from/to/reason/source/machineId) besides the usual `score.edited`. Other fields
+  stay editable under the existing rules. `manual` and legacy null → editable as before. The
+  challenge lock (409 `score_locked_by_challenge`) still applies first, admins included.
+- **How strong it is:** the browser reads EXIF before downscaling (which strips it) and sends it as
+  `meta`, so the token proves "this is the time /api/upload told this user", not that the camera was
+  right. Beating it takes a hand-built upload request — about the effort of editing a photo's EXIF,
+  which nothing server-side could detect. It closes the edit box: wizard, edit dialog and plain
+  PATCH/POST. **`video` via mvhd is weaker still** — the server never sees it; it's the client's word,
+  locked in the UI only.
+- `GET /api/scores` carries `playedAtSource` (the edit dialog reads it); POST/PATCH rows carry it too.
+- Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/playedAtProvenance.test.ts`
+  (token sign/verify/expiry/user binding/tampering, zone match incl. DST, source decision, lock rule);
+  `npx tsx test-score-provenance.ts` (dev branch only — throwaway `zz-provenance-test-*` users,
+  machine, venue; POST photo / mismatch / invalid / video / manual, PATCH 403 / 400 / admin
+  correction + event / manual + legacy editable; cleans up everything incl. events).
+
 ## Venue machine history (`venue_machine_history` table, added 2026-07-01)
 - Tracks which machines have been at a venue over time, since operators rotate inventory and Pinball Map only exposes each location's *current* roster (no history via their public API — confirmed empirically: their `user_submissions.json` activity feed is capped at the most recent ~200 events per region, non-paginated, no location filter, so anything older scrolls off with no way to page back).
 - **Lazy, not polled**: `syncVenueMachineHistory()` only runs as a side effect of `GET /api/venues/:id/machines` — i.e. whenever someone actually opens that venue in the app (VenuesPage modal or AddScorePage's venue step). A venue nobody looks at doesn't get its history advanced, and the recorded `removedAt` is "first time we happened to notice it was gone," not the operator's actual removal date.
@@ -460,7 +509,7 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   survivable, three in one request is the OOM this route already had once. One model call sees all
   images; `mergeReads()` right-aligns the per-image templates, a position is known if any image read
   it, disagreement becomes `?` plus a `conflicts` entry, and the longest template sets the length.
-  GPS = first photo with GPS; playedAt = earliest EXIF time; `differentGamesWarning` when photos are
+  GPS = first photo with GPS; playedAt = earliest EXIF time (signed as `playedAtToken` — see "Played-time provenance"); `differentGamesWarning` when photos are
   >10 min or >200m apart. Photos aren't stored — no schema change; the thumbnail stays single.
 - **Every player display is read** (added 2026-09-24). The tool returns, per image, a list of
   `displays` — `{ player, displayKind, digitWindows, displayText, template, lowConfidence,

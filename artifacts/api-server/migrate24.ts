@@ -23,6 +23,12 @@
 //     (responded_at = proposal_decided_at, decline_reason stays null), 'lapsed' → 'missed'. Only rows
 //     still 'pending', so it's a no-op on re-run.
 //
+// 10. scores.played_at_source text, CHECK in ('photo', 'video', 'manual'), nullable: where the played time
+//     came from (src/lib/playedAtProvenance.ts). null = legacy / unknown (every score before this) and
+//     stays editable; photo / video are locked to the player — only an admin may correct them.
+// 11. scores.played_at_corrected_by_id → users(id) ON DELETE SET NULL, scores.played_at_corrected_at:
+//     the last admin correction of a locked played time. The source is kept, so the lock survives.
+//
 // Legacy counter rows (countered_from_id set, proposed_by_id null — created by the counterer under
 // migrate22's model) are untouched and keep working as ordinary challenges.
 //
@@ -73,6 +79,14 @@ await sql.begin(async tx => {
     ALTER TABLE challenges ADD CONSTRAINT challenges_proposal_check
       CHECK (status NOT IN ('proposed', 'rejected', 'lapsed') OR proposed_by_id IS NOT NULL)`;
 
+  await tx`ALTER TABLE scores ADD COLUMN IF NOT EXISTS played_at_source text`;
+  await tx`ALTER TABLE scores DROP CONSTRAINT IF EXISTS scores_played_at_source_check`;
+  await tx`
+    ALTER TABLE scores ADD CONSTRAINT scores_played_at_source_check
+      CHECK (played_at_source IS NULL OR played_at_source IN ('photo', 'video', 'manual'))`;
+  await tx`ALTER TABLE scores ADD COLUMN IF NOT EXISTS played_at_corrected_by_id integer REFERENCES users(id) ON DELETE SET NULL`;
+  await tx`ALTER TABLE scores ADD COLUMN IF NOT EXISTS played_at_corrected_at timestamp`;
+
   const missed = await tx`
     UPDATE challenge_participants cp SET response = 'missed'
     FROM challenges c
@@ -97,5 +111,12 @@ const [counts] = await sql<Array<{ legacy: number; proposals: number; dangling: 
          (SELECT count(*)::int FROM challenges WHERE proposed_by_id IS NOT NULL) AS proposals,
          (SELECT count(*)::int FROM challenge_participants cp JOIN challenges c ON c.id = cp.challenge_id
            WHERE c.proposed_by_id IS NOT NULL AND c.status IN ('rejected', 'lapsed') AND cp.response = 'pending') AS dangling`;
+const [src] = await sql<Array<{ photo: number; video: number; manual: number; legacy: number }>>`
+  SELECT count(*) FILTER (WHERE played_at_source = 'photo')::int AS photo,
+         count(*) FILTER (WHERE played_at_source = 'video')::int AS video,
+         count(*) FILTER (WHERE played_at_source = 'manual')::int AS manual,
+         count(*) FILTER (WHERE played_at_source IS NULL)::int AS legacy
+    FROM scores`;
+console.log(`migrate24: scores.played_at_source — ${src.photo} photo, ${src.video} video, ${src.manual} manual, ${src.legacy} legacy (null)`);
 console.log(`migrate24: done — ${counts.legacy} legacy counter row(s), ${counts.proposals} proposal row(s), ${counts.dangling} pending row(s) left on closed proposals`);
 await sql.end();

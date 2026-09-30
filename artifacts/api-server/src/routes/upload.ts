@@ -15,6 +15,7 @@ import { getNearbyVenues, type Venue } from '../lib/hereApi.js';
 import { type PmLocation } from '../lib/pinballmapApi.js';
 import { pmLocationsNear, allowPmIds } from '../lib/pmGuards.js';
 import { matchPmLocation } from '../lib/pmMatch.js';
+import { signPlayedAtToken } from '../lib/playedAtProvenance.js';
 import { redactVenue, mayRevealByLocation } from '../lib/venuePrivacy.js';
 import {
   SlidingRateLimiter, TtlCache, cachedByCell, rateLimitMessage, NEARBY_RATE_WINDOWS, NEARBY_CACHE_TTL_MS,
@@ -268,6 +269,8 @@ interface PhotoMeta {
   latitude: number | null;
   longitude: number | null;
   exifDatetime: string | null;
+  /** 'video' when the browser says this entry is a video frame (its time is Apple's creationdate). */
+  timeKind: 'photo' | 'video';
 }
 
 function toFiniteOrNull(v: unknown): number | null {
@@ -286,6 +289,7 @@ function cleanMeta(raw: any): PhotoMeta {
     // The client sends the same zone-less shape `toNaiveLocal` produces (prepareUploadImage.ts), but
     // normalize anyway so a stale client can't reintroduce a `Z` the frontend would misread.
     exifDatetime: normalizeNaiveDatetime(typeof raw?.exifDatetime === 'string' ? raw.exifDatetime : null),
+    timeKind: raw?.timeKind === 'video' ? 'video' : 'photo',
   };
 }
 
@@ -412,6 +416,8 @@ router.post('/', requireAuth, receivePhotos, async (req, res) => {
         latitude: m.latitude ?? serverGps?.latitude ?? null,
         longitude: m.longitude ?? serverGps?.longitude ?? null,
         exifDatetime: m.exifDatetime ?? serverExifDatetime,
+        // A time the server read itself came from an uploaded image — always a photo.
+        timeKind: m.exifDatetime ? m.timeKind : 'photo',
       });
 
       if (isHeic(file)) {
@@ -504,7 +510,13 @@ router.post('/', requireAuth, receivePhotos, async (req, res) => {
     // strings of one fixed shape, so they sort lexically).
     const gpsMeta = meta.find(m => m.latitude != null && m.longitude != null);
     const gps = gpsMeta ? { latitude: gpsMeta.latitude!, longitude: gpsMeta.longitude! } : null;
-    const exifDatetime = meta.map(m => m.exifDatetime).filter((t): t is string => !!t).sort()[0] ?? null;
+    const earliest = meta.filter(m => !!m.exifDatetime).sort((a, b) => a.exifDatetime!.localeCompare(b.exifDatetime!))[0] ?? null;
+    const exifDatetime = earliest?.exifDatetime ?? null;
+    // Camera time → a signed token the score POST must present to store it as photo/video-sourced
+    // (and so locked to the player). Only for camera metadata — never the AI's reading of a date on
+    // the screen. See lib/playedAtProvenance.ts.
+    const { userId: clerkId } = getAuth(req);
+    const playedAtToken = exifDatetime && clerkId ? signPlayedAtToken(clerkId, exifDatetime, earliest!.timeKind) : null;
 
     // Same cached lookup as "Use my current location" — it used to go uncached to HERE and PM per upload.
     const venueList: Venue[] = gps ? await suggestVenuesNear(req, gps.latitude, gps.longitude) : [];
@@ -523,6 +535,11 @@ router.post('/', requireAuth, receivePhotos, async (req, res) => {
       // Zone-less wall clock ("2026-09-10T22:01:00") — see toNaiveLocal. The browser resolves it
       // against the viewer's timezone; do not hand this to `new Date()` on the server.
       playedAt: exifDatetime ?? normalizeNaiveDatetime(extracted.playedAt),
+      // 'photo' / 'video' when `playedAt` is camera metadata (null: AI-read or none), and the token
+      // that proves it to POST /api/scores. The token is null when no signing key is configured —
+      // the score then saves as 'manual' and the wizard leaves the time editable.
+      playedAtSource: exifDatetime ? earliest!.timeKind : null,
+      playedAtToken,
       latitude: gps?.latitude ?? null,
       longitude: gps?.longitude ?? null,
       venues: venueList,

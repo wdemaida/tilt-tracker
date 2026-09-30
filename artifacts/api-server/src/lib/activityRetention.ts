@@ -98,6 +98,7 @@ export const TIER_BY_TYPE: Readonly<Record<string, RetentionTier>> = {
   'admin.user_disabled': 'admin',
   'admin.user_enabled': 'admin',
   'admin.score_deleted': 'admin',
+  'admin.played_at_corrected': 'admin',
   'admin.photo_deleted': 'admin',
   'admin.thumbnail_deleted': 'admin',
   'admin.challenge_voided': 'admin',

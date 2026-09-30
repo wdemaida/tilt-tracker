@@ -49,7 +49,7 @@ export const ACTIVITY_TYPES = {
     'admin.score_deleted', 'admin.photo_deleted', 'admin.thumbnail_deleted',
     'admin.challenge_voided', 'admin.friendship_removed', 'admin.notification_deleted', 'admin.notifications_cleared',
     'admin.venue_deleted', 'admin.machine_updated', 'admin.machine_deleted',
-    'admin.settings_changed', 'admin.photo_orphans_run', 'admin.badge_updated', 'admin.badge_order_changed',
+    'admin.settings_changed', 'admin.photo_orphans_run', 'admin.badge_updated', 'admin.badge_order_changed', 'admin.played_at_corrected',
   ],
   system: ['system.stat_snapshot', 'system.challenge_sweep', 'system.activity_retention', 'system.photo_orphans'],
 } as const;

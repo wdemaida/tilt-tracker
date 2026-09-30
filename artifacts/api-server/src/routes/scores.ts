@@ -17,6 +17,9 @@ import { onScoreCreated, scoreChallengeSummary, scoreLockedByChallenge, SCORE_LO
 import { hasFullPhotoSql, publicScoreRow, deletePhotoBestEffort } from '../lib/photoStore.js';
 import { logActivity } from '../lib/activity.js';
 import { onScoreBadges } from '../lib/badges.js';
+import {
+  checkPlayedAtToken, decidePlayedAtSource, playedAtChanged, playedAtEditDecision,
+} from '../lib/playedAtProvenance.js';
 
 // Optional — resolves the caller's app user + role, without requiring auth.
 async function resolveRequester(req: any): Promise<{ id: number; role: string } | undefined> {
@@ -40,6 +43,8 @@ router.get('/', async (req, res) => {
         id: scores.id,
         score: scores.score,
         playedAt: scores.playedAt,
+        // photo / video = locked to the player (lib/playedAtProvenance.ts); the edit dialog reads it.
+        playedAtSource: scores.playedAtSource,
         type: scores.type,
         venueId: scores.venueId,
         venueName: scores.venueName,
@@ -105,6 +110,17 @@ router.post('/', requireAppUser, async (req, res) => {
   if (parsedScore == null) {
     return res.status(400).json({ error: 'score must be a positive whole number', code: 'invalid_score' });
   }
+  const playedAtDate = new Date(playedAt);
+  if (Number.isNaN(playedAtDate.getTime())) {
+    return res.status(400).json({ error: 'playedAt must be a date', code: 'invalid_played_at' });
+  }
+  // Played-time provenance (lib/playedAtProvenance.ts): a camera time is 'photo'/'video' only with
+  // the token /api/upload signed for this user. A forged / someone else's token is refused before
+  // anything is written; the time itself is checked once the venue (and so its zone) is known.
+  const tokenCheck = checkPlayedAtToken(req.body.playedAtToken, appUser.clerkId);
+  if (tokenCheck.refusal && !tokenCheck.refusal.ok) {
+    return res.status(tokenCheck.refusal.status).json(tokenCheck.refusal.body);
+  }
 
   try {
     const { venueId: resolvedVenueId, venueName: resolvedVenueName } = await resolveScoreVenue({
@@ -112,11 +128,31 @@ router.post('/', requireAppUser, async (req, res) => {
       latitude, longitude,
     }, appUser);
 
+    // The zone the browser used for the camera clock: the venue's own when it has one the uploader
+    // can see (a client can't pick a different one), else the one the client sent with the pick,
+    // else unknown — the viewer's own zone, checked with the weaker any-real-offset rule. (A hidden-
+    // tier home's zone is redacted from everyone but its owner and admins, so a friend logging there
+    // converted with their browser's zone.) A mismatch is a 400 with nothing written but the venue,
+    // as a normal save would have.
+    let playedAtZone: string | null = null;
+    if (tokenCheck.verified) {
+      const [v] = resolvedVenueId != null
+        ? await db.select().from(venues).where(eq(venues.id, resolvedVenueId)).limit(1)
+        : [];
+      const visibleZone = v ? redactVenue(v, appUser.id, appUser.role === 'admin').timezone : null;
+      playedAtZone = visibleZone ?? (!v?.timezone && typeof venueTimezone === 'string' && venueTimezone ? venueTimezone : null);
+    }
+    const source = decidePlayedAtSource({
+      verified: tokenCheck.verified, playedAt: playedAtDate, tz: playedAtZone, claimed: req.body.playedAtSource,
+    });
+    if (!source.ok) return res.status(source.status).json(source.body);
+
     const [row] = await db.insert(scores).values({
       userId: appUser.id,
       machineId,
       score: parsedScore,
-      playedAt: new Date(playedAt),
+      playedAt: playedAtDate,
+      playedAtSource: source.source,
       type: type ?? 'casual',
       venueId: resolvedVenueId ?? null,
       venueName: resolvedVenueName ?? null,
@@ -174,7 +210,27 @@ router.patch('/:id', requireAppUser, async (req, res) => {
     updates.score = parsedScore;
   }
   if (type !== undefined) updates.type = type;
-  if (playedAt !== undefined) updates.playedAt = new Date(playedAt);
+  // The played time. Re-sending the same minute is not a change (the edit form works in minutes and
+  // always sends the field), so it's left alone — seconds included. A real change on a photo/video
+  // score is the player's lock (403) or an admin's correction (reason required) — see
+  // lib/playedAtProvenance.ts. Legacy (null) and manual scores stay freely editable.
+  let correction: { reason: string; from: Date; to: Date } | null = null;
+  if (playedAt !== undefined) {
+    const next = new Date(playedAt);
+    if (Number.isNaN(next.getTime())) {
+      return res.status(400).json({ error: 'playedAt must be a date', code: 'invalid_played_at' });
+    }
+    if (playedAtChanged(existing.playedAt, next)) {
+      const d = playedAtEditDecision(existing.playedAtSource, appUser.role === 'admin', req.body.playedAtReason);
+      if (!d.allow) return res.status(d.status).json(d.body);
+      updates.playedAt = next;
+      if (d.correction) {
+        correction = { reason: d.reason!, from: existing.playedAt, to: next };
+        updates.playedAtCorrectedById = appUser.id;
+        updates.playedAtCorrectedAt = new Date();
+      }
+    }
+  }
   if (machineId !== undefined) updates.machineId = Number(machineId);
 
   // Attaching a venue after the fact. The upload flow lets you skip the venue step (and used to be
@@ -193,9 +249,13 @@ router.patch('/:id', requireAppUser, async (req, res) => {
     }
   }
 
-  const [updated] = await db.update(scores).set(updates).where(eq(scores.id, id)).returning();
+  // Nothing to write (e.g. only the unchanged played time was sent) — drizzle refuses an empty SET.
+  const [updated] = Object.keys(updates).length
+    ? await db.update(scores).set(updates).where(eq(scores.id, id)).returning()
+    : [existing];
   const changes: Record<string, { from: unknown; to: unknown }> = {};
   for (const k of Object.keys(updates)) {
+    if (k === 'playedAtCorrectedById' || k === 'playedAtCorrectedAt') continue;
     const from = (existing as any)[k]; const to = (updated as any)?.[k];
     if (String(from) !== String(to)) changes[k] = { from, to };
   }
@@ -203,6 +263,16 @@ router.patch('/:id', requireAppUser, async (req, res) => {
     type: 'score.edited', actorUserId: appUser.id, subjectUserId: existing.userId !== appUser.id ? existing.userId : null,
     targetType: 'score', targetId: id, payload: { changes, byAdmin: existing.userId !== appUser.id },
   });
+  // An admin moving a camera-recorded time is its own, admin-tier event (kept forever by default),
+  // with the reason — the score row only remembers who and when.
+  if (correction) {
+    await logActivity({
+      type: 'admin.played_at_corrected', actorUserId: appUser.id, subjectUserId: existing.userId,
+      targetType: 'score', targetId: id,
+      ip: req.ip ?? null, userAgent: typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : null,
+      payload: { from: correction.from, to: correction.to, reason: correction.reason, source: existing.playedAtSource, machineId: existing.machineId },
+    });
+  }
   // An edit can make the score count (a corrected played time, venue or machine): re-sync the author's
   // challenges exactly as an upload does (records the lock, resolves a won race, tells the others),
   // then report how it now fares. Neither throws.

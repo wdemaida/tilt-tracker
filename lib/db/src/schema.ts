@@ -93,6 +93,13 @@ export const scores = pgTable('scores', {
   photoBytes: integer('photo_bytes'),
   photoWidth: integer('photo_width'),
   photoHeight: integer('photo_height'),
+  // Where playedAt came from (migrate24, api-server src/lib/playedAtProvenance.ts): 'photo' (EXIF,
+  // vouched for by /api/upload's signed token), 'video' (metadata inside a video file), 'manual';
+  // null = legacy / unknown. photo / video are locked — only an admin may correct them, which stamps
+  // the two columns below and keeps the source (so the lock survives the correction).
+  playedAtSource: text('played_at_source'),
+  playedAtCorrectedById: integer('played_at_corrected_by_id').references(() => users.id, { onDelete: 'set null' }),
+  playedAtCorrectedAt: timestamp('played_at_corrected_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
