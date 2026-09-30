@@ -3,6 +3,7 @@ import Header from './Header';
 import MobileTabBar, { hidesTabBar } from './MobileTabBar';
 import DisabledAccountNotice from './DisabledAccountNotice';
 import UpdateBanner from './UpdateBanner';
+import Toaster from './Toaster';
 import { useAppUser } from '../lib/useAppUser';
 
 export default function Layout({ children }: { children: React.ReactNode }) {
@@ -11,7 +12,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const appUser = useAppUser();
 
   if (location === '/welcome') {
-    return <div className="min-h-screen w-full bg-background relative overflow-x-clip"><UpdateBanner />{children}</div>;
+    return <div className="min-h-screen w-full bg-background relative overflow-x-clip"><UpdateBanner />{children}<Toaster /></div>;
   }
 
   // Below md the fixed tab bar (h-16 + the iPhone home-indicator inset) sits over the bottom of the
@@ -26,6 +27,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         {appUser?.disabledAt ? <DisabledAccountNotice reason={appUser.disabledReason} /> : children}
       </main>
       <MobileTabBar />
+      <Toaster />
     </div>
   );
 }

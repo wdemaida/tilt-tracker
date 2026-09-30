@@ -4,25 +4,30 @@ import { SignedIn, SignedOut, useAuth } from '@clerk/clerk-react';
 import { useQuery } from '@tanstack/react-query';
 import { useApi } from '../lib/useApi';
 import { UNREAD_COUNT_KEY } from '../lib/myFriends';
+import { useBadgeToasts } from '../lib/badgeToasts';
 import AvatarMenu from './AvatarMenu';
 import { SCORES, MACHINES, VENUES, STATS, CREW, isActivePath, badgeText, useCrewBadgeCount } from './nav';
 
 const navItems = [SCORES, MACHINES, VENUES, STATS];
 
 /**
- * The inbox bell: unread count badge, polled every 60s and on window focus. Opens /notifications
- * (a page, not a dropdown — see NotificationsPage). Only rendered for a signed-in user with a profile;
+ * The inbox bell: unread count badge, polled every 30s (while the tab is visible) and on window
+ * focus; anything in the app that can raise a notification for the viewer themself (saving a score,
+ * an admin badge action) also invalidates ['notifications'] so the bell moves at once. The count
+ * also drives the "badge earned" toasts (lib/badgeToasts.tsx). Opens /notifications (a page, not a
+ * dropdown — see NotificationsPage). Only rendered for a signed-in user with a profile;
  * /api/notifications is the caller's own rows only.
  */
-function NotificationBell({ active }: { active: boolean }) {
+function NotificationBell({ active, userId }: { active: boolean; userId: number }) {
   const api = useApi();
   const { data } = useQuery({
     queryKey: UNREAD_COUNT_KEY,
     queryFn: api.notifications.unreadCount,
-    refetchInterval: 60_000,
+    refetchInterval: 30_000,
     refetchOnWindowFocus: true,
-    staleTime: 30_000,
+    staleTime: 10_000,
   });
+  useBadgeToasts(userId, data?.count);
   const count = data?.count ?? 0;
   return (
     <Link
@@ -96,7 +101,7 @@ export default function Header() {
 
           <div className="flex items-center gap-1.5 sm:gap-3">
             <SignedIn>
-              {appUser && <NotificationBell active={location === '/notifications'} />}
+              {appUser && <NotificationBell active={location === '/notifications'} userId={appUser.id} />}
               {/* Add Score on mobile is the tab bar's center button. */}
               <Link
                 href="/add"

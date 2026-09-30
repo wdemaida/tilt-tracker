@@ -1,6 +1,6 @@
-import { db, notifications } from '@workspace/db';
-import { and, eq, isNull, sql } from 'drizzle-orm';
-import { logActivity } from './activity.js';
+import { db, notifications, activityEvents } from '@workspace/db';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { buildActivityRow, isActivityRecorded, logActivity } from './activity.js';
 
 // The notifications inbox — writing side (feature/friends, phase 1). Reading is routes/notifications.ts.
 //
@@ -69,6 +69,65 @@ export async function raiseNotification(
     type: 'notification.sent', subjectUserId: userId, targetType: 'notification', targetId: row?.id ?? null,
     payload: { kind, ...payload },
   }, { tx: ex });
+}
+
+/**
+ * Raise one notification of `kind` for each item, in bulk — the badge backfill path, where a
+ * go-live can award hundreds of players at once and one raiseNotification() per player (a delete,
+ * an insert and an event, each a round trip) made the admin's request take minutes. Same dedupe
+ * semantics as raiseNotification, keyed on `dedupeKey` in each item's payload: an existing UNREAD
+ * one with the same value is replaced, so each user ends up with exactly one unread per value.
+ * Items are chunked (500 per statement); `notification.sent` events are written in bulk too, subject
+ * to the same retention gate as logActivity (checked once). Throws on DB errors — the caller decides.
+ * Returns the number of notifications inserted.
+ */
+export async function raiseNotificationsBulk(
+  ex: Executor,
+  kind: NotificationKind,
+  items: Array<{ userId: number; payload: Record<string, unknown> }>,
+  dedupeKey: string,
+): Promise<number> {
+  if (!items.length) return 0;
+  // Last write wins within the batch too: one per (user, dedupe value).
+  const unique = new Map<string, { userId: number; payload: Record<string, unknown> }>();
+  for (const it of items) unique.set(`${it.userId}:${String(it.payload[dedupeKey])}`, it);
+  const list = [...unique.values()];
+  const recordEvents = await isActivityRecorded('notification.sent');
+  let inserted = 0;
+  for (let i = 0; i < list.length; i += 500) {
+    const chunk = list.slice(i, i + 500);
+    // Group the chunk's deletes by dedupe value (a backfill is one value for everyone).
+    const byValue = new Map<string, number[]>();
+    for (const it of chunk) {
+      const v = String(it.payload[dedupeKey]);
+      byValue.set(v, [...(byValue.get(v) ?? []), it.userId]);
+    }
+    for (const [value, userIds] of byValue) {
+      await ex.delete(notifications).where(and(
+        inArray(notifications.userId, userIds),
+        eq(notifications.kind, kind),
+        isNull(notifications.readAt),
+        sql`${notifications.payload} ->> ${dedupeKey} = ${value}`,
+      ));
+    }
+    const rows = await ex.insert(notifications)
+      .values(chunk.map(it => ({ userId: it.userId, kind, payload: it.payload })))
+      .returning({ id: notifications.id, userId: notifications.userId });
+    inserted += rows.length;
+    if (recordEvents && rows.length) {
+      const payloadByUser = new Map(chunk.map(it => [it.userId, it.payload]));
+      try {
+        await ex.insert(activityEvents).values(rows.map(r => buildActivityRow({
+          type: 'notification.sent', subjectUserId: r.userId, targetType: 'notification', targetId: r.id,
+          payload: { kind, ...(payloadByUser.get(r.userId) ?? {}) },
+        })));
+      } catch (err: any) {
+        // Same contract as logActivity: a failed log never fails the action.
+        console.error('[activity] failed to log notification.sent (bulk):', err?.message ?? err);
+      }
+    }
+  }
+  return inserted;
 }
 
 /**

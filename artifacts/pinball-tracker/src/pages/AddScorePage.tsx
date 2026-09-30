@@ -20,6 +20,7 @@ import { ScoreDigitInput } from '../components/ScoreDigitInput';
 import { MissingLocationNotice, type CurrentLocationState } from '../components/MissingLocationNotice';
 import BadgeImage from '../components/BadgeImage';
 import { BADGES_KEY, type Badge } from '../lib/badges';
+import { markBadgesShown } from '../lib/badgeToasts';
 import {
   describePhotoLocation, detectPlatform, queryGeoPermission, getCurrentPosition, geoFailureMessage, CurrentPositionError,
   type PhotoLocationInfo, type PhotoSource, type GeoPermission,
@@ -716,8 +717,11 @@ export default function AddScorePage() {
       queryClient.invalidateQueries({ queryKey: ['venues'] });
       const newBadges: Badge[] = Array.isArray(row.newBadges) ? row.newBadges : [];
       if (newBadges.length) {
+        // Step 4 celebrates these; the bell's badge toasts (lib/badgeToasts.tsx) skip them.
+        markBadgesShown(newBadges.map(b => b.id));
         queryClient.invalidateQueries({ queryKey: ['user-badges'] });
         queryClient.invalidateQueries({ queryKey: BADGES_KEY });
+        queryClient.invalidateQueries({ queryKey: ['notifications'] });
       }
       setSavedScore({ id: row.id, venueId: row.venueId, machineName: data.machineName, score: data.score, newBadges });
       setStep(4);

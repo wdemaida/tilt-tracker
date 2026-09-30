@@ -1,31 +1,161 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Upload, Trash2, Eye, Rocket, Archive, Loader2, UserPlus, X } from 'lucide-react';
+import { Plus, Upload, Trash2, Eye, Rocket, Archive, Loader2, UserPlus, X, ChevronDown, Search } from 'lucide-react';
 import { useAdminApi, type AdminBadge, type BadgeInput, type BadgeKind, type BadgeRule, type BadgePreview, type UserRef } from '../lib/adminApi';
 import { useApi } from '../lib/useApi';
 import { toLocalInput, localInputToIso } from '../lib/datetime';
 import { AdminShell, Card, Pill, SectionTitle, ErrorNote, ConfirmDialog, When, Who, Segmented } from '../components/admin/AdminParts';
-import BadgeImage, { BADGE_ICONS } from '../components/BadgeImage';
+import BadgeImage, { BADGE_ICONS, badgeIcon } from '../components/BadgeImage';
 import UsernameLink from '../components/UsernameLink';
+import MachineCombobox, { type MachineOption } from '../components/MachineCombobox';
+import { toast } from '../lib/toast';
+import { BADGES_KEY } from '../lib/badges';
 
 // /admin/badges — create and edit badges (metric / rule / manual), upload artwork, preview who
 // qualifies, go live (with retroactive backfill when that's on), retire, and grant/revoke by hand.
-// Everything goes through ConfirmDialog and invalidates every ['admin', …] query afterwards. The
-// server is the authority on validation (routes/adminBadges.ts) — its per-field errors show inline.
+// Everything goes through ConfirmDialog and invalidates every ['admin', …] query afterwards — plus
+// the notifications, badge catalog and shelves, since going live / granting can award the admin
+// themself. The editor opens inline under the badge it edits (new badges: at the top), scrolls into
+// view and focuses Name; saving an edit collapses it with a toast. The server is the authority on
+// validation (routes/adminBadges.ts) — its per-field errors show inline and keep the editor open.
 
 const STATUS_TONE = { draft: 'muted', live: 'ok', retired: 'warn' } as const;
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const input = 'border border-white/20 rounded-lg px-3 py-2 text-sm text-white bg-white/5 focus:outline-none focus:ring-2 focus:ring-primary w-full';
 const btn = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold uppercase tracking-wider disabled:opacity-50 transition-colors';
 
-function Field({ label, error, hint, children }: { label: string; error?: string; hint?: ReactNode; children: ReactNode }) {
+function Field({ label, error, hint, children, group = false }: { label: string; error?: string; hint?: ReactNode; children: ReactNode; group?: boolean }) {
+  // `group`: a composite control (picker, combobox). A <label> would forward every click inside it
+  // to its first button, so those get a div and name themselves.
+  const Wrap = group ? 'div' : 'label';
   return (
-    <label className="flex flex-col gap-1 min-w-0">
+    <Wrap className="flex flex-col gap-1 min-w-0">
       <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">{label}</span>
       {children}
       {hint && !error && <span className="text-[11px] text-muted-foreground">{hint}</span>}
       {error && <span className="text-[11px] text-red-400">{error}</span>}
-    </label>
+    </Wrap>
+  );
+}
+
+const ICON_NAMES = Object.keys(BADGE_ICONS).sort();
+const GRID_COLS = 6;
+
+/** The icon field: a button showing the current icon, opening a searchable grid of every allowed icon in the badge's color. */
+function IconPicker({ value, color, onChange }: { value: string; color: string; onChange: (name: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const rootRef = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popId = useId();
+  const names = useMemo(() => {
+    const needle = q.trim().toLowerCase().replace(/\s+/g, '-');
+    return needle ? ICON_NAMES.filter(n => n.includes(needle)) : ICON_NAMES;
+  }, [q]);
+  const known = !!BADGE_ICONS[value];
+  const Current = badgeIcon(value);
+
+  useEffect(() => {
+    if (!open) return;
+    searchRef.current?.focus();
+    const onDown = (e: MouseEvent) => { if (!rootRef.current?.contains(e.target as Node)) close(false); };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [open]);
+
+  function close(refocus = true) {
+    setOpen(false);
+    setQ('');
+    if (refocus) triggerRef.current?.focus();
+  }
+  function choose(name: string) {
+    onChange(name);
+    close();
+  }
+  function focusCell(i: number) {
+    const cells = gridRef.current?.querySelectorAll<HTMLButtonElement>('button[data-icon]');
+    if (!cells?.length) return;
+    cells[Math.max(0, Math.min(i, cells.length - 1))].focus();
+  }
+  function onGridKey(e: React.KeyboardEvent, i: number) {
+    const moves: Record<string, number> = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: GRID_COLS, ArrowUp: -GRID_COLS };
+    const move = moves[e.key];
+    if (move) {
+      e.preventDefault();
+      if (e.key === 'ArrowUp' && i < GRID_COLS) { searchRef.current?.focus(); return; }
+      focusCell(i + move);
+    }
+  }
+
+  return (
+    <div ref={rootRef} className="relative" onKeyDown={e => { if (e.key === 'Escape' && open) { e.stopPropagation(); close(); } }}>
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-controls={popId}
+        aria-label={`Icon: ${value}${known ? '' : ' (unknown)'}. Change icon`}
+        onClick={() => (open ? close(false) : setOpen(true))}
+        className="flex items-center gap-2 w-full border border-white/20 rounded-lg pl-2 pr-2.5 py-1.5 text-sm text-white bg-white/5 hover:border-white/35 focus:outline-none focus:ring-2 focus:ring-primary"
+      >
+        <span className="inline-flex items-center justify-center w-7 h-7 rounded-full border flex-shrink-0" style={{ color, backgroundColor: `${color}26`, borderColor: `${color}80` }}>
+          <Current className="w-4 h-4" strokeWidth={2.25} aria-hidden />
+        </span>
+        <span className="flex-1 min-w-0 truncate text-left">{value}{known ? '' : ' (unknown)'}</span>
+        <ChevronDown className="w-4 h-4 text-muted-foreground flex-shrink-0" aria-hidden />
+      </button>
+      {open && (
+        <div id={popId} role="dialog" aria-label="Choose an icon"
+          className="absolute left-0 top-full mt-1 z-30 w-[18.5rem] max-w-[calc(100vw-2rem)] rounded-xl border border-white/15 bg-card shadow-2xl p-2.5 flex flex-col gap-2">
+          <div className="relative">
+            <Search className="w-4 h-4 text-muted-foreground absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" aria-hidden />
+            <input
+              ref={searchRef}
+              value={q}
+              onChange={e => setQ(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'ArrowDown') { e.preventDefault(); focusCell(0); }
+                if (e.key === 'Enter' && names.length) { e.preventDefault(); choose(names[0]); }
+              }}
+              placeholder="Search icons…"
+              aria-label="Search icons"
+              className="border border-white/20 rounded-lg pl-8 pr-2 py-1.5 text-sm text-white bg-white/5 focus:outline-none focus:ring-2 focus:ring-primary w-full"
+            />
+          </div>
+          {names.length === 0 ? (
+            <p className="text-xs text-muted-foreground px-1 py-2">No icon matches “{q.trim()}”.</p>
+          ) : (
+            <div ref={gridRef} role="listbox" aria-label="Icons" className="grid grid-cols-6 gap-1 max-h-60 overflow-y-auto">
+              {names.map((name, i) => {
+                const Icon = BADGE_ICONS[name];
+                const on = name === value;
+                return (
+                  <button
+                    key={name}
+                    type="button"
+                    role="option"
+                    aria-selected={on}
+                    data-icon={name}
+                    title={name}
+                    aria-label={name}
+                    onClick={() => choose(name)}
+                    onKeyDown={e => onGridKey(e, i)}
+                    className={`flex items-center justify-center h-10 rounded-lg border transition-colors focus:outline-none focus:ring-2 focus:ring-primary ${on ? 'border-white/60 bg-white/10' : 'border-transparent hover:bg-white/5 hover:border-white/15'}`}
+                    style={{ color }}
+                  >
+                    <Icon className="w-5 h-5" strokeWidth={2.25} aria-hidden />
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          <p className="text-[10px] text-muted-foreground px-1">Shown only when the badge has no uploaded image.</p>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -92,14 +222,8 @@ function RuleBuilder({ rule, onChange, error }: { rule: BadgeRule; onChange: (r:
   const api = useApi();
   const machines = useQuery({ queryKey: ['machines', 'admin-badge-picker'], queryFn: () => api.machines.list() });
   const venues = useQuery({ queryKey: ['venues', 'admin-badge-picker'], queryFn: () => api.venues.list() });
-  const [machineQ, setMachineQ] = useState('');
   const set = (patch: Partial<BadgeRule>) => onChange({ ...rule, ...patch });
-  const machineOptions = useMemo(() => {
-    const all = (machines.data ?? []) as Array<{ id: number; name: string }>;
-    const q = machineQ.trim().toLowerCase();
-    return all.filter(m => !q || m.name.toLowerCase().includes(q)).sort((a, b) => a.name.localeCompare(b.name)).slice(0, 50);
-  }, [machines.data, machineQ]);
-  const selectedMachine = (machines.data as Array<{ id: number; name: string }> | undefined)?.find(m => m.id === rule.machine?.machineId);
+  const machineList = (machines.data ?? []) as MachineOption[];
 
   return (
     <div className="flex flex-col gap-4 rounded-xl border border-white/10 p-4">
@@ -135,14 +259,14 @@ function RuleBuilder({ rule, onChange, error }: { rule: BadgeRule; onChange: (r:
         <Field label="Local time to" hint="Before “from” = wraps midnight"><input type="time" className={input} value={rule.localTime?.to ?? ''} onChange={e => set({ localTime: { from: rule.localTime?.from ?? '', to: e.target.value } })} /></Field>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <Field label="Machine" hint={selectedMachine ? `Selected: ${selectedMachine.name}` : 'Any machine'}>
-          <input className={input} placeholder="Search machines…" value={machineQ} onChange={e => setMachineQ(e.target.value)} />
-          <select className={input} value={rule.machine?.machineId ?? ''}
-            onChange={e => set({ machine: e.target.value ? { machineId: Number(e.target.value), matchMode: rule.machine?.matchMode ?? 'group' } : undefined })}>
-            <option value="">Any machine</option>
-            {selectedMachine && !machineOptions.some(m => m.id === selectedMachine.id) && <option value={selectedMachine.id}>{selectedMachine.name}</option>}
-            {machineOptions.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
-          </select>
+        <Field group label="Machine" hint={rule.machine ? 'Remove it (×) for any machine' : 'Leave empty for any machine'}>
+          <MachineCombobox
+            machines={machineList}
+            loading={machines.isLoading}
+            value={rule.machine?.machineId ?? null}
+            onChange={m => set({ machine: m ? { machineId: m.id, matchMode: rule.machine?.matchMode ?? 'group' } : undefined })}
+            placeholder="Any machine — search to pick one…"
+          />
         </Field>
         <Field label="Machine match" hint="Any model = Pro / Premium / LE of the same game (OPDB group)">
           <select className={input} disabled={!rule.machine} value={rule.machine?.matchMode ?? 'group'}
@@ -205,6 +329,7 @@ function ImagePanel({ badge, onDone }: { badge: AdminBadge; onDone: () => void }
     try {
       await admin.uploadBadgeImage(badge.id, file);
       setFile(null);
+      toast({ title: 'Image uploaded', body: `“${badge.name}” now uses it everywhere.` });
       onDone();
     } catch (e) { setError(e); } finally { setBusy(false); }
   }
@@ -240,7 +365,7 @@ function ImagePanel({ badge, onDone }: { badge: AdminBadge; onDone: () => void }
       <ErrorNote error={error} />
       {confirmRemove && (
         <ConfirmDialog title="Remove image" confirmLabel="Remove" body={<p>“{badge.name}” goes back to its icon everywhere.</p>}
-          onConfirm={async () => { await admin.deleteBadgeImage(badge.id); onDone(); }} onClose={() => setConfirmRemove(false)} />
+          onConfirm={async () => { await admin.deleteBadgeImage(badge.id); toast({ title: 'Image removed', body: `“${badge.name}” is back to its icon.` }); onDone(); }} onClose={() => setConfirmRemove(false)} />
       )}
     </div>
   );
@@ -288,7 +413,11 @@ function GrantPanel({ badge, onDone }: { badge: AdminBadge; onDone: () => void }
       {confirm && (
         <ConfirmDialog title="Grant badge" danger={false} confirmLabel="Grant"
           body={<p>Give “{badge.name}” to {picked.map(p => `@${p.username}`).join(', ')}? Each gets a notification.</p>}
-          onConfirm={async () => { await admin.grantBadge(badge.id, picked.map(p => p.id), note.trim()); setPicked([]); setNote(''); onDone(); }}
+          onConfirm={async () => {
+            const r = await admin.grantBadge(badge.id, picked.map(p => p.id), note.trim());
+            toast({ title: `Granted “${badge.name}”`, body: `${r.granted} ${r.granted === 1 ? 'player' : 'players'}${r.alreadyHad ? ` · ${r.alreadyHad} already had it` : ''}` });
+            setPicked([]); setNote(''); onDone();
+          }}
           onClose={() => setConfirm(false)} />
       )}
     </div>
@@ -320,7 +449,7 @@ function PreviewList({ p }: { p: BadgePreview }) {
   );
 }
 
-function BadgeEditor({ badge, onSaved, onClose }: { badge: AdminBadge | null; onSaved: (b: AdminBadge) => void; onClose: () => void }) {
+function BadgeEditor({ badge, onSaved, onClose }: { badge: AdminBadge | null; onSaved: (b: AdminBadge, created: boolean) => void; onClose: () => void }) {
   const admin = useAdminApi();
   const qc = useQueryClient();
   const metrics = useQuery({ queryKey: ['admin', 'badge-metrics'], queryFn: admin.badgeMetrics });
@@ -337,7 +466,22 @@ function BadgeEditor({ badge, onSaved, onClose }: { badge: AdminBadge | null; on
 
   const locked = (live?.earnedCount ?? 0) > 0;
   const set = (patch: Partial<Draft>) => setD(x => ({ ...x, ...patch }));
-  const refresh = () => qc.invalidateQueries({ queryKey: ['admin'] });
+  // Going live / granting can award the admin themself: the bell and the badge views move too.
+  const refresh = () => Promise.all([
+    qc.invalidateQueries({ queryKey: ['admin'] }),
+    qc.invalidateQueries({ queryKey: ['notifications'] }),
+    qc.invalidateQueries({ queryKey: BADGES_KEY }),
+    qc.invalidateQueries({ queryKey: ['user-badges'] }),
+  ]);
+
+  // Opening an editor (inline, possibly far down the list) brings it into view and focuses Name,
+  // so it never waits silently off-screen.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    rootRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    nameRef.current?.focus({ preventScroll: true });
+  }, [badge?.id]);
 
   async function save() {
     setSaving(true); setErrors({}); setError(null);
@@ -345,7 +489,10 @@ function BadgeEditor({ badge, onSaved, onClose }: { badge: AdminBadge | null; on
       const body = bodyOf(d, locked);
       const r = badge ? await admin.updateBadge(badge.id, body) : await admin.createBadge(body);
       await refresh();
-      onSaved(r.badge);
+      toast(badge
+        ? { title: 'Saved', body: `“${r.badge.name}”` }
+        : { title: 'Draft created', body: `“${r.badge.name}” — preview it, add art, then take it live.` });
+      onSaved(r.badge, !badge);
     } catch (e: any) {
       setErrors(e?.body?.errors ?? {});
       setError(e);
@@ -361,6 +508,7 @@ function BadgeEditor({ badge, onSaved, onClose }: { badge: AdminBadge | null; on
   const faceForPreview = { id: live?.id ?? 0, name: d.name || 'New badge', icon: Icon, color: d.color, imageVersion: live?.imageVersion ?? null };
 
   return (
+    <div ref={rootRef} className="scroll-mt-24">
     <Card className="p-4 sm:p-5 flex flex-col gap-5">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
@@ -374,7 +522,7 @@ function BadgeEditor({ badge, onSaved, onClose }: { badge: AdminBadge | null; on
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <Field label="Name" error={errors.name}><input className={input} maxLength={60} value={d.name} onChange={e => set({ name: e.target.value })} /></Field>
+        <Field label="Name" error={errors.name}><input ref={nameRef} className={input} maxLength={60} value={d.name} onChange={e => set({ name: e.target.value })} /></Field>
         <Field label="Key (permanent slug)" error={errors.key} hint={locked ? 'Frozen — players have this badge' : 'e.g. holiday-champion-2026'}>
           <input className={input} disabled={locked} value={d.key} onChange={e => set({ key: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '-') })} />
         </Field>
@@ -382,11 +530,8 @@ function BadgeEditor({ badge, onSaved, onClose }: { badge: AdminBadge | null; on
           <textarea className={input} rows={2} maxLength={300} value={d.description} onChange={e => set({ description: e.target.value })} />
         </Field>
         <div className="grid grid-cols-[1fr_auto_5rem] gap-3 items-start">
-          <Field label="Icon (when no image)" error={errors.icon}>
-            <select className={input} value={d.icon} onChange={e => set({ icon: e.target.value })}>
-              {!BADGE_ICONS[d.icon] && <option value={d.icon}>{d.icon} (unknown)</option>}
-              {Object.keys(BADGE_ICONS).sort().map(k => <option key={k} value={k}>{k}</option>)}
-            </select>
+          <Field group label="Icon (when no image)" error={errors.icon}>
+            <IconPicker value={d.icon} color={d.color} onChange={icon => set({ icon })} />
           </Field>
           <Field label="Color" error={errors.color}>
             <input type="color" className="h-[38px] w-12 rounded border border-white/20 bg-transparent" value={d.color} onChange={e => set({ color: e.target.value })} />
@@ -498,22 +643,30 @@ function BadgeEditor({ badge, onSaved, onClose }: { badge: AdminBadge | null; on
               ? <p><b>Retroactive is on:</b> everyone who already qualifies gets it now, each with a notification{preview ? ` (${preview.newCount.toLocaleString()} from the last preview)` : ' — run Preview first to see who'}.</p>
               : <p>Retroactive is off: only activity from now on counts.</p>)}
           </>}
-          onConfirm={async () => { await admin.activateBadge(live.id); await refresh(); setPreview(null); }}
+          onConfirm={async () => {
+            const r = await admin.activateBadge(live.id);
+            await refresh();
+            setPreview(null);
+            toast(r.skippedWindow
+              ? { tone: 'info', title: `“${live.name}” is live`, body: 'The availability window is shut, so nobody was backfilled.' }
+              : { title: `“${live.name}” is live`, body: live.kind === 'manual' ? 'Grant it by hand below.' : live.retroactive ? `Awarded to ${r.awarded.toLocaleString()} ${r.awarded === 1 ? 'player' : 'players'} from history.` : 'Only activity from now on counts.' });
+          }}
           onClose={() => setConfirm(null)} />
       )}
       {confirm === 'retire' && live && (
         <ConfirmDialog title="Retire badge" confirmLabel="Retire"
           body={<p>“{live.name}” stops being awarded and leaves the catalog. The {live.earnedCount.toLocaleString()} players who have it keep it.</p>}
-          onConfirm={async () => { await admin.retireBadge(live.id); await refresh(); }}
+          onConfirm={async () => { await admin.retireBadge(live.id); await refresh(); toast({ title: `“${live.name}” retired`, body: 'Holders keep it; nobody new can earn it.' }); }}
           onClose={() => setConfirm(null)} />
       )}
       {confirm && typeof confirm === 'object' && live && (
         <ConfirmDialog title="Revoke badge" confirmLabel="Revoke" reason="Reason (kept in the activity log)"
           body={<p>Take “{live.name}” away from @{confirm.revoke.username}? Nothing is revoked automatically — this is the only way.</p>}
-          onConfirm={async reason => { await admin.revokeBadge(live.id, confirm.revoke.id, reason); await refresh(); }}
+          onConfirm={async reason => { await admin.revokeBadge(live.id, confirm.revoke.id, reason); await refresh(); toast({ title: 'Badge revoked', body: `@${confirm.revoke.username} no longer has “${live.name}”.` }); }}
           onClose={() => setConfirm(null)} />
       )}
     </Card>
+    </div>
   );
 }
 
@@ -525,6 +678,12 @@ export default function AdminBadgesPage() {
   const items = (q.data?.items ?? []).filter(b => status === 'all' || b.status === status);
   // Keep the open editor pointed at the refreshed row after saves.
   const current = editing && editing !== 'new' ? q.data?.items.find(b => b.id === editing.id) ?? editing : null;
+  // An existing badge edits inline under its row; at the top only if the filter hides its row.
+  const inlineId = current && items.some(b => b.id === current.id) ? current.id : null;
+  const editor = editing && (
+    <BadgeEditor key={editing === 'new' ? 'new' : editing.id} badge={editing === 'new' ? null : current}
+      onSaved={(b, created) => setEditing(created ? b : null)} onClose={() => setEditing(null)} />
+  );
 
   return (
     <AdminShell>
@@ -536,19 +695,16 @@ export default function AdminBadgesPage() {
           <Plus className="w-3.5 h-3.5" /> New badge
         </button>
       </div>
-      {editing && (
-        <div className="mb-6">
-          <BadgeEditor key={editing === 'new' ? 'new' : editing.id} badge={editing === 'new' ? null : current}
-            onSaved={b => setEditing(b)} onClose={() => setEditing(null)} />
-        </div>
-      )}
+      {editing && inlineId == null && <div className="mb-6">{editor}</div>}
       <ErrorNote error={q.error} />
       {q.isLoading ? <p className="text-sm text-muted-foreground">Loading…</p> : items.length === 0 ? <p className="text-sm text-muted-foreground">No badges.</p> : (
-        <Card className="overflow-hidden">
+        <Card className="[&>ul>li:first-child>button]:rounded-t-xl [&>ul>li:last-child>button]:rounded-b-xl">
+          {/* No overflow-hidden: the inline editor's icon picker and machine dropdown must overhang. */}
           <ul className="divide-y divide-white/5">
             {items.map(b => (
               <li key={b.id}>
-                <button type="button" onClick={() => setEditing(b)} className={`w-full text-left px-4 py-3 flex items-center gap-3 hover:bg-white/[0.03] ${current?.id === b.id ? 'bg-white/[0.05]' : ''}`}>
+                <button type="button" aria-expanded={inlineId === b.id} onClick={() => setEditing(inlineId === b.id ? null : b)}
+                  className={`w-full text-left px-4 py-3 flex items-center gap-3 hover:bg-white/[0.03] ${current?.id === b.id ? 'bg-white/[0.05]' : ''}`}>
                   <BadgeImage badge={b} size={40} locked={b.status !== 'live'} />
                   <span className="min-w-0 flex-1">
                     <span className="flex flex-wrap items-center gap-2">
@@ -561,6 +717,7 @@ export default function AdminBadgesPage() {
                   </span>
                   <span className="text-xs text-muted-foreground tabular-nums flex-shrink-0">{b.earnedCount.toLocaleString()}</span>
                 </button>
+                {inlineId === b.id && <div className="px-2 pb-3 sm:px-3 bg-black/20">{editor}</div>}
               </li>
             ))}
           </ul>

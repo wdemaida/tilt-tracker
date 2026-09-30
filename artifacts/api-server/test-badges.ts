@@ -38,10 +38,12 @@ const { default: friendsRouter } = await import('./src/routes/friends.js');
 const { default: scoresRouter } = await import('./src/routes/scores.js');
 const { default: usersRouter } = await import('./src/routes/users.js');
 const { default: badgesRouter } = await import('./src/routes/badges.js');
+const { default: notificationsRouter } = await import('./src/routes/notifications.js');
 const { createClerkWebhookHandler } = await import('./src/routes/clerkWebhook.js');
 const { insertActivity, isActivityRecorded } = await import('./src/lib/activity.js');
 const { setRetentionLoaderForTests } = await import('./src/lib/activityRetention.js');
 const { awardBadges, onSignInBadges, runBadgeSweep } = await import('./src/lib/badges.js');
+const { raiseNotificationsBulk } = await import('./src/lib/notify.js');
 const { readMetric } = await import('./src/lib/badgeMetrics.js');
 
 const people = await db.select().from(users)
@@ -52,6 +54,7 @@ const [alice, bob, carol] = people;
 const ids = people.map(p => p.id);
 const [{ maxNotif }] = await db.select({ maxNotif: sql<number>`coalesce(max(id), 0)::int` }).from(notifications);
 const [{ maxEvent }] = await db.select({ maxEvent: sql<number>`coalesce(max(id), 0)::bigint` }).from(activityEvents);
+const [{ startedAt }] = await db.select({ startedAt: sql<string>`now()::timestamp::text` }).from(users).limit(1);
 console.log(`borrowing users ${ids.join(', ')}; notifications > ${maxNotif}, events > ${maxEvent}`);
 
 const SECRET = `whsec_${Buffer.from('tilttrack-badge-test-secret-012345').toString('base64')}`;
@@ -77,6 +80,7 @@ app.use(express.json());
 app.use(clerkMiddleware());
 app.use('/api/admin', stub, adminBadgesRouter);
 app.use('/api/friends', stub, friendsRouter);
+app.use('/api/notifications', stub, notificationsRouter);
 app.use('/api/scores', scoresRouter);
 app.use('/api/users', usersRouter);
 app.use('/api/badges', badgesRouter);
@@ -164,6 +168,37 @@ try {
 
   r = await call(alice, 'POST', `/admin/badges/${retro}/activate`);
   check('activating again → 409 already_live', r.status === 409 && r.body.code === 'already_live', r);
+
+  // ── backfill notifies every recipient exactly once; the bell counts each badge ──
+  const unread = async (u: { id: number }) => (await call(u, 'GET', '/notifications/unread-count')).body?.count as number;
+  const badgeNotifs = async (userId: number, badgeId: number) => db.select().from(notifications).where(and(
+    eq(notifications.userId, userId), eq(notifications.kind, 'badge_earned'), sql`${notifications.readAt} IS NULL`,
+    sql`${notifications.payload} ->> 'badgeId' = ${String(badgeId)}`));
+  const unreadBefore = Object.fromEntries(await Promise.all(people.map(async p => [p.id, await unread(p)])));
+  const anyRule = { machine: { machineId, matchMode: 'exact' } };
+  const everyone1 = await createBadge({ key: 'zz-badge-test-all-1', name: 'ZZ Everyone 1', kind: 'rule', rule: anyRule, retroactive: true });
+  const everyone2 = await createBadge({ key: 'zz-badge-test-all-2', name: 'ZZ Everyone 2', kind: 'rule', rule: { ...anyRule, count: 1 }, retroactive: true, icon: 'star' });
+  r = await call(alice, 'POST', `/admin/badges/${everyone1}/activate`);
+  check('backfill to three players → awarded 3', r.status === 200 && r.body.awarded === 3, r.body);
+  for (const p of people) {
+    const n = await badgeNotifs(p.id, everyone1);
+    check(`backfill: user ${p.id} has exactly one unread badge_earned for it`, n.length === 1 && (n[0].payload as any)?.badgeName === 'ZZ Everyone 1', n);
+  }
+  const sentEvents = await db.select({ subject: activityEvents.subjectUserId }).from(activityEvents).where(and(
+    eq(activityEvents.type, 'notification.sent'), gt(activityEvents.id, Number(maxEvent)),
+    sql`${activityEvents.payload} ->> 'badgeId' = ${String(everyone1)}`));
+  check('backfill: one notification.sent event per recipient', sentEvents.length === 3 && new Set(sentEvents.map(e => e.subject)).size === 3, sentEvents);
+  const earnedEvents = await db.select({ id: activityEvents.id }).from(activityEvents).where(and(eq(activityEvents.type, 'badge.earned'), eq(activityEvents.targetId, String(everyone1))));
+  check('backfill: one badge.earned event per recipient', earnedEvents.length === 3, earnedEvents.length);
+  // Re-raising for the same badge replaces the unread one rather than stacking a second.
+  await raiseNotificationsBulk(db, 'badge_earned', [{ userId: bob.id, payload: { badgeId: everyone1, badgeName: 'ZZ Everyone 1' } }], 'badgeId');
+  check('dedupe: re-raising leaves bob one unread for the badge', (await badgeNotifs(bob.id, everyone1)).length === 1);
+  r = await call(alice, 'POST', `/admin/badges/${everyone2}/activate`);
+  check('a second backfill → awarded 3', r.status === 200 && r.body.awarded === 3, r.body);
+  for (const p of people) {
+    const now = await unread(p);
+    check(`unread count for user ${p.id} rose by 2 (two badges, not collapsed into one)`, now === unreadBefore[p.id] + 2, { before: unreadBefore[p.id], now });
+  }
 
   r = await call(alice, 'POST', `/admin/badges/${fwd}/preview`);
   check('forward-only preview still reports who qualifies by history', r.body.total === 1 && r.body.retroactive === false, r.body);
@@ -331,7 +366,8 @@ try {
   r = await call(null, 'GET', '/badges');
   const cat = r.body?.find?.((b: any) => b.id === retro);
   check('guest catalog lists live badges with counts, no earnedAt', r.status === 200 && cat?.earnedCount === 1 && cat?.earnedAt === null && cat?.localDate?.from === '2025-12-25', cat);
-  check('catalog has no drafts', !r.body.some((b: any) => b.key?.startsWith('scores-')), r.body.map((b: any) => b.key));
+  const liveIds = new Set((await db.select({ id: badges.id }).from(badges).where(eq(badges.status, 'live'))).map(b => b.id));
+  check('catalog has only live badges', r.body.every((b: any) => liveIds.has(b.id)), r.body.map((b: any) => b.key));
 
   // ── retire; the sweep ──────────────────────────────────────────────────────
   r = await call(alice, 'POST', `/admin/badges/${big}/retire`);
@@ -357,6 +393,9 @@ try {
     ));
     await db.delete(badges).where(inArray(badges.id, allBadgeIds)); // user_badges cascade
   }
+  // Awards of anyone's *other* live badges (an admin's manual testing state, e.g. a live "send a
+  // friend request" badge) that this run's friend events / scores triggered for the borrowed users.
+  await db.delete(userBadges).where(and(inArray(userBadges.userId, ids), sql`${userBadges.earnedAt} >= ${startedAt}::timestamp`));
   await db.delete(friendships).where(and(inArray(friendships.requesterId, ids), inArray(friendships.addresseeId, ids)));
   await db.delete(notifications).where(and(inArray(notifications.userId, ids), gt(notifications.id, maxNotif)));
   await db.delete(activityEvents).where(and(gt(activityEvents.id, Number(maxEvent)), or(inArray(activityEvents.actorUserId, ids), inArray(activityEvents.subjectUserId, ids))));

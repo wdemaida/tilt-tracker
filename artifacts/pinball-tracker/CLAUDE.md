@@ -329,4 +329,14 @@
 - `/admin/badges`: list + editor (kind, metric + N or the rule form builder, window, retroactive),
   image upload with a live 48/96/locked preview, Preview / Go live / Retire, grant picker (admin user
   search) and per-holder revoke — all through `ConfirmDialog`. Preview and Go live use the **saved**
-  badge.
+  badge. The editor opens inline under its row (new: at the top), scrolls into view and focuses Name; saving
+  an edit collapses it with a toast. Icon = `IconPicker` (searchable grid in the badge color); rule
+  machine = `components/MachineCombobox.tsx` (attached dropdown, keyboard, chip with ×). Admin
+  actions also invalidate `['notifications']` — they can award the admin themself.
+- **Toasts** (`lib/toast.ts` + `components/Toaster.tsx`, mounted in `Layout`): `toast({ title, body,
+  tone, icon, href })` for confirmations and passive news; errors that need fixing stay inline.
+  `lib/badgeToasts.tsx` toasts new unread `badge_earned` notifications off the bell's 30 s unread-count
+  poll (high-water mark per user in localStorage; the first visit only records one), skipping badges
+  AddScorePage already showed (`markBadgesShown`). Other notification kinds could reuse it.
+- `index.css` sets `color-scheme: dark` and explicit `select option` colors — native `<select>` popups
+  were white-on-white. SignInPage's white inputs opt back into `[color-scheme:light]`.

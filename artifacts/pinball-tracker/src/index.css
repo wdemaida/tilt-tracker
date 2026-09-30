@@ -14,6 +14,21 @@
   --muted-foreground: 240 5% 50%;
   --card: 240 10% 7%;
   --border: 240 10% 14%;
+  /* The app is dark-only. Without this, native form chrome (the <select> popup list, date/time
+     pickers, scrollbars) renders in the OS light scheme — white option rows under our white text. */
+  color-scheme: dark;
+}
+
+/* Belt and braces for the <select> popup: some engines (Chromium on Windows) paint option rows from
+   the option's own colors, not color-scheme. Every select in the app uses translucent bg-white/5 on
+   the closed control, which the popup can't show, so give options the card surface explicitly. */
+select option,
+select optgroup {
+  background-color: hsl(var(--card));
+  color: hsl(var(--foreground));
+}
+select option:disabled {
+  color: hsl(var(--muted-foreground));
 }
 
 * {

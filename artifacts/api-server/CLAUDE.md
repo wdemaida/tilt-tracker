@@ -859,7 +859,10 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   user+metric+ref). migrate23 is dev-guarded; remove the guard deliberately at ship time.
 - **One engine:** every award goes through `awardBadges(userId, { metrics, score })` — it loads only
   live, in-window badges the trigger can affect and the user lacks, evaluates, inserts ON CONFLICT DO
-  NOTHING, raises `badge_earned` and logs `badge.earned`. **Never throws** (like `onScoreCreated`).
+  NOTHING, raises `badge_earned` and logs `badge.earned`. Notifications and events for new awards are written in bulk
+  (`raiseNotificationsBulk` in notify.ts, 500 per statement, deduped on `badgeId` — one unread per
+  user per badge) — the retroactive backfill notifies every recipient too, and used to cost ~200 ms
+  per player inside the admin's Go live request. **Never throws** (like `onScoreCreated`).
   Triggers: `POST /api/scores` (`onScoreBadges`; the response gains `newBadges`), the friend routes
   (`onFriendBadges` — marks, then both users), the Clerk webhook's `session.created`
   (`onSignInBadges` — the `login_days` mark is written **before** the retention gate, so it counts

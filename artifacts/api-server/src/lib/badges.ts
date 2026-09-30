@@ -1,8 +1,8 @@
-import { db, badges, userBadges, users, scores, machines, venues, notifications, challengeParticipants, type Badge } from '@workspace/db';
+import { db, badges, userBadges, users, scores, machines, venues, notifications, challengeParticipants, activityEvents, type Badge } from '@workspace/db';
 import { and, asc, desc, eq, gte, inArray, isNull, lte, notExists, or, sql, type SQL } from 'drizzle-orm';
 import sharp from 'sharp';
-import { logActivity, type Executor } from './activity.js';
-import { raiseNotification } from './notify.js';
+import { buildActivityRow, isActivityRecorded, logActivity, type Executor } from './activity.js';
+import { raiseNotificationsBulk } from './notify.js';
 import { canSeeScore, type Viewer } from './venueActivity.js';
 import {
   METRICS, PENDING_METRICS, metricByKey, metricCounts, readMetric, describeMetric, recordMarks, friendMarks,
@@ -147,26 +147,51 @@ async function insertAwards(inputs: AwardInput[], byId: Map<number, BadgeRow>, c
     const fresh = new Set(rows.map(r => `${r.userId}:${r.badgeId}`));
     out.push(...chunk.filter(a => fresh.has(`${a.userId}:${a.badgeId}`)));
   }
-  for (const a of out) {
-    const b = byId.get(a.badgeId)!;
-    try {
-      await raiseNotification(db, a.userId, 'badge_earned', {
-        badgeId: b.id, badgeName: b.name, icon: b.icon, color: b.color, imageVersion: b.hasImage ? b.imageVersion : null,
-        ...(a.grantedById ? { granted: true } : {}),
-      });
-    } catch (err) {
-      console.error('[badges] notification failed:', err);
-    }
-    const granted = a.grantedById != null;
-    await logActivity({
-      type: granted ? 'badge.granted' : 'badge.earned',
-      actorUserId: granted ? a.grantedById : a.userId,
-      subjectUserId: granted ? a.userId : null,
-      targetType: 'badge', targetId: b.id,
-      payload: { badgeKey: b.key, name: b.name, trigger: ctx.trigger, sourceScoreId: a.sourceScoreId ?? null, ...(a.note ? { note: a.note } : {}) },
-    });
+  if (!out.length) return out;
+  // Every recipient is notified — trigger, grant and retroactive backfill alike — in bulk, deduped
+  // on badgeId (one unread badge_earned per user per badge; a revoke-then-regrant replaces rather
+  // than stacks). One statement per 500 recipients, not three round trips per recipient: a backfill
+  // used to spend ~200 ms per player here, inside the admin's Go live request.
+  try {
+    await raiseNotificationsBulk(db, 'badge_earned', out.map(a => ({ userId: a.userId, payload: badgeNotificationPayload(byId.get(a.badgeId)!, a) })), 'badgeId');
+  } catch (err) {
+    console.error('[badges] notification failed:', err);
   }
+  await logAwardEvents(out, byId, ctx);
   return out;
+}
+
+/** The `badge_earned` payload (NotificationsPage renders it; the toast reads badgeId to dedupe). */
+export function badgeNotificationPayload(b: BadgeRow, a: Pick<AwardInput, 'grantedById'>): Record<string, unknown> {
+  return {
+    badgeId: b.id, badgeName: b.name, icon: b.icon, color: b.color, imageVersion: b.hasImage ? b.imageVersion : null,
+    ...(a.grantedById ? { granted: true } : {}),
+  };
+}
+
+/** `badge.earned` / `badge.granted`, bulk-inserted. Never throws (logActivity's contract). */
+async function logAwardEvents(out: AwardInput[], byId: Map<number, BadgeRow>, ctx: { trigger: string }) {
+  try {
+    const recorded = new Map<string, boolean>();
+    const rows = [];
+    for (const a of out) {
+      const b = byId.get(a.badgeId)!;
+      const granted = a.grantedById != null;
+      const type = granted ? 'badge.granted' : 'badge.earned';
+      if (!recorded.has(type)) recorded.set(type, await isActivityRecorded(type));
+      if (!recorded.get(type)) continue;
+      rows.push(buildActivityRow({
+        type,
+        actorUserId: granted ? a.grantedById : a.userId,
+        subjectUserId: granted ? a.userId : null,
+        targetType: 'badge', targetId: b.id,
+        payload: { badgeKey: b.key, name: b.name, trigger: ctx.trigger, sourceScoreId: a.sourceScoreId ?? null, ...(a.note ? { note: a.note } : {}) },
+      }));
+    }
+    for (let i = 0; i < rows.length; i += 500) await db.insert(activityEvents).values(rows.slice(i, i + 500));
+  } catch (err: any) {
+    console.error('[activity] failed to log badge awards:', err?.message ?? err);
+  }
 }
 
 /**
