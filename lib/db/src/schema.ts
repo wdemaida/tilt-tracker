@@ -270,8 +270,9 @@ export type ChallengeStatus = 'pending' | 'active' | 'resolved' | 'declined' | '
   | 'proposed' | 'rejected' | 'lapsed';
 // 'missed' (migrate24): never answered — the challenge started (or expired) without them.
 export type ChallengeResponse = 'pending' | 'accepted' | 'declined' | 'countered' | 'missed';
-// Why an invitee said no (migrate22). A counter-offer stores 'cant_reach' too.
-export type ChallengeDeclineReason = 'cant_reach' | 'no_thanks';
+// Why an invitee said no (migrate22). A counter-offer stores 'cant_reach' too. 'backed_out'
+// (migrate24): an accepted invitee left a group before it started — set only by the server.
+export type ChallengeDeclineReason = 'cant_reach' | 'no_thanks' | 'backed_out';
 // 'abandoned' = a race / average nobody finished (not a win, loss, tie or no-show; breaks a win streak).
 export type ChallengeOutcome = 'win' | 'loss' | 'tie' | 'forfeit' | 'no_show' | 'abandoned';
 export const challenges = pgTable('challenges', {
@@ -322,7 +323,7 @@ export const challengeParticipants = pgTable('challenge_participants', {
   challengeId: integer('challenge_id').references(() => challenges.id, { onDelete: 'cascade' }).notNull(),
   userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
   response: text('response').$type<ChallengeResponse>().default('pending').notNull(),
-  // Set with response 'declined' ('cant_reach' / 'no_thanks') or 'countered' (always 'cant_reach').
+  // Set with response 'declined' ('cant_reach' / 'no_thanks' / 'backed_out') or 'countered' (always 'cant_reach').
   declineReason: text('decline_reason').$type<ChallengeDeclineReason>(),
   outcome: text('outcome').$type<ChallengeOutcome>(),
   baselineScore: bigint('baseline_score', { mode: 'number' }),

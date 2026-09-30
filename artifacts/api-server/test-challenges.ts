@@ -512,6 +512,10 @@ try {
   let d = await declinedWith('maybe');
   check('decline with an unknown reason → 400 invalid_reason', d.res.status === 400 && d.res.body?.code === 'invalid_reason', d.res);
   await call(alice, 'POST', `/challenges/${d.id}/cancel`);
+  d = await declinedWith('backed_out');
+  check("decline body with reason 'backed_out' → 400 invalid_reason (only the back-out path sets it), nothing stored",
+    d.res.status === 400 && d.res.body?.code === 'invalid_reason' && d.note.length === 0, d.res);
+  await call(alice, 'POST', `/challenges/${d.id}/cancel`);
   d = await declinedWith('no_thanks');
   check('decline no_thanks → declined, reason stored', d.res.status === 200 && d.res.body?.status === 'declined' && bobPart(d.res.body)?.declineReason === 'no_thanks', d.res.body);
   check('challenge_declined carries reason no_thanks', d.note.length === 1 && d.note[0].payload.reason === 'no_thanks', d.note);
@@ -670,15 +674,26 @@ try {
   r = await call(alice, 'GET', `/challenges/${g1}`);
   check('challenger: Start with who’s in is available once someone accepted', r.body?.me?.canStart === true, r.body?.me);
   r = await call(carol, 'POST', `/challenges/${g1}/decline`, { reason: 'no_thanks' });
-  check('carol declines → she drops out, the group stays pending', r.body?.status === 'pending' && respOf(r.body, carol.id) === 'declined', r.body);
+  check('carol declines → she drops out, the group stays pending', r.body?.status === 'pending' && respOf(r.body, carol.id) === 'declined'
+    && partOf(r.body, carol.id)?.declineReason === 'no_thanks', r.body);
   let decl = (await inbox(alice)).filter(n => n.payload?.challengeId === g1 && n.kind === 'challenge_declined' && n.payload?.userId === carol.id);
-  check('challenge_declined carries remaining = 2', decl.length === 1 && decl[0].payload.remaining === 2 && decl[0].payload.backedOut === false, decl);
+  check('challenge_declined carries remaining = 2', decl.length === 1 && decl[0].payload.remaining === 2 && decl[0].payload.backedOut === false
+    && decl[0].payload.reason === 'no_thanks', decl);
   r = await call(bob, 'GET', `/challenges/${g1}`);
   check('an accepted player may back out while pending (canDecline)', r.body?.me?.canDecline === true && r.body?.me?.canAccept === false, r.body?.me);
-  r = await call(bob, 'POST', `/challenges/${g1}/decline`);
-  check('bob backs out → recorded declined, still pending (dave to answer)', r.body?.status === 'pending' && respOf(r.body, bob.id) === 'declined', r.body);
+  // A back-out stores 'backed_out' whatever the body says (here a chosen reason, which it overrides).
+  r = await call(bob, 'POST', `/challenges/${g1}/decline`, { reason: 'no_thanks' });
+  check("bob backs out → recorded declined / reason 'backed_out', still pending (dave to answer)", r.body?.status === 'pending'
+    && respOf(r.body, bob.id) === 'declined' && partOf(r.body, bob.id)?.declineReason === 'backed_out', r.body);
+  const [bobRow] = await db.select({ reason: challengeParticipants.declineReason }).from(challengeParticipants)
+    .where(and(eq(challengeParticipants.challengeId, g1), eq(challengeParticipants.userId, bob.id)));
+  check("…the stored decline_reason is 'backed_out'", bobRow?.reason === 'backed_out', bobRow);
   decl = (await inbox(alice)).filter(n => n.payload?.challengeId === g1 && n.kind === 'challenge_declined' && n.payload?.userId === bob.id);
-  check('…challenge_declined says backedOut', decl.length === 1 && decl[0].payload.backedOut === true && decl[0].payload.remaining === 1, decl);
+  check("…challenge_declined says reason 'backed_out' (and backedOut)", decl.length === 1 && decl[0].payload.reason === 'backed_out'
+    && decl[0].payload.backedOut === true && decl[0].payload.remaining === 1, decl);
+  const [boEvent] = await db.select({ payload: activityEvents.payload }).from(activityEvents)
+    .where(and(eq(activityEvents.type, 'challenge.declined'), eq(activityEvents.targetId, String(g1)), eq(activityEvents.actorUserId, bob.id)));
+  check("…challenge.declined activity carries reason 'backed_out'", (boEvent?.payload as any)?.reason === 'backed_out', boEvent);
   r = await call(bob, 'POST', `/challenges/${g1}/accept`);
   check('backed out = out: accepting again → 409', r.status === 409, r);
   r = await call(dave, 'POST', `/challenges/${g1}/accept`);
@@ -899,12 +914,21 @@ try {
     OR (proposed_by_id IS NULL AND countered_from_id IS NOT NULL AND creator_id = ${u} AND status IN ('active', 'resolved'))`);
   const countersRejected = (u: number) => n(sql`SELECT count(*)::int AS n FROM challenges WHERE proposed_by_id = ${u} AND status = 'rejected'`);
   const missedCount = (u: number) => n(sql`SELECT count(*)::int AS n FROM challenge_participants WHERE user_id = ${u} AND response = 'missed'`);
+  // challenges_backed_out / challenges_declined (a true decline: not a back-out, not a counter; never a proposal row).
+  const backedOutCount = (u: number) => n(sql`SELECT count(*)::int AS n FROM challenge_participants cp JOIN challenges c ON c.id = cp.challenge_id
+    WHERE cp.user_id = ${u} AND cp.response = 'declined' AND cp.decline_reason = 'backed_out' AND c.status NOT IN ('proposed', 'rejected', 'lapsed')`);
+  const declinedCount = (u: number) => n(sql`SELECT count(*)::int AS n FROM challenge_participants cp JOIN challenges c ON c.id = cp.challenge_id
+    WHERE cp.user_id = ${u} AND cp.response = 'declined' AND cp.decline_reason IS DISTINCT FROM 'backed_out' AND c.status NOT IN ('proposed', 'rejected', 'lapsed')`);
+  const allDeclined = (u: number) => n(sql`SELECT count(*)::int AS n FROM challenge_participants WHERE user_id = ${u} AND response = 'declined'`);
   // bob: taken = 1:1 ctr, p1, p3 (+ the legacy row he created, accepted) = 4; rejected = ctr2, p4, the Start one = 3.
   check('badge fact counters_accepted (bob = 4, incl. the legacy row)', await countersAccepted(bob.id) === 4, await countersAccepted(bob.id));
   check('badge fact counters_rejected (bob = 3: kept-mine ×2 + started)', await countersRejected(bob.id) === 3, await countersRejected(bob.id));
   check("badge fact counters_rejected counts superseded too (carol's p2)", await countersRejected(carol.id) === 1, await countersRejected(carol.id));
   check('badge fact challenges_missed (carol: Start g2, fixed start g4, score-hook start g5 = 3; dave g2 = 1)', await missedCount(carol.id) === 3 && await missedCount(dave.id) === 1,
     [await missedCount(carol.id), await missedCount(dave.id)]);
+  const bo = await backedOutCount(bob.id), dc = await declinedCount(bob.id), all = await allDeclined(bob.id);
+  check('badge fact challenges_backed_out (bob = 1: g1)', bo === 1, bo);
+  check('badge fact challenges_declined excludes back-outs (bob = 5 of his 6 declined rows)', dc === 5 && all === 6, { dc, bo, all });
 
   // ── challenge prefs + recommendations (zero Pinball Map calls) ─────────────
   const madeHome = await db.insert(machines).values([{ name: 'zz-challenge-test home' }, { name: 'zz-challenge-test hidden home' }]).returning({ id: machines.id });

@@ -12,7 +12,7 @@ import {
   useChallengeList, invalidateChallengeQueries, challengeErrorText, typeLabel, meAndThem, formatResult,
   timingText, useNow, historyOutcome, isGroupChallenge, othersOf, ordinal,
 } from '../lib/challenges';
-import type { Challenge, ChallengeDeclineReason } from '../lib/api';
+import type { Challenge, ChallengeDeclineChoice } from '../lib/api';
 
 // Crew → Challenges. Four sections from three list queries (pending is split by who has to act):
 // Waiting on you · Live · Sent · History. Every row links to /challenges/:id; the inline buttons are
@@ -40,7 +40,7 @@ function ChallengeRow({ c, myId, now }: { c: Challenge; myId: number | null; now
   const [error, setError] = useState<string | null>(null);
   const [cantReach, setCantReach] = useState(false);
   const act = useMutation({
-    mutationFn: ({ action, reason }: { action: 'accept' | 'decline' | 'cancel' | 'start'; reason?: ChallengeDeclineReason }) =>
+    mutationFn: ({ action, reason }: { action: 'accept' | 'decline' | 'cancel' | 'start'; reason?: ChallengeDeclineChoice }) =>
       api.challenges.act(c.id, action, reason ? { reason } : undefined),
     onSuccess: () => { setError(null); setCantReach(false); invalidateChallengeQueries(); },
     onError: e => { setError(challengeErrorText(e)); invalidateChallengeQueries(); },
@@ -62,7 +62,7 @@ function ChallengeRow({ c, myId, now }: { c: Challenge; myId: number | null; now
   let historyNote: string | null = null;
   if (c.status === 'declined') {
     const reason = c.participants.find(p => p.response === 'declined')?.declineReason;
-    historyNote = reason === 'cant_reach' ? 'Can’t get to it' : reason === 'no_thanks' ? 'Passed' : 'Declined';
+    historyNote = reason === 'cant_reach' ? 'Can’t get to it' : reason === 'no_thanks' ? 'Passed' : reason === 'backed_out' ? 'Backed out' : 'Declined';
   }
   else if (c.status === 'countered') historyNote = c.counteredToId ? 'Moved' : 'Countered';
   else if (c.status === 'cancelled') historyNote = 'Cancelled';

@@ -9,9 +9,9 @@ import { buildActivityRow, isActivityRecorded, logActivity } from './activity.js
 // lib/challenges.ts and routes/challenges.ts; every payload carries `challengeId`, `challengeType`,
 // `machineName` and the other person's userId/username/displayName):
 //   challenge_received          → each invitee, on create (`players`: how many, the challenger included)
-//   challenge_accepted/declined → the creator (declined carries `reason`: 'cant_reach' / 'no_thanks' / null,
-//                                 `remaining` — invitees still pending or accepted — and `backedOut`
-//                                 when an accepted player pulled out before the start)
+//   challenge_accepted/declined → the creator (declined carries `reason`: 'cant_reach' / 'no_thanks' /
+//                                 'backed_out' (an accepted player pulled out before the start; `backedOut`
+//                                 is true too) / null, and `remaining` — invitees still pending or accepted)
 //   challenge_countered         → the challenger, when an invitee suggests another machine: a PROPOSAL
 //                                 (feature/group-challenges; `proposal: true`). challengeId = the
 //                                 proposal, counteredFromId = the original, machineName = the suggested

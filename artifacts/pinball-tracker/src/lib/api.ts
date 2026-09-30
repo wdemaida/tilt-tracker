@@ -144,8 +144,13 @@ export type ChallengeStatus = 'pending' | 'active' | 'resolved' | 'declined' | '
 export type ChallengePhase = 'pending' | 'scheduled' | 'live' | 'ended' | 'resolved' | 'declined' | 'cancelled' | 'expired' | 'countered';
 /** `missed`: never answered — it started (or expired) without them. */
 export type ChallengeResponse = 'pending' | 'accepted' | 'declined' | 'countered' | 'missed';
-/** Why an invitee said no. A counter-offer is always `cant_reach`; an older decline may have none. */
-export type ChallengeDeclineReason = 'cant_reach' | 'no_thanks';
+/**
+ * Why an invitee said no. A counter-offer is always `cant_reach`; an older decline may have none.
+ * `backed_out`: an accepted player left a group before it started — the server sets it, never a client.
+ */
+export type ChallengeDeclineReason = 'cant_reach' | 'no_thanks' | 'backed_out';
+/** The reasons a decline body may give (the server 400s anything else, `backed_out` included). */
+export type ChallengeDeclineChoice = Exclude<ChallengeDeclineReason, 'backed_out'>;
 /** `abandoned`: a race nobody beat, or an average nobody qualified for — no winner, no loser. */
 export type ChallengeOutcome = 'win' | 'loss' | 'tie' | 'forfeit' | 'no_show' | 'abandoned' | (string & {});
 
@@ -457,9 +462,10 @@ export function createApi(getToken: () => Promise<string | null>) {
       venueOptions: async (machineId: number, matchMode: 'game' | 'exact') =>
         request<ChallengeVenueOption[]>(`/challenges/venue-options?machineId=${machineId}&matchMode=${matchMode}`, undefined, await tok()),
       // `decline` may say why ('cant_reach' | 'no_thanks') — stored, and passed on to the challenger.
+      // An accepted player's decline is a back-out: stored as 'backed_out' whatever the body says.
       // On a proposal (you're the challenger): accept = take it for everyone, decline = keep yours.
       // `start` = "Start with who's in" (the challenger, once someone accepted).
-      act: async (id: number, action: 'accept' | 'decline' | 'cancel' | 'forfeit' | 'start', body?: { reason?: ChallengeDeclineReason }) =>
+      act: async (id: number, action: 'accept' | 'decline' | 'cancel' | 'forfeit' | 'start', body?: { reason?: ChallengeDeclineChoice }) =>
         request<Challenge>(`/challenges/${id}/${action}`, { method: 'POST', body: body ? JSON.stringify(body) : undefined }, await tok()),
       // "Can't get to this one — how about this instead": a create body (no friend: it goes to the
       // original's creator). It's a suggestion to them: the original stays open until they take it

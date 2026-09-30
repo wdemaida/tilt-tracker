@@ -590,7 +590,11 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   `afterAnswer()` (pure): **L** = pending, no invitee pending, no proposal open, ≥ 1 invitee accepted
   → active; **D** = no invitee pending or accepted, no proposal open → declined. A decline just drops
   that player; an **accepted invitee may back out** while it's pending (`/decline`, recorded
-  `declined`, `challenge_declined.backedOut`). `POST /:id/start` = "Start with who's in" (challenger,
+  `declined` with **`decline_reason = 'backed_out'`**, whatever reason the body gave —
+  `storedDeclineReason()`; `challenge_declined` and `challenge.declined` carry `reason: 'backed_out'`,
+  the notification also `backedOut: true`). Only that path sets `backed_out`: a decline body naming it
+  is a 400 `invalid_reason` (`parseDeclineReason`). A player who backed out is still re-invited when a
+  suggestion is taken (only `no_thanks` is final). `POST /:id/start` = "Start with who's in" (challenger,
   ≥ 1 accepted): pending players become **`missed`** (`challenge_missed`) and open proposals close
   as `rejected` ('started'). A **fixed start** (`pendingDue()`): ≥ 1 accepted → it starts, the rest
   `missed`, proposals `lapsed`; nobody → expired (pending → `missed` too). Groups send
@@ -661,7 +665,8 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   in 180 days, plus your own residence if it has an inventory. Runs on the first prefs read, yours or a
   friend's recommendations request. After that removals stick; new candidates are `suggestions`.
 - **Answers**: decline takes `{ reason: 'cant_reach' | 'no_thanks' }` (`challenge_participants.decline_reason`,
-  in the `challenge_declined` payload and the `challenge.declined` event). `POST /api/challenges/:id/counter`
+  in the `challenge_declined` payload and the `challenge.declined` event). The stored column also takes
+  `'backed_out'` (migrate24), set only by the server when an accepted player backs out of a group. `POST /api/challenges/:id/counter`
   (create body; it always goes to the challenger) — **since 2026-09-29 a proposal, not a new challenge
   that ends the original**; see "Counter-offers are proposals" under Challenges. (Under migrate22 it
   ended the original `countered` and created a challenge by the counterer — those legacy rows still

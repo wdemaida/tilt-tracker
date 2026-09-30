@@ -14,7 +14,10 @@
 //     answered: the challenge started — or expired — without them).
 //  6. challenges_proposal_check: a row in a proposal status must name its proposer. It deliberately
 //     does NOT require countered_from_id, which is ON DELETE SET NULL.
-//  7. Backfill: pending participants of expired challenges become 'missed'.
+//  7. challenge_participants_decline_reason_check (migrate22) widens to allow 'backed_out': an
+//     accepted invitee who leaves a group before it starts is recorded response 'declined' with
+//     decline_reason 'backed_out' — set only by the server's back-out path, never from a decline body.
+//  8. Backfill: pending participants of expired challenges become 'missed'.
 //
 // Legacy counter rows (countered_from_id set, proposed_by_id null — created by the counterer under
 // migrate22's model) are untouched and keep working as ordinary challenges.
@@ -57,6 +60,10 @@ await sql.begin(async tx => {
   await tx`
     ALTER TABLE challenge_participants ADD CONSTRAINT challenge_participants_response_check
       CHECK (response IN ('pending', 'accepted', 'declined', 'countered', 'missed'))`;
+  await tx`ALTER TABLE challenge_participants DROP CONSTRAINT IF EXISTS challenge_participants_decline_reason_check`;
+  await tx`
+    ALTER TABLE challenge_participants ADD CONSTRAINT challenge_participants_decline_reason_check
+      CHECK (decline_reason IS NULL OR decline_reason IN ('cant_reach', 'no_thanks', 'backed_out'))`;
   await tx`ALTER TABLE challenges DROP CONSTRAINT IF EXISTS challenges_proposal_check`;
   await tx`
     ALTER TABLE challenges ADD CONSTRAINT challenges_proposal_check

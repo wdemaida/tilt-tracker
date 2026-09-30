@@ -5,7 +5,7 @@ import {
   opdbGroup, matchGroupFor, machineMatches, rosterHasMachine, exclusionReason, scoreCounts, baselineFrom, bestOnMachine,
   raceTarget, computeStanding, resolveChallenge, resolutionTrigger, raceWinner, projectedRanks,
   pendingExpired, canAccept, canDecline, canCounter, canCancel, canForfeit, phaseOf, validateCreate, computeRecord,
-  parseDeclineReason, saidNo,
+  parseDeclineReason, storedDeclineReason, saidNo,
   pendingDue, afterAnswer, canStart, canDecideProposal, isProposalStatus, reinvitees, proposalClosure, parseInvitees, pairOutcome,
   MAX_WINDOW_DAYS, MIN_PLAYS, MAX_PLAYERS, MAX_INVITEES,
   type CandidateScore, type CountRule, type ChallengeType, type ParticipantState, type Standing,
@@ -450,6 +450,16 @@ test('parseDeclineReason', () => {
   assert.equal(parseDeclineReason({ reason: 'no_thanks' }), 'no_thanks');
   assert.equal(parseDeclineReason({ reason: 'busy' }), 'invalid');
   assert.equal(parseDeclineReason({ reason: 1 }), 'invalid');
+  assert.equal(parseDeclineReason({ reason: 'backed_out' }), 'invalid', 'only the back-out path sets backed_out — a client can’t send it');
+});
+
+test('storedDeclineReason: an accepted invitee declining is a back-out, whatever the body said', () => {
+  assert.equal(storedDeclineReason('accepted', null), 'backed_out');
+  assert.equal(storedDeclineReason('accepted', 'no_thanks'), 'backed_out');
+  assert.equal(storedDeclineReason('accepted', 'cant_reach'), 'backed_out');
+  assert.equal(storedDeclineReason('pending', 'no_thanks'), 'no_thanks');
+  assert.equal(storedDeclineReason('pending', 'cant_reach'), 'cant_reach');
+  assert.equal(storedDeclineReason('pending', null), null, 'an older client’s reasonless decline stays null');
 });
 
 test('saidNo: declined and countered participants are out', () => {
@@ -601,7 +611,7 @@ test('computeRecord: order is by resolution time, not input order; empty record 
 
 const D = 4, E = 5;
 type Resp = 'pending' | 'accepted' | 'declined' | 'countered' | 'missed';
-const pp = (userId: number, response: Resp, declineReason: 'cant_reach' | 'no_thanks' | null = null) => ({ userId, response, outcome: null, declineReason });
+const pp = (userId: number, response: Resp, declineReason: 'cant_reach' | 'no_thanks' | 'backed_out' | null = null) => ({ userId, response, outcome: null, declineReason });
 const group = { creatorId: A, status: 'pending' as const, startsAt: null, endsAt: at(72) };
 
 test('pendingDue truth table', () => {
@@ -670,6 +680,8 @@ test('reinvitees: everyone except the challenger, the proposer, no_thanks declin
   friends.delete(6);
   assert.deepEqual(reinvitees(group, ps, B, friends), [C, E, 7, 8], 'no longer the challenger’s friend → not re-invited');
   assert.deepEqual(reinvitees(group, [pp(A, 'accepted'), pp(B, 'countered')], B, new Set([B])), [], '1:1: nobody to re-invite');
+  assert.deepEqual(reinvitees(group, [pp(A, 'accepted'), pp(B, 'countered', 'cant_reach'), pp(C, 'declined', 'backed_out')], B, new Set([B, C])), [C],
+    'a player who backed out is asked again (only no_thanks is final)');
 });
 
 test('proposalClosure: status and notified reason per closing event', () => {

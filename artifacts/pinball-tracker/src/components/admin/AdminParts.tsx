@@ -218,7 +218,7 @@ const TYPE_TEXT: Record<string, string> = {
   'pod.member_removed': 'removed from a pod:',
   'challenge.created': 'challenged',
   'challenge.accepted': 'accepted a challenge',
-  'challenge.declined': 'declined a challenge',
+  'challenge.declined': 'declined (or backed out of) a challenge',
   'challenge.cancelled': 'withdrew a challenge',
   'challenge.forfeited': 'forfeited a challenge',
   'challenge.resolved': 'Challenge resolved',
@@ -309,7 +309,7 @@ function detail(ev: ActivityEvent): string | null {
     case 'challenge.resolved':
       return Array.isArray(p.outcomes) ? p.outcomes.map((o: any) => `@${o.username ?? o.userId} ${o.outcome}`).join(', ') + (p.reason ? ` (${p.reason})` : '') : null;
     case 'challenge.declined':
-      return [p.challengeType, p.machineName, p.reason === 'cant_reach' ? 'can’t get to it' : p.reason === 'no_thanks' ? 'no thanks' : null].filter(Boolean).join(' · ') || null;
+      return [p.challengeType, p.machineName, p.reason === 'cant_reach' ? 'can’t get to it' : p.reason === 'no_thanks' ? 'no thanks' : p.reason === 'backed_out' ? 'backed out' : null].filter(Boolean).join(' · ') || null;
     case 'challenge.countered':
       return [`${p.machineName ?? '?'} → ${p.newMachineName ?? '?'}`, p.newChallengeId ? `${p.proposal ? 'suggestion' : 'new'} #${p.newChallengeId}` : null].filter(Boolean).join(' · ');
     case 'challenge.started':

@@ -94,7 +94,8 @@ function describe(n: AppNotification): { text: React.ReactNode; href: string | n
         return { text: <>{name} accepted your challenge: {what}</>, href, Icon: Swords };
       case 'challenge_declined':
         // Neutral on purpose: "can't get to it" isn't a refusal, and "passed" isn't a snub.
-        if (n.payload.backedOut) return { text: <>{name} backed out of {what}</>, href, Icon: Ban };
+        // reason 'backed_out' (older notifications only carry backedOut): an accepted player left before the start.
+        if (n.payload.reason === 'backed_out' || n.payload.backedOut) return { text: <>{name} backed out of {what}</>, href, Icon: Ban };
         return n.payload.reason === 'cant_reach'
           ? { text: <>{name} can’t get to the machine for {what}</>, href, Icon: Ban }
           : n.payload.reason === 'no_thanks'

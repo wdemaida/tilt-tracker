@@ -7,9 +7,9 @@ import {
   computeStanding, resolveChallenge, resolutionTrigger, projectedRanks, scoreCounts, baselineFrom, bestOnMachine,
   raceTarget, matchGroupFor, pendingDue, afterAnswer, canAccept, canDecline, canCounter, canCancel, canStart, canForfeit,
   canDecideProposal, phaseOf, validateCreate, parseInvitees, computeRecord, rosterHasMachine, saidNo, reinvitees, proposalClosure,
-  isProposalStatus, ENDING_SOON_MS, PROPOSAL_REMINDER_MS, MAX_PLAYERS,
+  isProposalStatus, storedDeclineReason, ENDING_SOON_MS, PROPOSAL_REMINDER_MS, MAX_PLAYERS,
   type CandidateScore, type MatchMode, type CountRule, type MatchRule, type ParticipantState, type ResolutionReason, type Outcome,
-  type ChallengeRecord, type CreateInput, type DeclineReason, type ParticipantResponse, type ProposalCloseReason,
+  type ChallengeRecord, type ChosenDeclineReason, type CreateInput, type DeclineReason, type ParticipantResponse, type ProposalCloseReason,
 } from './challengeRules.js';
 import { canSeeScore, type ActivityVenue } from './venueActivity.js';
 import { isPrivateVenue } from './venueAddress.js';
@@ -669,7 +669,7 @@ export interface ParticipantView {
   user: UserRef;
   isCreator: boolean;
   response: ParticipantRow['response'];
-  /** Why they said no: 'cant_reach' / 'no_thanks' (declined), always 'cant_reach' when countered. */
+  /** Why they said no: 'cant_reach' / 'no_thanks' / 'backed_out' (declined), always 'cant_reach' when countered. */
   declineReason: DeclineReason | null;
   respondedAt: Date | null;
   /** Final, once resolved (or 'forfeit' as soon as they withdraw). */
@@ -1292,10 +1292,11 @@ export type ActionKind = 'answer' | 'take' | 'reject';
 /**
  * POST /api/challenges/:id/(accept|decline|cancel|forfeit|start). A decline may carry `reason`
  * ('cant_reach' | 'no_thanks'), stored on the participant row and passed on in challenge_declined.
+ * An accepted invitee's decline is a back-out: stored (and notified) as reason 'backed_out'.
  * On a proposal, accept = take it and decline = keep mine (the challenger only).
  */
 export async function actOnChallengeDetailed(
-  id: number, me: AppUser, action: Action, now = new Date(), opts: { reason?: DeclineReason | null } = {},
+  id: number, me: AppUser, action: Action, now = new Date(), opts: { reason?: ChosenDeclineReason | null } = {},
 ): Promise<{ view: ChallengeView; kind: ActionKind }> {
   // Bring it up to date first (a past-deadline challenge resolves; an unanswered one expires or starts).
   const synced = await syncChallenge(id, now);
@@ -1341,8 +1342,10 @@ export async function actOnChallengeDetailed(
           if (original?.status === 'pending') await settleAfterAnswer(tx, original, now, { actorId: me.id, strict: false });
           return false;
         }
-        const reason = opts.reason ?? null;
+        // Backing out (an accepted invitee leaving a pending group) is stored as 'backed_out',
+        // whatever the body said; a normal decline stores the reason chosen (or null).
         const backedOut = mine.response === 'accepted';
+        const reason = storedDeclineReason(mine.response, opts.reason ?? null);
         await tx.update(challengeParticipants).set({ response: 'declined', declineReason: reason, respondedAt: now })
           .where(and(eq(challengeParticipants.challengeId, id), eq(challengeParticipants.userId, me.id)));
         await settleInvitation(tx, me.id, id, 'read');
@@ -1382,7 +1385,7 @@ export async function actOnChallengeDetailed(
 }
 
 export async function actOnChallenge(
-  id: number, me: AppUser, action: Action, now = new Date(), opts: { reason?: DeclineReason | null } = {},
+  id: number, me: AppUser, action: Action, now = new Date(), opts: { reason?: ChosenDeclineReason | null } = {},
 ): Promise<ChallengeView> {
   return (await actOnChallengeDetailed(id, me, action, now, opts)).view;
 }

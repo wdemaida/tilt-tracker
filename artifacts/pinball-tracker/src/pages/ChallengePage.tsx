@@ -14,7 +14,7 @@ import {
   TYPE_META, SCORE_RULES, challengeKey, invalidateChallengeQueries, challengeErrorText, meAndThem, formatScore,
   formatResult, formatDuration, useNow, isAbandoned, historyOutcome, outcomeMeta, isGroupChallenge, isOut, othersOf, ordinal, typeLabel,
 } from '../lib/challenges';
-import type { Challenge, ChallengeDeclineReason, ChallengeParticipant, ChallengeProposal } from '../lib/api';
+import type { Challenge, ChallengeDeclineChoice, ChallengeParticipant, ChallengeProposal } from '../lib/api';
 
 // /challenges/:id — one challenge, for its participants. Machine + rules up top, a live countdown,
 // the standings (you in username yellow, them in friend aqua), each side's counting scores, and the
@@ -67,7 +67,7 @@ function statusLine(c: Challenge, now: number): { text: string; tone: string } {
     case 'resolved': return { text: `Finished ${c.resolvedAt ? format(new Date(c.resolvedAt), 'MMM d, h:mm a') : ''}`, tone: 'text-muted-foreground' };
     case 'declined': {
       const reason = c.participants.find(p => p.response === 'declined')?.declineReason;
-      return { text: reason === 'cant_reach' ? 'Declined — can’t get to this machine' : reason === 'no_thanks' ? 'Passed on' : 'Declined', tone: 'text-muted-foreground' };
+      return { text: reason === 'cant_reach' ? 'Declined — can’t get to this machine' : reason === 'no_thanks' ? 'Passed on' : reason === 'backed_out' ? 'Declined — players backed out' : 'Declined', tone: 'text-muted-foreground' };
     }
     case 'countered': return { text: c.counteredToId ? 'Moved to a suggested machine' : 'Countered — another machine was suggested', tone: MUTED };
     case 'cancelled': return { text: 'Cancelled', tone: MUTED };
@@ -156,7 +156,7 @@ function responseNote(p: ChallengeParticipant): React.ReactNode {
   if (p.response === 'pending') return <span className="text-amber-200">Hasn’t answered</span>;
   if (p.response === 'missed') return 'Missed it — didn’t answer in time';
   if (p.response === 'countered') return 'Suggested another machine';
-  if (p.response === 'declined') return p.declineReason === 'cant_reach' ? 'Can’t get to it' : p.declineReason === 'no_thanks' ? 'Passed' : 'Declined';
+  if (p.response === 'declined') return p.declineReason === 'cant_reach' ? 'Can’t get to it' : p.declineReason === 'no_thanks' ? 'Passed' : p.declineReason === 'backed_out' ? 'Backed out' : 'Declined';
   return null;
 }
 
@@ -409,7 +409,7 @@ function Actions({ c }: { c: Challenge }) {
   const [cantReach, setCantReach] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const act = useMutation({
-    mutationFn: ({ action, reason }: { action: 'accept' | 'decline' | 'cancel' | 'forfeit' | 'start'; reason?: ChallengeDeclineReason }) =>
+    mutationFn: ({ action, reason }: { action: 'accept' | 'decline' | 'cancel' | 'forfeit' | 'start'; reason?: ChallengeDeclineChoice }) =>
       api.challenges.act(c.id, action, reason ? { reason } : undefined),
     onSuccess: () => { setError(null); setConfirmForfeit(false); setConfirmStart(false); setConfirmBackOut(false); setCantReach(false); invalidateChallengeQueries(); },
     onError: e => { setError(challengeErrorText(e)); invalidateChallengeQueries(); },

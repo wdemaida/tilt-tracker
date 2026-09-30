@@ -110,7 +110,8 @@ router.post('/', async (req, res) => {
 
 // POST /api/challenges/:id/accept | decline | cancel | forfeit | start — 200 with the updated
 // ChallengeView. decline takes an optional body { reason: 'cant_reach' | 'no_thanks' } (400
-// invalid_reason otherwise); an accepted player may decline too while it's pending (backing out).
+// invalid_reason otherwise — 'backed_out' included: only the server sets it); an accepted player may
+// decline too while it's pending (backing out), which is stored and logged as reason 'backed_out'.
 // On a PROPOSAL (status 'proposed') the challenger's accept takes it for everyone and decline keeps
 // hers. start = "Start with who's in" (the challenger, pending, at least one accepted) — its
 // challenge.started event is written inside the transaction, so nothing extra here.
@@ -132,7 +133,9 @@ for (const action of ['accept', 'decline', 'cancel', 'forfeit', 'start'] as cons
           type, ...actorOf(req), subjectUserId: kind !== 'answer' ? view.proposedBy?.id ?? null : null, targetType: 'challenge', targetId: id,
           payload: {
             challengeType: view.type, machineName: view.machine.name, status: view.status,
-            ...(action === 'decline' && kind === 'answer' ? { reason } : {}),
+            // The stored reason ('backed_out' for a back-out), not just what the body said.
+            ...(action === 'decline' && kind === 'answer'
+              ? { reason: view.participants.find(p => p.user.id === (req as any).appUser.id)?.declineReason ?? null } : {}),
             ...(kind !== 'answer' ? { counteredFromId: view.counteredFromId, ...(kind === 'reject' ? { reason: 'rejected' } : {}) } : {}),
           },
         });

@@ -526,15 +526,30 @@ export function phaseOf(c: LifecycleChallenge, now: Date): ChallengePhase {
  * badges can tell "can't get there" from "not interested": 'cant_reach' (a plain decline after
  * "Can't get to this one", and every counter-offer) and 'no_thanks'. A decline sent without a reason
  * (an older client) stays null.
+ *
+ * 'backed_out' is the third stored value: an ACCEPTED invitee who leaves a group before it starts
+ * (response 'declined'). The server sets it on the back-out path only — it is not one of the
+ * DECLINE_REASONS a client may send, so a decline body naming it is a 400.
  */
 export const DECLINE_REASONS = ['cant_reach', 'no_thanks'] as const;
-export type DeclineReason = (typeof DECLINE_REASONS)[number];
+/** A reason a client may give in a decline body. */
+export type ChosenDeclineReason = (typeof DECLINE_REASONS)[number];
+/** Every stored value of challenge_participants.decline_reason. */
+export type DeclineReason = ChosenDeclineReason | 'backed_out';
 
-/** The optional `reason` of a decline body: a DeclineReason, null when absent, or 'invalid'. */
-export function parseDeclineReason(body: unknown): DeclineReason | null | 'invalid' {
+/** The optional `reason` of a decline body: a chosen reason, null when absent, or 'invalid' (incl. 'backed_out'). */
+export function parseDeclineReason(body: unknown): ChosenDeclineReason | null | 'invalid' {
   const raw = body && typeof body === 'object' ? (body as Record<string, unknown>).reason : undefined;
   if (raw === undefined || raw === null || raw === '') return null;
-  return (DECLINE_REASONS as readonly unknown[]).includes(raw) ? raw as DeclineReason : 'invalid';
+  return (DECLINE_REASONS as readonly unknown[]).includes(raw) ? raw as ChosenDeclineReason : 'invalid';
+}
+
+/**
+ * The decline_reason a decline stores: 'backed_out' when the decliner had already accepted (backing
+ * out of a pending group — whatever reason the body gave), otherwise the reason they chose (or null).
+ */
+export function storedDeclineReason(priorResponse: ParticipantResponse, chosen: ChosenDeclineReason | null): DeclineReason | null {
+  return priorResponse === 'accepted' ? 'backed_out' : chosen;
 }
 
 /**
