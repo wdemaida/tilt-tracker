@@ -736,8 +736,12 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
 - Tests: `npx tsx --test src/lib/challengeRules.test.ts`; `npx tsx test-challenges.ts` (dev branch
   only; borrows **4** friendless users — dave is the true non-friend until the group section — and
   throwaway `zz-challenge-test` machines; covers groups, proposals, lapse / supersede / re-invite,
-  the reminder, group records and recommendations, the DB CHECK and the badge facts; cleans up,
-  including the activity events about the borrowed users and their challenges).
+  the reminder, group records and recommendations, the DB CHECK and the badge facts — and that the
+  badge registry's `readMetric` matches each fact; cleans up, including the activity events about
+  the borrowed users and their challenges). **Its `runChallengeSweep()` is global**: on dev it also
+  sends `challenge_ending_soon` for anyone's live challenge near its end (seen 2026-09-30 on Will's
+  challenge 41 — undone by hand: `ending_soon_notified_at` back to null, the 2 notifications and 2
+  `notification.sent` events deleted). Snapshot dev before running it if manual test state matters.
 
 ## Challenge recommendations + counter-offers (`challengeReach.ts`, `challengeRecs.ts`, `routes/me.ts`, migrate22, added 2026-09-29)
 - **Three levels** of "machines this player can reach": 1 = "Challenge me on" (`user_challenge_machines`,
@@ -1025,17 +1029,48 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   Triggers: `POST /api/scores` (`onScoreBadges`; the response gains `newBadges`), the friend routes
   (`onFriendBadges` — marks, then both users), the Clerk webhook's `session.created`
   (`onSignInBadges` — the `login_days` mark is written **before** the retention gate, so it counts
-  with high-volume at 0), and `runBadgeSweep()` in daily housekeeping (metric badges for users
-  active in the last 25 h). No automatic revocation, ever.
+  with high-volume at 0), the challenge lifecycle (`onChallengeBadges`, phase 3 — below), and
+  `runBadgeSweep()` in daily housekeeping (every metric badge, challenge metrics included, for users
+  active in the last 25 h: a score, a mark, or a challenge change — answered, resolved, started,
+  ended, suggestion decided). No automatic revocation, ever.
 - **Metrics** (`badgeMetrics.ts`): a registry; each metric is one `GROUP BY user_id` SQL used for a
   single user, the sweep and the retroactive backfill (`HAVING value >= threshold`) — never a loop.
   Derived: `scores_posted`, `distinct_machines`, `distinct_venues`. Marks (`ref` makes them
   idempotent): `friend_requests_sent` (ref = recipient), `…accepted_by_you` / `your_requests_accepted`
   (ref = other user), `…declined_by_you` / `your_requests_declined` (ref = other:declineNumber),
-  `login_days` (ref = America/New_York date). **Phase 3** (after feature/challenge-recs merges):
-  the challenge metrics are listed in `PENDING_METRICS` (admin shows them as "phase 3"; activation
-  answers 400 `metric_unavailable`) — see the `TODO(phase 3)` notes in `badgeMetrics.ts` and
-  `badges.ts` for where they and the `applyResolution` / decline / counter triggers plug in.
+  `login_days` (ref = America/New_York date). `PENDING_METRICS` (listed in the admin form, 400
+  `metric_unavailable` on go-live) is empty since phase 3 — keep the mechanism for a future metric.
+- **Challenge metrics** (phase 3, feature/badges-phase3, 2026-09-30) — all derived from durable
+  challenge columns, never activity events; triggers `['challenge', 'sweep']`:
+  - **Record** — the SQL twin of `computeRecord()` over exactly `getRecord()`'s rows (status
+    `resolved`, own row `accepted` with an outcome): `challenge_wins`, `challenge_losses` (in a group,
+    below 1st is a loss), `challenges_tied`, `challenges_abandoned`, and best-ever streaks
+    `win_streak_achieved` / `loss_streak_achieved` (gaps-and-islands window SQL; order
+    `(resolved_at, id)`; any other outcome — abandoned too — ends a run; a legacy `void` row neither
+    extends nor breaks one). badgeMetrics.test.ts checks them against computeRecord on random
+    histories. **Admin void** (status `cancelled`, outcomes cleared) drops out of all of them; nothing
+    already awarded is revoked.
+  - **Participant** (every one skips proposal rows — status `proposed` / `rejected` / `lapsed`):
+    `challenges_declined` (response `declined`, reason not `backed_out` — a true decline),
+    `challenges_backed_out`, `challenges_countered` (response `countered`), `challenges_cant_reach`
+    (reason `cant_reach` — declines and counters), `challenges_passed` (`no_thanks`),
+    `challenges_missed` (response `missed`; unlike the plan's raw fact SQL it also skips proposal
+    rows, so a lapsed suggestion's challenger row isn't a missed challenge).
+  - **Proposal**: `counters_accepted` (a proposal you made that was taken, whatever happened after,
+    plus legacy migrate22 counter rows you created that went active/resolved), `counters_rejected`
+    (your proposals with status `rejected` — kept-mine, superseded, started without it).
+  - **Triggers** (lib/challenges.ts): `queueChallengeBadges(tx, challengeId, userIds)` inside the
+    transaction; `txWithBadges` (syncChallenge, actOnChallengeDetailed, counterChallenge) runs
+    `onChallengeBadges` **after the commit** — a rolled-back action awards nothing, and awardBadges
+    reads the committed rows. Queued at: `applyResolution` (every player), a decline / back-out, a
+    counter, `takeProposal` (the proposer), `closeProposal` when `rejected` (the proposer),
+    `activate` / `expireChallenge` (the `missed` players; a legacy counter row's creator when it
+    starts). A queue on an unregistered executor is dropped — the daily sweep is the safety net.
+    Awards store `source_challenge_id` (the first queued challenge for that player in the
+    transaction) and `badge.earned` carries `trigger: 'challenge'` + `sourceChallengeId`; the shelf
+    links it only for the challenge's participants.
+  - The seeded challenge badges (migrate23: wins 1/5/25, losses 10, streaks, 1 tie, 5 abandoned) are
+    still **draft** — they can go live now; Will decides which.
 - **Rules** (`badgeRules.ts`, pure): localDate / daysOfWeek / localTime in the **venue's** zone
   (fallback America/New_York), `postedWithinHours` (always on with a date, default 48), machine
   (group = OPDB group captured on save by

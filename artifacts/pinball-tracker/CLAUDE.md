@@ -365,6 +365,12 @@
   series color + pips); tapping a tier opens its detail with the ladder.
 - AddScorePage step 4 shows `newBadges` from the score POST at 96px; the notifications page renders
   `badge_earned`.
+- **Challenge badges** (phase 3, 2026-09-30): earned from challenge results, streaks, declines /
+  back-outs / counters (server-side, after the challenge action commits — no client change needed to
+  award). A challenge-earned badge's detail shows "From a challenge" linking `/challenges/:id` —
+  the server sends `sourceChallengeId` only to that challenge's participants, so never build the
+  link from anything else. The admin metric picker lists every challenge metric as available (its
+  label/description come from the server registry); an unbuilt metric would show "— not built yet".
 - `/admin/badges`: list + editor (kind, metric + N or the rule form builder, window, retroactive),
   image upload with a live 48/96/locked preview, Preview / Go live / Retire, grant picker (admin user
   search) and per-holder revoke — all through `ConfirmDialog`. Preview, Go live and Backfill now use
