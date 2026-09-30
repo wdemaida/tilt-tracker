@@ -66,6 +66,12 @@ npx tsx migrate<N>.ts
 This hits the **production Neon DB** via `DATABASE_URL` in `artifacts/api-server/.env`.
 Always also update `lib/db/src/schema.ts` to keep Drizzle types in sync.
 
+**Timestamp columns are always `timestamptz`** — `timestamp('x', { withTimezone: true })` in schema.ts,
+`timestamptz` in the migration (migrate26 converted every existing one; `schema.test.ts` fails on a naive
+one). `lib/db` pins `process.env.TZ = 'UTC'` for everything that imports it, so local scripts and tests
+behave like Render (local log times and the PM dev-budget day are then UTC). Details: api-server
+CLAUDE.md, "Timestamps".
+
 ---
 
 ## Deploy sequence
@@ -173,4 +179,5 @@ Feature-specific gotchas live in `artifacts/pinball-tracker/CLAUDE.md` (frontend
 | `artifacts/api-server/src/lib/badgeSeries.ts` | Badge series (tier ladders): shared shelf/catalog order, reorder validation, shelf collapsing + pips |
 | `artifacts/pinball-tracker/src/components/BadgeImage.tsx` | Draws every badge — image, or lucide icon + color fallback |
 | `lib/db/src/schema.ts` | Drizzle schema — source of truth for DB types |
+| `artifacts/api-server/src/lib/instant.ts` | `parseInstant` (client instants must carry an offset) and `dbTimestampToIso` (raw-SQL timestamps out) |
 | `artifacts/api-server/migrate*.ts` | Numbered migration scripts (run once, keep for history) |

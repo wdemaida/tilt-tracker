@@ -168,6 +168,12 @@
   as **local**, so the edit modal and the score card disagreed by the viewer's offset and saving
   wrote that shift back to the database. `toLocalInput` / `localInputToIso` are the round trip;
   `naiveToLocalInput` is for the zone-less wall clock `/api/upload` returns for EXIF timestamps.
+- **Every instant sent to the API must carry an offset** — `toISOString()` or `localInputToIso()`.
+  Since fix/timestamptz the server refuses a zone-less one with a 400 (`invalid_played_at`,
+  `invalid_window`, a badge field error, `invalid_date`) instead of reading it in its own zone.
+  `localInputToIso` returns its input unchanged when it can't parse it, which now surfaces as that
+  400. Every timestamp the API returns is ISO with an offset (the admin overview's "last ran" rows,
+  `events_since` and users' `lastScoreAt` used to be raw Postgres text, read as the viewer's local time).
 
 ## Camera-recorded played times are locked (`src/lib/captureTime.ts`, added 2026-09-30)
 - A score's played time from the photo's EXIF (or a video's own metadata) **can't be changed by the

@@ -410,11 +410,67 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   components back out with the local getters, and the route returns `playedAt` as a zone-less
   `YYYY-MM-DDTHH:mm:ss`. The **browser** turns it into an instant against the viewer's timezone (see
   `src/lib/datetime.ts` on the frontend) — never call `new Date()` on that value server-side.
-- **`scores.played_at` / `created_at` are `timestamp WITHOUT time zone`.** Prod is only self-consistent
-  because Render runs in UTC; a score written by a locally-run api-server stores an ET wall clock into
-  the same column. Migrating both to `timestamptz` is the real fix, not yet done. When querying them
-  for debugging, select `::text` — postgres.js parses them into a Date in *your* zone, so
-  `new Date(row.created_at).toISOString()` prints times that don't match the column.
+- **Stored played times are instants** (`timestamptz`, see "Timestamps" below); only the EXIF
+  value in `/api/upload`'s response is a zone-less wall clock, and the browser converts it.
+
+## Timestamps (`timestamptz`, migrate26, fix/timestamptz, 2026-09-30)
+- **Every timestamp column is `timestamptz`** — all 48 (25 tables), `withTimezone: true` in
+  schema.ts. They always held instants: until migrate26 they were naive `timestamp` columns holding
+  UTC digits by convention. `stat_history.period_date` is the one calendar value and stays a `date`
+  (a New York day). **New timestamp columns must be `timestamptz`** — `src/lib/schema.test.ts` fails
+  on a `timestamp(...)` without `{ withTimezone: true }`; in a migration write `timestamptz`.
+- **What was actually true before** (the old note here was wrong): a locally-run api-server did
+  **not** store Eastern wall clocks. Drizzle 0.38 replaces postgres.js's timestamp parsers with
+  pass-throughs, writes `toISOString()` and reads a naive value as `new Date(text + "+0000")` — the
+  same in any process zone (dev confirmed: JS-set and `DEFAULT now()` columns written from the Eastern
+  laptop agree to ~1 s). The real hazards were (1) **raw `postgres()` clients** (scripts): postgres.js
+  parses a naive value in the *process's* zone, so reading a row and writing it back shifted it +4 h
+  (EDT) / +5 h (EST) — the seed tooling's custom type and backfill-played-at's local getters existed
+  for this; (2) **`new Date(<string without an offset>)`** in Node; (3) **raw-SQL timestamp text sent
+  to the browser** (`"2026-09-30 05:00:00.1"`, read as the viewer's local time — the admin overview's
+  "last ran" rows and users' `lastScoreAt` were 4-5 h off for an Eastern admin); (4) SQL that relied
+  on the Neon session `TimeZone` being GMT (`now() AT TIME ZONE 'UTC'`, `'-infinity'::timestamp`).
+- **Guards now in place:**
+  - **Zone-less client instants are refused** — `parseInstant()` (`src/lib/instant.ts`) requires
+    `Z` or `±hh:mm`: `POST`/`PATCH /api/scores` `playedAt` → 400 `invalid_played_at`; challenge
+    `startsAt`/`endsAt` → 400 `invalid_window` (epoch ms still accepted); badge
+    `availableFrom`/`availableTo` → field error; admin activity `from`/`to` → 400 `invalid_date`.
+    The frontend sends `toISOString()` / `localInputToIso()` for all of them. Any new route taking
+    an instant should use it.
+  - **Raw-SQL timestamps never leave the server as Postgres text**: select them through
+    `.mapWith(<column>)` (a Date → ISO `…Z` in the JSON) or `dbTimestampToIso()`. Drizzle's typed
+    columns and its `max()`/`min()` helpers are already mapped; a hand-written ``sql`max(col)` `` or
+    `db.execute` is not.
+  - **SQL compares timestamptz with timestamptz** — `now() - make_interval(…)`,
+    `'-infinity'::timestamptz`, `'<iso>'::timestamptz`, "today" = `date_trunc('day', now() AT TIME ZONE
+    'America/New_York') AT TIME ZONE 'America/New_York'`. A bare `'2026-09-30'::date` or `::timestamp`
+    compared with a column is cast at the session zone's midnight — make it explicit (`::timestamp AT
+    TIME ZONE 'UTC'`).
+  - **`process.env.TZ = 'UTC'`** is pinned by `lib/db/src/pinUtc.ts` (first import of
+    `@workspace/db`), so the api-server, every `test-*.ts` and scripts run like Render even on the
+    Eastern laptop. Side effects locally: console timestamps and pmClient's dev-budget day key
+    (`localDateKey`) follow UTC — the 50-calls/day budget rolls over at 8 pm EDT / 7 pm EST.
+    `toNaiveLocal()` in upload.ts is unaffected (it mirrors exifr's own local-zone construction).
+  - **Session TimeZone check**: startup logs `!!! DATABASE SESSION TimeZone IS …` unless it's
+    UTC/GMT, and `/api/admin/health` returns `database.timeZone` / `timeZoneOk` (shown on the Health
+    page). With timestamptz columns a non-UTC session no longer changes stored instants — only how raw
+    SQL renders them as text and how a naive value would be cast. A `connection: { TimeZone }`
+    startup parameter is not a reliable guard on Neon (it dropped `default_transaction_read_only`).
+- **Debugging queries**: `col::text` now carries its offset (`2026-09-30 11:32:45.82+00` under
+  Neon's GMT session); `(col AT TIME ZONE 'UTC')::text` gives the bare UTC digits whatever the
+  session. A raw postgres.js client parses timestamptz correctly in any zone. For read-only checks on
+  Neon use `BEGIN READ ONLY` — a `default_transaction_read_only` startup parameter is ignored.
+- **Seed backups** (`seedData/`, gitignored): `db.ts` moves timestamps as Postgres text through
+  `src/lib/backupTimestamps.ts`. New backups carry `+00`; backups from before migrate26 hold naive
+  UTC digits and are written back with an explicit `+00` — never through a Date, never in the
+  session's or the process's zone. `verifyRestore.ts` checksums under `SET LOCAL TIME ZONE 'UTC'`.
+  (`restoreSeedData` still writes only the users/scores columns that existed in September —
+  `users.challenge_venues_seeded_at`, `disabled_*`, `pinball_map_email`, the scores provenance
+  columns are not restored.)
+- `backfill-played-at.ts` (the 2026-09-10 EXIF repair) is obsolete and refuses to run.
+- Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/schema.test.ts
+  src/lib/instant.test.ts src/lib/timestamptzMigration.test.ts src/lib/backupTimestamps.test.ts`
+  (the migration and backup tests run in PGlite under a New York session).
 
 ## Played-time provenance and the photo-time lock (`src/lib/playedAtProvenance.ts`, migrate24, added 2026-09-30)
 - **Why:** Will edited an old May-2 photo score's played time to today and it then counted in four
@@ -1002,7 +1058,7 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   tier at 0 is purged with cutoff = now. Per tier: `DELETE … USING
   (SELECT id … WHERE <tier> AND created_at < cutoff ORDER BY created_at LIMIT 5000)`, looped until a
   short batch, capped at 200 batches (1M rows) per tier per run — the rest goes next day
-  (`capped: true`). Cutoffs are computed on the DB clock in UTC (`created_at` is naive UTC). A failing
+  (`capped: true`). Cutoffs are `now() - make_interval(days)` on the DB clock (`created_at` is timestamptz). A failing
   tier is recorded in `errors`; the others still run. It then logs `system.activity_retention` with
   per-tier counts — the overview's "Activity-log retention" row and the Config page's "last cleanup".
 - **Indexes:** the standard/admin tiers use `activity_events_created_at_idx` (migrate19); the
