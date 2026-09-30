@@ -113,7 +113,12 @@ export const METRICS: readonly MetricDef[] = [
 // streaks from computeRecord() (challengeRules.ts: bestStreak and bestLossStreak), the rest as
 // GROUP BY queries that exclude proposal rows (status proposed / rejected / lapsed) — move it into
 // METRICS, and delete it from this list. counters_accepted is now a proposal fact (proposed_by_id),
-// not "challenges you created"; the exact SQL is in the badges plan's "Phase 3 notes". Seeded badges
+// not "challenges you created"; the exact SQL is in the badges plan's "Phase 3 notes".
+// challenges_declined is a TRUE decline only: response 'declined' AND decline_reason IS DISTINCT FROM
+// 'backed_out' (a counter is response 'countered', so it's excluded too). challenges_backed_out is
+// response 'declined' AND decline_reason 'backed_out' — an accepted invitee who left a pending group
+// (migrate24; the server sets that reason only on the back-out path). Both join challenges and skip
+// proposal rows (status proposed / rejected / lapsed). Seeded badges
 // on these metrics (migrate23) stay draft until then: activateBadge refuses an unavailable metric.
 export const PENDING_METRICS: ReadonlyArray<Pick<MetricDef, 'key' | 'label' | 'description'>> = [
   { key: 'challenge_wins', label: 'Challenges won', description: 'Resolved challenges the player won.' },
@@ -122,7 +127,8 @@ export const PENDING_METRICS: ReadonlyArray<Pick<MetricDef, 'key' | 'label' | 'd
   { key: 'challenges_abandoned', label: 'Challenges abandoned', description: 'Challenges nobody finished.' },
   { key: 'win_streak_achieved', label: 'Best win streak', description: 'Longest run of consecutive challenge wins.' },
   { key: 'loss_streak_achieved', label: 'Worst loss streak', description: 'Longest run of consecutive challenge losses.' },
-  { key: 'challenges_declined', label: 'Challenges declined', description: 'Challenges the player declined outright.' },
+  { key: 'challenges_declined', label: 'Challenges declined', description: 'Challenges the player declined outright (not counter-offers, not backing out after accepting).' },
+  { key: 'challenges_backed_out', label: 'Challenges backed out of', description: 'Group challenges the player accepted, then left before they started.' },
   { key: 'challenges_countered', label: 'Counter-offers made', description: 'Challenges the player answered with a counter-offer.' },
   { key: 'challenges_cant_reach', label: '"Can’t get there" answers', description: 'Declines or counters because the player can’t reach the venue.' },
   { key: 'challenges_passed', label: 'Challenges passed on', description: 'Declines with "no thanks".' },
