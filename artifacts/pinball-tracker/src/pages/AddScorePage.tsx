@@ -19,6 +19,10 @@ import { extractVideoFrames, isVideoFile, VideoFrameError, VIDEO_UNSUPPORTED_MES
 import { ScoreDigitInput } from '../components/ScoreDigitInput';
 import { MissingLocationNotice, type CurrentLocationState } from '../components/MissingLocationNotice';
 import BadgeImage from '../components/BadgeImage';
+import ChallengeFitSummary from '../components/ChallengeFitSummary';
+import EditScoreDialog, { type EditScoreTarget } from '../components/EditScoreDialog';
+import type { ChallengeFit } from '../lib/api';
+import { invalidateChallengeQueries } from '../lib/challenges';
 import { BADGES_KEY, type Badge } from '../lib/badges';
 import { markBadgesShown } from '../lib/badgeToasts';
 import {
@@ -87,6 +91,14 @@ interface SavedScore {
   score: number;
   /** Badges this score just earned (POST /api/scores `newBadges`). */
   newBadges: Badge[];
+  /** How it fared in the user's challenges on this machine (POST / PATCH `challenges`; older servers omit it). */
+  challenges: ChallengeFit[];
+  /** For the challenge summary's dates and "Edit played time" (the shared edit dialog). */
+  machineId: number;
+  type: 'casual' | 'tournament';
+  playedAt: string;
+  venueName: string | null;
+  venueTimezone: string | null;
 }
 
 export default function AddScorePage() {
@@ -183,6 +195,8 @@ export default function AddScorePage() {
   const addBlockedByHeic = uploadItems.some(i => i.images.some(im => im.heicFailed));
   const canAddMore = uploadItems.length > 0 && uploadItems.length < MAX_ITEMS && !addBlockedByHeic;
   const [savedScore, setSavedScore] = useState<SavedScore | null>(null);
+  /** Step 4's "Edit played time": the saved score, open in the shared edit dialog. */
+  const [editSaved, setEditSaved] = useState<EditScoreTarget | null>(null);
   const [pmLogin, setPmLogin] = useState('');
   const [pmPassword, setPmPassword] = useState('');
   const [pmSubmitting, setPmSubmitting] = useState(false);
@@ -723,7 +737,13 @@ export default function AddScorePage() {
         queryClient.invalidateQueries({ queryKey: BADGES_KEY });
         queryClient.invalidateQueries({ queryKey: ['notifications'] });
       }
-      setSavedScore({ id: row.id, venueId: row.venueId, machineName: data.machineName, score: data.score, newBadges });
+      const challenges: ChallengeFit[] = Array.isArray(row.challenges) ? row.challenges : [];
+      if (challenges.length) invalidateChallengeQueries();
+      setSavedScore({
+        id: row.id, venueId: row.venueId, machineName: data.machineName, score: data.score, newBadges, challenges,
+        machineId: row.machineId, type: row.type === 'tournament' ? 'tournament' : 'casual', playedAt: row.playedAt,
+        venueName: row.venueName ?? null, venueTimezone: selectedVenue?.timezone ?? null,
+      });
       setStep(4);
       void runFullPhotoUpload(row.id);
     },
@@ -2079,6 +2099,23 @@ export default function AddScorePage() {
                 </div>
               </div>
             )}
+            <ChallengeFitSummary
+              fits={savedScore.challenges}
+              playedAt={savedScore.playedAt}
+              venueTimezone={savedScore.venueTimezone}
+              onEditPlayedTime={() => setEditSaved({
+                id: savedScore.id, machineId: savedScore.machineId, machineName: savedScore.machineName, score: savedScore.score,
+                type: savedScore.type, playedAt: savedScore.playedAt, venueId: savedScore.venueId, venueName: savedScore.venueName,
+                venueTimezone: savedScore.venueTimezone, hasFullPhoto: fullPhoto.status === 'saved', isOwn: true,
+              })}
+            />
+            <EditScoreDialog
+              score={editSaved}
+              onClose={() => setEditSaved(null)}
+              onSaved={r => setSavedScore(prev => (prev
+                ? { ...prev, ...r }
+                : prev))}
+            />
             {fullPhoto.status === 'working' && (
               <p className="flex items-center gap-1.5 text-xs text-muted-foreground" role="status">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" /> Saving full-size photo…

@@ -13,7 +13,7 @@ import { redactScoreLocation, redactVenue, canSeeVenueLinkage } from '../lib/ven
 import { getAuth } from '@clerk/express';
 import { parseScore } from '../lib/scoreRead.js';
 import { visibleScoreSql } from '../lib/venueActivity.js';
-import { onScoreCreated, scoreLockedByChallenge, SCORE_LOCKED } from '../lib/challenges.js';
+import { onScoreCreated, scoreChallengeSummary, scoreLockedByChallenge, SCORE_LOCKED } from '../lib/challenges.js';
 import { hasFullPhotoSql, publicScoreRow, deletePhotoBestEffort } from '../lib/photoStore.js';
 import { logActivity } from '../lib/activity.js';
 import { onScoreBadges } from '../lib/badges.js';
@@ -139,7 +139,10 @@ router.post('/', requireAppUser, async (req, res) => {
     // Badges: the score metrics and every live rule badge. Never throws; the "Score logged!" step
     // shows whatever this returns.
     const newBadges = await onScoreBadges(row);
-    res.status(201).json({ ...publicScoreRow(row), newBadges });
+    // How it fared in the uploader's challenges on this machine — after onScoreCreated, so the lock
+    // rows are written and a counting score reads "counted". Never throws ([] on error).
+    const challengeFits = await scoreChallengeSummary(row);
+    res.status(201).json({ ...publicScoreRow(row), newBadges, challenges: challengeFits });
   } catch (err) {
     console.error('Create score error:', err);
     res.status(500).json({ error: 'Failed to create score' });
@@ -200,7 +203,12 @@ router.patch('/:id', requireAppUser, async (req, res) => {
     type: 'score.edited', actorUserId: appUser.id, subjectUserId: existing.userId !== appUser.id ? existing.userId : null,
     targetType: 'score', targetId: id, payload: { changes, byAdmin: existing.userId !== appUser.id },
   });
-  res.json(publicScoreRow(updated));
+  // An edit can make the score count (a corrected played time, venue or machine): re-sync the author's
+  // challenges exactly as an upload does (records the lock, resolves a won race, tells the others),
+  // then report how it now fares. Neither throws.
+  await onScoreCreated(updated);
+  const challengeFits = await scoreChallengeSummary(updated);
+  res.json({ ...publicScoreRow(updated), challenges: challengeFits });
 });
 
 // DELETE /api/scores/:id — owner or admin
@@ -370,6 +378,8 @@ router.post('/:id/repair/machine', requireAppUser, async (req, res) => {
 
     await db.update(scores).set({ machineId: target.id }).where(eq(scores.id, id));
     const previousRetired = await retireMachineIfUnused(previousMachineId);
+    // The score is on a new machine now — it may count in a challenge on it (see PATCH above).
+    await onScoreCreated({ id, userId: existing.userId });
     await logActivity({
       type: 'score.repair_machine', actorUserId: appUser.id, subjectUserId: existing.userId !== appUser.id ? existing.userId : null,
       targetType: 'score', targetId: id, payload: { fromMachineId: previousMachineId, toMachineId: target.id, toMachineName: target.name, previousRetired },

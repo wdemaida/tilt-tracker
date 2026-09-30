@@ -571,6 +571,23 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   synced (so the moment one is uploaded). PATCH / DELETE / per-score machine repair answer 409
   `score_locked_by_challenge`, admins included; the FK has no ON DELETE, so the DB refuses too.
   Machine retirement, admin machine/venue deletes and venue merges account for challenges.
+- **"How did my score fare?"** (2026-09-30 — Will's old photo's EXIF time fell before all four of
+  his Munsters challenges started; the rules rightly skipped it and nothing said so). `POST
+  /api/scores` (201) and `PATCH /api/scores/:id` (200) now also return `challenges: ChallengeFit[]`
+  — one per challenge of the scorer's **on that score's machine** (match mode applies; a score on
+  another machine returns `[]`): `{ challengeId, machineName, type, status, reason, startsAt, endsAt,
+  venueName, opponents }`. `status` = `counted` | `not_counted` | `not_started`; `reason` = `counted`,
+  `not_started` (pending, or active with the start still ahead), or the **first** failing rule, in
+  `exclusionReason()`'s order: `wrong_venue`, `no_photo`, `played_before_start` / `played_after_end`,
+  `posted_before_start` / `posted_after_end` (`created_at`), `not_visible`. The pure half is
+  `scoreChallengeFits()` in `challengeRules.ts` — it maps `exclusionReason()`, never re-implements
+  it, and `challengeStarted()` is shared with `evaluate()`. `scoreChallengeSummary()` in
+  `challenges.ts` loads it (the scorer's accepted, outcome-less active / pending challenges, plus any
+  the score is locked into — a race it just won is resolved by then) and **runs after
+  `onScoreCreated()`**, so a lock row means `counted`. Never throws (`[]`). Old clients ignore the
+  field. **PATCH now re-syncs** (it calls `onScoreCreated()` after the update — lock rows, a race won,
+  the opponent-scored notice), so correcting the played time / venue / machine can make a score count;
+  per-score machine repair re-syncs too. The lock still applies first: a counted score is 409.
 - **Race = strictly beat the target** (`> target`; equalling it is not a finish). **Nobody finishing**
   (race: nobody beat the target; average: nobody reached `min_plays`) **or nobody playing at all
   (any type)** = **abandoned**: every non-forfeited participant's `outcome` is `'abandoned'`,

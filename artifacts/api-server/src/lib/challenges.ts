@@ -7,9 +7,9 @@ import {
   computeStanding, resolveChallenge, resolutionTrigger, projectedRanks, scoreCounts, baselineFrom, bestOnMachine,
   raceTarget, matchGroupFor, pendingDue, afterAnswer, canAccept, canDecline, canCounter, canCancel, canStart, canForfeit,
   canDecideProposal, phaseOf, validateCreate, parseInvitees, computeRecord, rosterHasMachine, saidNo, reinvitees, proposalClosure,
-  isProposalStatus, storedDeclineReason, ENDING_SOON_MS, PROPOSAL_REMINDER_MS, MAX_PLAYERS,
+  isProposalStatus, storedDeclineReason, challengeStarted, scoreChallengeFits, ENDING_SOON_MS, PROPOSAL_REMINDER_MS, MAX_PLAYERS,
   type CandidateScore, type MatchMode, type CountRule, type MatchRule, type ParticipantState, type ResolutionReason, type Outcome,
-  type ChallengeRecord, type ChosenDeclineReason, type CreateInput, type DeclineReason, type ParticipantResponse, type ProposalCloseReason,
+  type ChallengeRecord, type ChallengeFit, type ChosenDeclineReason, type CreateInput, type DeclineReason, type ParticipantResponse, type ProposalCloseReason,
 } from './challengeRules.js';
 import { canSeeScore, type ActivityVenue } from './venueActivity.js';
 import { isPrivateVenue } from './venueAddress.js';
@@ -222,7 +222,7 @@ interface Evaluation {
 
 function evaluate(c: ChallengeRow, participants: ParticipantRow[], candidates: ScoredCandidate[], now: Date): Evaluation {
   const accepted = participants.filter(p => p.response === 'accepted');
-  const started = (c.status === 'active' || c.status === 'resolved') && !!c.startsAt && +now >= +c.startsAt;
+  const started = challengeStarted(c, now);
   const rule: CountRule | null = started ? { ...matchRuleOf(c), venueId: c.venueId, startsAt: c.startsAt!, endsAt: c.endsAt } : null;
   const counting = new Map<number, ScoredCandidate[]>();
   const states = accepted.map(p => {
@@ -570,6 +570,57 @@ export async function onScoreCreated(score: { id: number; userId: number }, now 
     }
   } catch (err) {
     console.error('Challenge score hook failed:', err);
+  }
+}
+
+/**
+ * How a score fared in its author's challenges (POST /api/scores and PATCH /api/scores/:id return it
+ * as `challenges`). Call it AFTER onScoreCreated(), which syncs them and writes the lock rows, so a
+ * counting score reads "counted". Covers the challenges the author is still playing (accepted, no
+ * outcome; active, or pending — "not_started") plus any this score is locked into (a race it just
+ * won resolves on the spot). Only challenges on the score's machine appear — see scoreChallengeFits
+ * in challengeRules.ts, which decides with the same rules the standings use. Never throws: [] on error.
+ */
+export async function scoreChallengeSummary(score: { id: number; userId: number }, now = new Date()): Promise<ChallengeFit[]> {
+  try {
+    const rows = await db
+      .selectDistinct({ id: challenges.id })
+      .from(challenges)
+      .innerJoin(challengeParticipants, eq(challengeParticipants.challengeId, challenges.id))
+      .leftJoin(challengeScores, and(eq(challengeScores.challengeId, challenges.id), eq(challengeScores.scoreId, score.id)))
+      .where(and(
+        eq(challengeParticipants.userId, score.userId),
+        or(
+          isNotNull(challengeScores.scoreId),
+          and(
+            inArray(challenges.status, ['active', 'pending']),
+            eq(challengeParticipants.response, 'accepted'),
+            isNull(challengeParticipants.outcome),
+          ),
+        ),
+      ));
+    const locked = new Set((await db.select({ id: challengeScores.challengeId }).from(challengeScores)
+      .where(eq(challengeScores.scoreId, score.id))).map(r => r.id));
+    const fits = [];
+    for (const { id } of [...rows].sort((a, b) => a.id - b.id)) {
+      const c = await loadChallenge(db, id);
+      if (!c) continue;
+      const participants = await loadParticipants(db, id);
+      // The score as THIS challenge's audience sees it (visibility depends on who's in it); absent
+      // when it isn't on the challenge's machine.
+      const [mine] = (await loadCandidates(db, matchRuleOf(c), [score.userId], audienceOf(participants))).filter(s => s.id === score.id);
+      if (!mine) continue;
+      fits.push({
+        challengeId: c.id, machineName: c.machine.name, type: c.type, status: c.status,
+        machineId: c.machineId, matchGroup: c.matchGroup, venueId: c.venueId, venueName: c.venue?.name ?? null,
+        startsAt: c.startsAt, endsAt: c.endsAt, locked: locked.has(c.id), score: mine,
+        opponents: participants.filter(p => p.userId !== score.userId && p.response === 'accepted').map(p => p.user.displayName),
+      });
+    }
+    return scoreChallengeFits(fits, now);
+  } catch (err) {
+    console.error('Challenge summary failed:', err);
+    return [];
   }
 }
 

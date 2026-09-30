@@ -1227,6 +1227,56 @@ try {
   r = await call(bob, 'GET', '/me/challenge-prefs');
   check('…no re-seeding on the next read', r.body?.venues?.length === 1, r.body?.venues);
 
+  // ── how a score fared: POST / PATCH /api/scores `challenges` (2026-09-30) ──
+  // Will's #1276: an old photo's EXIF played_at fell before his challenges started, so it (rightly)
+  // didn't count — and nothing said so. Every upload / edit now reports it per matching challenge.
+  {
+    r = await post(alice, { friendId: bob.id, type: 'high_score', matchMode: 'exact' });
+    const fitExact = r.body.id;
+    await call(bob, 'POST', `/challenges/${fitExact}/accept`);
+    r = await post(alice, { friendId: bob.id, type: 'high_score', matchMode: 'game' });
+    const fitGame = r.body.id;
+    await call(bob, 'POST', `/challenges/${fitGame}/accept`);
+    r = await post(alice, { friendId: bob.id, type: 'high_score' });
+    const fitPending = r.body.id; // bob hasn't answered: pending, starts when accepted
+    const fitIds = [fitExact, fitGame];
+    const fitsIn = (b: any, cids: number[]) => ((b?.challenges ?? []) as any[]).filter(f => cids.includes(f.challengeId));
+    const [fw] = await db.select({ startsAt: challenges.startsAt }).from(challenges).where(eq(challenges.id, fitExact));
+    const [fw2] = await db.select({ startsAt: challenges.startsAt }).from(challenges).where(eq(challenges.id, fitGame));
+    const latestStart = Math.max(+fw.startsAt!, +fw2.startsAt!);
+
+    s = await upload(alice, { score: 3_333, playedAt: new Date(+fw.startsAt! - 150 * 24 * H).toISOString() });
+    const oldPhoto = s.body.id;
+    let fits = fitsIn(s.body, fitIds);
+    check('upload played before the start → 201 with challenges: not_counted / played_before_start in each matching one',
+      s.status === 201 && fits.length === 2 && fits.every(f => f.status === 'not_counted' && f.reason === 'played_before_start'), s.body?.challenges);
+    check('…each entry has the documented shape', fits.every(f => typeof f.machineName === 'string' && f.type === 'high_score'
+      && typeof f.startsAt === 'string' && typeof f.endsAt === 'string' && Array.isArray(f.opponents) && f.opponents.includes(bob.displayName)), fits);
+    const pend = fitsIn(s.body, [fitPending]);
+    check('…a pending challenge alice is in reads not_started', pend.length === 1 && pend[0].status === 'not_started' && pend[0].startsAt === null, s.body?.challenges);
+    check('…and no lock rows for it', (await db.select().from(challengeScores).where(eq(challengeScores.scoreId, oldPhoto))).length === 0);
+
+    r = await call(alice, 'PATCH', `/scores/${oldPhoto}`, { playedAt: new Date(latestStart + 1000).toISOString() });
+    fits = fitsIn(r.body, fitIds);
+    check('PATCH played_at into the window → 200, counted in both', r.status === 200 && fits.length === 2 && fits.every(f => f.status === 'counted' && f.reason === 'counted'), r.body?.challenges ?? r);
+    check('…and the edit wrote the lock rows', (await db.select().from(challengeScores).where(eq(challengeScores.scoreId, oldPhoto))).length === 2);
+    check('…PATCH keeps the score fields (backward compatible)', r.body?.id === oldPhoto && r.body?.score === 3_333, r.body);
+    r = await call(alice, 'PATCH', `/scores/${oldPhoto}`, { playedAt: new Date(+fw.startsAt! - 150 * 24 * H).toISOString() });
+    check('…now locked: editing it again → 409', r.status === 409 && r.body?.code === 'score_locked_by_challenge', r);
+
+    s = await upload(alice, { score: 4_444, machineId: OTHER });
+    check('a score on a different machine lists no challenges', s.status === 201 && Array.isArray(s.body?.challenges) && s.body.challenges.length === 0, s.body?.challenges);
+    s = await upload(alice, { score: 5_555, photoThumbnail: undefined });
+    fits = fitsIn(s.body, fitIds);
+    check('no photo → not_counted / no_photo', fits.length === 2 && fits.every(f => f.status === 'not_counted' && f.reason === 'no_photo'), s.body?.challenges);
+    s = await upload(alice, { score: 6_666, machineId: PREM });
+    const prem = fitsIn(s.body, fitIds);
+    check('a Premium score: counted in the game-mode one, absent from the exact one', prem.length === 1 && prem[0].challengeId === fitGame && prem[0].status === 'counted', s.body?.challenges);
+    r = await call(alice, 'PATCH', `/scores/${s.body.id}`, { score: 1 });
+    check('…(it counted, so it is locked)', r.status === 409, r);
+    await call(alice, 'POST', `/challenges/${fitPending}/cancel`);
+  }
+
   // ── run-wide audit: closed proposals, one event per action ─────────────────
   {
     const runCids = [...new Set((await db.select({ id: challengeParticipants.challengeId }).from(challengeParticipants)

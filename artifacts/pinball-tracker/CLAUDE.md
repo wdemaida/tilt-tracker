@@ -400,6 +400,22 @@
   proposal's id ("Take it for everyone" / "Keep mine" — `me.canDecideProposal`). An accepted player
   in a pending challenge sees "Back out" (a decline); the challenger sees "Start with who's in"
   (`me.canStart`, `act(id, 'start')`). Both go through an inline confirm.
+- **Did my score count?** (`components/ChallengeFitSummary.tsx`, 2026-09-30): Add Score's step 4
+  and the edit dialog (after a save) render the `challenges` list POST / PATCH `/api/scores` return.
+  Identical (status, reason) pairs share one line; tap a line for links to the challenges. Copy:
+  all counted "Counts in 4 of your challenges" (one: "Counts in your Munsters (Pro) challenge" — a
+  leading "The" is dropped after "your"); `played_before_start` "Not counted in your … challenges —
+  played May 2, before they started" (the date via `formatScoreTime` in the venue's zone);
+  `played_after_end` "…after they ended"; `posted_before_start` / `posted_after_end` "…logged
+  before they started / after they ended"; `no_photo` "…challenge scores need a photo";
+  `wrong_venue` "…they only count at <venue>"; `not_visible` "…the other players can't see scores at
+  this venue"; `not_started` "Your … challenge hasn't started yet — plays after it starts will
+  count". Nothing renders when the list is empty (no challenge on that machine). **Edit played time**
+  shows only for a played-time reason and only when nothing counted (a counted score is locked, 409).
+- **One edit-score dialog** (`components/EditScoreDialog.tsx`), used by Home's cards and step 4's
+  Edit played time — don't build a second editor. When the PATCH returns challenges it stays open on
+  the summary ("Score Updated", Done / Edit played time); otherwise it closes as before. `onSaved`
+  hands the caller the updated fields + summary (step 4 re-renders from it).
 - **Read `status`, not `phase`, for proposed / rejected / lapsed** — the server maps them onto old
   phases for cached clients. `statusLine` has a `default` branch: never remove it (an unknown status
   from a newer server must not crash the page).

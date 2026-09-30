@@ -167,6 +167,99 @@ export function scoreCounts(rule: CountRule, s: CandidateScore): boolean {
 }
 
 /**
+ * Whether a challenge's window is open for counting: active (or resolved), with a start that has
+ * passed. Before that nothing counts — evaluate() in challenges.ts and scoreChallengeFits() share it.
+ */
+export function challengeStarted(c: { status: ChallengeStatus; startsAt: Date | null }, now: Date): boolean {
+  return (c.status === 'active' || c.status === 'resolved') && !!c.startsAt && +now >= +c.startsAt;
+}
+
+// ── "how did this score fare?" (the Add Score / edit-score summary) ─────────
+
+/**
+ * Why a score doesn't count in one challenge, as the Add Score summary words it. Derived from
+ * exclusionReason() — the same rules, in the same order, so the summary can never disagree with the
+ * standings — with the window reasons split by which side of it the time fell:
+ *   played_before_start / played_after_end   (played_at outside [starts_at, ends_at])
+ *   posted_before_start / posted_after_end   (created_at outside it — a backdated upload)
+ *   wrong_venue (venue lock), no_photo, not_visible (another participant can't see it — canSeeScore).
+ * 'machine' never appears: a score on another machine isn't reported at all.
+ */
+export type ChallengeFitReason =
+  | 'counted' | 'not_started'
+  | 'wrong_venue' | 'no_photo' | 'played_before_start' | 'played_after_end'
+  | 'posted_before_start' | 'posted_after_end' | 'not_visible';
+export type ChallengeFitStatus = 'counted' | 'not_counted' | 'not_started';
+
+/** One of the scorer's challenges, as scoreChallengeFits() needs it. */
+export interface FitChallenge extends MatchRule {
+  challengeId: number;
+  machineName: string;
+  type: ChallengeType;
+  status: ChallengeStatus;
+  venueId: number | null;
+  venueName: string | null;
+  startsAt: Date | null;
+  endsAt: Date;
+  /** The other accepted players' display names (for the summary's links). */
+  opponents: string[];
+  /** A challenge_scores row exists for this score — it counted (the lock never lies). */
+  locked: boolean;
+  /** The score as this challenge's audience sees it (visibleToOthers depends on who's in it). */
+  score: CandidateScore;
+}
+
+export interface ChallengeFit {
+  challengeId: number;
+  machineName: string;
+  type: ChallengeType;
+  status: ChallengeFitStatus;
+  reason: ChallengeFitReason;
+  startsAt: Date | null;
+  endsAt: Date;
+  venueName: string | null;
+  opponents: string[];
+}
+
+function fitReason(rule: CountRule, s: CandidateScore): ChallengeFitReason | 'machine' {
+  switch (exclusionReason(rule, s)) {
+    case null: return 'counted';
+    case 'machine': return 'machine';
+    case 'venue': return 'wrong_venue';
+    case 'no_photo': return 'no_photo';
+    case 'played_outside_window': return +s.playedAt < +rule.startsAt ? 'played_before_start' : 'played_after_end';
+    case 'uploaded_outside_window': return +s.createdAt < +rule.startsAt ? 'posted_before_start' : 'posted_after_end';
+    case 'hidden': return 'not_visible';
+  }
+}
+
+/**
+ * How one score fares in each of its author's challenges on the same machine: counted, not counted
+ * (with the first failing rule), or not started yet (pending, or active with a start still ahead — it
+ * will count if it's played after the start). Challenges on another machine are left out, so a score
+ * on an unrelated game lists nothing. `locked` wins: a score recorded in challenge_scores counted.
+ */
+export function scoreChallengeFits(challenges: FitChallenge[], now: Date): ChallengeFit[] {
+  const out: ChallengeFit[] = [];
+  for (const c of challenges) {
+    if (!machineMatches(c, c.score)) continue;
+    const base = {
+      challengeId: c.challengeId, machineName: c.machineName, type: c.type,
+      startsAt: c.startsAt, endsAt: c.endsAt, venueName: c.venueName, opponents: c.opponents,
+    };
+    if (c.locked) { out.push({ ...base, status: 'counted', reason: 'counted' }); continue; }
+    if (!challengeStarted(c, now)) {
+      if (c.status === 'pending' || c.status === 'active') out.push({ ...base, status: 'not_started', reason: 'not_started' });
+      continue;
+    }
+    const reason = fitReason({ machineId: c.machineId, matchGroup: c.matchGroup, venueId: c.venueId, startsAt: c.startsAt!, endsAt: c.endsAt }, c.score);
+    if (reason === 'machine') continue;
+    out.push({ ...base, status: reason === 'counted' ? 'counted' : 'not_counted', reason });
+  }
+  return out;
+}
+
+/**
  * most_improved baseline: the best score on the matching machine PLAYED before the window starts.
  * Venue lock and the photo rule don't apply (it's your history, not a challenge entry), but the
  * visibility rule does, so a hidden home-venue score can't set a baseline the opponent can't see.

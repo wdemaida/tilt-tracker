@@ -321,6 +321,29 @@ export interface CreateChallengeBody {
 }
 
 /** A signed, short-lived link to a score's full-size photo (GET /api/scores/:id/photo). */
+/**
+ * How a score fared in one of its author's challenges on the same machine — POST /api/scores and
+ * PATCH /api/scores/:id return a list of these as `challenges` (older servers omit it). The server
+ * decides with the same rules as the standings (challengeRules.ts scoreChallengeFits).
+ */
+export type ChallengeFitReason =
+  | 'counted' | 'not_started'
+  | 'wrong_venue' | 'no_photo' | 'played_before_start' | 'played_after_end'
+  | 'posted_before_start' | 'posted_after_end' | 'not_visible' | (string & {});
+export interface ChallengeFit {
+  challengeId: number;
+  machineName: string;
+  type: ChallengeType;
+  status: 'counted' | 'not_counted' | 'not_started' | (string & {});
+  reason: ChallengeFitReason;
+  startsAt: string | null;
+  endsAt: string;
+  /** The venue a venue-locked challenge counts at. */
+  venueName: string | null;
+  /** The other accepted players' display names. */
+  opponents: string[];
+}
+
 export interface FullPhotoLink {
   /** Signed R2 URL, or null for a thumbnail-only score (then `thumbnail` is its data URL). */
   url: string | null;
@@ -346,7 +369,7 @@ export function createApi(getToken: () => Promise<string | null>) {
         request<any>('/scores', { method: 'POST', body: JSON.stringify(body) }, await tok()),
       // `venueId` attaches a venue to a score that was logged without one — see ScoreVenuePicker.
       patch: async (id: number, body: { score?: number; type?: string; playedAt?: string; machineId?: number; venueId?: number | null }) =>
-        request(`/scores/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, await tok()),
+        request<{ id: number; playedAt: string; challenges?: ChallengeFit[] } & Record<string, unknown>>(`/scores/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, await tok()),
       delete: async (id: number) =>
         request(`/scores/${id}`, { method: 'DELETE' }, await tok()),
 

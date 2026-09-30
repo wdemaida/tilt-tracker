@@ -6,9 +6,10 @@ import {
   raceTarget, computeStanding, resolveChallenge, resolutionTrigger, raceWinner, projectedRanks,
   pendingExpired, canAccept, canDecline, canCounter, canCancel, canForfeit, phaseOf, validateCreate, computeRecord,
   parseDeclineReason, storedDeclineReason, saidNo,
+  challengeStarted, scoreChallengeFits,
   pendingDue, afterAnswer, canStart, canDecideProposal, isProposalStatus, reinvitees, proposalClosure, parseInvitees, pairOutcome,
   MAX_WINDOW_DAYS, MIN_PLAYS, MAX_PLAYERS, MAX_INVITEES,
-  type CandidateScore, type CountRule, type ChallengeType, type ParticipantState, type Standing,
+  type CandidateScore, type CountRule, type FitChallenge, type ChallengeType, type ParticipantState, type Standing,
 } from './challengeRules.js';
 
 const A = 1, B = 2, C = 3;
@@ -134,6 +135,79 @@ test('wrong machine is excluded; exact mode excludes the other model', () => {
 
 test('a score the opponent may not see (hidden home-venue activity) does not count', () => {
   assert.equal(exclusionReason(gameRule, sc({ userId: A, score: 1, visibleToOthers: false })), 'hidden');
+});
+
+// ── scoreChallengeFits: the Add Score / edit summary ─────────────────────────
+
+let nextChallenge = 500;
+function fc(over: Partial<FitChallenge> & { score: CandidateScore }): FitChallenge {
+  return {
+    challengeId: nextChallenge++, machineName: 'The Munsters (Pro)', type: 'high_score', status: 'active',
+    machineId: MUNSTERS_PRO.id, matchGroup: 'GbPde', venueId: null, venueName: null,
+    startsAt: T0, endsAt: at(72), opponents: ['Bee'], locked: false, ...over,
+  };
+}
+const NOW = at(10);
+
+test('challengeStarted: active/resolved with a start that has passed', () => {
+  assert.ok(challengeStarted({ status: 'active', startsAt: T0 }, NOW));
+  assert.ok(challengeStarted({ status: 'resolved', startsAt: T0 }, NOW));
+  assert.ok(!challengeStarted({ status: 'active', startsAt: at(20) }, NOW));
+  assert.ok(!challengeStarted({ status: 'active', startsAt: null }, NOW));
+  assert.ok(!challengeStarted({ status: 'pending', startsAt: T0 }, NOW));
+});
+
+test('scoreChallengeFits: an old photo (played before the start) is not counted in every matching challenge', () => {
+  const score = sc({ userId: A, score: 1, playedAt: at(-24 * 120), createdAt: at(5) });
+  const r = scoreChallengeFits([fc({ score }), fc({ score, matchGroup: null }), fc({ score, type: 'race' })], NOW);
+  assert.equal(r.length, 3);
+  for (const f of r) {
+    assert.equal(f.status, 'not_counted');
+    assert.equal(f.reason, 'played_before_start');
+  }
+  assert.deepEqual(r.map(f => f.type), ['high_score', 'high_score', 'race']);
+});
+
+test('scoreChallengeFits: counted, and each failing rule maps to its reason (same order as exclusionReason)', () => {
+  const ok = sc({ userId: A, score: 1, playedAt: at(2), createdAt: at(3) });
+  const one = (over: Partial<FitChallenge>, s: CandidateScore = ok) => scoreChallengeFits([fc({ score: s, ...over })], NOW)[0];
+  assert.deepEqual([one({}).status, one({}).reason], ['counted', 'counted']);
+  assert.equal(one({ venueId: 8, venueName: 'Arcade' }, { ...ok, venueId: 7 }).reason, 'wrong_venue');
+  assert.equal(one({ venueId: 8 }, { ...ok, venueId: 7 }).venueName, null);
+  assert.equal(one({}, { ...ok, hasPhoto: false }).reason, 'no_photo');
+  assert.equal(one({}, { ...ok, playedAt: at(80), createdAt: at(80) }).reason, 'played_after_end');
+  assert.equal(one({}, { ...ok, createdAt: at(-1) }).reason, 'posted_before_start');
+  assert.equal(one({}, { ...ok, playedAt: at(70), createdAt: at(73) }).reason, 'posted_after_end');
+  assert.equal(one({}, { ...ok, visibleToOthers: false }).reason, 'not_visible');
+  // First failing rule wins: no photo AND played before the start → no_photo (photo is checked first).
+  assert.equal(one({}, { ...ok, hasPhoto: false, playedAt: at(-5) }).reason, 'no_photo');
+});
+
+test('scoreChallengeFits: a score on another machine lists nothing; game mode takes the other model', () => {
+  const other = sc({ userId: A, score: 1, machineId: OTHER.id, opdbId: OTHER.opdb });
+  assert.deepEqual(scoreChallengeFits([fc({ score: other }), fc({ score: other, matchGroup: null })], NOW), []);
+  const prem = sc({ userId: A, score: 1, machineId: MUNSTERS_PREM.id, opdbId: MUNSTERS_PREM.opdb });
+  const r = scoreChallengeFits([fc({ score: prem }), fc({ score: prem, matchGroup: null })], NOW);
+  assert.equal(r.length, 1);
+  assert.equal(r[0].status, 'counted');
+});
+
+test('scoreChallengeFits: pending, or active with a start ahead → not_started; other statuses are left out', () => {
+  const score = sc({ userId: A, score: 1, playedAt: at(9), createdAt: at(9) });
+  const r = scoreChallengeFits([
+    fc({ score, status: 'pending', startsAt: null }),
+    fc({ score, status: 'active', startsAt: at(20) }),
+    fc({ score, status: 'cancelled' }),
+  ], NOW);
+  assert.deepEqual(r.map(f => [f.status, f.reason]), [['not_started', 'not_started'], ['not_started', 'not_started']]);
+});
+
+test('scoreChallengeFits: a locked score counted, whatever the rules say now (a race it just won)', () => {
+  const score = sc({ userId: A, score: 1, playedAt: at(2), createdAt: at(3) });
+  const [f] = scoreChallengeFits([fc({ score, status: 'resolved', locked: true, type: 'race' })], NOW);
+  assert.equal(f.status, 'counted');
+  assert.equal(f.challengeId > 0, true);
+  assert.deepEqual(f.opponents, ['Bee']);
 });
 
 // ── baseline / race target ───────────────────────────────────────────────────
