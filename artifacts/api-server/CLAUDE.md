@@ -628,6 +628,12 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   `countered_from_id` set, `proposed_by_id` null, created by the counterer) are ordinary pending
   challenges. `challenges_proposal_check`: a proposal status needs `proposed_by_id` — deliberately
   not `countered_from_id` (ON DELETE SET NULL); unique (`countered_from_id`, `proposed_by_id`).
+  **Users are never deleted** (Will, 2026-09-30) — an account is made inactive with the admin
+  disable (`users.disabled_at`, `adminActions.ts`), and Clerk's `user.deleted` webhook leaves our
+  row alone. That's why the check is safe: `proposed_by_id`'s ON DELETE SET NULL never fires in the
+  app, so a proposal row can't be left nameless. (Only dev test scripts — `test-admin.ts`,
+  `test-retention.ts` — delete their own throwaway users.) Don't add a user hard-delete without
+  revisiting this check.
 - **Records**: headline totals and streaks stay on the player's own `outcome` (below 1st in a group
   is a loss); head-to-head is **pairwise by rank** (`pairOutcome`: my forfeit / no-show / abandoned
   stays mine; their forfeit / no-show is my win; else the better rank wins) — identical to the old
