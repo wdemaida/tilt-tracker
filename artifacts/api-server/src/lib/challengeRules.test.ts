@@ -6,7 +6,8 @@ import {
   raceTarget, computeStanding, resolveChallenge, resolutionTrigger, raceWinner, projectedRanks,
   pendingExpired, canAccept, canDecline, canCounter, canCancel, canForfeit, phaseOf, validateCreate, computeRecord,
   parseDeclineReason, saidNo,
-  MAX_WINDOW_DAYS, MIN_PLAYS,
+  pendingDue, afterAnswer, canStart, canDecideProposal, isProposalStatus, reinvitees, proposalClosure, parseInvitees, pairOutcome,
+  MAX_WINDOW_DAYS, MIN_PLAYS, MAX_PLAYERS, MAX_INVITEES,
   type CandidateScore, type CountRule, type ChallengeType, type ParticipantState, type Standing,
 } from './challengeRules.js';
 
@@ -594,4 +595,200 @@ test('computeRecord: order is by resolution time, not input order; empty record 
   assert.equal(empty.played, 0);
   assert.equal(empty.currentStreak, 0);
   assert.deepEqual(empty.headToHead, []);
+});
+
+// ── groups + proposals (feature/group-challenges) ───────────────────────────
+
+const D = 4, E = 5;
+type Resp = 'pending' | 'accepted' | 'declined' | 'countered' | 'missed';
+const pp = (userId: number, response: Resp, declineReason: 'cant_reach' | 'no_thanks' | null = null) => ({ userId, response, outcome: null, declineReason });
+const group = { creatorId: A, status: 'pending' as const, startsAt: null, endsAt: at(72) };
+
+test('pendingDue truth table', () => {
+  const ps = [pp(A, 'accepted'), pp(B, 'accepted'), pp(C, 'pending')];
+  const none = [pp(A, 'accepted'), pp(B, 'pending'), pp(C, 'declined')];
+  const fixed = { ...group, startsAt: at(5) };
+  assert.equal(pendingDue(group, ps, at(1)), null, 'starts-when-accepted never starts on its own');
+  assert.equal(pendingDue(group, ps, at(72)), 'expire', 'end passed');
+  assert.equal(pendingDue(fixed, ps, at(4)), null, 'before the fixed start');
+  assert.equal(pendingDue(fixed, ps, at(5)), 'start', 'fixed start, one accepted → starts with who is in');
+  assert.equal(pendingDue(fixed, none, at(5)), 'expire', 'fixed start, nobody accepted → expires');
+  assert.equal(pendingDue(fixed, ps, at(72)), 'expire', 'end passed beats the start');
+  assert.equal(pendingDue({ ...group, status: 'active' }, ps, at(100)), null);
+  const proposal = { creatorId: A, status: 'proposed' as const, startsAt: null, endsAt: at(48) };
+  assert.equal(pendingDue(proposal, [], at(47)), null);
+  assert.equal(pendingDue(proposal, [], at(48)), 'lapse', 'its own end passed');
+  assert.equal(pendingDue({ ...proposal, startsAt: at(10) }, [], at(10)), 'lapse', 'its own start passed');
+  assert.equal(pendingDue({ ...proposal, status: 'rejected' }, [], at(100)), null);
+});
+
+test('afterAnswer truth table (L / D / wait)', () => {
+  const L = (ps: ReturnType<typeof pp>[], open = 0) => afterAnswer(group, ps, open);
+  assert.equal(L([pp(A, 'accepted'), pp(B, 'accepted')]), 'active', '1:1 accepted');
+  assert.equal(L([pp(A, 'accepted'), pp(B, 'declined')]), 'declined', '1:1 declined');
+  assert.equal(L([pp(A, 'accepted'), pp(B, 'accepted'), pp(C, 'pending')]), null, 'someone still pending');
+  assert.equal(L([pp(A, 'accepted'), pp(B, 'accepted'), pp(C, 'declined')]), 'active', 'one decline drops that player');
+  assert.equal(L([pp(A, 'accepted'), pp(B, 'declined'), pp(C, 'declined', 'no_thanks')]), 'declined', 'nobody left');
+  assert.equal(L([pp(A, 'accepted'), pp(B, 'accepted'), pp(C, 'countered')], 1), null, 'an open proposal blocks the start');
+  assert.equal(L([pp(A, 'accepted'), pp(B, 'countered')], 1), null, 'an open proposal blocks declined too');
+  assert.equal(L([pp(A, 'accepted'), pp(B, 'countered')], 0), 'declined', 'the counterer is out once their proposal closed');
+  assert.equal(L([pp(A, 'accepted'), pp(B, 'accepted'), pp(C, 'countered')], 0), 'active');
+  assert.equal(afterAnswer({ ...group, status: 'active' }, [pp(A, 'accepted'), pp(B, 'accepted')], 0), null, 'only a pending one');
+});
+
+test('group guards: back out, start with who is in, deciding a proposal', () => {
+  const accepted = pp(B, 'accepted');
+  assert.ok(canDecline(group, accepted), 'an accepted invitee may back out while pending');
+  assert.ok(!canAccept(group, accepted), 'but not accept twice');
+  assert.ok(!canCounter(group, accepted), 'nor counter once accepted');
+  assert.ok(!canDecline({ ...group, status: 'active' }, accepted), 'no backing out once it started (forfeit instead)');
+  assert.ok(!canDecline(group, pp(A, 'accepted')), 'the challenger cancels instead');
+  assert.ok(!canDecline(group, pp(C, 'declined')));
+  assert.ok(!canDecline(group, pp(C, 'missed')));
+  const ps = [pp(A, 'accepted'), pp(B, 'accepted'), pp(C, 'pending')];
+  assert.ok(canStart(group, ps, A), 'challenger + one accepted');
+  assert.ok(!canStart(group, ps, B), 'only the challenger');
+  assert.ok(!canStart(group, [pp(A, 'accepted'), pp(B, 'pending')], A), 'nobody accepted yet');
+  assert.ok(!canStart({ ...group, status: 'active' }, ps, A));
+  const proposal = { creatorId: A, status: 'proposed' as const, startsAt: null, endsAt: at(48) };
+  const challenger = pp(A, 'pending'), proposer = pp(B, 'accepted');
+  assert.ok(canDecideProposal(proposal, challenger));
+  assert.ok(canAccept(proposal, challenger) && canDecline(proposal, challenger), 'accept = take it, decline = keep mine');
+  assert.ok(!canAccept(proposal, proposer) && !canDecline(proposal, proposer), 'the proposer can’t decide (or withdraw) it');
+  assert.ok(!canCounter(proposal, challenger), 'no counter-of-a-counter for the challenger');
+  assert.ok(!canCancel(proposal, A), 'a proposal is not cancellable');
+  assert.ok(!canDecideProposal({ ...proposal, status: 'rejected' }, challenger));
+  assert.ok(!canDecideProposal(proposal, undefined));
+  assert.ok(isProposalStatus('proposed') && isProposalStatus('rejected') && isProposalStatus('lapsed'));
+  assert.ok(!isProposalStatus('pending') && !isProposalStatus('countered'));
+});
+
+test('reinvitees: everyone except the challenger, the proposer, no_thanks decliners and ex-friends', () => {
+  const ps = [pp(A, 'accepted'), pp(B, 'countered', 'cant_reach'), pp(C, 'accepted'), pp(D, 'declined', 'no_thanks'), pp(E, 'declined', 'cant_reach'), pp(6, 'pending'), pp(7, 'countered', 'cant_reach'), pp(8, 'declined')];
+  const friends = new Set([B, C, D, E, 6, 7, 8]);
+  assert.deepEqual(reinvitees(group, ps, B, friends), [C, E, 6, 7, 8]);
+  friends.delete(6);
+  assert.deepEqual(reinvitees(group, ps, B, friends), [C, E, 7, 8], 'no longer the challenger’s friend → not re-invited');
+  assert.deepEqual(reinvitees(group, [pp(A, 'accepted'), pp(B, 'countered')], B, new Set([B])), [], '1:1: nobody to re-invite');
+});
+
+test('proposalClosure: status and notified reason per closing event', () => {
+  assert.deepEqual(proposalClosure('rejected'), { status: 'rejected', notifyReason: 'rejected' });
+  assert.deepEqual(proposalClosure('superseded'), { status: 'rejected', notifyReason: 'superseded' });
+  assert.deepEqual(proposalClosure('started'), { status: 'rejected', notifyReason: 'started' });
+  assert.deepEqual(proposalClosure('fixed_start'), { status: 'lapsed', notifyReason: 'started' });
+  assert.deepEqual(proposalClosure('cancelled'), { status: 'lapsed', notifyReason: 'cancelled' });
+  assert.deepEqual(proposalClosure('expired'), { status: 'lapsed', notifyReason: 'expired' });
+});
+
+test('phaseOf maps the new statuses onto old phases (old cached clients have no default branch)', () => {
+  const c = { creatorId: A, status: 'proposed' as const, startsAt: null, endsAt: at(72) };
+  assert.equal(phaseOf(c, at(1)), 'pending');
+  assert.equal(phaseOf({ ...c, status: 'rejected' }, at(1)), 'declined');
+  assert.equal(phaseOf({ ...c, status: 'lapsed' }, at(1)), 'expired');
+  const old = ['pending', 'scheduled', 'live', 'ended', 'resolved', 'declined', 'cancelled', 'expired', 'countered'];
+  for (const status of ['pending', 'active', 'resolved', 'declined', 'cancelled', 'expired', 'countered', 'proposed', 'rejected', 'lapsed'] as const) {
+    assert.ok(old.includes(phaseOf({ ...c, status }, at(1))), status);
+  }
+});
+
+test('saidNo: missed players are out too', () => {
+  assert.ok(saidNo('missed'));
+});
+
+test('parseInvitees: ids, usernames, the 1:1 fields, the cap and repeats', () => {
+  const ok = (b: Record<string, unknown>) => { const r = parseInvitees(b); assert.ok(r.ok, JSON.stringify(r)); return r.ok ? r.value : []; };
+  const code = (b: Record<string, unknown>) => { const r = parseInvitees(b); return r.ok ? 'ok' : r.code; };
+  assert.deepEqual(ok({ friendId: 5 }), [{ id: 5 }]);
+  assert.deepEqual(ok({ friendId: '5' }), [{ id: 5 }]);
+  assert.deepEqual(ok({ friendUsername: ' bob ' }), [{ username: 'bob' }]);
+  assert.deepEqual(ok({ friendIds: [2, 3], friendUsernames: ['zed'] }), [{ id: 2 }, { id: 3 }, { username: 'zed' }]);
+  assert.equal(code({}), 'invalid_user');
+  assert.equal(code({ friendIds: [] }), 'invalid_user');
+  assert.equal(code({ friendIds: 'bob' }), 'invalid_user');
+  assert.equal(code({ friendIds: [1.5] }), 'invalid_user');
+  assert.equal(code({ friendIds: [0] }), 'invalid_user');
+  assert.equal(code({ friendId: 'x' }), 'invalid_user');
+  assert.equal(code({ friendIds: [2, 2] }), 'duplicate_invitee');
+  assert.equal(code({ friendIds: [2], friendId: 2 }), 'duplicate_invitee');
+  assert.equal(code({ friendUsernames: ['Bob', 'bob'] }), 'duplicate_invitee');
+  assert.equal(code({ friendIds: Array.from({ length: MAX_INVITEES }, (_, i) => i + 1) }), 'ok');
+  assert.equal(code({ friendIds: Array.from({ length: MAX_INVITEES + 1 }, (_, i) => i + 1) }), 'too_many_players');
+  assert.equal(MAX_PLAYERS, 8);
+  assert.equal(MAX_INVITEES, 7);
+});
+
+test('pairOutcome matrix', () => {
+  const P = (outcome: any, rank: number | null) => ({ outcome, rank });
+  // my own bucket stays mine
+  assert.equal(pairOutcome(P('forfeit', 4), P('win', 1)), 'forfeit');
+  assert.equal(pairOutcome(P('no_show', 3), P('forfeit', 4)), 'no_show');
+  assert.equal(pairOutcome(P('abandoned', 1), P('abandoned', 1)), 'abandoned');
+  // they forfeited / didn't show → I win, whatever my headline outcome
+  assert.equal(pairOutcome(P('loss', 2), P('forfeit', 4)), 'win');
+  assert.equal(pairOutcome(P('loss', 2), P('no_show', 3)), 'win');
+  assert.equal(pairOutcome(P('win', 1), P('forfeit', 2)), 'win');
+  // otherwise by rank
+  assert.equal(pairOutcome(P('loss', 2), P('loss', 3)), 'win', 'second beats third');
+  assert.equal(pairOutcome(P('loss', 3), P('loss', 2)), 'loss');
+  assert.equal(pairOutcome(P('loss', 2), P('loss', 2)), 'tie', 'level below first');
+  assert.equal(pairOutcome(P('tie', 1), P('tie', 1)), 'tie');
+  assert.equal(pairOutcome(P('win', 1), P('loss', 2)), 'win');
+  assert.equal(pairOutcome(P('loss', 2), P('win', 1)), 'loss');
+  assert.equal(pairOutcome(P('win', 1), P('abandoned', null)), 'win', 'missing rank falls back to my outcome');
+});
+
+test('pairOutcome agrees with the headline outcome in every 1:1 resolution', () => {
+  const cases: Array<[ChallengeType, ParticipantState[], 'deadline' | 'race_target' | 'forfeit']> = [
+    ['high_score', [state('high_score', A, [10]), state('high_score', B, [5])], 'deadline'],
+    ['high_score', [state('high_score', A, [10]), state('high_score', B, [10])], 'deadline'],
+    ['high_score', [state('high_score', A, [10]), state('high_score', B, [])], 'deadline'],
+    ['high_score', [state('high_score', A, []), state('high_score', B, [])], 'deadline'],
+    ['high_score', [state('high_score', A, [10]), state('high_score', B, [20], { forfeited: true })], 'forfeit'],
+    ['race', [state('race', A, [2000], { target: 1000, createdAt: [2] }), state('race', B, [1500], { target: 1000, createdAt: [1] })], 'race_target'],
+    ['race', [state('race', A, [500], { target: 1000 }), state('race', B, [], { target: 1000 })], 'deadline'],
+    ['average', [state('average', A, [10, 10, 10], { minPlays: 3 }), state('average', B, [50], { minPlays: 3 })], 'deadline'],
+    ['most_improved', [state('most_improved', A, [150], { baseline: 100 }), state('most_improved', B, [300], { baseline: 100 })], 'deadline'],
+  ];
+  for (const [type, states, reason] of cases) {
+    const r = resolveChallenge(type, states, reason);
+    const [pa, pb] = [r.participants.find(p => p.userId === A)!, r.participants.find(p => p.userId === B)!];
+    assert.equal(pairOutcome(pa, pb), pa.outcome, `${type}/${reason}: A`);
+    assert.equal(pairOutcome(pb, pa), pb.outcome, `${type}/${reason}: B`);
+  }
+});
+
+test('computeRecord, groups: headline on outcome (below 1st = loss), head-to-head pairwise by rank, loss streaks', () => {
+  const rec = computeRecord([
+    // 4 players: A 2nd, B 1st, C 3rd, D no-show
+    { challengeId: 1, resolvedAt: at(1), void: false, outcome: 'loss', rank: 2, opponents: [
+      { userId: B, outcome: 'win', rank: 1 }, { userId: C, outcome: 'loss', rank: 3 }, { userId: D, outcome: 'no_show', rank: 4 },
+    ] },
+    // 3 players: A 3rd
+    { challengeId: 2, resolvedAt: at(2), void: false, outcome: 'loss', rank: 3, opponents: [
+      { userId: B, outcome: 'win', rank: 1 }, { userId: C, outcome: 'loss', rank: 2 },
+    ] },
+    // A wins
+    { challengeId: 3, resolvedAt: at(3), void: false, outcome: 'win', rank: 1, opponents: [{ userId: C, outcome: 'loss', rank: 2 }] },
+    // two losses in a row
+    { challengeId: 4, resolvedAt: at(4), void: false, outcome: 'loss', rank: 2, opponents: [{ userId: B, outcome: 'win', rank: 1 }] },
+    { challengeId: 5, resolvedAt: at(5), void: false, outcome: 'loss', rank: 2, opponents: [{ userId: B, outcome: 'win', rank: 1 }] },
+  ]);
+  assert.equal(rec.wins, 1);
+  assert.equal(rec.losses, 4, 'second and third place are losses');
+  assert.equal(rec.bestLossStreak, 2, 'challenges 1–2 and 4–5');
+  assert.equal(rec.bestStreak, 1);
+  assert.equal(rec.currentStreak, 0);
+  const h = (id: number) => rec.headToHead.find(x => x.opponentId === id)!;
+  assert.deepEqual(h(B), { opponentId: B, played: 4, wins: 0, losses: 4, ties: 0, forfeits: 0, noShows: 0, abandoned: 0 });
+  assert.deepEqual(h(C), { opponentId: C, played: 3, wins: 2, losses: 1, ties: 0, forfeits: 0, noShows: 0, abandoned: 0 }, 'beat C as 2nd vs 3rd and 1st vs 2nd; lost as 3rd vs 2nd');
+  assert.deepEqual(h(D), { opponentId: D, played: 1, wins: 1, losses: 0, ties: 0, forfeits: 0, noShows: 0, abandoned: 0 }, 'D did not show → my win');
+});
+
+test('computeRecord: bestLossStreak — any other outcome ends a run, a legacy void does not', () => {
+  const e = (id: number, outcome: any, isVoid = false) => ({ challengeId: id, resolvedAt: at(id), void: isVoid, outcome, opponentIds: [B] });
+  assert.equal(computeRecord([e(1, 'loss'), e(2, 'loss'), e(3, 'tie'), e(4, 'loss')]).bestLossStreak, 2);
+  assert.equal(computeRecord([e(1, 'loss'), e(2, 'no_show', true), e(3, 'loss')]).bestLossStreak, 2, 'void neither extends nor breaks');
+  assert.equal(computeRecord([e(1, 'loss'), e(2, 'abandoned'), e(3, 'loss')]).bestLossStreak, 1, 'abandoned breaks it');
+  assert.equal(computeRecord([]).bestLossStreak, 0);
 });

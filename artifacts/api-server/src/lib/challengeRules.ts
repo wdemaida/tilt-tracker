@@ -4,8 +4,18 @@
 // unit-tested (challengeRules.test.ts).
 //
 // The rules (Will, 2026-09-25/26):
-//  - Friends only, checked at creation. 1v1 today, but participants are rows and everything here
-//    ranks N of them, so groups are a UI change later, not a rules change.
+//  - Friends only, checked at creation: every invitee must be the challenger's friend (they needn't be
+//    friends with each other). Up to MAX_PLAYERS (8) players, the challenger included. Participants
+//    are rows and everything here ranks N of them.
+//  - GROUPS (feature/group-challenges, Will 2026-09-29): a group proceeds once at least one invitee
+//    accepts. A decline drops that player; the challenge ends `declined` only when no invitee is
+//    pending or accepted. "Starts when accepted" = once everyone has answered, or when the challenger
+//    taps "Start with who's in"; with a fixed start it starts with whoever accepted and the rest are
+//    `missed`. See afterAnswer() / pendingDue() below.
+//  - COUNTER-OFFERS ARE PROPOSALS (1:1 and groups alike): a proposal row sent to the challenger —
+//    creator_id = the challenger, proposed_by_id = the counterer, countered_from_id = the original,
+//    status 'proposed'. Taking it ends the original `countered` and turns the proposal into an
+//    ordinary pending challenge everyone is re-invited to; rejecting it drops the counterer.
 //  - Types:
 //      high_score     best counting score wins, at the deadline.
 //      race           "Beat my score / First to X". Target = the number the creator picked, or the
@@ -37,8 +47,10 @@
 export const CHALLENGE_TYPES = ['high_score', 'race', 'most_improved', 'average'] as const;
 export type ChallengeType = (typeof CHALLENGE_TYPES)[number];
 export type MatchMode = 'game' | 'exact';
-export type ChallengeStatus = 'pending' | 'active' | 'resolved' | 'declined' | 'cancelled' | 'expired' | 'countered';
-export type ParticipantResponse = 'pending' | 'accepted' | 'declined' | 'countered';
+export type ChallengeStatus = 'pending' | 'active' | 'resolved' | 'declined' | 'cancelled' | 'expired' | 'countered'
+  | 'proposed' | 'rejected' | 'lapsed';
+/** 'missed' = never answered: the challenge started (or expired) without them. */
+export type ParticipantResponse = 'pending' | 'accepted' | 'declined' | 'countered' | 'missed';
 export type Outcome = 'win' | 'loss' | 'tie' | 'forfeit' | 'no_show' | 'abandoned';
 
 export const MIN_PLAYS = { min: 3, max: 10 } as const;
@@ -52,6 +64,11 @@ export const MAX_START_AHEAD_DAYS = 30;
 export const START_GRACE_MS = 5 * 60 * 1000;
 /** The daily sweep's "ending soon" notice goes out once this close to the deadline. */
 export const ENDING_SOON_MS = 24 * 60 * 60 * 1000;
+/** Players in one challenge, the challenger included (Will, 2026-09-29). */
+export const MAX_PLAYERS = 8;
+export const MAX_INVITEES = MAX_PLAYERS - 1;
+/** The daily sweep reminds the challenger once about a suggestion unanswered this long. No timer beyond that. */
+export const PROPOSAL_REMINDER_MS = 24 * 60 * 60 * 1000;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -359,33 +376,144 @@ export interface LifecycleParticipant {
   outcome: Outcome | null;
 }
 
-/** A pending challenge nobody answered in time: its chosen start, or its end, has passed. */
+/** The statuses a proposal row can be in before it's taken (a taken one is an ordinary challenge). */
+export const PROPOSAL_STATUSES = ['proposed', 'rejected', 'lapsed'] as const;
+export function isProposalStatus(status: ChallengeStatus): boolean {
+  return (PROPOSAL_STATUSES as readonly string[]).includes(status);
+}
+
+/** The challenger's invitees: every participant but the creator. */
+function inviteesOf<P extends LifecycleParticipant>(c: LifecycleChallenge, ps: P[]): P[] {
+  return ps.filter(p => p.userId !== c.creatorId);
+}
+
+/**
+ * A pending challenge whose chosen start, or end, has passed. (The yes/no view of pendingDue — with a
+ * fixed start it may now START rather than expire; see pendingDue.)
+ */
 export function pendingExpired(c: LifecycleChallenge, now: Date): boolean {
   if (c.status !== 'pending') return false;
   if (c.startsAt && +now >= +c.startsAt) return true;
   return +now >= +c.endsAt;
 }
 
+export type PendingDue = 'start' | 'expire' | 'lapse';
+
+/**
+ * What a pending challenge (or an open proposal) must do now on its own, if anything:
+ *  - pending, its end passed → 'expire' (it can't run any more);
+ *  - pending, its fixed start passed → 'start' when at least one invitee accepted (the rest become
+ *    `missed`), else 'expire';
+ *  - an open proposal ('proposed') whose own start or end passed → 'lapse'.
+ * "Starts when accepted" challenges never start here — only an answer (afterAnswer) or the
+ * challenger's Start does that.
+ */
+export function pendingDue(c: LifecycleChallenge, participants: LifecycleParticipant[], now: Date): PendingDue | null {
+  if (c.status === 'proposed') {
+    return (c.startsAt && +now >= +c.startsAt) || +now >= +c.endsAt ? 'lapse' : null;
+  }
+  if (c.status !== 'pending') return null;
+  if (+now >= +c.endsAt) return 'expire';
+  if (c.startsAt && +now >= +c.startsAt) {
+    return inviteesOf(c, participants).some(p => p.response === 'accepted') ? 'start' : 'expire';
+  }
+  return null;
+}
+
+/**
+ * Checked after every answer (accept, decline, back out, a proposal rejected or lapsed):
+ *  - L 'active': pending, no invitee pending, no proposal open, at least one invitee accepted;
+ *  - D 'declined': pending, no invitee pending or accepted, no proposal open;
+ *  - otherwise null (keep waiting).
+ * An open proposal blocks both, so a counter can't be superseded the instant it's made.
+ */
+export function afterAnswer(c: LifecycleChallenge, participants: LifecycleParticipant[], openProposals: number): 'active' | 'declined' | null {
+  if (c.status !== 'pending' || openProposals > 0) return null;
+  const invitees = inviteesOf(c, participants);
+  if (invitees.some(p => p.response === 'pending')) return null;
+  return invitees.some(p => p.response === 'accepted') ? 'active' : 'declined';
+}
+
+/** The challenger answering an open proposal: take it ("for everyone") or keep hers. */
+export function canDecideProposal(c: LifecycleChallenge, p: LifecycleParticipant | undefined): boolean {
+  return !!p && c.status === 'proposed' && p.userId === c.creatorId && p.response === 'pending';
+}
+/** An invitee answering a pending challenge — or the challenger taking a proposal (the same button). */
 export function canAccept(c: LifecycleChallenge, p: LifecycleParticipant | undefined): boolean {
+  if (canDecideProposal(c, p)) return true;
   return !!p && c.status === 'pending' && p.response === 'pending' && p.userId !== c.creatorId;
 }
-export const canDecline = canAccept;
-/** Answering "can't get to this one" with a counter-offer: exactly when a plain decline is allowed. */
-export const canCounter = canAccept;
+/**
+ * An invitee saying no — also an accepted invitee backing out while it's still pending (recorded
+ * 'declined'; Will 2026-09-29) — or the challenger keeping hers over a proposal.
+ */
+export function canDecline(c: LifecycleChallenge, p: LifecycleParticipant | undefined): boolean {
+  if (canDecideProposal(c, p)) return true;
+  return !!p && c.status === 'pending' && p.userId !== c.creatorId && (p.response === 'pending' || p.response === 'accepted');
+}
+/** Answering "can't get to this one" with a counter-offer: an invitee who hasn't answered yet. */
+export function canCounter(c: LifecycleChallenge, p: LifecycleParticipant | undefined): boolean {
+  return !!p && c.status === 'pending' && p.response === 'pending' && p.userId !== c.creatorId;
+}
 export function canCancel(c: LifecycleChallenge, actorId: number): boolean {
   return c.status === 'pending' && c.creatorId === actorId;
+}
+/** "Start with who's in": the challenger, while pending, once at least one invitee accepted. */
+export function canStart(c: LifecycleChallenge, participants: LifecycleParticipant[], actorId: number): boolean {
+  return c.status === 'pending' && c.creatorId === actorId && inviteesOf(c, participants).some(p => p.response === 'accepted');
 }
 export function canForfeit(c: LifecycleChallenge, p: LifecycleParticipant | undefined): boolean {
   return !!p && c.status === 'active' && p.response === 'accepted' && p.outcome === null;
 }
 
 /**
+ * Who a taken proposal re-invites (Will, 2026-09-29): everyone on the original except the challenger
+ * and the proposer (already in), `no_thanks` decliners, and anyone no longer the challenger's friend.
+ * Everyone re-accepts, including players who had accepted the original.
+ */
+export function reinvitees(
+  original: LifecycleChallenge, participants: Array<LifecycleParticipant & { declineReason?: DeclineReason | null }>,
+  proposerId: number, challengerFriendIds: Set<number>,
+): number[] {
+  return participants
+    .filter(p => p.userId !== original.creatorId && p.userId !== proposerId)
+    .filter(p => !(p.response === 'declined' && p.declineReason === 'no_thanks'))
+    .filter(p => challengerFriendIds.has(p.userId))
+    .map(p => p.userId);
+}
+
+/**
+ * Why an open proposal closed, and the status it closes with: the challenger kept hers ('rejected'),
+ * another suggestion was taken ('superseded'), the challenger started the original ('started'), or it
+ * lapsed — the original hit its fixed start ('fixed_start', notified as 'started'), was cancelled, or
+ * expired (the original, or the proposal's own window).
+ */
+export type ProposalCloseReason = 'rejected' | 'superseded' | 'started' | 'fixed_start' | 'cancelled' | 'expired';
+export type ProposalNotifyReason = 'rejected' | 'superseded' | 'started' | 'cancelled' | 'expired';
+export function proposalClosure(reason: ProposalCloseReason): { status: 'rejected' | 'lapsed'; notifyReason: ProposalNotifyReason } {
+  switch (reason) {
+    case 'rejected': case 'superseded': case 'started': return { status: 'rejected', notifyReason: reason };
+    case 'fixed_start': return { status: 'lapsed', notifyReason: 'started' };
+    case 'cancelled': case 'expired': return { status: 'lapsed', notifyReason: reason };
+  }
+}
+
+/**
  * What the UI shows: pending, scheduled (accepted, start date ahead), live, resolved, declined,
  * cancelled, expired, countered. ('ended' only for the instant between the deadline and a lazy resolve.)
+ * The proposal statuses map onto the old phases (proposed → pending, rejected → declined, lapsed →
+ * expired) so an old cached client — whose status line has no default branch — never sees a phase it
+ * doesn't know. New clients read `status` for the difference.
  */
 export type ChallengePhase = 'pending' | 'scheduled' | 'live' | 'ended' | 'resolved' | 'declined' | 'cancelled' | 'expired' | 'countered';
 export function phaseOf(c: LifecycleChallenge, now: Date): ChallengePhase {
-  if (c.status !== 'active') return c.status;
+  switch (c.status) {
+    case 'proposed': return 'pending';
+    case 'rejected': return 'declined';
+    case 'lapsed': return 'expired';
+    case 'active': break;
+    default: return c.status;
+  }
   if (c.startsAt && +now < +c.startsAt) return 'scheduled';
   if (+now > +c.endsAt) return 'ended';
   return 'live';
@@ -409,9 +537,12 @@ export function parseDeclineReason(body: unknown): DeclineReason | null | 'inval
   return (DECLINE_REASONS as readonly unknown[]).includes(raw) ? raw as DeclineReason : 'invalid';
 }
 
-/** A participant who said no — plain decline or counter-offer. They're out of this challenge. */
+/**
+ * A participant who is out of this challenge: said no (plain decline or counter-offer), or missed it
+ * (never answered before it started / expired).
+ */
 export function saidNo(response: ParticipantResponse): boolean {
-  return response === 'declined' || response === 'countered';
+  return response === 'declined' || response === 'countered' || response === 'missed';
 }
 
 // ── creation input ───────────────────────────────────────────────────────────
@@ -491,14 +622,82 @@ export function validateCreate(body: Record<string, unknown>, now: Date): Valid<
   };
 }
 
+/** One invitee as the create body names them. */
+export type InviteeRef = { id: number } | { username: string };
+
+/**
+ * The invitees of a create body: `friendIds` (array of user ids) and/or `friendUsernames`, or the 1:1
+ * fields `friendId` / `friendUsername` older clients send. At least one, at most MAX_INVITEES, no
+ * repeats (by id, and by username — the DB layer re-checks once usernames resolve to ids).
+ */
+export function parseInvitees(body: Record<string, unknown>): Valid<InviteeRef[]> | Invalid {
+  const refs: InviteeRef[] = [];
+  const addId = (raw: unknown): boolean => {
+    const n = typeof raw === 'string' && /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : raw;
+    if (typeof n !== 'number' || !Number.isSafeInteger(n) || n <= 0) return false;
+    refs.push({ id: n });
+    return true;
+  };
+  const addName = (raw: unknown): boolean => {
+    if (typeof raw !== 'string' || !raw.trim()) return false;
+    refs.push({ username: raw.trim() });
+    return true;
+  };
+  const listError = bad('invalid_user', 'friendIds must be an array of user ids, friendUsernames an array of usernames');
+  if (body.friendIds !== undefined && body.friendIds !== null) {
+    if (!Array.isArray(body.friendIds) || !body.friendIds.every(addId)) return listError;
+  }
+  if (body.friendUsernames !== undefined && body.friendUsernames !== null) {
+    if (!Array.isArray(body.friendUsernames) || !body.friendUsernames.every(addName)) return listError;
+  }
+  if (body.friendId !== undefined && body.friendId !== null && body.friendId !== '') {
+    if (!addId(body.friendId)) return bad('invalid_user', 'friendId must be a user id');
+  } else if (body.friendUsername !== undefined && body.friendUsername !== null && body.friendUsername !== '') {
+    if (!addName(body.friendUsername)) return bad('invalid_user', 'friendUsername must be a username');
+  }
+  if (!refs.length) return bad('invalid_user', 'friendIds (or friendId / friendUsername) is required');
+  if (refs.length > MAX_INVITEES) {
+    return bad('too_many_players', `A challenge can have at most ${MAX_PLAYERS} players — you and ${MAX_INVITEES} friends`);
+  }
+  const keys = refs.map(r => ('id' in r ? `id:${r.id}` : `u:${r.username.toLowerCase()}`));
+  if (new Set(keys).size !== keys.length) return bad('duplicate_invitee', 'Each friend can only be invited once');
+  return { ok: true, value: refs };
+}
+
 // ── records ──────────────────────────────────────────────────────────────────
+
+/** One participant's final place in a resolved challenge. */
+export interface Placing {
+  outcome: Outcome;
+  rank: number | null;
+}
 
 export interface RecordEntry {
   challengeId: number;
   resolvedAt: Date;
   void: boolean;
   outcome: Outcome;
-  opponentIds: number[];
+  /** The subject's rank (head-to-head is pairwise by rank). */
+  rank?: number | null;
+  /** The other accepted players and their placings. Preferred over `opponentIds`. */
+  opponents?: Array<Placing & { userId: number }>;
+  /** Older shape: head-to-head then just repeats the headline outcome (right for 1:1 only). */
+  opponentIds?: number[];
+}
+
+/**
+ * My result against one other player of the same resolved challenge (head-to-head is pairwise by
+ * rank, Will 2026-09-29). My own forfeit / no-show / abandoned stays in its bucket; if THEY forfeited
+ * or didn't show, I win; otherwise the better rank wins and an equal rank ties. For two players this
+ * is exactly the headline outcome.
+ */
+export function pairOutcome(me: Placing, them: Placing): Outcome {
+  if (me.outcome === 'forfeit' || me.outcome === 'no_show' || me.outcome === 'abandoned') return me.outcome;
+  if (them.outcome === 'forfeit' || them.outcome === 'no_show') return 'win';
+  if (me.rank == null || them.rank == null) return me.outcome;
+  if (me.rank < them.rank) return 'win';
+  if (me.rank > them.rank) return 'loss';
+  return 'tie';
 }
 
 export interface HeadToHead {
@@ -525,19 +724,23 @@ export interface ChallengeRecord {
   voids: number;
   currentStreak: number;
   bestStreak: number;
+  /** Longest run of consecutive losses (badges phase 3). Any other outcome ends one. */
+  bestLossStreak: number;
   headToHead: HeadToHead[];
 }
 
 /**
- * W/L/T/forfeit/no-show/abandoned totals and win streaks from resolved challenges. An abandoned one
- * counts only in `abandoned` and DOES break a streak. Streaks are consecutive wins in resolved order;
- * any other outcome ends one. (A legacy void challenge — void is retired — counts as a no-show and in
- * `voids`, and neither extends nor breaks a streak.)
+ * W/L/T/forfeit/no-show/abandoned totals and streaks from resolved challenges. The headline totals
+ * and the streaks use the subject's own `outcome` — in a group, placing below 1st is a loss. An
+ * abandoned one counts only in `abandoned` and DOES break a streak. Win streaks are consecutive wins
+ * in resolved order, loss streaks consecutive losses; any other outcome ends one. (A legacy void
+ * challenge — void is retired — counts as a no-show and in `voids`, and neither extends nor breaks a
+ * streak.) Head-to-head is pairwise by rank (pairOutcome).
  */
 export function computeRecord(entries: RecordEntry[]): ChallengeRecord {
   const rec: ChallengeRecord = {
     played: 0, wins: 0, losses: 0, ties: 0, forfeits: 0, noShows: 0, abandoned: 0, voids: 0,
-    currentStreak: 0, bestStreak: 0, headToHead: [],
+    currentStreak: 0, bestStreak: 0, bestLossStreak: 0, headToHead: [],
   };
   const h2h = new Map<number, HeadToHead>();
   const bump = (r: { wins: number; losses: number; ties: number; forfeits: number; noShows: number; abandoned: number }, o: Outcome) => {
@@ -549,20 +752,25 @@ export function computeRecord(entries: RecordEntry[]): ChallengeRecord {
     else r.noShows++;
   };
   const ordered = [...entries].sort((a, b) => +a.resolvedAt - +b.resolvedAt || a.challengeId - b.challengeId);
-  let run = 0;
+  let run = 0, lossRun = 0;
   for (const e of ordered) {
     rec.played++;
     bump(rec, e.outcome);
     if (e.void) rec.voids++;
-    for (const id of e.opponentIds) {
+    const pairs: Array<[number, Outcome]> = e.opponents
+      ? e.opponents.map(o => [o.userId, pairOutcome({ outcome: e.outcome, rank: e.rank ?? null }, o)])
+      : (e.opponentIds ?? []).map(id => [id, e.outcome]);
+    for (const [id, o] of pairs) {
       const row = h2h.get(id) ?? { opponentId: id, played: 0, wins: 0, losses: 0, ties: 0, forfeits: 0, noShows: 0, abandoned: 0 };
       row.played++;
-      bump(row, e.outcome);
+      bump(row, o);
       h2h.set(id, row);
     }
     if (e.void) continue;
     run = e.outcome === 'win' ? run + 1 : 0;
+    lossRun = e.outcome === 'loss' ? lossRun + 1 : 0;
     rec.bestStreak = Math.max(rec.bestStreak, run);
+    rec.bestLossStreak = Math.max(rec.bestLossStreak, lossRun);
   }
   rec.currentStreak = run;
   rec.headToHead = [...h2h.values()].sort((a, b) => b.played - a.played || a.opponentId - b.opponentId);
