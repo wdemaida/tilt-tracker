@@ -107,11 +107,11 @@ try {
   created.userIds.push(admin.id, user.id);
   await db.delete(appSettings).where(inArray(appSettings.key, [RETENTION_SETTING_KEY, PHOTO_ORPHANS_SETTING_KEY]));
 
-  // ── synthetic events, backdated (created_at is naive UTC) ───────────────────
+  // ── synthetic events, backdated on the DB clock (created_at is timestamptz) ──
   const ev = async (label: string, type: string, daysAgo: number) => {
     const [row] = await db.insert(activityEvents).values({
       type, actorUserId: user.id, payload: { zzRetentionTest: TAG, label },
-      createdAt: sql`((now() AT TIME ZONE 'UTC') - make_interval(days => ${daysAgo}))` as any,
+      createdAt: sql`(now() - make_interval(days => ${daysAgo}))` as any,
     }).returning({ id: activityEvents.id });
     return row.id;
   };

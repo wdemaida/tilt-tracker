@@ -72,7 +72,8 @@ function check(label: string, ok: boolean, detail?: unknown) {
 async function row(id: number) {
   const [r] = await db.select({
     source: scores.playedAtSource, correctedBy: scores.playedAtCorrectedById, correctedAt: scores.playedAtCorrectedAt,
-    playedAt: sql<string>`${scores.playedAt}::text`, score: scores.score,
+    // UTC digits, whatever the session's TimeZone (played_at is timestamptz).
+    playedAt: sql<string>`(${scores.playedAt} AT TIME ZONE 'UTC')::text`, score: scores.score,
   }).from(scores).where(eq(scores.id, id));
   return r;
 }
@@ -182,6 +183,18 @@ try {
   check('PATCH with only the same minute (nothing to write) → 200', r.status === 200, r);
   r = await call(clerkIds.alice, 'POST', '/scores', { ...base, playedAt: 'nope' });
   check('POST with a junk playedAt → 400 invalid_played_at', r.status === 400 && r.body?.code === 'invalid_played_at', r);
+  // A zone-less instant is refused, never guessed at (lib/instant.ts parseInstant) — the browser always sends …Z.
+  const n1 = (await db.select({ n: sql<number>`count(*)::int` }).from(scores).where(eq(scores.machineId, machine.id)))[0].n;
+  r = await call(clerkIds.alice, 'POST', '/scores', { ...base, playedAt: '2026-06-01T12:00:00' });
+  check('POST with a zone-less playedAt → 400 invalid_played_at', r.status === 400 && r.body?.code === 'invalid_played_at', r);
+  r = await call(clerkIds.alice, 'POST', '/scores', { ...base, playedAt: '2026-06-01' });
+  check('POST with a date-only playedAt → 400 invalid_played_at', r.status === 400 && r.body?.code === 'invalid_played_at', r);
+  check('… neither wrote a score', (await db.select({ n: sql<number>`count(*)::int` }).from(scores).where(eq(scores.machineId, machine.id)))[0].n === n1);
+  r = await call(clerkIds.alice, 'PATCH', `/scores/${manualId}`, { playedAt: '2026-06-02 09:00:00' });
+  check('PATCH with a zone-less playedAt → 400 invalid_played_at', r.status === 400 && r.body?.code === 'invalid_played_at', r);
+  check('… unchanged', (await row(manualId)).playedAt.startsWith('2026-06-01'), await row(manualId));
+  r = await call(clerkIds.alice, 'PATCH', `/scores/${manualId}`, { playedAt: '2026-06-01T08:00:30-04:00' });
+  check('PATCH with an explicit −04:00 offset for the same minute → 200, nothing to write', r.status === 200 && (await row(manualId)).playedAt === '2026-06-01 12:00:00', { r, row: await row(manualId) });
 
   // ── never in the future (lib/playedAtClock.ts, 15 min of skew) ─────────────
   const inMin = (m: number) => new Date(Date.now() + m * 60_000).toISOString();
