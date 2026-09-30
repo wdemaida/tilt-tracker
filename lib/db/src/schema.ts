@@ -260,10 +260,16 @@ export const notifications = pgTable('notifications', {
 // ("GbPde") captured at creation for match_mode 'game'; null means exact machine only.
 // `visibility` is reserved ('participants') — nothing reads it yet.
 export type ChallengeType = 'high_score' | 'race' | 'most_improved' | 'average';
-// 'countered' (migrate22): the invitee couldn't get to the machine and answered with a counter-offer
-// — a new challenge whose countered_from_id points back here.
-export type ChallengeStatus = 'pending' | 'active' | 'resolved' | 'declined' | 'cancelled' | 'expired' | 'countered';
-export type ChallengeResponse = 'pending' | 'accepted' | 'declined' | 'countered';
+// 'countered' (migrate22): the original of a counter-offer that was taken (or, for a legacy row, the
+// one a counter answered) — a newer challenge's countered_from_id points back here.
+// Proposal statuses (migrate24): a counter-offer is a PROPOSAL row sent to the challenger —
+// 'proposed' (open), 'rejected' (she kept hers / superseded / the original started) and 'lapsed'
+// (the original was cancelled, expired or hit its fixed start, or the proposal's window passed).
+// A taken proposal becomes an ordinary 'pending' challenge.
+export type ChallengeStatus = 'pending' | 'active' | 'resolved' | 'declined' | 'cancelled' | 'expired' | 'countered'
+  | 'proposed' | 'rejected' | 'lapsed';
+// 'missed' (migrate24): never answered — the challenge started (or expired) without them.
+export type ChallengeResponse = 'pending' | 'accepted' | 'declined' | 'countered' | 'missed';
 // Why an invitee said no (migrate22). A counter-offer stores 'cant_reach' too.
 export type ChallengeDeclineReason = 'cant_reach' | 'no_thanks';
 // 'abandoned' = a race / average nobody finished (not a win, loss, tie or no-show; breaks a win streak).
@@ -294,14 +300,23 @@ export const challenges = pgTable('challenges', {
   // A counter-offer's original (migrate22). The original's status is then 'countered'; chains of
   // counters are allowed, each pointing at the one before.
   counteredFromId: integer('countered_from_id').references((): AnyPgColumn => challenges.id, { onDelete: 'set null' }),
+  // Proposals (migrate24). Set on a counter-offer row: the player who suggested it (creator_id stays
+  // the challenger). The CHECK challenges_proposal_check requires it for the proposal statuses; a
+  // unique index allows one proposal per player per original. Legacy counters have it null.
+  proposedById: integer('proposed_by_id').references(() => users.id, { onDelete: 'set null' }),
+  // When the challenger took it, or it was rejected / lapsed.
+  proposalDecidedAt: timestamp('proposal_decided_at'),
+  // The daily sweep's one reminder to the challenger about an unanswered suggestion (after 24 h).
+  proposalRemindedAt: timestamp('proposal_reminded_at'),
 }, (table) => ({
   statusEndsIdx: index('challenges_status_ends_at_idx').on(table.status, table.endsAt),
   creatorIdx: index('challenges_creator_id_idx').on(table.creatorId),
   counteredFromIdx: index('challenges_countered_from_id_idx').on(table.counteredFromId),
+  proposedByIdx: index('challenges_proposed_by_id_idx').on(table.proposedById),
 }));
 
-// One row per (challenge, participant) — the creator included (accepted at creation). Groups later
-// just means more rows. `baselineScore` is frozen at acceptance for most_improved; `resultValue` and
+// One row per (challenge, participant) — the creator included (accepted at creation). A group is
+// just more rows (up to 8 players, migrate24). `baselineScore` is frozen at acceptance for most_improved; `resultValue` and
 // `rank` are written at resolution (live standings are computed, not stored).
 export const challengeParticipants = pgTable('challenge_participants', {
   challengeId: integer('challenge_id').references(() => challenges.id, { onDelete: 'cascade' }).notNull(),
