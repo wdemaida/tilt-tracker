@@ -2,6 +2,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@workspace/db';
 import { ACTIVITY_TYPES, logActivity, type Executor } from './activity.js';
 import { getSetting, setSetting } from './appSettings.js';
+import { dbTimestampToIso } from './instant.js';
 
 // Tiered retention for the admin activity log (`activity_events`, which is otherwise append-only and
 // grows forever). Three tiers, each with an admin-editable age limit (/admin/config → Data retention,
@@ -370,9 +371,9 @@ function sqlTextArray(values: string[]): SQL {
   return sql`ARRAY[${sql.join(values.map(v => sql`${v}`), sql`, `)}]::text[]`;
 }
 
-/** created_at is a naive UTC column; the cutoff is computed in UTC on the DB clock. */
+/** The cutoff instant on the DB clock (created_at is timestamptz — no session-zone dependence). */
 function cutoffSql(days: number): SQL {
-  return sql`((now() AT TIME ZONE 'UTC') - make_interval(days => ${days}))`;
+  return sql`(now() - make_interval(days => ${days}))`;
 }
 
 async function deleteTierBatch(tier: RetentionTier, days: number, limit: number, scope?: SQL): Promise<number> {
@@ -455,7 +456,7 @@ export async function retentionStatus(settings: RetentionSettings): Promise<Tier
   // cutoff = now, so every row counts.
   const cut = (tier: RetentionTier) => {
     const d = retentionDays(settings, tier);
-    return d == null ? sql`'-infinity'::timestamp` : cutoffSql(d);
+    return d == null ? sql`'-infinity'::timestamptz` : cutoffSql(d);
   };
   const rows = await db.execute(sql`
     SELECT tier, count(*)::int AS rows, min(created_at) AS oldest,
@@ -473,19 +474,8 @@ export async function retentionStatus(settings: RetentionSettings): Promise<Tier
     GROUP BY tier`) as unknown as Array<{ tier: RetentionTier; rows: number; oldest: string | Date | null; eligible: number }>;
   return RETENTION_TIERS.map(tier => {
     const r = rows.find(x => x.tier === tier);
-    return { tier, days: retentionDays(settings, tier), rows: r?.rows ?? 0, oldest: naiveUtcToIso(r?.oldest), eligible: r?.eligible ?? 0 };
+    return { tier, days: retentionDays(settings, tier), rows: r?.rows ?? 0, oldest: dbTimestampToIso(r?.oldest), eligible: r?.eligible ?? 0 };
   });
 }
 
-/**
- * A naive-UTC timestamp from a raw query (drizzle hands raw `timestamp` values back as strings like
- * `2026-09-26 12:34:56.789`) as an ISO string with a Z, so browsers don't read it as local time.
- */
-export function naiveUtcToIso(v: string | Date | null | undefined): string | null {
-  if (v == null) return null;
-  if (v instanceof Date) return v.toISOString();
-  const s = String(v).trim();
-  if (/\d:\d\d(:\d\d(\.\d+)?)?\s*(z|[+-]\d\d(:?\d\d)?)$/i.test(s)) return new Date(s).toISOString();
-  const d = new Date(`${s.replace(' ', 'T')}Z`);
-  return Number.isNaN(+d) ? s : d.toISOString();
-}
+// Raw-SQL timestamps (drizzle hands them back as Postgres text) → ISO: lib/instant.ts dbTimestampToIso.

@@ -21,6 +21,7 @@ import {
   checkPlayedAtToken, decidePlayedAtSource, playedAtChanged, playedAtEditDecision,
 } from '../lib/playedAtProvenance.js';
 import { playedAfter, PLAYED_AT_IN_FUTURE, PLAYED_AT_AFTER_LOGGED } from '../lib/playedAtClock.js';
+import { parseInstant } from '../lib/instant.js';
 
 // Optional — resolves the caller's app user + role, without requiring auth.
 async function resolveRequester(req: any): Promise<{ id: number; role: string } | undefined> {
@@ -111,9 +112,11 @@ router.post('/', requireAppUser, async (req, res) => {
   if (parsedScore == null) {
     return res.status(400).json({ error: 'score must be a positive whole number', code: 'invalid_score' });
   }
-  const playedAtDate = new Date(playedAt);
-  if (Number.isNaN(playedAtDate.getTime())) {
-    return res.status(400).json({ error: 'playedAt must be a date', code: 'invalid_played_at' });
+  // An instant with an explicit offset (the browser sends toISOString()); a zone-less time is refused
+  // rather than read in this server's zone — lib/instant.ts.
+  const playedAtDate = parseInstant(playedAt);
+  if (playedAtDate === 'invalid') {
+    return res.status(400).json({ error: 'playedAt must be an ISO date-time with a time zone offset', code: 'invalid_played_at' });
   }
   // Not in the future (beyond 15 minutes of phone-clock skew) — lib/playedAtClock.ts. Challenges and
   // badges compare played_at against their windows, so a future time would count early.
@@ -222,9 +225,9 @@ router.patch('/:id', requireAppUser, async (req, res) => {
   // lib/playedAtProvenance.ts. Legacy (null) and manual scores stay freely editable.
   let correction: { reason: string; from: Date; to: Date } | null = null;
   if (playedAt !== undefined) {
-    const next = new Date(playedAt);
-    if (Number.isNaN(next.getTime())) {
-      return res.status(400).json({ error: 'playedAt must be a date', code: 'invalid_played_at' });
+    const next = parseInstant(playedAt);
+    if (next === 'invalid') {
+      return res.status(400).json({ error: 'playedAt must be an ISO date-time with a time zone offset', code: 'invalid_played_at' });
     }
     if (playedAtChanged(existing.playedAt, next)) {
       // Not after the score was logged (beyond the skew) — admins included (lib/playedAtClock.ts).

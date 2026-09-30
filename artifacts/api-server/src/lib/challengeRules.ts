@@ -47,6 +47,7 @@
 //    challenge still neither extends nor breaks one.)
 
 import { playedAfter } from './playedAtClock.js';
+import { parseInstant } from './instant.js';
 
 export const CHALLENGE_TYPES = ['high_score', 'race', 'most_improved', 'average'] as const;
 export type ChallengeType = (typeof CHALLENGE_TYPES)[number];
@@ -695,11 +696,10 @@ export interface CreateInput {
 export type Invalid = { ok: false; code: string; error: string };
 export type Valid<T> = { ok: true; value: T };
 
+/** An instant with an explicit offset, or epoch ms; a zone-less string is 'invalid' (lib/instant.ts). */
 function parseDate(raw: unknown): Date | null | 'invalid' {
   if (raw === undefined || raw === null || raw === '') return null;
-  if (typeof raw !== 'string' && typeof raw !== 'number') return 'invalid';
-  const d = new Date(raw);
-  return Number.isNaN(+d) ? 'invalid' : d;
+  return parseInstant(raw, { allowEpochMs: true });
 }
 
 function parsePositiveInt(raw: unknown): number | null {

@@ -5,9 +5,10 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import { ACTIVITY_TYPES, logActivity } from './activity.js';
 import {
   tierOf, typesInTier, unmappedCatalogTypes, TIER_BY_TYPE, DEFAULT_RETENTION, RETENTION_LIMITS, validateRetentionSettings,
-  normalizeRetention, retentionDays, isTierRecorded, planRetention, runBatches, tierSql, naiveUtcToIso,
+  normalizeRetention, retentionDays, isTierRecorded, planRetention, runBatches, tierSql,
   setRetentionLoaderForTests, primeRetentionCache, cachedRetentionSettings, isTypeRecorded, type RetentionSettings,
 } from './activityRetention.js';
+import { dbTimestampToIso } from './instant.js';
 
 test('every catalogued activity type has an explicit retention tier', () => {
   assert.deepEqual(unmappedCatalogTypes(), []);
@@ -223,11 +224,12 @@ test('runBatches: an error propagates (the caller records it per tier)', async (
   await assert.rejects(runBatches(async limit => { if (++n === 2) throw new Error('boom'); return limit; }, 10, 5), /boom/);
 });
 
-test('naiveUtcToIso: naive DB strings are UTC; zoned strings and Dates pass through', () => {
-  assert.equal(naiveUtcToIso('2026-09-26 12:34:56.789'), '2026-09-26T12:34:56.789Z');
-  assert.equal(naiveUtcToIso('2026-09-26 12:34:56'), '2026-09-26T12:34:56.000Z');
-  assert.equal(naiveUtcToIso('2026-09-26T12:34:56Z'), '2026-09-26T12:34:56.000Z');
-  assert.equal(naiveUtcToIso('2026-09-26 08:34:56-04'), '2026-09-26T12:34:56.000Z');
-  assert.equal(naiveUtcToIso(new Date('2026-01-01T00:00:00Z')), '2026-01-01T00:00:00.000Z');
-  assert.equal(naiveUtcToIso(null), null);
+test('retention status oldest: timestamptz text, legacy naive-UTC text and Dates become ISO Z (dbTimestampToIso)', () => {
+  assert.equal(dbTimestampToIso('2026-09-26 12:34:56.789+00'), '2026-09-26T12:34:56.789Z');
+  assert.equal(dbTimestampToIso('2026-09-26 12:34:56.789'), '2026-09-26T12:34:56.789Z');
+  assert.equal(dbTimestampToIso('2026-09-26 12:34:56'), '2026-09-26T12:34:56.000Z');
+  assert.equal(dbTimestampToIso('2026-09-26T12:34:56Z'), '2026-09-26T12:34:56.000Z');
+  assert.equal(dbTimestampToIso('2026-09-26 08:34:56-04'), '2026-09-26T12:34:56.000Z');
+  assert.equal(dbTimestampToIso(new Date('2026-01-01T00:00:00Z')), '2026-01-01T00:00:00.000Z');
+  assert.equal(dbTimestampToIso(null), null);
 });

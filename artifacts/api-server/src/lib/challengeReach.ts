@@ -338,7 +338,7 @@ function toChallengeVenueHit(v: PrivacyFlags & { id: number; name: string; city:
  * search. Our own tables only — no Pinball Map, no HERE.
  */
 export async function recentChallengeVenues(userId: number): Promise<ChallengeVenueHit[]> {
-  const lastPlayed = sql<Date>`max(${scores.playedAt})`;
+  const lastPlayed = sql<Date>`max(${scores.playedAt})`.mapWith(scores.playedAt); // a Date, not raw Postgres text
   const rows = await db.select({
     id: venues.id, name: venues.name, address: venues.address, city: venues.city, state: venues.state,
     ownerId: venues.ownerId, isResidence: venues.isResidence, privacyTier: venues.privacyTier,
