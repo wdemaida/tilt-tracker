@@ -641,6 +641,42 @@ try {
     && r.body?.venues?.find((v: any) => v.id === ARCADE.id)?.source === 'added' && r.body?.venues?.length === 4, r.body?.venues);
   r = await call(bob, 'GET', `/me/challenge-venue-search?q=${encodeURIComponent('zz challenge test searchable')}`);
   check('venue search leaves out venues already in your list', r.status === 200 && !hitIds(r.body).includes(ARCADE.id), r.body);
+
+  // Empty q → "Recently played": your venues by latest played_at, newest first, listed ones left out.
+  const recentVenues = await db.insert(venues).values([
+    { name: 'zz-challenge-test recent newest', city: 'Zzton', state: 'ZZ' },
+    { name: 'zz-challenge-test recent oldest', city: 'Zzton', state: 'ZZ' },
+    { name: 'zz-challenge-test carol shed', isResidence: true, ownerId: carol.id, city: 'Zzshed', state: 'ZZ' },
+  ]).returning({ id: venues.id, name: venues.name });
+  venueIds.push(...recentVenues.map(v => v.id));
+  const [NEWEST, OLDEST, SHED] = recentVenues;
+  const ago = (min: number) => new Date(Date.now() - min * 60_000);
+  await db.insert(scores).values([
+    // NEWEST's latest play is the most recent even though it also has the oldest play of the three.
+    { userId: bob.id, machineId: PRO, venueId: NEWEST.id, venueName: NEWEST.name, score: 11, playedAt: ago(5), createdAt: ago(5) },
+    { userId: bob.id, machineId: PRO, venueId: NEWEST.id, venueName: NEWEST.name, score: 12, playedAt: ago(60 * 24 * 30), createdAt: ago(60 * 24 * 30) },
+    { userId: bob.id, machineId: PRO, venueId: SHED.id, venueName: SHED.name, score: 13, playedAt: ago(10), createdAt: ago(10) },
+    { userId: bob.id, machineId: PRO, venueId: OLDEST.id, venueName: OLDEST.name, score: 14, playedAt: ago(15), createdAt: ago(15) },
+    // A more recent play at a venue already in bob's list must not surface it.
+    { userId: bob.id, machineId: PRO, venueId: ARCADE.id, venueName: ARCADE.name, score: 15, playedAt: ago(1), createdAt: ago(1) },
+  ]);
+  r = await call(bob, 'GET', '/me/challenge-venue-search?q=');
+  const recentIds = hitIds(r.body);
+  const order = recentIds.filter(id => [NEWEST.id, SHED.id, OLDEST.id].includes(id));
+  check('empty q → 200, your venues ordered by most recent play (≤6)', r.status === 200 && recentIds.length <= 6
+    && JSON.stringify(order) === JSON.stringify([NEWEST.id, SHED.id, OLDEST.id]), r.body);
+  check('empty q leaves out venues already in your list', [PMV.id, BOB_HOME.id, CAROL_HOME.id, ARCADE.id].every(id => !recentIds.includes(id)), r.body);
+  check("empty q never includes a stranger's residence", !recentIds.includes(CABIN.id) && !JSON.stringify(r.body).includes(CABIN.name), r.body);
+  const shedHit = (r.body ?? []).find?.((h: any) => h.id === SHED.id);
+  check("empty q: a private venue you've scored at is name only — no city/state", shedHit
+    && shedHit.city === null && shedHit.state === null && shedHit.isPrivate === true && shedHit.isHome === false, r.body);
+  const newestHit = (r.body ?? []).find?.((h: any) => h.id === NEWEST.id);
+  check('empty q: a public venue keeps its city/state', newestHit?.city === 'Zzton' && newestHit?.state === 'ZZ', r.body);
+  r = await call(bob, 'GET', '/me/challenge-venue-search');
+  check('absent q behaves like empty q', r.status === 200 && JSON.stringify(hitIds(r.body)) === JSON.stringify(recentIds), r.body);
+  r = await call(alice, 'GET', '/me/challenge-venue-search?q=');
+  check("empty q: alice (never played there) gets none of bob's recent venues or anyone's residence", r.status === 200
+    && [NEWEST.id, OLDEST.id, SHED.id, BOB_HOME.id, CAROL_HOME.id, CABIN.id].every(id => !hitIds(r.body).includes(id)), r.body);
   check('venue search: zero Pinball Map calls', pmClient().stats().liveCallsToday === pmBeforeSearch);
 
   r = await call(carol, 'GET', `/challenges/recommendations/${encodeURIComponent(bob.username)}`);

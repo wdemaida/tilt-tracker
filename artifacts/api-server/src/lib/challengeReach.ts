@@ -4,7 +4,7 @@ import {
 } from '@workspace/db';
 import { and, asc, eq, gte, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { canSeeVenueActivity, visibleScoreSql, type Viewer } from './venueActivity.js';
-import { isPrivateVenue } from './venueAddress.js';
+import { isPrivateVenue, type PrivacyFlags } from './venueAddress.js';
 import { matchScore, queryLength, MIN_QUERY_CHARS } from './venueSearch.js';
 import { acceptedPairSql } from './friendships.js';
 import { countVisits } from './statsCalc.js';
@@ -313,6 +313,38 @@ export async function updateChallengePrefs(userId: number, body: Record<string, 
 /** A venue search hit for the challenge-locations editor. */
 export interface ChallengeVenueHit { id: number; name: string; city: string | null; state: string | null; isPrivate: boolean; isHome: boolean }
 export const CHALLENGE_VENUE_SEARCH_LIMIT = 8;
+/** How many "Recently played" venues an empty search returns. */
+export const CHALLENGE_RECENT_VENUE_LIMIT = 6;
+
+/** Shape a venue row as a hit: city/state only for a public venue or your own. */
+function toChallengeVenueHit(v: PrivacyFlags & { id: number; name: string; city: string | null; state: string | null; ownerId: number | null }, userId: number): ChallengeVenueHit {
+  const priv = isPrivateVenue(v);
+  const own = v.ownerId === userId;
+  return {
+    id: v.id, name: v.name,
+    city: !priv || own ? v.city : null, state: !priv || own ? v.state : null,
+    isPrivate: priv, isHome: own && v.isResidence,
+  };
+}
+
+/**
+ * The empty-query case of the challenge-venue search: the venues you've most recently played at (by
+ * your latest score's played_at there), newest first, leaving out ones already in your list. Every
+ * one is a venue you've scored at, so the PUT accepts it; city/state is redacted exactly as in the
+ * search. Our own tables only — no Pinball Map, no HERE.
+ */
+export async function recentChallengeVenues(userId: number): Promise<ChallengeVenueHit[]> {
+  const lastPlayed = sql<Date>`max(${scores.playedAt})`;
+  const rows = await db.select({
+    id: venues.id, name: venues.name, address: venues.address, city: venues.city, state: venues.state,
+    ownerId: venues.ownerId, isResidence: venues.isResidence, privacyTier: venues.privacyTier,
+    lastPlayed,
+  }).from(scores).innerJoin(venues, eq(venues.id, scores.venueId)).where(and(
+    eq(scores.userId, userId),
+    sql`NOT EXISTS (SELECT 1 FROM user_challenge_venues ucv WHERE ucv.user_id = ${userId} AND ucv.venue_id = ${venues.id})`,
+  )).groupBy(venues.id).orderBy(sql`${lastPlayed} DESC`, asc(venues.id)).limit(CHALLENGE_RECENT_VENUE_LIMIT);
+  return rows.map(v => toChallengeVenueHit(v, userId));
+}
 
 /**
  * GET /api/me/challenge-venue-search?q= — any TiltTrack venue you could add as a challenge location,
@@ -320,9 +352,11 @@ export const CHALLENGE_VENUE_SEARCH_LIMIT = 8;
  * Pinball Map, no HERE. Only venues PUT would accept — public, your own, or one you've scored at —
  * so a stranger's private venue never appears. City/state only for a public venue or your own; a
  * private venue you merely scored at shows its name alone (as its chip already does). Venues already
- * in your list are left out.
+ * in your list are left out. An empty (or absent) q returns your most recently played venues instead
+ * (recentChallengeVenues) — same rule, same shape.
  */
 export async function searchChallengeVenues(userId: number, q: string): Promise<ChallengeVenueHit[]> {
+  if (q.trim() === '') return recentChallengeVenues(userId);
   if (queryLength(q) < MIN_QUERY_CHARS) return [];
   const rows = await db.select({
     id: venues.id, name: venues.name, address: venues.address, city: venues.city, state: venues.state,
@@ -342,11 +376,7 @@ export async function searchChallengeVenues(userId: number, q: string): Promise<
     .filter((r): r is typeof r & { score: number } => r.score != null)
     .sort((a, b) => b.score - a.score || a.v.name.localeCompare(b.v.name))
     .slice(0, CHALLENGE_VENUE_SEARCH_LIMIT)
-    .map(({ v, priv, own }) => ({
-      id: v.id, name: v.name,
-      city: !priv || own ? v.city : null, state: !priv || own ? v.state : null,
-      isPrivate: priv, isHome: own && v.isResidence,
-    }));
+    .map(({ v }) => toChallengeVenueHit(v, userId));
 }
 
 // ── recommendations ──────────────────────────────────────────────────────────

@@ -40,6 +40,7 @@ router.put('/challenge-prefs', async (req, res) => {
 // GET /api/me/challenge-venue-search?q= — venues you could add as a challenge location, from
 // TiltTrack's own venues table only (zero Pinball Map / HERE calls). Public venues, your own, or one
 // you've scored at — never a stranger's private venue. Same per-user limit as the Add Score search.
+// An empty q returns your most recently played venues ("Recently played"), same rule and shape.
 const venueSearchLimiter = new SlidingRateLimiter(SEARCH_RATE_WINDOWS);
 setInterval(() => venueSearchLimiter.sweep(), 10 * 60_000).unref();
 

@@ -7,7 +7,7 @@ import { queryClient } from '../lib/queryClient';
 import { CHALLENGE_PREFS_KEY, challengeErrorText } from '../lib/challenges';
 import MachinePicker, { type MachineOption } from './MachinePicker';
 import { MachineThumb } from './ChallengeParts';
-import type { ChallengeMeMachine, ChallengePrefs, ChallengePrefVenue } from '../lib/api';
+import type { ChallengeMeMachine, ChallengePrefs, ChallengePrefVenue, ChallengeVenueHit } from '../lib/api';
 
 // "Challenge me" (feature/challenge-recs).
 //  - Yours (on your profile and the Challenges page, collapsible): the machines you want to be
@@ -53,19 +53,46 @@ function plural(n: number, one: string) { return `${n} ${one}${n === 1 ? '' : 's
 /** Letters/digits only — the server searches from 2 of them (MIN_QUERY_CHARS). */
 const searchable = (q: string) => q.replace(/[^\p{L}\p{N}]/gu, '').length >= 2;
 
-/** Type-ahead over TiltTrack's own venues (public, yours, or ones you've scored at) to add any location. */
+/**
+ * Type-ahead over TiltTrack's own venues (public, yours, or ones you've scored at) to add any location.
+ * Focused with nothing typed, it offers the venues you've most recently played at ("Recently played",
+ * the same endpoint with an empty q); typing switches to search results.
+ */
 function VenueSearch({ onPick, busy }: { onPick: (id: number) => void; busy: boolean }) {
   const api = useApi();
   const [q, setQ] = useState('');
+  const [open, setOpen] = useState(false);
   const dq = useDebounced(q.trim(), 250);
-  const active = searchable(dq);
+  const recentMode = q.trim() === '';
+  const active = !recentMode && searchable(dq);
   const hits = useQuery({
     queryKey: ['challenge-venue-search', dq],
     queryFn: () => api.challenges.searchVenues(dq),
-    enabled: active,
+    enabled: open && active,
     staleTime: 30_000,
   });
-  const results = hits.data ?? [];
+  const recent = useQuery({
+    queryKey: ['challenge-venue-search', ''],
+    queryFn: () => api.challenges.searchVenues(''),
+    enabled: open && recentMode,
+    staleTime: 30_000,
+  });
+  const results = (recentMode ? recent.data : hits.data) ?? [];
+  const pick = (id: number) => { onPick(id); setQ(''); setOpen(false); };
+  // Recently played: nothing until it has loaded (no spinner flash), a quiet line if there are none.
+  const showRecent = open && recentMode && recent.isSuccess;
+  const showSearch = open && active;
+  const venueRow = (v: ChallengeVenueHit) => (
+    <button key={v.id} type="button" disabled={busy} onClick={() => pick(v.id)}
+      className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/5 disabled:opacity-50">
+      {v.isHome ? <Home className="w-3.5 h-3.5 text-venue flex-shrink-0" aria-hidden /> : <MapPin className="w-3.5 h-3.5 text-venue flex-shrink-0" aria-hidden />}
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm text-venue truncate">{v.name}</span>
+        {(v.city || v.state) && <span className="block text-[11px] text-muted-foreground truncate">{[v.city, v.state].filter(Boolean).join(', ')}</span>}
+      </span>
+      <Plus className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" aria-hidden />
+    </button>
+  );
   return (
     <div className="mt-2">
       <div className="relative">
@@ -73,31 +100,29 @@ function VenueSearch({ onPick, busy }: { onPick: (id: number) => void; busy: boo
         <input
           type="search"
           value={q}
-          onChange={e => setQ(e.target.value)}
+          onChange={e => { setQ(e.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          onClick={() => setOpen(true)}
+          onBlur={() => setOpen(false)}
+          onKeyDown={e => { if (e.key === 'Escape' && open) { e.preventDefault(); setOpen(false); } }}
           placeholder="Search TiltTrack venues to add…"
           aria-label="Search venues to add as a challenge location"
+          aria-expanded={showRecent || showSearch}
           className="w-full rounded-lg border border-white/10 bg-card pl-8 pr-3 py-2 text-sm text-white placeholder:text-muted-foreground focus:outline-none focus:border-venue/50"
         />
       </div>
-      {active && (
-        <div className="mt-1.5 rounded-lg border border-white/10 bg-card divide-y divide-white/5">
-          {hits.isLoading && <p className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground"><Loader2 className="w-3 h-3 animate-spin" aria-hidden /> Searching…</p>}
-          {hits.isError && <p className="px-3 py-2 text-xs text-red-400">{challengeErrorText(hits.error, 'Search failed')}</p>}
-          {!hits.isLoading && !hits.isError && results.length === 0 && (
+      {(showRecent || showSearch) && (
+        // mousedown would blur the input (closing the list) before the click lands on a row.
+        <div onMouseDown={e => e.preventDefault()} className="mt-1.5 rounded-lg border border-white/10 bg-card divide-y divide-white/5">
+          {showRecent && (results.length === 0
+            ? <p className="px-3 py-2 text-xs text-muted-foreground">No recent venues</p>
+            : <p className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wide text-muted-foreground">Recently played</p>)}
+          {showSearch && hits.isLoading && <p className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground"><Loader2 className="w-3 h-3 animate-spin" aria-hidden /> Searching…</p>}
+          {showSearch && hits.isError && <p className="px-3 py-2 text-xs text-red-400">{challengeErrorText(hits.error, 'Search failed')}</p>}
+          {showSearch && !hits.isLoading && !hits.isError && results.length === 0 && (
             <p className="px-3 py-2 text-xs text-muted-foreground">No TiltTrack venue matches. A venue shows up here once someone has logged a score there.</p>
           )}
-          {results.map(v => (
-            <button key={v.id} type="button" disabled={busy}
-              onClick={() => { onPick(v.id); setQ(''); }}
-              className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/5 disabled:opacity-50">
-              {v.isHome ? <Home className="w-3.5 h-3.5 text-venue flex-shrink-0" aria-hidden /> : <MapPin className="w-3.5 h-3.5 text-venue flex-shrink-0" aria-hidden />}
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm text-venue truncate">{v.name}</span>
-                {(v.city || v.state) && <span className="block text-[11px] text-muted-foreground truncate">{[v.city, v.state].filter(Boolean).join(', ')}</span>}
-              </span>
-              <Plus className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" aria-hidden />
-            </button>
-          ))}
+          {results.map(venueRow)}
         </div>
       )}
     </div>
