@@ -39,7 +39,7 @@ export function Segmented<T extends string>({ options, value, onChange }: {
   options: Array<{ value: T; label: string }>; value: T; onChange: (v: T) => void;
 }) {
   return (
-    <div className="inline-flex max-w-full overflow-x-auto gap-0.5 p-1 rounded-lg bg-white/5 border border-white/10">
+    <div className="inline-flex max-w-full overflow-x-auto overflow-y-hidden scrollbar-none gap-0.5 p-1 rounded-lg bg-white/5 border border-white/10">
       {options.map(o => (
         <button
           key={o.value}

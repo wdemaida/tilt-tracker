@@ -98,3 +98,17 @@ body {
 .recharts-wrapper:focus:not(:focus-visible) {
   outline: none;
 }
+
+/* Sideways-scrolling strips (AdminNav, Segmented): still swipe/scroll on phones and with a trackpad,
+   but no visible scrollbar on any platform. Pair with overflow-y-hidden — overflow-x:auto alone
+   makes overflow-y auto too, and AdminNav's -mb-px tab underline is a pixel taller than the strip,
+   which drew a tiny up/down scrollbar at the end of the row on Windows desktop. */
+@layer utilities {
+  .scrollbar-none {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+}
