@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Upload, Trash2, Eye, Rocket, Archive, Loader2, UserPlus, X, ChevronDown, Search } from 'lucide-react';
-import { useAdminApi, type AdminBadge, type BadgeInput, type BadgeKind, type BadgeRule, type BadgePreview, type UserRef } from '../lib/adminApi';
+import { Plus, Upload, Trash2, Eye, Rocket, Archive, Loader2, UserPlus, X, ChevronDown, Search, History } from 'lucide-react';
+import { useAdminApi, type AdminBadge, type BadgeInput, type BadgeKind, type BadgeRule, type BadgePreview, type BadgeBackfillResult, type UserRef } from '../lib/adminApi';
 import { useApi } from '../lib/useApi';
 import { toLocalInput, localInputToIso } from '../lib/datetime';
 import { AdminShell, Card, Pill, SectionTitle, ErrorNote, ConfirmDialog, When, Who, Segmented } from '../components/admin/AdminParts';
@@ -18,6 +18,11 @@ import { BADGES_KEY } from '../lib/badges';
 // themself. The editor opens inline under the badge it edits (new badges: at the top), scrolls into
 // view and focuses Name; saving an edit collapses it with a toast. The server is the authority on
 // validation (routes/adminBadges.ts) — its per-field errors show inline and keep the editor open.
+//
+// Unsaved edits never reach an action silently: Go live saves first ("Save & go live") and then
+// activates the saved badge; Preview and Backfill now are disabled until the edits are saved. (Going
+// live with Retroactive ticked but unsaved used to activate forward-only — prod "First Ball".)
+// Saving a LIVE badge with Retroactive newly on backfills server-side, so that save asks first.
 
 const STATUS_TONE = { draft: 'muted', live: 'ok', retired: 'warn' } as const;
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -216,6 +221,15 @@ function bodyOf(d: Draft, locked: boolean): BadgeInput {
 }
 
 const num = (v: string) => (v === '' ? undefined : Math.round(Number(v)));
+
+const players = (n: number) => `${n.toLocaleString()} ${n === 1 ? 'player' : 'players'}`;
+
+/** The toast after a save that backfilled (PATCH turned retroactive on for a live badge). */
+function backfillToast(name: string, b: BadgeBackfillResult) {
+  if ('failed' in b) return toast({ tone: 'error', title: `Saved “${name}” — backfill failed`, body: `${b.error}. Use Backfill now to retry.` });
+  if (b.skippedWindow) return toast({ tone: 'info', title: `Saved “${name}”`, body: 'The availability window is shut, so nobody was backfilled.' });
+  return toast({ title: `Saved — ${players(b.awarded)} awarded`, body: `“${name}” went to everyone who already qualified.` });
+}
 
 /** The form builder for the rule vocabulary. */
 function RuleBuilder({ rule, onChange, error }: { rule: BadgeRule; onChange: (r: BadgeRule) => void; error?: string }) {
@@ -461,11 +475,16 @@ function BadgeEditor({ badge, onSaved, onClose }: { badge: AdminBadge | null; on
   const [saving, setSaving] = useState(false);
   const [preview, setPreview] = useState<BadgePreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
-  const [confirm, setConfirm] = useState<null | 'activate' | 'retire' | { revoke: UserRef }>(null);
+  const [confirm, setConfirm] = useState<null | 'activate' | 'retire' | 'backfill' | 'save-backfill' | { revoke: UserRef }>(null);
   useEffect(() => { setD(badge ? draftOf(badge) : EMPTY); setErrors({}); setError(null); setPreview(null); }, [badge?.id]);
 
   const locked = (live?.earnedCount ?? 0) > 0;
   const set = (patch: Partial<Draft>) => setD(x => ({ ...x, ...patch }));
+  // Unsaved edits = what Save would send differs from what the saved badge would send.
+  const dirty = !!badge && !!live && JSON.stringify(bodyOf(d, locked)) !== JSON.stringify(bodyOf(draftOf(live), locked));
+  const isLive = live?.status === 'live';
+  // Saving this turns retroactive on for a live badge → the server backfills on save.
+  const saveBackfills = !!badge && !!live && isLive && live.kind !== 'manual' && d.kind !== 'manual' && !live.retroactive && d.retroactive;
   // Going live / granting can award the admin themself: the bell and the badge views move too.
   const refresh = () => Promise.all([
     qc.invalidateQueries({ queryKey: ['admin'] }),
@@ -483,20 +502,32 @@ function BadgeEditor({ badge, onSaved, onClose }: { badge: AdminBadge | null; on
     nameRef.current?.focus({ preventScroll: true });
   }, [badge?.id]);
 
-  async function save() {
+  /** PATCH / POST the draft. Throws (after putting field errors inline); refreshes on success. */
+  async function persist(): Promise<{ badge: AdminBadge; backfill?: BadgeBackfillResult | null }> {
     setSaving(true); setErrors({}); setError(null);
     try {
       const body = bodyOf(d, locked);
       const r = badge ? await admin.updateBadge(badge.id, body) : await admin.createBadge(body);
       await refresh();
-      toast(badge
-        ? { title: 'Saved', body: `“${r.badge.name}”` }
-        : { title: 'Draft created', body: `“${r.badge.name}” — preview it, add art, then take it live.` });
-      onSaved(r.badge, !badge);
+      return r;
     } catch (e: any) {
       setErrors(e?.body?.errors ?? {});
       setError(e);
+      throw e;
     } finally { setSaving(false); }
+  }
+  async function saveAndClose() {
+    const r = await persist();
+    if (r.backfill) backfillToast(r.badge.name, r.backfill);
+    else toast(badge
+      ? { title: 'Saved', body: `“${r.badge.name}”` }
+      : { title: 'Draft created', body: `“${r.badge.name}” — preview it, add art, then take it live.` });
+    onSaved(r.badge, !badge);
+  }
+  function save() {
+    // Turning retroactive on for a live badge awards people on save — confirm first.
+    if (saveBackfills) setConfirm('save-backfill');
+    else saveAndClose().catch(() => { /* shown inline */ });
   }
   async function runPreview() {
     if (!badge) return;
@@ -571,10 +602,14 @@ function BadgeEditor({ badge, onSaved, onClose }: { badge: AdminBadge | null; on
         {d.kind !== 'manual' && (
           <label className="flex items-center gap-2 text-sm text-white/80 pb-2">
             <input type="checkbox" checked={d.retroactive} onChange={e => set({ retroactive: e.target.checked })} />
-            Retroactive (award from history at go-live)
+            {isLive ? 'Retroactive (award from history)' : 'Retroactive (award from history at go-live)'}
           </label>
         )}
       </div>
+      {saveBackfills && <p className="text-xs text-amber-300 -mt-3">This badge is live: saving awards it now to everyone who already qualifies, each with a notification.</p>}
+      {isLive && live?.retroactive && !d.retroactive && d.kind !== 'manual' && (
+        <p className="text-xs text-muted-foreground -mt-3">Turning Retroactive off takes the badge from nobody. From now on only new activity counts{d.kind === 'rule' ? ' (scores posted after it went live)' : ''}.</p>
+      )}
 
       {live?.activationBlocker && <p className="text-xs text-amber-300">Can’t go live yet: {live.activationBlocker}</p>}
       <ErrorNote error={error} />
@@ -586,13 +621,18 @@ function BadgeEditor({ badge, onSaved, onClose }: { badge: AdminBadge | null; on
         {badge && live && (
           <>
             {live.kind !== 'manual' && (
-              <button type="button" onClick={runPreview} disabled={previewing} className={`${btn} border border-white/15 text-white/80 hover:text-white`}>
+              <button type="button" onClick={runPreview} disabled={previewing || dirty} title={dirty ? 'Save changes first' : undefined} className={`${btn} border border-white/15 text-white/80 hover:text-white`}>
                 {previewing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Eye className="w-3.5 h-3.5" />} Preview
               </button>
             )}
             {live.status !== 'live' && (
-              <button type="button" onClick={() => setConfirm('activate')} disabled={!!live.activationBlocker} className={`${btn} bg-emerald-600 text-white hover:bg-emerald-500`}>
-                <Rocket className="w-3.5 h-3.5" /> Go live
+              <button type="button" onClick={() => setConfirm('activate')} disabled={!!live.activationBlocker || saving} className={`${btn} bg-emerald-600 text-white hover:bg-emerald-500`}>
+                <Rocket className="w-3.5 h-3.5" /> {dirty ? 'Save & go live' : 'Go live'}
+              </button>
+            )}
+            {isLive && live.retroactive && live.kind !== 'manual' && (
+              <button type="button" onClick={() => setConfirm('backfill')} disabled={dirty} title={dirty ? 'Save changes first' : undefined} className={`${btn} border border-emerald-500/40 text-emerald-300 hover:text-emerald-200`}>
+                <History className="w-3.5 h-3.5" /> Backfill now
               </button>
             )}
             {live.status === 'live' && (
@@ -603,7 +643,12 @@ function BadgeEditor({ badge, onSaved, onClose }: { badge: AdminBadge | null; on
           </>
         )}
       </div>
-      {badge && <p className="text-[11px] text-muted-foreground -mt-3">Save your edits before previewing or going live — both use the saved badge.</p>}
+      {dirty && (
+        <p className="text-[11px] text-amber-300 -mt-3">
+          Unsaved changes — Preview{isLive && live?.retroactive ? ' and Backfill now use' : ' uses'} the saved badge, so save first.
+          {!isLive && ' Save & go live saves them, then takes the saved badge live.'}
+        </p>
+      )}
       {preview && <PreviewList p={preview} />}
 
       {badge && live && (
@@ -636,20 +681,49 @@ function BadgeEditor({ badge, onSaved, onClose }: { badge: AdminBadge | null; on
       )}
 
       {confirm === 'activate' && live && (
-        <ConfirmDialog title="Go live" danger={false} confirmLabel="Go live"
+        // With unsaved edits this saves first and activates the SAVED badge; the dialog describes
+        // the draft, since that's what gets saved.
+        <ConfirmDialog title={dirty ? 'Save & go live' : 'Go live'} danger={false} confirmLabel={dirty ? 'Save & go live' : 'Go live'}
           body={<>
-            <p>“{live.name}” becomes earnable and shows in the public catalog.</p>
-            {live.kind !== 'manual' && (live.retroactive
-              ? <p><b>Retroactive is on:</b> everyone who already qualifies gets it now, each with a notification{preview ? ` (${preview.newCount.toLocaleString()} from the last preview)` : ' — run Preview first to see who'}.</p>
+            {dirty && <p><b>Your unsaved changes are saved first</b>, then the saved badge goes live.</p>}
+            <p>“{dirty ? d.name || live.name : live.name}” becomes earnable and shows in the public catalog.</p>
+            {(dirty ? d.kind : live.kind) !== 'manual' && ((dirty ? d.retroactive : live.retroactive)
+              ? <p><b>Retroactive is on:</b> everyone who already qualifies gets it now, each with a notification{dirty ? '' : preview ? ` (${preview.newCount.toLocaleString()} from the last preview)` : ' — run Preview first to see who'}.</p>
               : <p>Retroactive is off: only activity from now on counts.</p>)}
           </>}
           onConfirm={async () => {
-            const r = await admin.activateBadge(live.id);
+            const saved = dirty ? (await persist()).badge : live;
+            const r = await admin.activateBadge(saved.id);
             await refresh();
             setPreview(null);
             toast(r.skippedWindow
-              ? { tone: 'info', title: `“${live.name}” is live`, body: 'The availability window is shut, so nobody was backfilled.' }
-              : { title: `“${live.name}” is live`, body: live.kind === 'manual' ? 'Grant it by hand below.' : live.retroactive ? `Awarded to ${r.awarded.toLocaleString()} ${r.awarded === 1 ? 'player' : 'players'} from history.` : 'Only activity from now on counts.' });
+              ? { tone: 'info', title: `“${saved.name}” is live`, body: 'The availability window is shut, so nobody was backfilled.' }
+              : { title: `“${saved.name}” is live`, body: saved.kind === 'manual' ? 'Grant it by hand below.' : saved.retroactive ? `Awarded to ${players(r.awarded)} from history.` : 'Only activity from now on counts.' });
+          }}
+          onClose={() => setConfirm(null)} />
+      )}
+      {confirm === 'save-backfill' && live && (
+        <ConfirmDialog title="Save & backfill" danger={false} confirmLabel="Save & backfill"
+          body={<>
+            <p>“{d.name || live.name}” is live and you’ve turned <b>Retroactive</b> on.</p>
+            <p>Saving awards it now to everyone who already qualifies from history and doesn’t have it yet, each with a notification.</p>
+          </>}
+          onConfirm={() => saveAndClose()}
+          onClose={() => setConfirm(null)} />
+      )}
+      {confirm === 'backfill' && live && (
+        <ConfirmDialog title="Backfill now" danger={false} confirmLabel="Backfill"
+          body={<>
+            <p>Award “{live.name}” to everyone who qualifies from history and doesn’t have it yet, each with a notification.</p>
+            <p>Players who already have it are skipped — nobody is awarded or notified twice.{preview ? ` The last preview found ${preview.newCount.toLocaleString()} without it.` : ''}</p>
+          </>}
+          onConfirm={async () => {
+            const r = await admin.backfillBadge(live.id);
+            await refresh();
+            setPreview(null);
+            toast(r.skippedWindow
+              ? { tone: 'info', title: 'Nothing backfilled', body: `The availability window for “${live.name}” is shut.` }
+              : { title: `Backfilled “${live.name}”`, body: r.awarded ? `${players(r.awarded)} awarded.` : 'Everyone who qualifies already has it.' });
           }}
           onClose={() => setConfirm(null)} />
       )}

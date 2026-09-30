@@ -892,6 +892,29 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   `skippedWindow` if the availability window is shut), retire, grants (badge must be live) and
   revoke (`DELETE …/grants?userId=`; also deletes that unread notification). Every action logs
   `admin.badge_updated` / `badge.granted` / `badge.revoked` (admin tier).
+- **Retroactive after go-live** (fix/badge-backfill, 2026-09-29). Activation backfills from the
+  *stored* `retroactive`. On prod, "First Ball" and "Regular" went live while the editor had
+  Retroactive ticked but unsaved → activated forward-only (`awarded: 0`); the later save set
+  retroactive true on a live badge and, since backfill only ran inside activation, nobody was ever
+  awarded. Now:
+  - A **PATCH that turns retroactive false → true on a live** (non-manual) badge runs the same
+    backfill (`backfillBadge(…, 'retroactive_enabled')`, shared `backfillLive()` with activation:
+    bulk qualifiers, ON CONFLICT DO NOTHING, one notification per *new* recipient, `badge.earned`
+    trigger `backfill`, skipped with `skippedWindow` outside the availability window). The response
+    gains `backfill: {awarded, skippedWindow} | {failed, error} | null` (null = no backfill ran); the
+    edit is saved even if the backfill fails. Logged as `admin.badge_updated {action: 'backfilled',
+    trigger, awarded, skippedWindow}` next to the `edited` event.
+  - **`POST /api/admin/badges/:id/backfill`** — "Backfill now" for a live retroactive badge
+    (`trigger: 'manual'`). Idempotent: holders are skipped and never re-notified, so a second run
+    answers `awarded: 0`. 409 `badge_not_live` / `not_retroactive`, 400 `manual_badge`. This is also
+    the retry after a failed backfill-on-edit, and the way to award new qualifiers after editing a
+    live retroactive badge's criteria (an edit other than retroactive off→on doesn't backfill).
+  - **Retroactive true → false on a live badge revokes nothing** (no automatic revocation, ever). It
+    only makes the badge forward-only from then on: a rule badge counts scores posted after
+    `activated_at`; a metric badge simply isn't backfilled again.
+  - The admin UI no longer acts on unsaved edits: Go live becomes "Save & go live" (saves, then
+    activates the saved badge); Preview and Backfill now are disabled until saved; saving a live
+    badge with retroactive newly on asks for confirmation. See the frontend CLAUDE.md.
 - **Public** (optional auth, guests included): `GET /api/badges` (live catalog, requirement text,
   window, earned counts, the viewer's earn dates), `GET /api/badges/:id/image?v=` (immutable for a
   year only when `v` is current), `GET /api/users/:username/badges` (no friend/pod check; a source

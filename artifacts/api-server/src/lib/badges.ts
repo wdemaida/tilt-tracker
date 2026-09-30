@@ -17,6 +17,7 @@ import { normalizeRule, ruleSatisfied, describeRule, type BadgeRule, type RuleSc
 //                                            when a score was posted). Skips badges the user has and
 //                                            badges outside their availability window. Never throws.
 //   previewBadge / activateBadge            admin dry run / go live (+ retroactive backfill)
+//   backfillBadge                           backfill a live retroactive badge (Backfill now, or a PATCH turning retroactive on)
 //   grantBadge / revokeBadge                admin manual awards (no automatic revocation, ever)
 //   runBadgeSweep                           daily safety net from runDailyHousekeeping
 //
@@ -387,24 +388,51 @@ export async function activateBadge(id: number, adminId: number, now = new Date(
     .returning({ id: badges.id });
   if (!updated) return fail(409, 'already_live', 'This badge is already live');
 
-  let awarded = 0;
-  let skippedWindow = false;
-  if (b.retroactive && b.kind !== 'manual') {
-    if (!windowOpen(b, now)) {
-      skippedWindow = true;
-    } else {
-      const live = (await loadBadge(id))!;
-      const q = await qualifiers(live);
-      const fresh = await insertAwards(q.map(x => ({ userId: x.userId, badgeId: id, sourceScoreId: x.sourceScoreId ?? null })),
-        new Map([[id, live]]), { trigger: 'backfill' });
-      awarded = fresh.length;
-    }
-  }
+  const { awarded, skippedWindow } = b.retroactive && b.kind !== 'manual'
+    ? await backfillLive((await loadBadge(id))!, now)
+    : { awarded: 0, skippedWindow: false };
   await logActivity({
     type: 'admin.badge_updated', actorUserId: adminId, targetType: 'badge', targetId: id,
     payload: { action: 'activated', badgeKey: b.key, name: b.name, retroactive: b.retroactive, awarded, skippedWindow },
   });
   return { status: 200, body: { badge: publicBadge((await loadBadge(id))!), awarded, skippedWindow } };
+}
+
+/**
+ * The retroactive backfill: award everyone who qualifies from history and lacks the badge — one
+ * bulk insert (ON CONFLICT DO NOTHING), one notification per *new* recipient, `badge.earned` with
+ * trigger 'backfill'. Idempotent: holders are skipped and never re-notified, so running it twice
+ * (or concurrently) awards nobody twice. Nothing happens while the availability window is shut.
+ */
+async function backfillLive(b: BadgeRow, now: Date): Promise<{ awarded: number; skippedWindow: boolean }> {
+  if (!windowOpen(b, now)) return { awarded: 0, skippedWindow: true };
+  const q = await qualifiers(b);
+  const fresh = await insertAwards(q.map(x => ({ userId: x.userId, badgeId: b.id, sourceScoreId: x.sourceScoreId ?? null })),
+    new Map([[b.id, b]]), { trigger: 'backfill' });
+  return { awarded: fresh.length, skippedWindow: false };
+}
+
+/**
+ * Backfill a LIVE retroactive badge now. Two callers: the admin's explicit "Backfill now"
+ * (`reason: 'manual'`, POST /api/admin/badges/:id/backfill) and a PATCH that turns retroactive on
+ * for a badge that's already live (`reason: 'retroactive_enabled'`) — before that fix, backfill only
+ * ran inside activation, so switching retroactive on after going live awarded nobody.
+ * Logs `admin.badge_updated {action: 'backfilled'}`.
+ */
+export async function backfillBadge(id: number, adminId: number, reason: 'manual' | 'retroactive_enabled', now = new Date()): Promise<ActionResult> {
+  const b = await loadBadge(id);
+  if (!b) return fail(404, 'badge_not_found', 'Badge not found');
+  if (b.kind === 'manual') return fail(400, 'manual_badge', 'A manual badge has nothing to backfill — grant it by hand');
+  if (b.status !== 'live') return fail(409, 'badge_not_live', 'Only a live badge can be backfilled — going live backfills a retroactive badge');
+  if (!b.retroactive) return fail(409, 'not_retroactive', 'Turn Retroactive on (and save) to award from history');
+  const blocker = activationBlocker(b);
+  if (blocker) return fail(400, blocker.code, blocker.error);
+  const { awarded, skippedWindow } = await backfillLive(b, now);
+  await logActivity({
+    type: 'admin.badge_updated', actorUserId: adminId, targetType: 'badge', targetId: id,
+    payload: { action: 'backfilled', badgeKey: b.key, name: b.name, trigger: reason, awarded, skippedWindow },
+  });
+  return { status: 200, body: { awarded, skippedWindow } };
 }
 
 export async function retireBadge(id: number, adminId: number): Promise<ActionResult> {

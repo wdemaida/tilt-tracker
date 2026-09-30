@@ -205,6 +205,9 @@ export interface BadgePreview {
 }
 
 /** Create/PATCH body. Dates are ISO strings or null. */
+/** PATCH's `backfill`: set when the edit turned retroactive on for a live badge (the server backfilled). */
+export type BadgeBackfillResult = { awarded: number; skippedWindow: boolean } | { failed: true; error: string };
+
 export type BadgeInput = Partial<{
   key: string; name: string; description: string; icon: string; color: string; kind: BadgeKind;
   metric: string | null; threshold: number | null; rule: BadgeRule | null; retroactive: boolean;
@@ -257,7 +260,7 @@ export function createAdminApi(getToken: () => Promise<string | null>) {
     badgeMetrics: () => get<BadgeMetricInfo[]>('/admin/badges/metrics'),
     createBadge: (body: BadgeInput) => post<{ badge: AdminBadge }>('/admin/badges', body),
     updateBadge: async (id: number, body: BadgeInput) =>
-      request<{ badge: AdminBadge }>(`/admin/badges/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, await tok()),
+      request<{ badge: AdminBadge; backfill?: BadgeBackfillResult | null }>(`/admin/badges/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, await tok()),
     uploadBadgeImage: async (id: number, file: File) => {
       const form = new FormData();
       form.append('image', file);
@@ -266,6 +269,7 @@ export function createAdminApi(getToken: () => Promise<string | null>) {
     deleteBadgeImage: (id: number) => del<{ imageVersion: null }>(`/admin/badges/${id}/image`),
     previewBadge: (id: number) => post<BadgePreview>(`/admin/badges/${id}/preview`),
     activateBadge: (id: number) => post<{ awarded: number; skippedWindow: boolean }>(`/admin/badges/${id}/activate`),
+    backfillBadge: (id: number) => post<{ awarded: number; skippedWindow: boolean }>(`/admin/badges/${id}/backfill`),
     retireBadge: (id: number) => post<ActionResponse>(`/admin/badges/${id}/retire`),
     grantBadge: (id: number, userIds: number[], note: string) => post<{ granted: number; alreadyHad: number }>(`/admin/badges/${id}/grants`, { userIds, note }),
     revokeBadge: (id: number, userId: number, reason: string) => del<ActionResponse>(`/admin/badges/${id}/grants${qs({ userId, reason })}`),

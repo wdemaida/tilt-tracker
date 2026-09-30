@@ -96,7 +96,10 @@ test('every admin route refuses guests, users, disabled admins and profile-less 
   const areaRoutes = routesOf(adminAreaRouter);
   assert.ok(areaRoutes.length >= 18, `admin area has its routes (${areaRoutes.length})`);
   const badgeRoutes = routesOf(adminBadgesRouter);
-  assert.ok(badgeRoutes.length >= 12, `admin badges has its routes (${badgeRoutes.length})`);
+  assert.ok(badgeRoutes.length >= 13, `admin badges has its routes (${badgeRoutes.length})`);
+  for (const p of ['/badges/:id/preview', '/badges/:id/activate', '/badges/:id/backfill', '/badges/:id/retire', '/badges/:id/grants']) {
+    assert.ok(badgeRoutes.some(r => r.method === 'POST' && r.path === p), `POST ${p} is an admin badges route`);
+  }
   for (const r of [...areaRoutes, ...badgeRoutes]) {
     assert.ok(routes.some(x => x.method === r.method && x.path === r.path), `${r.method} ${r.path} is mounted inside the guarded admin router`);
   }

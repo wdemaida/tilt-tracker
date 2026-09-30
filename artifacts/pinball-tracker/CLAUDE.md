@@ -332,8 +332,13 @@
   `badge_earned`.
 - `/admin/badges`: list + editor (kind, metric + N or the rule form builder, window, retroactive),
   image upload with a live 48/96/locked preview, Preview / Go live / Retire, grant picker (admin user
-  search) and per-holder revoke — all through `ConfirmDialog`. Preview and Go live use the **saved**
-  badge. The editor opens inline under its row (new: at the top), scrolls into view and focuses Name; saving
+  search) and per-holder revoke — all through `ConfirmDialog`. Preview, Go live and Backfill now use
+  the **saved** badge, so the editor tracks unsaved edits (`dirty`: `bodyOf(draft)` vs
+  `bodyOf(draftOf(saved))`): with edits pending, Go live is "Save & go live" (PATCH, then activate
+  the saved badge) and Preview / Backfill now are disabled ("Save changes first"). Going live with
+  Retroactive ticked but unsaved once activated forward-only on prod. "Backfill now" shows on live
+  retroactive badges (idempotent server-side); saving a live badge with Retroactive newly on
+  confirms first, since the server backfills on that save, and toasts "Saved — N awarded". The editor opens inline under its row (new: at the top), scrolls into view and focuses Name; saving
   an edit collapses it with a toast. Icon = `IconPicker` (searchable grid in the badge color); rule
   machine = `components/MachineCombobox.tsx` (attached dropdown, keyboard, chip with ×). Admin
   actions also invalidate `['notifications']` — they can award the admin themself.

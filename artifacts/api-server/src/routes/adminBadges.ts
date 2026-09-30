@@ -7,7 +7,7 @@ import { fromReq, logActivity } from '../lib/activity.js';
 import { metricCatalog, metricByKey } from '../lib/badgeMetrics.js';
 import {
   badgeCols, requirementText, normalizeBadgeInput, kindConsistencyError, resolveRuleRefs, activationBlocker, loadBadge,
-  previewBadge, activateBadge, retireBadge, grantBadge, revokeBadge, processBadgeImage, BADGE_IMAGE, BADGE_LIMITS,
+  previewBadge, activateBadge, backfillBadge, retireBadge, grantBadge, revokeBadge, processBadgeImage, BADGE_IMAGE, BADGE_LIMITS,
   type BadgeRow, type ActionResult,
 } from '../lib/badges.js';
 import type { BadgeRule } from '../lib/badgeRules.js';
@@ -19,11 +19,13 @@ import type { BadgeRule } from '../lib/badgeRules.js';
 //   GET    /badges/metrics         the metric library (badgeMetrics.ts) — phase-3 metrics flagged unavailable
 //   GET    /badges/:id             one badge + its holders (newest first, 200 max)
 //   POST   /badges                 create (always draft)
-//   PATCH  /badges/:id             edit; key, kind and metric are frozen once anyone has it
+//   PATCH  /badges/:id             edit; key, kind and metric are frozen once anyone has it. Turning
+//                                  retroactive on for a LIVE badge backfills (response `backfill`)
 //   POST   /badges/:id/image       multipart `image`, ≤ 1 MB PNG/WebP/JPEG → 256x256 WebP; bumps image_version
 //   DELETE /badges/:id/image       back to the lucide icon
 //   POST   /badges/:id/preview     dry run: who qualifies from history (writes nothing)
 //   POST   /badges/:id/activate    go live (+ retroactive backfill)
+//   POST   /badges/:id/backfill    live + retroactive: award everyone who qualifies and lacks it (idempotent)
 //   POST   /badges/:id/retire      no new awards; earned ones stay
 //   POST   /badges/:id/grants      { userIds, note? } manual award (badge must be live)
 //   DELETE /badges/:id/grants      ?userId= (or body { userId, reason }) revoke — by hand only
@@ -182,7 +184,22 @@ router.patch('/badges/:id', async (req, res) => {
     await db.update(badges).set(set as any).where(eq(badges.id, id));
     const changes = Object.keys(req.body ?? {}).filter(k => k in set || k === 'rule');
     await logActivity({ type: 'admin.badge_updated', ...fromReq(req), targetType: 'badge', targetId: id, payload: { action: 'edited', badgeKey: (v.key ?? b.key), name: v.name ?? b.name, fields: changes } });
-    res.json({ badge: adminBadge((await loadBadge(id))!, awarded) });
+
+    // Retroactive switched on for a badge that's already live: activation's backfill already ran
+    // (with retroactive off), so run it now. Off → on only; on → off revokes nothing (forward-only
+    // from here: a rule badge counts only scores posted after activated_at). The edit is saved
+    // either way — a failed backfill is reported, and "Backfill now" retries it.
+    let backfill: { awarded: number; skippedWindow: boolean } | { failed: true; error: string } | null = null;
+    if (b.status === 'live' && !b.retroactive && v.retroactive === true && kind !== 'manual') {
+      try {
+        const r = await backfillBadge(id, (req as any).appUser.id, 'retroactive_enabled');
+        backfill = r.status === 200 ? r.body as { awarded: number; skippedWindow: boolean } : { failed: true, error: String(r.body.error) };
+      } catch (err) {
+        console.error('admin badges backfill-on-edit error:', err);
+        backfill = { failed: true, error: 'The backfill failed — use Backfill now to retry' };
+      }
+    }
+    res.json({ badge: adminBadge((await loadBadge(id))!, backfill ? await awardCount(id) : awarded), backfill });
   } catch (err: any) {
     if (err?.code === '23505' || err?.cause?.code === '23505') return void res.status(409).json({ error: 'That key is taken', code: 'key_taken', errors: { key: 'That key is taken' } });
     fail500(res, 'update badge', err);
@@ -253,6 +270,12 @@ router.post('/badges/:id/activate', async (req, res) => {
   const id = intParam(req.params.id);
   if (!id) return void res.status(400).json({ error: 'Invalid badge id' });
   try { send(res, await activateBadge(id, (req as any).appUser.id)); } catch (err) { fail500(res, 'activate badge', err); }
+});
+
+router.post('/badges/:id/backfill', async (req, res) => {
+  const id = intParam(req.params.id);
+  if (!id) return void res.status(400).json({ error: 'Invalid badge id' });
+  try { send(res, await backfillBadge(id, (req as any).appUser.id, 'manual')); } catch (err) { fail500(res, 'backfill badge', err); }
 });
 
 router.post('/badges/:id/retire', async (req, res) => {

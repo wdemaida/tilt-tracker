@@ -207,6 +207,50 @@ try {
   r = await call(alice, 'POST', `/admin/badges/${big}/activate`);
   check('forward-only "big score" awards nobody from history', r.body.awarded === 0 && await holds(alice.id, big) === 0, r.body);
 
+  // ── retroactive switched on AFTER go-live backfills (the prod bug: Go live with retroactive
+  //    unsaved → activation ran forward-only, the later save awarded nobody) ─────────────────
+  const late = await createBadge({ key: 'zz-badge-test-late-retro', name: 'ZZ Late retro', kind: 'rule', rule: anyRule, retroactive: false });
+  r = await call(alice, 'POST', `/admin/badges/${late}/backfill`);
+  check('backfill on a draft → 409 badge_not_live', r.status === 409 && r.body.code === 'badge_not_live', r);
+  r = await call(alice, 'POST', `/admin/badges/${late}/activate`);
+  check('late: activate non-retroactive → 0 awarded', r.status === 200 && r.body.awarded === 0, r.body);
+  r = await call(alice, 'POST', `/admin/badges/${late}/backfill`);
+  check('backfill while retroactive is off → 409 not_retroactive', r.status === 409 && r.body.code === 'not_retroactive', r);
+  r = await call(alice, 'PATCH', `/admin/badges/${late}`, { retroactive: true });
+  check('late: PATCH retroactive true on a live badge → backfill awarded 3', r.status === 200 && r.body.backfill?.awarded === 3 && r.body.badge?.earnedCount === 3, r.body);
+  check('late: all three now hold it', (await Promise.all(people.map(p => holds(p.id, late)))).every(n => n === 1));
+  for (const p of people) {
+    const n = await badgeNotifs(p.id, late);
+    check(`late: user ${p.id} has exactly one unread badge_earned for it`, n.length === 1, n.length);
+  }
+  const lateEvents = async () => ({
+    earned: await db.select({ payload: activityEvents.payload }).from(activityEvents).where(and(eq(activityEvents.type, 'badge.earned'), eq(activityEvents.targetId, String(late)))),
+    sent: await db.select({ id: activityEvents.id }).from(activityEvents).where(and(eq(activityEvents.type, 'notification.sent'), gt(activityEvents.id, Number(maxEvent)), sql`${activityEvents.payload} ->> 'badgeId' = ${String(late)}`)),
+    backfilled: await db.select({ payload: activityEvents.payload }).from(activityEvents).where(and(eq(activityEvents.type, 'admin.badge_updated'), eq(activityEvents.targetId, String(late)), sql`${activityEvents.payload} ->> 'action' = 'backfilled'`)),
+  });
+  let ev = await lateEvents();
+  check('late: 3 badge.earned events, trigger backfill', ev.earned.length === 3 && ev.earned.every(e => (e.payload as any)?.trigger === 'backfill'), ev.earned);
+  check('late: 3 notification.sent events', ev.sent.length === 3, ev.sent.length);
+  check('late: admin.badge_updated backfilled {trigger: retroactive_enabled, awarded: 3}', ev.backfilled.length === 1 && (ev.backfilled[0].payload as any)?.trigger === 'retroactive_enabled' && (ev.backfilled[0].payload as any)?.awarded === 3, ev.backfilled);
+  r = await call(alice, 'POST', `/admin/badges/${late}/backfill`);
+  check('late: Backfill now again → 0 new', r.status === 200 && r.body.awarded === 0 && r.body.skippedWindow === false, r.body);
+  ev = await lateEvents();
+  check('late: no duplicate awards / notifications / earned events', ev.earned.length === 3 && ev.sent.length === 3
+    && (await Promise.all(people.map(p => badgeNotifs(p.id, late)))).every(n => n.length === 1), { earned: ev.earned.length, sent: ev.sent.length });
+  check('late: the manual backfill is logged with trigger manual, awarded 0', ev.backfilled.some(e => (e.payload as any)?.trigger === 'manual' && (e.payload as any)?.awarded === 0), ev.backfilled);
+  r = await call(alice, 'PATCH', `/admin/badges/${late}`, { retroactive: true, name: 'ZZ Late retro 2' });
+  check('late: PATCH with retroactive already true → no backfill', r.status === 200 && r.body.backfill === null, r.body);
+  r = await call(alice, 'PATCH', `/admin/badges/${late}`, { retroactive: false });
+  check('late: retroactive true → false revokes nobody', r.status === 200 && r.body.backfill === null && r.body.badge?.earnedCount === 3, r.body);
+  const shut = await createBadge({ key: 'zz-badge-test-late-shut', name: 'ZZ Late shut', kind: 'rule', rule: anyRule, retroactive: false, availableTo: '2001-01-01T00:00:00Z' });
+  await call(alice, 'POST', `/admin/badges/${shut}/activate`);
+  r = await call(alice, 'PATCH', `/admin/badges/${shut}`, { retroactive: true });
+  check('late: window shut → PATCH backfill skippedWindow, nobody awarded', r.status === 200 && r.body.backfill?.skippedWindow === true && r.body.backfill?.awarded === 0, r.body);
+  const manualLate = await createBadge({ key: 'zz-badge-test-late-manual', name: 'ZZ Late manual', kind: 'manual' });
+  await call(alice, 'POST', `/admin/badges/${manualLate}/activate`);
+  r = await call(alice, 'POST', `/admin/badges/${manualLate}/backfill`);
+  check('backfill on a manual badge → 400 manual_badge', r.status === 400 && r.body.code === 'manual_badge', r);
+
   // A new score through the real POST /api/scores: forward-only badges see only it.
   r = await call(alice, 'POST', '/scores', { machineId, score: 99_999, playedAt: new Date().toISOString(), photoThumbnail: 'data:image/jpeg;base64,zz' });
   if (r.body?.id) scoreIds.push(r.body.id);
