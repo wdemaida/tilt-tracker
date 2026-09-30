@@ -462,7 +462,9 @@
   (same hook, cache and rate limit as Add Score). TiltTrack venues in either list add directly.
 - Picking a place (marked "New"): `api.venues.create` (name + the place's address) → the shared
   **`DuplicateVenuePrompt`** on 409 (a stranger's private candidate is shown but not usable — the prefs
-  PUT refuses it) → `api.venues.pmMatch` **once** (skipped when Near me already matched it) →
+  PUT refuses it) → `api.venues.pmMatch` **once**, only when the place has no `pinballMapId` (a Near-me place
+  *with* one skips it; one *without* is not "checked" — Near me asks PM for 1 mile around you, HERE's
+  places reach further) →
   `api.venues.repair.pmLink` (reads the roster once into the server's cache) → the prefs PUT. A PM
   failure still adds the venue, with a note to link it from the venue page. `addVenue` reads the
   cached prefs, not the render's list, since a place add finishes seconds after the tap.

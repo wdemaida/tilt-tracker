@@ -170,12 +170,16 @@ let friendshipId: number | null = null;
 // A Pinball Map location id no real venue uses (checked below), for the planted roster.
 const FAKE_PM_ID = 2_147_000_000 + Math.floor(Math.random() * 400_000);
 
-/** Counts every request through pmClient (fixture, cache or live) until stop(). */
+/** Counts every request through pmClient (fixture, cache or live) until stop(); `paths` in order. */
 function countPmRequests() {
   const client = pmClient() as any;
   const original = client.get;
-  const counter = { count: 0, stop: () => { client.get = original; } };
-  client.get = (...args: unknown[]) => { counter.count++; return original(...args); };
+  const counter = {
+    count: 0, paths: [] as string[], stop: () => { client.get = original; },
+    /** Requests since index `from` whose path contains `part`. */
+    since: (from: number, part: string) => counter.paths.slice(from).filter(p => p.includes(part)).length,
+  };
+  client.get = (...args: unknown[]) => { counter.count++; counter.paths.push(String(args[0])); return original(...args); };
   return counter;
 }
 // What the Pinball Map-only place section's pm-link may touch on dev, put back in `finally`.
@@ -1322,7 +1326,8 @@ try {
 
   // ── a Pinball Map-only place as a challenge location (feature/pm-challenge-locations) ──
   // The card's flow, route by route: Near me (POST /upload/nearby-venues) / the search's Places
-  // fallback (GET /venues/search) → POST /venues (409 duplicate) → GET /venues/pm-match →
+  // fallback (GET /venues/search) → POST /venues (409 duplicate) → GET /venues/pm-match (only for a
+  // place with no Pinball Map id — a Near-me place that has one skips it) →
   // POST /venues/:id/repair/pm-link (the one roster read, into pm_location_cache) → PUT prefs →
   // recommendations read that cached roster with zero Pinball Map requests. HERE is the test double
   // above; Pinball Map answers from the offline fixtures for Red Nun Bar & Grill (#20676, Dennis MA).
@@ -1369,6 +1374,13 @@ try {
     r = await call(bob, 'GET', `/me/challenge-venue-search?q=${encodeURIComponent('zz challenge test carol lair')}`);
     check("…nor does the challenge-venue search", r.status === 200 && !hitIds(r.body).includes(LAIR.id), r.body);
 
+    // The card's Near-me pick, as the client makes it: the place carries its Pinball Map id, so it's
+    // POST /venues → pm-link with that id — no pm-match. Age the fixture's roster row past pm-link's
+    // force window (FORCE_MIN_AGE_MS, 5 min) so the roster read is deterministic: exactly 1 request.
+    // (The row is put back in `finally` — it's hash-compared.)
+    await db.update(pmLocationCache).set({ fetchedAt: sql`${pmLocationCache.fetchedAt} - interval '1 hour'` })
+      .where(eq(pmLocationCache.pmLocationId, PM_FIXTURE_ID));
+    const addFrom = pmRequests.paths.length;
     r = await call(bob, 'POST', '/venues', { name: PLACE, address: nearPlace?.address ?? herePlace.label });
     const NEW = r.body;
     if (NEW?.id) venueIds.push(NEW.id);
@@ -1378,16 +1390,28 @@ try {
     check('a second add of the same place → 409 duplicate_venue naming the new venue (the card offers "use this one")',
       r.status === 409 && r.body?.code === 'duplicate_venue' && r.body?.candidates?.some((c: any) => c.id === NEW?.id), r.body);
 
+    r = await call(bob, 'POST', `/venues/${NEW?.id}/repair/pm-link`, { pinballMapId: nearPlace?.pinballMapId });
+    check('pm-link by its creator with the Near-me id (no pm-match) → 200, roster read (fixture: 1 machine)', r.status === 200 && r.body?.venue?.pinballMapId === PM_FIXTURE_ID && r.body?.machineCount === rosterNames.length, r.body);
+    const addPaths = pmRequests.paths.slice(addFrom);
+    const addRoster = pmRequests.since(addFrom, `/locations/${PM_FIXTURE_ID}.json`);
+    const addClosest = pmRequests.since(addFrom, 'closest_by_lat_lon');
+    const addOther = addPaths.length - addRoster - pmRequests.since(addFrom, '/machines.json');
+    check(`Near-me pick with a Pinball Map id: exactly 1 PM request during the add (the roster), 0 closest_by_lat_lon — made ${JSON.stringify(addPaths)}`,
+      addRoster === 1 && addClosest === 0 && addOther === 0, addPaths);
+    check(`…the whole section so far made 1 closest_by_lat_lon (the Near-me tap's; the second Near me hit the cell cache) — made ${pmRequests.since(0, 'closest_by_lat_lon')}`,
+      pmRequests.since(0, 'closest_by_lat_lon') === 1, pmRequests.paths);
+    // A search (HERE Places) pick carries no id, so the card asks pm-match once — at the place's own
+    // coordinates. Here that's the Near-me cell, so the shared per-cell cache answers it: 0 requests.
+    const matchFrom = pmRequests.paths.length;
     r = await call(bob, 'GET', `/venues/pm-match?lat=${at.lat}&lng=${at.lng}&name=${encodeURIComponent(PLACE)}`);
-    check('pm-match (a search pick, once) → the Pinball Map listing', r.status === 200 && r.body?.pinballMapId === PM_FIXTURE_ID && r.body?.linked === false, r.body);
-    r = await call(bob, 'POST', `/venues/${NEW?.id}/repair/pm-link`, { pinballMapId: PM_FIXTURE_ID });
-    check('pm-link by its creator → 200, roster read (fixture: 1 machine)', r.status === 200 && r.body?.venue?.pinballMapId === PM_FIXTURE_ID && r.body?.machineCount === rosterNames.length, r.body);
+    check('pm-match (a search pick, or a Near-me place with no id — once) → the Pinball Map listing', r.status === 200 && r.body?.pinballMapId === PM_FIXTURE_ID && r.body?.linked === false, r.body);
+    check('…from the per-cell cache Near me filled: 0 PM requests', pmRequests.paths.length === matchFrom, pmRequests.paths.slice(matchFrom));
     const [cachedRoster] = await db.select().from(pmLocationCache).where(eq(pmLocationCache.pmLocationId, PM_FIXTURE_ID));
     check('…and the roster is in pm_location_cache', !!cachedRoster && (cachedRoster.machines as any[]).length === rosterNames.length, cachedRoster);
     r = await call(alice, 'POST', `/venues/${NEW?.id}/repair/pm-link`, { pinballMapId: PM_FIXTURE_ID });
     check("pm-link by someone who didn't add it → 403", r.status === 403, r);
     const addFlowPmRequests = pmRequests.count;
-    check(`the whole add flow made at most 3 Pinball Map requests (closest_by_lat_lon, roster, catalog) — made ${addFlowPmRequests}`, addFlowPmRequests <= 3, addFlowPmRequests);
+    check(`the whole section (Near me + add) made at most 3 Pinball Map requests (closest_by_lat_lon, roster, catalog) — made ${addFlowPmRequests}`, addFlowPmRequests <= 3, pmRequests.paths);
 
     r = await call(bob, 'PUT', '/me/challenge-prefs', { venueIds: [BOB_HOME.id, NEW?.id] });
     check('PUT prefs accepts the venue bob just created (his own: owner_id) → 200, source added', r.status === 200

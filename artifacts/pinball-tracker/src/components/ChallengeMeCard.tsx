@@ -68,9 +68,14 @@ interface PlacePick {
   address: string;
   lat: number | null;
   lng: number | null;
-  /** The nearby lookup already matched Pinball Map (`pmChecked`); a search place still needs pm-match. */
+  /**
+   * Set when Near me already matched it to Pinball Map (an id the server allowlisted for this user):
+   * pm-link takes it directly, no pm-match. Null — a search place, or a Near-me place with no id —
+   * gets one pm-match at the place's own coordinates. A Near-me place without an id is NOT "checked":
+   * nearby-venues asks Pinball Map for 1 mile around *you*, while HERE's places reach further
+   * (Land Ho, 4.7 mi out, came back with no id although it's PM #5388).
+   */
   pinballMapId: number | null;
-  pmChecked: boolean;
 }
 
 /** One row of POST /api/upload/nearby-venues (hereApi.ts `Venue`): a TiltTrack venue (`venueId`) or a HERE place. */
@@ -185,7 +190,7 @@ function VenueSearch({ onPick, onPickPlace, at, busy }: {
           {places.map(p => (
             <PlaceRow key={p.hereId} name={p.name} busy={busy}
               detail={[p.address, p.distance != null ? `${(p.distance / 1609.34).toFixed(1)} mi` : ''].filter(Boolean).join(' · ')}
-              onPick={() => pickPlace({ name: p.name, address: p.address, lat: p.venueLat, lng: p.venueLng, pinballMapId: null, pmChecked: false })} />
+              onPick={() => pickPlace({ name: p.name, address: p.address, lat: p.venueLat, lng: p.venueLng, pinballMapId: null })} />
           ))}
         </div>
       )}
@@ -197,7 +202,7 @@ function VenueSearch({ onPick, onPickPlace, at, busy }: {
  * Everything under the chips that adds a location: "Near me" (the Add Score "Use my current location"
  * lookup, only ever on a tap), the search, and turning a picked place into a venue. A place is created
  * through the same POST /api/venues as every other "add a venue" form (its 409 duplicate prompt
- * included), then matched to Pinball Map once (skipped when the nearby lookup already did) and linked
+ * included), then matched to Pinball Map once (skipped when Near me already carries its id) and linked
  * through the venue repair pm-link — which reads the roster once into pm_location_cache, where
  * recommendations find it without ever calling Pinball Map. Then it's added like any other venue.
  */
@@ -226,11 +231,14 @@ function AddLocation({ listedIds, onAddId, busy }: { listedIds: number[]; onAddI
     }
   }
 
-  /** Pinball Map for a just-created venue: one pm-match (unless nearby already matched), then pm-link. */
+  /**
+   * Pinball Map for a just-created venue: with a Near-me id, straight to pm-link (its roster read
+   * verifies the id) — 1 request; otherwise one pm-match at the place, then pm-link — ≤ 2.
+   */
   async function linkPinballMap(venueId: number, place: PlacePick): Promise<{ machines: number } | 'none' | 'failed'> {
     try {
       let pmId = place.pinballMapId;
-      if (pmId == null && !place.pmChecked) {
+      if (pmId == null) {
         setWorking(`Checking Pinball Map for “${place.name}”…`);
         const m = await api.venues.pmMatch(place.lat != null && place.lng != null
           ? { lat: place.lat, lng: place.lng, name: place.name }
@@ -306,7 +314,7 @@ function AddLocation({ listedIds, onAddId, busy }: { listedIds: number[]; onAddI
             if (v.venueId == null) {
               return (
                 <PlaceRow key={`here-${v.hereId ?? v.name}`} name={v.name} detail={detail} busy={disabled}
-                  onPick={() => addPlace({ name: v.name, address: v.address, lat: v.venueLat ?? null, lng: v.venueLng ?? null, pinballMapId: v.pinballMapId ?? null, pmChecked: true })} />
+                  onPick={() => addPlace({ name: v.name, address: v.address, lat: v.venueLat ?? null, lng: v.venueLng ?? null, pinballMapId: v.pinballMapId ?? null })} />
               );
             }
             const listed = listedIds.includes(v.venueId);

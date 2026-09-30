@@ -762,21 +762,28 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   endpoints, called by the client: `POST /api/upload/nearby-venues` ("Near me", a tap) and/or
   `GET /api/venues/search` (its `places`, only when the TiltTrack search has no match) → `POST
   /api/venues` (its 409 `duplicate_venue` included; HERE geocode + `findVenueByName`, no PM) →
-  `GET /api/venues/pm-match` once per pick (skipped for a Near-me place, which already carries its
-  matched id) → `POST /api/venues/:id/repair/pm-link` → `PUT /api/me/challenge-prefs`. **The roster
+  `GET /api/venues/pm-match` once per pick, **only when the place has no Pinball Map id** (a search
+  place, or a Near-me place nearby-venues couldn't match — it asks PM for 1 mile around *you*, while
+  HERE's places reach further; a Near-me place *with* an id skips it and goes straight to pm-link,
+  whose roster read verifies the id; that id is allowlisted for the user by `suggestVenuesNear`'s
+  `allowPmIds`) → `POST /api/venues/:id/repair/pm-link` → `PUT /api/me/challenge-prefs`. **The roster
   is cached by pm-link itself** (`getVenueRoster(force)`, one roster read into `pm_location_cache`,
   0 if it was read in the last 5 min); level 2 then reads that row like any other. The PUT rule needs
   no change: `POST /api/venues` sets `owner_id` (and `created_by_id`) to the creator, so "yours"
   covers a venue you just made, and `canRepairVenue` lets its creator pm-link it. A place is always
   created public (never residence/restricted), so linking it is allowed.
-- **Worst-case Pinball Map calls/day for that flow**, per user: an add = ≤ 1 `closest_by_lat_lon`
-  (pm-match; the per-~110m-cell cache `pmLocationsNear` shares with nearby-venues, so 0 after a Near
-  me tap there) + ≤ 1 roster (pm-link) ≈ **≤ 2 per added place**, and the 20-location cap means
+- **Worst-case Pinball Map calls/day for that flow**, per user: a Near-me pick with an id = **1**
+  (the roster, pm-link; 0 if read in the last 5 min); any other pick = ≤ 1 `closest_by_lat_lon`
+  (pm-match at the place; the per-~110m-cell cache `pmLocationsNear` shares with nearby-venues, so 0
+  in the Near-me tap's cell) + ≤ 1 roster ≈ **≤ 2 per added place**, and the 20-location cap means
   building a full list from scratch is ≤ 40. A Near-me tap = ≤ 1 (same cell cache, 10 min). Hard
   ceilings are the existing per-user limiters, shared with Add Score / the repair panel (nothing new
   was added): nearby-venues 10/min + 100/day, pm-match 30/min + 500/day, pm-link (`repairPmLimiter`)
   20/hour — all under pmClient's global 1 req/s. **Recommendations stay at 0.** Verified in
-  test-challenges.ts: the add flow made 2 PM requests (fixtures), recommendations 0.
+  test-challenges.ts (fixtures): a Near-me pick with an id makes exactly 1 PM request during the add
+  (the roster) and no `closest_by_lat_lon` beyond the Near-me tap's; recommendations 0. (Fixed
+  2026-09-30: the card treated every Near-me place as already checked, so one Near me couldn't match
+  — Land Ho, 4.7 mi out, PM #5388 — would have been added unlinked.)
 - **Seeding** (`ensureSeeded`, once — `users.challenge_venues_seeded_at`): up to 5 venues with ≥ 2 visits
   in 180 days, plus your own residence if it has an inventory. Runs on the first prefs read, yours or a
   friend's recommendations request. After that removals stick; new candidates are `suggestions`.
