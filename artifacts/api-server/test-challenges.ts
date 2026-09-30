@@ -8,8 +8,9 @@
 // constraints all run for real without Clerk session tokens. The sweep is called as the function the
 // cron route calls (index.ts can't be imported here — it listens on 3001).
 //
-// Borrows three existing users that are in no friendship and no challenge yet (so it never disturbs
-// seeded data), makes two of them friends, and works on three throwaway `zz-challenge-test` machines.
+// Borrows four existing users that are in no friendship and no challenge yet (so it never disturbs
+// seeded data), makes some of them friends (dave stays the true non-friend until the group section),
+// and works on three throwaway `zz-challenge-test` machines.
 // At the end it deletes every challenge among those users, the scores on the throwaway machines,
 // the machines, the friendship it made, and every notification it raised for them. The venue-lock
 // checks use three throwaway `zz-challenge-test` venues (one "Pinball Map linked" through a fake
@@ -19,6 +20,12 @@
 // hidden residence, the "at home" label, hidden-score exclusion from level 3) and zero Pinball Map
 // calls — plus the profile's challengeMe field, using two more throwaway machines and two throwaway
 // residences. The borrowed users' challenge prefs / seeded_at are restored at the end.
+// Group challenges (feature/group-challenges): counters as proposals (take / keep mine, a legacy
+// counter row, the DB CHECK), group validation (non-friend, cap, repeats), partial accept / decline /
+// back out, Start with who's in, fixed start (sweep and score hook), two counters with supersede and
+// re-invite, lapse on start / fixed start / cancel / own window, the proposal reminder, group records,
+// group recommendations and the durable badge facts. Everything it creates is removed at the end,
+// including the activity events about these users and challenges.
 //
 //   cd artifacts/api-server && npx tsx test-challenges.ts
 
@@ -52,12 +59,18 @@ const PHOTO = 'data:image/jpeg;base64,/9j/zz-challenge-test';
 const people = await db.select().from(users)
   .where(sql`NOT EXISTS (SELECT 1 FROM friendships f WHERE f.requester_id = ${users.id} OR f.addressee_id = ${users.id})
     AND NOT EXISTS (SELECT 1 FROM challenge_participants cp WHERE cp.user_id = ${users.id})`)
-  .orderBy(desc(users.id)).limit(3);
-if (people.length < 3) throw new Error('Need at least 3 users with no friendships or challenges in the dev DB');
-const [alice, bob, carol] = people;
+  .orderBy(desc(users.id)).limit(4);
+if (people.length < 4) throw new Error('Need at least 4 users with no friendships or challenges in the dev DB');
+const [alice, bob, carol, dave] = people;
 const ids = people.map(p => p.id);
 // DB clock at start — cleanup removes badge awards this run's scores triggered (see the end).
 const [{ startedAt }] = await db.select({ startedAt: sql<string>`now()::timestamp::text` }).from(users).limit(1);
+// How far Neon's clock runs ahead of this machine's (accept stamps "starts when accepted" with the DB
+// clock, uploads here send this machine's played_at). The checks below that depend on it allow for it.
+const skewProbe = Date.now();
+const [{ dbMs }] = await db.select({ dbMs: sql<number>`(extract(epoch from clock_timestamp()) * 1000)::float8` }).from(users).limit(1);
+const SKEW_MS = Math.max(0, Number(dbMs) - (skewProbe + Date.now()) / 2);
+console.log(`DB clock ahead of this machine by ~${Math.round(SKEW_MS)} ms`);
 // The borrowed users' existing notifications — the "clear all" check empties carol's inbox, so any
 // she already had (e.g. a badge an admin awarded while testing) are put back at the end.
 const notificationsBefore = await db.select().from(notifications).where(inArray(notifications.userId, ids));
@@ -275,7 +288,9 @@ try {
   r = await post(alice, { friendId: bob.id, type: 'high_score' });
   cid = r.body.id;
   r = await call(bob, 'POST', `/challenges/${cid}/accept`);
-  check('accept → active, window starts now', r.status === 200 && r.body?.status === 'active' && r.body?.phase === 'live' && r.body?.startsAt != null, r.body);
+  // Starts "now" on the DB clock — which may be a moment ahead of this machine's (then 'scheduled' for that moment).
+  check('accept → active, window starts now', r.status === 200 && r.body?.status === 'active' && r.body?.startsAt != null
+    && (r.body?.phase === 'live' || (r.body?.phase === 'scheduled' && r.body?.startsInMs <= SKEW_MS + 2000)), { body: r.body, SKEW_MS });
   check('alice got challenge_accepted', (await kinds(alice, cid)).includes('challenge_accepted'));
   r = await call(alice, 'POST', `/challenges/${cid}/cancel`);
   check('cannot cancel once active → 409', r.status === 409, r);
@@ -419,9 +434,13 @@ try {
     && r.body?.participants?.every((p: any) => p.baselineScore != null), r.body?.participants);
   const baseOf = (u: number) => r.body.participants.find((p: any) => p.user.id === u).baselineScore;
   check('alice baseline = best before the window (the 100,000 from 10 days ago)', baseOf(alice.id) === 100_000, baseOf(alice.id));
-  await new Promise(res => setTimeout(res, 1100));
+  // Past the start on this machine's clock too (uploads send its played_at), however far the DB is ahead.
+  await new Promise(res => setTimeout(res, 1100 + SKEW_MS));
   await upload(alice, { score: 150_000 });                // +50%
   await upload(bob, { score: baseOf(bob.id) * 2 });       // +100%
+  // created_at is stamped by the DB clock: let this machine's clock pass it before ending the window
+  // "just now", or bob's upload would land after the end.
+  await new Promise(res => setTimeout(res, 1000 + SKEW_MS));
   const [miRow] = await db.select({ startsAt: challenges.startsAt }).from(challenges).where(eq(challenges.id, mi));
   await setWindow(mi, miRow.startsAt, new Date(Date.now() - 500));
   r = await call(alice, 'GET', `/challenges/${mi}`);
@@ -473,7 +492,8 @@ try {
     && r.body?.noShows === 0 && r.body?.voids === 0 && r.body?.abandoned === 2 && r.body?.ties === 0 && r.body?.played === 8, r.body);
   check('record: head-to-head vs bob', r.body?.headToHead?.[0]?.opponent?.id === bob.id && r.body?.headToHead?.[0]?.played === 8
     && r.body?.headToHead?.[0]?.abandoned === 2, r.body?.headToHead);
-  check('record: streaks (the nobody-played abandon broke the first run)', r.body?.currentStreak === 0 && r.body?.bestStreak === 1, r.body);
+  check('record: streaks (the nobody-played abandon broke the first run); bestLossStreak 1', r.body?.currentStreak === 0 && r.body?.bestStreak === 1
+    && r.body?.bestLossStreak === 1, r.body);
   r = await call(carol, 'GET', `/challenges/record/${encodeURIComponent(alice.username)}`);
   check("someone else's record: totals, but head-to-head only against the viewer", r.status === 200 && r.body?.wins === 3 && r.body?.headToHead?.length === 0, r.body);
   r = await call(bob, 'GET', `/challenges/record/${encodeURIComponent(alice.username)}`);
@@ -505,7 +525,7 @@ try {
   check('decline without a reason → declined, reason null', d.res.status === 200 && bobPart(d.res.body)?.declineReason === null
     && d.note.length === 1 && d.note[0].payload.reason === null, { body: d.res.body, note: d.note });
 
-  // ── counter-offers ─────────────────────────────────────────────────────────
+  // ── counter-offers = proposals to the challenger (feature/group-challenges) ─
   r = await post(alice, { friendId: bob.id, type: 'high_score' });
   const orig = r.body.id;
   const counterBody = { machineId: OTHER, type: 'high_score', matchMode: 'exact', endsAt: iso(72 * H) };
@@ -513,53 +533,378 @@ try {
   check('counter with a bad body → 400 invalid_type', r.status === 400 && r.body?.code === 'invalid_type', r);
   let [origRow] = await db.select().from(challenges).where(eq(challenges.id, orig));
   let kids = await db.select({ id: challenges.id }).from(challenges).where(eq(challenges.counteredFromId, orig));
-  check('…nothing written: original still pending, no counter row', origRow.status === 'pending' && kids.length === 0, { origRow, kids });
+  check('…nothing written: original still pending, no proposal row', origRow.status === 'pending' && kids.length === 0, { origRow, kids });
   r = await call(alice, 'POST', `/challenges/${orig}/counter`, counterBody);
   check('the creator cannot counter their own → 409 cannot_counter', r.status === 409 && r.body?.code === 'cannot_counter', r);
   r = await call(carol, 'POST', `/challenges/${orig}/counter`, counterBody);
   check('a stranger cannot counter → 404', r.status === 404 && r.body?.code === 'challenge_not_found', r);
   r = await call(bob, 'GET', `/challenges/${orig}`);
   check('invitee view: canCounter', r.body?.me?.canCounter === true, r.body?.me);
-  r = await call(bob, 'POST', `/challenges/${orig}/counter`, { ...counterBody, friendId: carol.id });
-  check('bob counters (a friend in the body is ignored) → 201', r.status === 201 && r.body?.counter?.id > 0, r);
+  r = await call(bob, 'POST', `/challenges/${orig}/counter`, { ...counterBody, friendId: carol.id, friendIds: [carol.id] });
+  check('bob counters (invitees in the body are ignored) → 201', r.status === 201 && r.body?.counter?.id > 0, r);
   const ctr = r.body?.counter ?? {};
-  check('original: countered, links to the counter', r.body?.original?.status === 'countered' && r.body?.original?.phase === 'countered'
-    && r.body?.original?.counteredToId === ctr.id, r.body?.original);
-  check('counter: pending, created by bob, against alice, links back, exact machine', ctr.status === 'pending' && ctr.creatorId === bob.id
-    && ctr.opponent?.id === alice.id && ctr.counteredFromId === orig && ctr.machine?.id === OTHER && ctr.matchGroup === null, ctr);
+  check('original: still pending (an open proposal blocks it), no counteredToId yet', r.body?.original?.status === 'pending'
+    && r.body?.original?.counteredToId === null, r.body?.original);
+  check('proposal: status proposed (phase pending for old clients), creator = alice, proposedBy = bob, links back, exact machine',
+    ctr.status === 'proposed' && ctr.phase === 'pending' && ctr.isProposal === true && ctr.creatorId === alice.id
+    && ctr.proposedBy?.id === bob.id && ctr.counteredFromId === orig && ctr.machine?.id === OTHER && ctr.matchGroup === null, ctr);
+  check("proposal participants: bob accepted, alice pending", ctr.participants?.length === 2
+    && ctr.participants.find((p: any) => p.user.id === bob.id)?.response === 'accepted'
+    && ctr.participants.find((p: any) => p.user.id === alice.id)?.response === 'pending', ctr.participants);
   const [bp] = await db.select().from(challengeParticipants).where(and(eq(challengeParticipants.challengeId, orig), eq(challengeParticipants.userId, bob.id)));
   check('bob on the original: response countered, reason cant_reach', bp?.response === 'countered' && bp?.declineReason === 'cant_reach', bp);
   const an = (await inbox(alice)).filter(n => n.payload?.challengeId === ctr.id);
-  check('alice got challenge_countered (not a separate challenge_received)', an.length === 1 && an[0].kind === 'challenge_countered'
+  check('alice got challenge_countered for the proposal', an.length === 1 && an[0].kind === 'challenge_countered' && an[0].payload.proposal === true
     && an[0].payload.newChallengeId === ctr.id && an[0].payload.counteredFromId === orig && an[0].payload.userId === bob.id
     && an[0].payload.machineName === 'zz-challenge-test other' && an[0].payload.originalMachineName === 'zz-challenge-test (Pro)', an);
   check("bob's invitation to the original marked read", (await inbox(bob)).filter(n => n.payload?.challengeId === orig && n.kind === 'challenge_received').every(n => n.readAt));
   const [ctrEvent] = await db.select({ payload: activityEvents.payload }).from(activityEvents)
     .where(and(eq(activityEvents.type, 'challenge.countered'), eq(activityEvents.targetId, String(orig))));
-  check('challenge.countered activity links the new challenge', (ctrEvent?.payload as any)?.newChallengeId === ctr.id, ctrEvent);
+  check('challenge.countered activity links the proposal', (ctrEvent?.payload as any)?.newChallengeId === ctr.id, ctrEvent);
   r = await call(bob, 'POST', `/challenges/${orig}/counter`, counterBody);
   check('countering again → 409 cannot_counter', r.status === 409 && r.body?.code === 'cannot_counter', r);
   r = await call(bob, 'POST', `/challenges/${orig}/accept`);
-  check('accepting a countered challenge → 409', r.status === 409, r);
+  check('accepting after countering → 409', r.status === 409, r);
   r = await call(alice, 'GET', `/challenges/${orig}`);
-  check("alice's view of the original: countered, bob's answer visible", r.body?.status === 'countered' && bobPart(r.body)?.response === 'countered'
-    && bobPart(r.body)?.declineReason === 'cant_reach' && r.body?.counteredToId === ctr.id, r.body);
-  r = await call(alice, 'GET', '/challenges?status=history');
-  check('countered shows in history', r.body?.some((c: any) => c.id === orig && c.status === 'countered'), r.body?.map((c: any) => [c.id, c.status]));
+  check("alice's view of the original: pending, bob's answer, the proposal listed, can't start", r.body?.status === 'pending'
+    && bobPart(r.body)?.response === 'countered' && r.body?.proposals?.length === 1 && r.body.proposals[0].id === ctr.id
+    && r.body.proposals[0].status === 'proposed' && r.body.proposals[0].proposedBy?.id === bob.id && r.body?.me?.canStart === false, r.body);
   r = await call(alice, 'GET', `/challenges/${ctr.id}`);
-  check('alice may accept / decline / counter the counter', r.body?.me?.canAccept && r.body?.me?.canDecline && r.body?.me?.canCounter, r.body?.me);
-  r = await call(alice, 'POST', `/challenges/${ctr.id}/counter`, { machineId: PREM, type: 'high_score', matchMode: 'exact', endsAt: iso(72 * H) });
-  check('a counter can itself be countered (by alice, now the creator)', r.status === 201 && r.body?.counter?.counteredFromId === ctr.id
-    && r.body?.counter?.creatorId === alice.id && r.body?.original?.status === 'countered', r);
-  const ctr2 = r.body?.counter?.id;
-  check("bob's challenge_countered for it", (await inbox(bob)).some(n => n.payload?.challengeId === ctr2 && n.kind === 'challenge_countered' && !n.readAt));
-  r = await call(bob, 'POST', `/challenges/${ctr2}/accept`);
-  check('the counter of a counter is accepted → active', r.status === 200 && r.body?.status === 'active', r.body);
-  check("accepting settles bob's challenge_countered", (await inbox(bob)).filter(n => n.payload?.challengeId === ctr2 && n.kind === 'challenge_countered').every(n => n.readAt));
-  r = await call(bob, 'POST', `/challenges/${ctr2}/counter`, counterBody);
+  check('alice may take / keep-mine the proposal (accept / decline), not counter or cancel it', r.body?.me?.canAccept && r.body?.me?.canDecline
+    && r.body?.me?.canDecideProposal && !r.body?.me?.canCounter && !r.body?.me?.canCancel, r.body?.me);
+  r = await call(bob, 'POST', `/challenges/${ctr.id}/accept`);
+  check('the proposer cannot decide their own proposal → 409', r.status === 409, r);
+  r = await call(bob, 'POST', `/challenges/${ctr.id}/decline`);
+  check('…nor withdraw it (v1) → 409', r.status === 409, r);
+  r = await call(alice, 'GET', '/challenges?status=pending');
+  check("alice's pending list shows the proposal (Waiting on you)", r.body?.some((c: any) => c.id === ctr.id && c.status === 'proposed'), r.body?.map((c: any) => [c.id, c.status]));
+  r = await call(alice, 'POST', `/challenges/${ctr.id}/accept`);
+  check('alice takes it: 1:1 → active at once', r.status === 200 && r.body?.status === 'active' && r.body?.counteredFromId === orig
+    && r.body?.proposedBy?.id === bob.id && r.body?.isProposal === false, r.body);
+  [origRow] = await db.select().from(challenges).where(eq(challenges.id, orig));
+  const [ctrRow] = await db.select().from(challenges).where(eq(challenges.id, ctr.id));
+  check('original → countered; proposal_decided_at stamped', origRow.status === 'countered' && ctrRow.proposalDecidedAt != null, { origRow, ctrRow });
+  r = await call(alice, 'GET', `/challenges/${orig}`);
+  check('original view: countered, counteredToId = the taken proposal', r.body?.status === 'countered' && r.body?.counteredToId === ctr.id, r.body);
+  check('bob got challenge_counter_accepted', (await inbox(bob)).some(n => n.kind === 'challenge_counter_accepted' && n.payload?.challengeId === ctr.id && n.payload?.counteredFromId === orig));
+  check("alice's challenge_countered settled (read)", (await inbox(alice)).filter(n => n.payload?.challengeId === ctr.id && n.kind === 'challenge_countered').every(n => n.readAt));
+  const [takeEvent] = await db.select({ payload: activityEvents.payload }).from(activityEvents)
+    .where(and(eq(activityEvents.type, 'challenge.counter_accepted'), eq(activityEvents.targetId, String(ctr.id))));
+  check('challenge.counter_accepted activity', (takeEvent?.payload as any)?.counteredFromId === orig, takeEvent);
+  r = await call(bob, 'POST', `/challenges/${ctr.id}/counter`, counterBody);
   check('countering an active challenge → 409 cannot_counter', r.status === 409 && r.body?.code === 'cannot_counter', r);
   r = await call(bob, 'POST', '/challenges/999999999/counter', counterBody);
   check('countering a challenge that does not exist → 404', r.status === 404, r);
+  await call(bob, 'POST', `/challenges/${ctr.id}/forfeit`);
+
+  // Keep mine (1:1): the proposal is rejected and — nobody else being left — the original ends declined.
+  r = await post(alice, { friendId: bob.id, type: 'high_score' });
+  const orig2 = r.body.id;
+  r = await call(bob, 'POST', `/challenges/${orig2}/counter`, counterBody);
+  const ctr2 = r.body?.counter?.id;
+  r = await call(alice, 'POST', `/challenges/${ctr2}/decline`);
+  check('keep mine: the proposal → rejected (phase declined for old clients)', r.status === 200 && r.body?.status === 'rejected' && r.body?.phase === 'declined', r.body);
+  r = await call(alice, 'GET', `/challenges/${orig2}`);
+  check('…1:1 original has nobody left → declined', r.body?.status === 'declined' && r.body?.proposals?.[0]?.status === 'rejected', r.body);
+  check('bob got challenge_counter_rejected reason rejected', (await inbox(bob)).some(n => n.kind === 'challenge_counter_rejected' && n.payload?.challengeId === ctr2 && n.payload?.reason === 'rejected'));
+  r = await call(alice, 'POST', `/challenges/${ctr2}/accept`);
+  check('a rejected proposal cannot be taken later → 409', r.status === 409, r);
+  r = await call(alice, 'GET', '/challenges?status=history');
+  check('rejected proposal + countered original show in history', r.body?.some((c: any) => c.id === ctr2 && c.status === 'rejected')
+    && r.body?.some((c: any) => c.id === orig && c.status === 'countered'), r.body?.map((c: any) => [c.id, c.status]));
+
+  // A legacy counter row (migrate22 model: created by the counterer, proposed_by_id null) is an ordinary challenge.
+  const [legacy] = await db.insert(challenges).values({
+    creatorId: bob.id, type: 'high_score', machineId: PRO, matchMode: 'game', matchGroup: 'GzzT1', endsAt: new Date(Date.now() + 48 * H),
+    status: 'pending', counteredFromId: orig2,
+  }).returning({ id: challenges.id });
+  await db.insert(challengeParticipants).values([
+    { challengeId: legacy.id, userId: bob.id, response: 'accepted', respondedAt: new Date() },
+    { challengeId: legacy.id, userId: alice.id, response: 'pending' },
+  ]);
+  r = await call(alice, 'GET', `/challenges/${legacy.id}`);
+  check('legacy counter row: pending, not a proposal, alice may accept / counter', r.body?.status === 'pending' && r.body?.isProposal === false
+    && r.body?.counteredFromId === orig2 && r.body?.me?.canAccept && r.body?.me?.canCounter && !r.body?.me?.canDecideProposal, r.body);
+  r = await call(alice, 'POST', `/challenges/${legacy.id}/accept`);
+  check('legacy counter row accepted → active', r.status === 200 && r.body?.status === 'active', r.body);
+  await call(alice, 'POST', `/challenges/${legacy.id}/forfeit`);
+
+  // The DB CHECK: a proposal status must name its proposer; countered_from_id is NOT required.
+  const pgCode = async (f: () => Promise<unknown>) => { try { await f(); return 'ok'; } catch (e: any) { return String(e?.code ?? e?.cause?.code ?? e?.message); } };
+  let code = await pgCode(() => db.insert(challenges).values({ creatorId: alice.id, type: 'high_score', machineId: PRO, endsAt: new Date(Date.now() + H), status: 'proposed' }));
+  check('CHECK: status proposed without proposed_by_id → 23514', code === '23514', code);
+  code = await pgCode(() => db.insert(challenges).values({ creatorId: alice.id, type: 'high_score', machineId: PRO, endsAt: new Date(Date.now() + H), status: 'lapsed', proposedById: bob.id }));
+  check('CHECK: a lapsed proposal whose original is gone (countered_from_id null) is fine', code === 'ok', code);
+  code = await pgCode(() => db.insert(challenges).values({ creatorId: alice.id, type: 'high_score', machineId: PRO, endsAt: new Date(Date.now() + H), status: 'rejected', proposedById: bob.id, counteredFromId: orig2 }));
+  check('unique: a second proposal by the same player on the same original → 23505', code === '23505', code);
+  code = await pgCode(() => db.insert(challengeParticipants).values({ challengeId: orig2, userId: carol.id, response: 'maybe' as any }));
+  check("response CHECK still refuses nonsense (and allows 'missed')", code === '23514', code);
+  await db.delete(challenges).where(and(eq(challenges.creatorId, alice.id), eq(challenges.status, 'lapsed'), sql`${challenges.counteredFromId} IS NULL`));
+
+  // ── group challenges (feature/group-challenges) ────────────────────────────
+  // alice ↔ bob and alice ↔ carol are friends by now; dave is nobody's friend yet.
+  const partOf = (b: any, u: number) => b?.participants?.find((p: any) => p.user.id === u);
+  const respOf = (b: any, u: number) => partOf(b, u)?.response;
+  const postG = (friendIds: number[], body: Record<string, unknown> = {}) => post(alice, { friendIds, type: 'high_score', ...body });
+  r = await postG([bob.id, dave.id]);
+  check('group: a non-friend among the invitees → 403 not_friends', r.status === 403 && r.body?.code === 'not_friends', r);
+  r = await postG([bob.id, bob.id]);
+  check('group: the same friend twice → 400 duplicate_invitee', r.status === 400 && r.body?.code === 'duplicate_invitee', r);
+  r = await post(alice, { friendIds: [bob.id], friendUsernames: [bob.username], type: 'high_score' });
+  check('group: same friend by id and by username → 400 duplicate_invitee', r.status === 400 && r.body?.code === 'duplicate_invitee', r);
+  r = await postG([bob.id, carol.id, 1, 2, 3, 4, 5, 6]);
+  check('group: more than 8 players → 400 too_many_players', r.status === 400 && r.body?.code === 'too_many_players', r);
+  r = await postG([bob.id, alice.id]);
+  check('group: yourself among the invitees → 400 cannot_challenge_self', r.status === 400 && r.body?.code === 'cannot_challenge_self', r);
+  let [daveFriend] = await db.insert(friendships).values({ requesterId: dave.id, addresseeId: alice.id, status: 'accepted', respondedAt: new Date() }).returning({ id: friendships.id });
+
+  // Partial accept, a decline dropping out, backing out, then everyone answered → it starts.
+  r = await postG([bob.id, carol.id, dave.id]);
+  check('group create → 201 pending, 4 players', r.status === 201 && r.body?.status === 'pending' && r.body?.participants?.length === 4
+    && r.body?.playerCount === 4 && r.body?.maxPlayers === 8, r.body);
+  const g1 = r.body.id;
+  check('every invitee got challenge_received', (await kinds(bob, g1)).includes('challenge_received') && (await kinds(carol, g1)).includes('challenge_received')
+    && (await kinds(dave, g1)).includes('challenge_received'));
+  r = await call(bob, 'POST', `/challenges/${g1}/accept`);
+  check('bob accepts → still pending (others to answer)', r.status === 200 && r.body?.status === 'pending' && respOf(r.body, bob.id) === 'accepted', r.body);
+  r = await call(alice, 'GET', `/challenges/${g1}`);
+  check('challenger: Start with who’s in is available once someone accepted', r.body?.me?.canStart === true, r.body?.me);
+  r = await call(carol, 'POST', `/challenges/${g1}/decline`, { reason: 'no_thanks' });
+  check('carol declines → she drops out, the group stays pending', r.body?.status === 'pending' && respOf(r.body, carol.id) === 'declined', r.body);
+  let decl = (await inbox(alice)).filter(n => n.payload?.challengeId === g1 && n.kind === 'challenge_declined' && n.payload?.userId === carol.id);
+  check('challenge_declined carries remaining = 2', decl.length === 1 && decl[0].payload.remaining === 2 && decl[0].payload.backedOut === false, decl);
+  r = await call(bob, 'GET', `/challenges/${g1}`);
+  check('an accepted player may back out while pending (canDecline)', r.body?.me?.canDecline === true && r.body?.me?.canAccept === false, r.body?.me);
+  r = await call(bob, 'POST', `/challenges/${g1}/decline`);
+  check('bob backs out → recorded declined, still pending (dave to answer)', r.body?.status === 'pending' && respOf(r.body, bob.id) === 'declined', r.body);
+  decl = (await inbox(alice)).filter(n => n.payload?.challengeId === g1 && n.kind === 'challenge_declined' && n.payload?.userId === bob.id);
+  check('…challenge_declined says backedOut', decl.length === 1 && decl[0].payload.backedOut === true && decl[0].payload.remaining === 1, decl);
+  r = await call(bob, 'POST', `/challenges/${g1}/accept`);
+  check('backed out = out: accepting again → 409', r.status === 409, r);
+  r = await call(dave, 'POST', `/challenges/${g1}/accept`);
+  check('dave accepts → everyone answered, one accepted → active', r.status === 200 && r.body?.status === 'active', r.body);
+  check('group: challenge_started to accepted players but the actor', (await kinds(alice, g1)).includes('challenge_started')
+    && !(await kinds(dave, g1)).includes('challenge_started'), [await kinds(alice, g1), await kinds(dave, g1)]);
+  await call(dave, 'POST', `/challenges/${g1}/forfeit`);
+
+  // Everyone declines → declined.
+  r = await postG([bob.id, carol.id]);
+  const g0 = r.body.id;
+  await call(bob, 'POST', `/challenges/${g0}/decline`);
+  r = await call(bob, 'GET', `/challenges/${g0}`);
+  check('one of two declines → still pending', r.body?.status === 'pending', r.body?.status);
+  r = await call(carol, 'POST', `/challenges/${g0}/decline`);
+  check('nobody pending or accepted → declined', r.body?.status === 'declined', r.body?.status);
+
+  // Start with who's in: pending players become missed.
+  r = await postG([bob.id, carol.id, dave.id]);
+  const g2 = r.body.id;
+  r = await call(alice, 'POST', `/challenges/${g2}/start`);
+  check('Start with nobody accepted → 409 cannot_start', r.status === 409 && r.body?.code === 'cannot_start', r);
+  await call(bob, 'POST', `/challenges/${g2}/accept`);
+  r = await call(bob, 'POST', `/challenges/${g2}/start`);
+  check('only the challenger can Start → 409', r.status === 409 && r.body?.code === 'cannot_start', r);
+  r = await call(alice, 'POST', `/challenges/${g2}/start`);
+  check('Start with who’s in → active; carol and dave missed', r.status === 200 && r.body?.status === 'active'
+    && respOf(r.body, carol.id) === 'missed' && respOf(r.body, dave.id) === 'missed' && r.body?.playerCount === 2, r.body);
+  check('missed players got challenge_missed, their invitation settled', (await kinds(carol, g2)).includes('challenge_missed')
+    && (await inbox(carol)).filter(n => n.payload?.challengeId === g2 && n.kind === 'challenge_received').every(n => n.readAt));
+  check('bob got challenge_started (byChallenger)', (await inbox(bob)).some(n => n.payload?.challengeId === g2 && n.kind === 'challenge_started' && n.payload?.byChallenger === true));
+  r = await call(carol, 'POST', `/challenges/${g2}/accept`);
+  check('a missed player can’t join after the start → 409', r.status === 409, r);
+  const [startEvent] = await db.select({ payload: activityEvents.payload }).from(activityEvents)
+    .where(and(eq(activityEvents.type, 'challenge.started'), eq(activityEvents.targetId, String(g2))));
+  check('challenge.started event (start_with_whos_in, 2 players, 2 missed)', (startEvent?.payload as any)?.trigger === 'start_with_whos_in'
+    && (startEvent?.payload as any)?.missed === 2, startEvent);
+  await call(bob, 'POST', `/challenges/${g2}/forfeit`);
+
+  // A group resolves with ranks; records are pairwise by rank.
+  r = await postG([bob.id, carol.id, dave.id], { matchMode: 'exact' });
+  const g3 = r.body.id;
+  for (const u of [bob, carol, dave]) await call(u, 'POST', `/challenges/${g3}/accept`);
+  r = await call(alice, 'GET', `/challenges/${g3}`);
+  check('all three accepted → active', r.body?.status === 'active', r.body?.status);
+  const [g3Row] = await db.select({ startsAt: challenges.startsAt }).from(challenges).where(eq(challenges.id, g3));
+  // The window started on the DB clock; pull it back a minute so this machine's clock can't land an upload before it.
+  await setWindow(g3, new Date(+g3Row.startsAt! - 60_000), new Date(Date.now() + 48 * H));
+  await upload(alice, { score: 3_000_000 });
+  await upload(bob, { score: 2_000_000 });
+  await upload(carol, { score: 1_000_000 });
+  const posted = (await inbox(dave)).filter(n => n.payload?.challengeId === g3 && n.kind === 'challenge_opponent_scored' && !n.readAt);
+  check('one unread "X posted" per challenge, naming the newest poster', posted.length === 1 && posted[0].payload.userId === carol.id, posted);
+  r = await call(dave, 'GET', `/challenges/${g3}`);
+  check('live ranks for the group', standing(r.body, alice.id)?.liveRank === 1 && standing(r.body, bob.id)?.liveRank === 2
+    && standing(r.body, carol.id)?.liveRank === 3, r.body?.participants);
+  await setWindow(g3, new Date(+g3Row.startsAt! - 60_000), new Date(Date.now() - 500));
+  await runChallengeSweep();
+  r = await call(bob, 'GET', `/challenges/${g3}`);
+  check('group result: alice win 1, bob loss 2, carol loss 3, dave no_show 4', r.body?.status === 'resolved'
+    && partOf(r.body, alice.id)?.outcome === 'win' && partOf(r.body, alice.id)?.rank === 1
+    && partOf(r.body, bob.id)?.outcome === 'loss' && partOf(r.body, bob.id)?.rank === 2
+    && partOf(r.body, carol.id)?.outcome === 'loss' && partOf(r.body, carol.id)?.rank === 3
+    && partOf(r.body, dave.id)?.outcome === 'no_show' && partOf(r.body, dave.id)?.rank === 4, r.body?.participants);
+  const res3 = (await inbox(bob)).filter(n => n.payload?.challengeId === g3 && n.kind === 'challenge_result');
+  check('challenge_result carries rank, playerCount and winners', res3.length === 1 && res3[0].payload.rank === 2 && res3[0].payload.playerCount === 4
+    && res3[0].payload.winners?.length === 1 && res3[0].payload.winners[0].userId === alice.id, res3);
+  r = await call(carol, 'GET', '/challenges/record');
+  const h2h = (b: any, u: number) => b?.headToHead?.find((h: any) => h.opponent.id === u);
+  check("carol's record: headline loss (3rd of 4); head-to-head: lost to alice and bob, beat dave (no-show)", r.body?.losses >= 1
+    && h2h(r.body, alice.id)?.losses >= 1 && h2h(r.body, bob.id)?.losses === 1 && h2h(r.body, bob.id)?.wins === 0
+    && h2h(r.body, dave.id)?.wins === 1 && typeof r.body?.bestLossStreak === 'number', r.body);
+  r = await call(bob, 'GET', `/challenges/record/${encodeURIComponent(carol.username)}`);
+  check("bob sees carol's record vs him only: carol 0–1", r.body?.headToHead?.length === 1 && h2h(r.body, bob.id)?.losses === 1, r.body?.headToHead);
+
+  // Fixed start: it starts with whoever accepted; the rest are missed. Sweep path, then the score-hook path.
+  r = await postG([bob.id, carol.id], { startsAt: iso(2 * H), endsAt: iso(30 * H) });
+  const g4 = r.body.id;
+  await call(bob, 'POST', `/challenges/${g4}/accept`);
+  r = await call(bob, 'GET', `/challenges/${g4}`);
+  check('fixed start ahead, carol still pending → pending', r.body?.status === 'pending', r.body?.status);
+  await setWindow(g4, new Date(Date.now() - 60_000), new Date(Date.now() + 30 * H));
+  await runChallengeSweep();
+  r = await call(alice, 'GET', `/challenges/${g4}`);
+  check('fixed start passed (sweep): active with alice + bob, carol missed', r.body?.status === 'active' && respOf(r.body, carol.id) === 'missed', r.body);
+  await call(bob, 'POST', `/challenges/${g4}/forfeit`);
+
+  r = await postG([bob.id, carol.id], { startsAt: iso(2 * H), endsAt: iso(30 * H) });
+  const g5 = r.body.id;
+  await call(bob, 'POST', `/challenges/${g5}/accept`);
+  await setWindow(g5, new Date(Date.now() - 60_000), new Date(Date.now() + 30 * H));
+  s = await upload(bob, { score: 1234 });
+  const [g5Row] = await db.select({ status: challenges.status }).from(challenges).where(eq(challenges.id, g5));
+  check('score hook: a pending group past its fixed start starts on the upload, and the score counts (locked)', g5Row.status === 'active'
+    && (await db.select().from(challengeScores).where(and(eq(challengeScores.challengeId, g5), eq(challengeScores.scoreId, s.body.id)))).length === 1, g5Row);
+  await call(bob, 'POST', `/challenges/${g5}/forfeit`);
+
+  // Two counters: taking one supersedes the other; re-invites skip ex-friends; everyone re-accepts.
+  r = await postG([bob.id, carol.id, dave.id]);
+  const g6 = r.body.id;
+  await call(dave, 'POST', `/challenges/${g6}/accept`);
+  r = await call(bob, 'POST', `/challenges/${g6}/counter`, counterBody);
+  const p1 = r.body?.counter?.id;
+  r = await call(carol, 'POST', `/challenges/${g6}/counter`, { ...counterBody, machineId: PREM });
+  const p2 = r.body?.counter?.id;
+  r = await call(alice, 'GET', `/challenges/${g6}`);
+  check('two open proposals block the start (nobody pending, dave accepted)', r.body?.status === 'pending' && r.body?.proposals?.length === 2, r.body);
+  r = await call(bob, 'GET', `/challenges/${g6}`);
+  check('a proposer sees only their own proposal on the original', r.body?.proposals?.length === 1 && r.body.proposals[0].id === p1, r.body?.proposals);
+  r = await call(dave, 'GET', `/challenges/${g6}`);
+  check('another invitee sees no proposals', r.body?.proposals?.length === 0, r.body?.proposals);
+  r = await call(dave, 'GET', `/challenges/${p1}`);
+  check('privacy: a proposal is 404 to the other invitees', r.status === 404, r);
+  await db.delete(friendships).where(eq(friendships.id, daveFriend.id));
+  r = await call(alice, 'POST', `/challenges/${p1}/accept`);
+  check("take bob's for everyone → pending on the new machine (carol re-invited)", r.status === 200 && r.body?.status === 'pending'
+    && respOf(r.body, alice.id) === 'accepted' && respOf(r.body, bob.id) === 'accepted' && respOf(r.body, carol.id) === 'pending', r.body);
+  check('…dave (no longer alice’s friend) is not re-invited', !partOf(r.body, dave.id), r.body?.participants);
+  r = await call(alice, 'GET', `/challenges/${g6}`);
+  check('original → countered, links to the taken one; the other proposal superseded (rejected)', r.body?.status === 'countered'
+    && r.body?.counteredToId === p1 && r.body?.proposals?.find((p: any) => p.id === p2)?.status === 'rejected', r.body);
+  check('carol: challenge_counter_rejected superseded + challenge_moved to the new one', (await inbox(carol)).some(n => n.kind === 'challenge_counter_rejected'
+    && n.payload?.challengeId === p2 && n.payload?.reason === 'superseded')
+    && (await inbox(carol)).some(n => n.kind === 'challenge_moved' && n.payload?.challengeId === p1 && n.payload?.fromChallengeId === g6));
+  r = await call(carol, 'POST', `/challenges/${p1}/accept`);
+  check('carol re-accepts → everyone in → active', r.status === 200 && r.body?.status === 'active', r.body);
+  check("accepting settles carol's challenge_moved", (await inbox(carol)).filter(n => n.payload?.challengeId === p1 && n.kind === 'challenge_moved').every(n => n.readAt));
+  await call(carol, 'POST', `/challenges/${p1}/forfeit`);
+  await call(bob, 'POST', `/challenges/${p1}/forfeit`);
+  [daveFriend] = await db.insert(friendships).values({ requesterId: dave.id, addresseeId: alice.id, status: 'accepted', respondedAt: new Date() }).returning({ id: friendships.id });
+
+  // Re-invite: previously accepted players must re-accept; no_thanks decliners aren't asked again.
+  r = await postG([bob.id, carol.id, dave.id]);
+  const g7 = r.body.id;
+  await call(dave, 'POST', `/challenges/${g7}/accept`);
+  await call(carol, 'POST', `/challenges/${g7}/decline`, { reason: 'no_thanks' });
+  r = await call(bob, 'POST', `/challenges/${g7}/counter`, counterBody);
+  const p3 = r.body?.counter?.id;
+  r = await call(alice, 'POST', `/challenges/${p3}/accept`);
+  check('taken: dave (had accepted) re-invited as pending; carol (no_thanks) not asked again', r.body?.status === 'pending'
+    && respOf(r.body, dave.id) === 'pending' && !partOf(r.body, carol.id), r.body?.participants);
+  check('dave got challenge_moved', (await kinds(dave, p3)).includes('challenge_moved'));
+  await call(alice, 'POST', `/challenges/${p3}/cancel`);
+
+  // Keep the original: the proposal is rejected, the proposer stays out, and the original starts (L).
+  r = await postG([bob.id, carol.id]);
+  const g8 = r.body.id;
+  await call(carol, 'POST', `/challenges/${g8}/accept`);
+  r = await call(bob, 'POST', `/challenges/${g8}/counter`, counterBody);
+  const p4 = r.body?.counter?.id;
+  // The one reminder: 24 h unanswered → the sweep re-raises challenge_countered once.
+  await db.update(challenges).set({ createdAt: new Date(Date.now() - 25 * H) }).where(eq(challenges.id, p4));
+  const sw1 = await runChallengeSweep();
+  const sw2 = await runChallengeSweep();
+  const reminders = (await inbox(alice)).filter(n => n.payload?.challengeId === p4 && n.kind === 'challenge_countered' && n.payload?.reminder === true);
+  const [p4Row] = await db.select({ at: challenges.proposalRemindedAt }).from(challenges).where(eq(challenges.id, p4));
+  check('proposal reminder: once, after 24 h (durable marker)', reminders.length === 1 && p4Row.at != null && sw1.proposalReminders >= 1 && sw2.proposalReminders === 0,
+    { reminders, p4Row, sw1, sw2 });
+  r = await call(alice, 'POST', `/challenges/${p4}/decline`);
+  check('keep mine → proposal rejected', r.body?.status === 'rejected', r.body?.status);
+  r = await call(alice, 'GET', `/challenges/${g8}`);
+  check('…the original starts with carol (bob stays out)', r.body?.status === 'active' && respOf(r.body, bob.id) === 'countered', r.body);
+  await call(carol, 'POST', `/challenges/${g8}/forfeit`);
+
+  // Proposals close when the original starts (challenger's Start → rejected 'started'; fixed start →
+  // lapsed), is cancelled (lapsed), or the proposal's own window passes (lapsed, then the original re-checks).
+  const openProposalOn = async (friendIds: number[], extra: Record<string, unknown> = {}) => {
+    const made = await postG(friendIds, extra);
+    if (friendIds.includes(carol.id)) await call(carol, 'POST', `/challenges/${made.body.id}/accept`);
+    const ct = await call(bob, 'POST', `/challenges/${made.body.id}/counter`, counterBody);
+    return { gid: made.body.id as number, pid: ct.body?.counter?.id as number };
+  };
+  const statusOf = async (id: number) => (await db.select({ s: challenges.status }).from(challenges).where(eq(challenges.id, id)))[0]?.s;
+  const reasonTo = async (who: typeof bob, pid: number) => (await inbox(who)).find(n => n.kind === 'challenge_counter_rejected' && n.payload?.challengeId === pid)?.payload?.reason;
+  let o = await openProposalOn([bob.id, carol.id]);
+  await call(alice, 'POST', `/challenges/${o.gid}/start`);
+  check('Start with who’s in rejects the open proposal (reason started)', await statusOf(o.gid) === 'active' && await statusOf(o.pid) === 'rejected'
+    && await reasonTo(bob, o.pid) === 'started', [await statusOf(o.gid), await statusOf(o.pid), await reasonTo(bob, o.pid)]);
+  await call(carol, 'POST', `/challenges/${o.gid}/forfeit`);
+  o = await openProposalOn([bob.id, carol.id], { startsAt: iso(2 * H), endsAt: iso(30 * H) });
+  await setWindow(o.gid, new Date(Date.now() - 60_000), new Date(Date.now() + 30 * H));
+  await runChallengeSweep();
+  check('fixed start: the original starts, the proposal lapses (reason started)', await statusOf(o.gid) === 'active' && await statusOf(o.pid) === 'lapsed'
+    && await reasonTo(bob, o.pid) === 'started', [await statusOf(o.gid), await statusOf(o.pid)]);
+  await call(carol, 'POST', `/challenges/${o.gid}/forfeit`);
+  o = await openProposalOn([bob.id]);
+  await call(alice, 'POST', `/challenges/${o.gid}/cancel`);
+  check('cancel: the proposal lapses (reason cancelled)', await statusOf(o.gid) === 'cancelled' && await statusOf(o.pid) === 'lapsed'
+    && await reasonTo(bob, o.pid) === 'cancelled', [await statusOf(o.gid), await statusOf(o.pid)]);
+  o = await openProposalOn([bob.id, carol.id]);
+  await setWindow(o.pid, null, new Date(Date.now() - 60_000));
+  await runChallengeSweep();
+  check("the proposal's own window passed: lapsed (expired), and the original then starts with carol", await statusOf(o.pid) === 'lapsed'
+    && await reasonTo(bob, o.pid) === 'expired' && await statusOf(o.gid) === 'active', [await statusOf(o.pid), await statusOf(o.gid)]);
+  await call(carol, 'POST', `/challenges/${o.gid}/forfeit`);
+
+  // most_improved: a decline that makes the group start must never fail on a missing baseline.
+  r = await postG([bob.id, carol.id], { type: 'most_improved' });
+  const g9 = r.body.id;
+  await call(bob, 'POST', `/challenges/${g9}/accept`);
+  // Take alice's baseline away (every score of hers on the game, moved aside for a moment) — then carol declines.
+  const aside = await db.select({ id: scores.id, machineId: scores.machineId }).from(scores)
+    .where(and(eq(scores.userId, alice.id), inArray(scores.machineId, [PRO, PREM])));
+  if (aside.length) await db.update(scores).set({ machineId: OTHER }).where(inArray(scores.id, aside.map(x => x.id)));
+  r = await call(carol, 'POST', `/challenges/${g9}/decline`);
+  check('most_improved: a decline that starts it succeeds even though the challenger lost her baseline (no creator_no_baseline)', r.status === 200
+    && r.body?.status === 'active' && partOf(r.body, alice.id)?.baselineScore === null, r);
+  for (const m of [PRO, PREM]) {
+    const back = aside.filter(x => x.machineId === m).map(x => x.id);
+    if (back.length) await db.update(scores).set({ machineId: m }).where(inArray(scores.id, back));
+  }
+  await call(bob, 'POST', `/challenges/${g9}/forfeit`);
+
+  // Durable badge facts (phase 3 reads these; see the badges plan).
+  const n = async (q: ReturnType<typeof sql>) => Number(((await db.execute(q)) as any)[0]?.n ?? 0);
+  const countersAccepted = (u: number) => n(sql`SELECT count(*)::int AS n FROM challenges WHERE
+    (proposed_by_id = ${u} AND proposal_decided_at IS NOT NULL AND status NOT IN ('proposed', 'rejected', 'lapsed'))
+    OR (proposed_by_id IS NULL AND countered_from_id IS NOT NULL AND creator_id = ${u} AND status IN ('active', 'resolved'))`);
+  const countersRejected = (u: number) => n(sql`SELECT count(*)::int AS n FROM challenges WHERE proposed_by_id = ${u} AND status = 'rejected'`);
+  const missedCount = (u: number) => n(sql`SELECT count(*)::int AS n FROM challenge_participants WHERE user_id = ${u} AND response = 'missed'`);
+  // bob: taken = 1:1 ctr, p1, p3 (+ the legacy row he created, accepted) = 4; rejected = ctr2, p4, the Start one = 3.
+  check('badge fact counters_accepted (bob = 4, incl. the legacy row)', await countersAccepted(bob.id) === 4, await countersAccepted(bob.id));
+  check('badge fact counters_rejected (bob = 3: kept-mine ×2 + started)', await countersRejected(bob.id) === 3, await countersRejected(bob.id));
+  check("badge fact counters_rejected counts superseded too (carol's p2)", await countersRejected(carol.id) === 1, await countersRejected(carol.id));
+  check('badge fact challenges_missed (carol: Start g2, fixed start g4, score-hook start g5 = 3; dave g2 = 1)', await missedCount(carol.id) === 3 && await missedCount(dave.id) === 1,
+    [await missedCount(carol.id), await missedCount(dave.id)]);
 
   // ── challenge prefs + recommendations (zero Pinball Map calls) ─────────────
   const madeHome = await db.insert(machines).values([{ name: 'zz-challenge-test home' }, { name: 'zz-challenge-test hidden home' }]).returning({ id: machines.id });
@@ -718,6 +1063,30 @@ try {
   const [rosterRow] = await db.select({ fetchedAt: pmLocationCache.fetchedAt }).from(pmLocationCache).where(eq(pmLocationCache.pmLocationId, FAKE_PM_ID));
   check('the stale cached roster was not refreshed', +rosterRow.fetchedAt < Date.now() - 29 * 24 * H, rosterRow);
 
+  // Group recommendations: GET /api/challenges/recommendations?users=a,b (zero Pinball Map calls).
+  const pmBeforeGroup = pmClient().stats().liveCallsToday;
+  r = await call(alice, 'GET', `/challenges/recommendations?users=${encodeURIComponent(bob.username)}`);
+  check('group recs with one user = exactly the single-friend list', r.status === 200 && r.body?.users?.length === 1
+    && JSON.stringify(r.body?.recommendations) === JSON.stringify(recs.body?.recommendations), { group: r.body?.recommendations, single: recs.body?.recommendations });
+  r = await call(alice, 'GET', `/challenges/recommendations?users=${encodeURIComponent(bob.username)},${encodeURIComponent(carol.username)}`);
+  const grec = (id: number) => r.body?.recommendations?.find((x: any) => x.machineId === id);
+  check('group recs → 200, both users', r.status === 200 && r.body?.users?.map((u: any) => u.id).join() === [bob.id, carol.id].join(), r);
+  check('group recs: the machine both can reach ranks first, with coverage 2', r.body?.recommendations?.[0]?.machineId === PRO
+    && grec(PRO)?.coverage === 2 && grec(PRO)?.reachedBy?.includes(bob.id) && grec(PRO)?.reachedBy?.includes(carol.id), r.body?.recommendations);
+  check("group recs: bob's own residence machine shows as atHomeOf bob, never 'at home' or the venue's name", JSON.stringify(grec(HOME_M)?.atHomeOf) === JSON.stringify([bob.id])
+    && !JSON.stringify(r.body).includes('at home') && !JSON.stringify(r.body).includes(BOB_HOME.name) && !JSON.stringify(r.body).includes(CAROL_HOME.name), r.body);
+  r = await call(carol, 'GET', `/challenges/recommendations?users=${encodeURIComponent(bob.username)}`);
+  check('group recs for a non-friend → 403 not_friends', r.status === 403 && r.body?.code === 'not_friends', r);
+  r = await call(alice, 'GET', `/challenges/recommendations?users=${encodeURIComponent(bob.username)},zz-nobody-here`);
+  check('group recs with an unknown user → 404', r.status === 404 && r.body?.code === 'user_not_found', r);
+  r = await call(alice, 'GET', `/challenges/recommendations?users=${encodeURIComponent(bob.username)},${encodeURIComponent(bob.username)}`);
+  check('group recs with a repeat → 400 duplicate_invitee', r.status === 400 && r.body?.code === 'duplicate_invitee', r);
+  r = await call(alice, 'GET', '/challenges/recommendations?users=');
+  check('group recs without users → 400', r.status === 400, r);
+  check('group recs: zero Pinball Map calls', pmClient().stats().liveCallsToday === pmBeforeGroup);
+  const recsSrc = readFileSync(new URL('./src/lib/challengeRecs.ts', import.meta.url), 'utf8');
+  check('challengeRecs.ts imports nothing Pinball Map (pure)', !/from '\.\/(pmRosterCache|pmClient|pinballMap|pinballmapApi)\.js'/.test(recsSrc) && !/from '/.test(recsSrc.replace(/^\/\/.*$/gm, '')));
+
   r = await call(alice, 'GET', `/users/${encodeURIComponent(bob.username)}`);
   check('profile: a friend sees challengeMe (level 1 only)', JSON.stringify(r.body?.challengeMe?.map((m: any) => m.id)) === JSON.stringify([PREM]), r.body?.challengeMe);
   r = await call(carol, 'GET', `/users/${encodeURIComponent(bob.username)}`);
@@ -795,6 +1164,17 @@ try {
     or(
       and(eq(activityEvents.type, 'badge.earned'), inArray(activityEvents.actorUserId, ids)),
       and(eq(activityEvents.type, 'notification.sent'), inArray(activityEvents.subjectUserId, ids), sql`${activityEvents.payload} ->> 'kind' = 'badge_earned'`),
+    ),
+  ));
+  // Every activity event this run wrote about these users or their challenges (challenge.*,
+  // notification.sent, …) — the rows are only ever about the borrowed users, so nothing else goes.
+  const cidText = cids.map(String);
+  await db.delete(activityEvents).where(and(
+    sql`${activityEvents.createdAt} >= ${startedAt}::timestamp`,
+    or(
+      inArray(activityEvents.actorUserId, ids),
+      inArray(activityEvents.subjectUserId, ids),
+      cidText.length ? and(eq(activityEvents.targetType, 'challenge'), inArray(activityEvents.targetId, cidText)) : sql`false`,
     ),
   ));
   if (notificationsBefore.length) await db.insert(notifications).values(notificationsBefore).onConflictDoNothing();

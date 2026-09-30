@@ -38,6 +38,7 @@ export const ACTIVITY_TYPES = {
   challenge: [
     'challenge.created', 'challenge.accepted', 'challenge.declined', 'challenge.cancelled',
     'challenge.forfeited', 'challenge.resolved', 'challenge.expired', 'challenge.countered',
+    'challenge.started', 'challenge.counter_accepted', 'challenge.counter_rejected',
   ],
   profile: ['profile.challenge_prefs_updated'],
   notification: ['notification.sent'],

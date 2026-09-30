@@ -5,10 +5,11 @@ import {
 import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, lte, gt, ne, or, sql, type SQL } from 'drizzle-orm';
 import {
   computeStanding, resolveChallenge, resolutionTrigger, projectedRanks, scoreCounts, baselineFrom, bestOnMachine,
-  raceTarget, matchGroupFor, pendingExpired, canAccept, canDecline, canCounter, canCancel, canForfeit, phaseOf, validateCreate,
-  computeRecord, rosterHasMachine, saidNo, ENDING_SOON_MS,
+  raceTarget, matchGroupFor, pendingDue, afterAnswer, canAccept, canDecline, canCounter, canCancel, canStart, canForfeit,
+  canDecideProposal, phaseOf, validateCreate, parseInvitees, computeRecord, rosterHasMachine, saidNo, reinvitees, proposalClosure,
+  isProposalStatus, ENDING_SOON_MS, PROPOSAL_REMINDER_MS, MAX_PLAYERS,
   type CandidateScore, type MatchMode, type CountRule, type MatchRule, type ParticipantState, type ResolutionReason, type Outcome,
-  type ChallengeRecord, type CreateInput, type DeclineReason, type ParticipantResponse,
+  type ChallengeRecord, type CreateInput, type DeclineReason, type ParticipantResponse, type ProposalCloseReason,
 } from './challengeRules.js';
 import { canSeeScore, type ActivityVenue } from './venueActivity.js';
 import { isPrivateVenue } from './venueAddress.js';
@@ -20,17 +21,30 @@ import { getCatalogOrNull, getStoredCatalog, type PinballMachine } from './pinba
 import { challengePmLimiter } from './pmGuards.js';
 import type { PmLocationMachineXref } from './pinballmapApi.js';
 
-// Challenges — database orchestration (feature/challenges, phase 2). The rules are pure, in
-// challengeRules.ts; this file loads rows, asks the rules, and writes the answers. Routes are
-// routes/challenges.ts (thin: HTTP in, one of these functions, HTTP out).
+// Challenges — database orchestration (feature/challenges, phase 2; groups + proposals,
+// feature/group-challenges). The rules are pure, in challengeRules.ts; this file loads rows, asks the
+// rules, and writes the answers. Routes are routes/challenges.ts (thin: HTTP in, one of these
+// functions, HTTP out).
 //
-// RESOLUTION has three triggers, all funnelled through syncChallenge(), which locks the challenge
-// row (FOR UPDATE) so two triggers can't resolve it twice:
+// STATE CHANGES ON THEIR OWN have three triggers, all funnelled through syncChallenge(), which locks
+// the challenge row (FOR UPDATE) so two triggers can't act on it twice:
 //   (a) lazily on read — list / detail / record call it before answering;
-//   (b) onScoreCreated() — POST /api/scores calls it for the uploader's active challenges: a race
-//       resolves on the spot, and the other participant(s) get challenge_opponent_scored;
-//   (c) runChallengeSweep() — the daily secret-guarded cron route: resolves past-deadline
-//       challenges, expires stale pending ones, sends "ending soon", and prunes read notifications.
+//   (b) onScoreCreated() — POST /api/scores calls it for the uploader's active challenges (and pending
+//       ones whose fixed start has passed — they start first): a race resolves on the spot, and the
+//       other participant(s) get challenge_opponent_scored;
+//   (c) runChallengeSweep() — the daily secret-guarded cron route: resolves past-deadline challenges,
+//       starts / expires pending ones at their fixed start, lapses stale proposals, sends "ending soon"
+//       and the one proposal reminder, and prunes read notifications.
+//
+// GROUPS AND PROPOSALS (Will, 2026-09-29) — see the header of challengeRules.ts. After every answer
+// settleAfterAnswer() applies afterAnswer(): L (everyone answered, ≥ 1 accepted, no proposal open) →
+// active; D (nobody pending or accepted, no proposal open) → declined. A counter-offer is a PROPOSAL
+// row (status 'proposed', creator = the challenger, proposed_by_id = the counterer, countered_from_id
+// = the original). /accept and /decline on a proposal are the challenger's "take it for everyone" /
+// "keep mine" (takeProposal / closeProposal). LOCK ORDER: always the original first, then its
+// proposals (lockForAction / syncChallenge peek at a proposal's original before locking it).
+// Legacy counter rows (countered_from_id set, proposed_by_id null — the migrate22 model, created by
+// the counterer) are ordinary pending challenges here.
 //
 // THE SCORE LOCK: every time syncChallenge() evaluates an active challenge (every trigger above,
 // the create hook included, so in practice the moment a counting score is uploaded) it records the
@@ -39,9 +53,11 @@ import type { PmLocationMachineXref } from './pinballmapApi.js';
 // edited, so it can't stop counting.
 //
 // PRIVACY: a challenge, its participants and its standings are only ever returned to its
-// participants; anyone else gets 404 challenge_not_found (the pods pattern). A score only counts
-// when every other participant may see it (canSeeScore), so standings never surface a score from a
-// home venue whose owner hid its activity.
+// participants; anyone else gets 404 challenge_not_found (the pods pattern). A proposal row's
+// participants are just the proposer and the challenger, so the other invitees can't open it; the
+// original's `proposals` list is shown to the challenger (all) and to each proposer (their own).
+// A score only counts when every other participant may see it (canSeeScore), so standings never
+// surface a score from a home venue whose owner hid its activity.
 //
 // TIMESTAMPS: starts_at / ends_at are naive `timestamp` columns holding UTC, the same convention as
 // scores.played_at / created_at under Drizzle (it writes toISOString() and reads values back as
@@ -74,6 +90,8 @@ export class ChallengeError extends Error {
 }
 
 const notFound = () => new ChallengeError(404, 'challenge_not_found', 'Challenge not found');
+const noBaseline = () => new ChallengeError(409, 'no_baseline', 'Most improved needs a score of yours on this machine from before the challenge');
+const creatorNoBaseline = () => new ChallengeError(409, 'creator_no_baseline', 'The challenger no longer has a score on this machine to measure improvement from');
 
 // ── loading ──────────────────────────────────────────────────────────────────
 
@@ -92,6 +110,20 @@ async function loadChallenge(ex: Executor, id: number, lock = false): Promise<Ch
   const [row] = lock ? await q.for('update', { of: challenges }) : await q;
   if (!row) return undefined;
   return { ...row.c, machine: row.machine, venue: row.venueId != null ? { id: row.venueId, name: row.venueName! } : null };
+}
+
+/** An original's open proposals, oldest first (locked when `lock` — after the original, never before). */
+async function openProposals(ex: Executor, originalId: number, lock = false): Promise<ChallengeRow[]> {
+  const q = ex.select({ id: challenges.id }).from(challenges)
+    .where(and(eq(challenges.counteredFromId, originalId), eq(challenges.status, 'proposed')))
+    .orderBy(asc(challenges.id));
+  const ids = lock ? await q.for('update') : await q;
+  const out: ChallengeRow[] = [];
+  for (const { id } of ids) {
+    const row = await loadChallenge(ex, id);
+    if (row) out.push(row);
+  }
+  return out;
 }
 
 async function loadParticipants(ex: Executor, challengeId: number): Promise<ParticipantRow[]> {
@@ -158,17 +190,26 @@ async function loadCandidates(ex: Executor, rule: MatchRule, userIds: number[], 
 }
 
 /**
- * Settle the invitation to a challenge in `userId`'s inbox: challenge_received, or — for a
- * counter-offer — challenge_countered (a counter's invitation IS the countered notice, so the
- * original creator isn't sent two notifications for one event).
+ * Settle the invitation to a challenge in `userId`'s inbox: challenge_received, challenge_moved (a
+ * re-invite after a taken counter-offer), or challenge_countered (the challenger's notice of a
+ * proposal — or, for a legacy counter row, its invitation).
  */
 export async function settleInvitation(ex: Executor, userId: number, challengeId: number, mode: 'read' | 'delete'): Promise<void> {
   await settleNotifications(ex, userId, 'challenge_received', challengeId, mode, 'challengeId');
+  await settleNotifications(ex, userId, 'challenge_moved', challengeId, mode, 'challengeId');
   await settleNotifications(ex, userId, 'challenge_countered', challengeId, mode, 'challengeId');
 }
 
 const matchRuleOf = (c: Pick<Challenge, 'machineId' | 'matchGroup'>): MatchRule => ({ machineId: c.machineId, matchGroup: c.matchGroup });
 const audienceOf = (ps: ParticipantRow[]) => ps.filter(p => !saidNo(p.response)).map(p => ({ id: p.user.id, role: p.user.role }));
+const refOf = (p: { user: UserRef }): UserRef => ({ id: p.user.id, username: p.user.username, displayName: p.user.displayName });
+const isGroup = (ps: ParticipantRow[]) => ps.length > 2;
+
+/** The database clock — the same clock that stamps scores.created_at. */
+async function dbNow(tx: Executor): Promise<Date> {
+  const [{ dbNowMs }] = await tx.select({ dbNowMs: sql<number>`(extract(epoch from now()) * 1000)::float8` }).from(sql`(select 1) as one`);
+  return new Date(Number(dbNowMs));
+}
 
 // ── evaluation ───────────────────────────────────────────────────────────────
 
@@ -196,6 +237,172 @@ function evaluate(c: ChallengeRow, participants: ParticipantRow[], candidates: S
   return { states, counting, started };
 }
 
+// ── notifications: who a notice is "about" ──────────────────────────────────
+
+function userPayload(c: Pick<ChallengeRow, 'id' | 'type' | 'machine'>, other: UserRef | undefined): Record<string, unknown> {
+  return {
+    challengeId: c.id, challengeType: c.type, machineName: c.machine.name,
+    ...(other ? { userId: other.id, username: other.username, displayName: other.displayName } : {}),
+  };
+}
+
+/** The first other participant still in it (the opponent, in 1v1) — who a notification is "about". */
+function otherOf(participants: ParticipantRow[], userId: number): UserRef | undefined {
+  const o = participants.find(p => p.userId !== userId && !saidNo(p.response));
+  return o ? refOf(o) : undefined;
+}
+
+function creatorRefOf(c: Pick<Challenge, 'creatorId'>, participants: ParticipantRow[]): UserRef | undefined {
+  const p = participants.find(x => x.userId === c.creatorId);
+  return p ? refOf(p) : undefined;
+}
+
+// ── state transitions (inside the caller's transaction, rows already locked) ─
+
+/**
+ * Close an open proposal: 'rejected' (kept / superseded / the challenger started the original) or
+ * 'lapsed' (the original's fixed start, cancel or expiry, or its own window). Settles the
+ * challenger's notice and tells the proposer (challenge_counter_rejected, with the reason).
+ */
+async function closeProposal(tx: Executor, p: ChallengeRow, reason: ProposalCloseReason, now: Date): Promise<void> {
+  const { status, notifyReason } = proposalClosure(reason);
+  await tx.update(challenges).set({ status, proposalDecidedAt: now }).where(and(eq(challenges.id, p.id), eq(challenges.status, 'proposed')));
+  await settleInvitation(tx, p.creatorId, p.id, 'read');
+  const ps = await loadParticipants(tx, p.id);
+  const challenger = creatorRefOf(p, ps);
+  if (p.proposedById) {
+    await raiseNotification(tx, p.proposedById, 'challenge_counter_rejected', {
+      ...userPayload(p, challenger), counteredFromId: p.counteredFromId, reason: notifyReason,
+    });
+  }
+  await logActivity({
+    type: 'challenge.counter_rejected', subjectUserId: p.proposedById, targetType: 'challenge', targetId: p.id,
+    payload: { counteredFromId: p.counteredFromId, reason: notifyReason, status, challengeType: p.type, machineName: p.machine.name },
+  }, { tx });
+}
+
+interface ActivateOpts {
+  /** Who made it start (their answer, or the challenger's Start); null = its fixed start passed. */
+  actorId: number | null;
+  /**
+   * Accept and "Start with who's in" only: a missing most_improved baseline for the actor or the
+   * challenger refuses the action (no_baseline / creator_no_baseline). Every other trigger — a
+   * decline, a rejected or lapsed proposal, a fixed start — must never fail, so a missing baseline
+   * is stored as null (that player can't qualify).
+   */
+  strict: boolean;
+  /** How any still-open proposals close ('started' / 'fixed_start'); null = there are none (L). */
+  closeReason: 'started' | 'fixed_start' | null;
+}
+
+/**
+ * Pending → active with whoever accepted: the start is stamped (DB clock) for "starts when accepted",
+ * most_improved baselines are frozen, anyone still pending becomes `missed` (challenge_missed), open
+ * proposals close, and in a group the accepted players other than the actor get challenge_started.
+ */
+async function activate(tx: Executor, c: ChallengeRow, participants: ParticipantRow[], now: Date, o: ActivateOpts): Promise<void> {
+  const startsAt = c.startsAt ?? await dbNow(tx);
+  const accepted = participants.filter(p => p.response === 'accepted');
+  if (c.type === 'most_improved') {
+    const rule = matchRuleOf(c);
+    const cands = await loadCandidates(tx, rule, accepted.map(p => p.userId), audienceOf(accepted));
+    for (const p of accepted) {
+      const baseline = baselineFrom(rule, startsAt, cands.filter(s => s.userId === p.userId));
+      if (baseline == null && o.strict) {
+        if (p.userId === o.actorId) throw noBaseline();
+        if (p.userId === c.creatorId) throw creatorNoBaseline();
+      }
+      await tx.update(challengeParticipants).set({ baselineScore: baseline })
+        .where(and(eq(challengeParticipants.challengeId, c.id), eq(challengeParticipants.userId, p.userId)));
+    }
+  }
+  const creator = creatorRefOf(c, participants);
+  const missed = participants.filter(p => p.response === 'pending');
+  if (missed.length) {
+    await tx.update(challengeParticipants).set({ response: 'missed' })
+      .where(and(eq(challengeParticipants.challengeId, c.id), inArray(challengeParticipants.userId, missed.map(p => p.userId))));
+    for (const p of missed) {
+      await settleInvitation(tx, p.userId, c.id, 'read');
+      await raiseNotification(tx, p.userId, 'challenge_missed', { ...userPayload(c, creator), players: accepted.length });
+    }
+  }
+  if (o.closeReason) for (const p of await openProposals(tx, c.id, true)) await closeProposal(tx, p, o.closeReason, now);
+  await tx.update(challenges).set({ status: 'active', startsAt }).where(eq(challenges.id, c.id));
+  if (isGroup(participants)) {
+    const actor = participants.find(p => p.userId === o.actorId);
+    for (const p of accepted) {
+      if (p.userId === o.actorId) continue;
+      await raiseNotification(tx, p.userId, 'challenge_started', {
+        ...userPayload(c, actor ? refOf(actor) : creator), players: accepted.length, startsAt, byChallenger: o.actorId === c.creatorId,
+      });
+    }
+  }
+  await logActivity({
+    type: 'challenge.started', actorUserId: o.actorId, targetType: 'challenge', targetId: c.id,
+    payload: {
+      trigger: o.actorId == null ? 'fixed_start' : o.closeReason === 'started' ? 'start_with_whos_in' : 'answered',
+      players: accepted.length, missed: missed.length, challengeType: c.type, machineName: c.machine.name,
+    },
+  }, { tx });
+}
+
+/** Pending → expired: nobody is left to play it (or its window ran out). Pending players are `missed`. */
+async function expireChallenge(tx: Executor, c: ChallengeRow, participants: ParticipantRow[], now: Date): Promise<void> {
+  await tx.update(challenges).set({ status: 'expired' }).where(eq(challenges.id, c.id));
+  const pending = participants.filter(p => p.response === 'pending');
+  if (pending.length) {
+    await tx.update(challengeParticipants).set({ response: 'missed' })
+      .where(and(eq(challengeParticipants.challengeId, c.id), inArray(challengeParticipants.userId, pending.map(p => p.userId))));
+  }
+  for (const p of pending) await settleInvitation(tx, p.userId, c.id, 'read');
+  for (const p of await openProposals(tx, c.id, true)) await closeProposal(tx, p, 'expired', now);
+  await logActivity({ type: 'challenge.expired', targetType: 'challenge', targetId: c.id, payload: { challengeType: c.type, machineName: c.machine.name } }, { tx });
+}
+
+/**
+ * After an answer on a pending challenge: L → active, D → declined (afterAnswer). Returns the status.
+ * `c` must be locked; its open proposals are counted (they block both).
+ */
+async function settleAfterAnswer(tx: Executor, c: ChallengeRow, now: Date, o: { actorId: number | null; strict: boolean }): Promise<Challenge['status']> {
+  const participants = await loadParticipants(tx, c.id);
+  const open = (await openProposals(tx, c.id)).length;
+  const next = afterAnswer({ ...c, status: 'pending' }, participants, open);
+  if (next === 'active') {
+    await activate(tx, c, participants, now, { ...o, closeReason: null });
+    return 'active';
+  }
+  if (next === 'declined') {
+    await tx.update(challenges).set({ status: 'declined' }).where(eq(challenges.id, c.id));
+    return 'declined';
+  }
+  return 'pending';
+}
+
+/**
+ * A pending (locked) challenge's own due work: expire, start at its fixed start, or lapse proposals
+ * whose own window passed (then re-check L/D). Returns the status it's left in.
+ */
+async function syncPending(tx: Executor, c: ChallengeRow, now: Date): Promise<Challenge['status']> {
+  const participants = await loadParticipants(tx, c.id);
+  const due = pendingDue(c, participants, now);
+  if (due === 'expire') {
+    await expireChallenge(tx, c, participants, now);
+    return 'expired';
+  }
+  if (due === 'start') {
+    await activate(tx, c, participants, now, { actorId: null, strict: false, closeReason: 'fixed_start' });
+    return 'active';
+  }
+  let lapsed = 0;
+  for (const p of await openProposals(tx, c.id, true)) {
+    if (pendingDue(p, [], now) === 'lapse') {
+      await closeProposal(tx, p, 'expired', now);
+      lapsed++;
+    }
+  }
+  return lapsed ? settleAfterAnswer(tx, c, now, { actorId: null, strict: false }) : 'pending';
+}
+
 // ── sync (the one place a challenge changes state on its own) ────────────────
 
 export interface SyncResult {
@@ -203,19 +410,6 @@ export interface SyncResult {
   /** Set when this call resolved it. */
   resolvedNow: ResolutionReason | null;
   countingScoreIds: Set<number>;
-}
-
-function userPayload(c: ChallengeRow, other: UserRef | undefined): Record<string, unknown> {
-  return {
-    challengeId: c.id, challengeType: c.type, machineName: c.machine.name,
-    ...(other ? { userId: other.id, username: other.username, displayName: other.displayName } : {}),
-  };
-}
-
-/** The first other accepted participant (the opponent, in 1v1) — who a notification is "about". */
-function otherOf(participants: ParticipantRow[], userId: number): UserRef | undefined {
-  const o = participants.find(p => p.userId !== userId && !saidNo(p.response));
-  return o ? { id: o.user.id, username: o.user.username, displayName: o.user.displayName } : undefined;
 }
 
 async function applyResolution(
@@ -229,9 +423,14 @@ async function applyResolution(
   }
   // r.void is always false now (void is retired — nobody playing is abandoned); the column stays.
   await tx.update(challenges).set({ status: 'resolved', void: r.void, resolvedAt: now }).where(eq(challenges.id, c.id));
+  const byId = new Map(participants.map(p => [p.userId, p]));
+  const winners = r.participants.filter(p => p.rank === 1 && (p.outcome === 'win' || p.outcome === 'tie'))
+    .map(p => byId.get(p.userId)).filter((p): p is ParticipantRow => !!p).map(refOf)
+    .map(u => ({ userId: u.id, username: u.username, displayName: u.displayName }));
   for (const p of r.participants) {
     await raiseNotification(tx, p.userId, 'challenge_result', {
       ...userPayload(c, otherOf(participants, p.userId)), outcome: p.outcome, rank: p.rank, void: r.void, abandoned: r.abandoned, reason,
+      playerCount: r.participants.length, winners,
     });
   }
   await logActivity({
@@ -239,7 +438,7 @@ async function applyResolution(
     payload: {
       reason, abandoned: r.abandoned, challengeType: c.type, machineName: c.machine.name,
       outcomes: r.participants.map(p => ({
-        userId: p.userId, username: participants.find(x => x.userId === p.userId)?.user.username ?? null,
+        userId: p.userId, username: byId.get(p.userId)?.user.username ?? null,
         outcome: p.outcome, rank: p.rank, resultValue: p.resultValue,
       })),
     },
@@ -247,23 +446,34 @@ async function applyResolution(
 }
 
 /**
- * Bring one challenge up to date: expire it if it went unanswered, record its counting scores
- * (the lock), and resolve it if a race was won, someone forfeited, or its deadline passed.
- * Idempotent; safe to call from any trigger at any time.
+ * Bring one challenge up to date: expire / start / lapse it if it's pending (or a proposal), record
+ * its counting scores (the lock), and resolve it if a race was won, someone forfeited, or its
+ * deadline passed. Idempotent; safe to call from any trigger at any time.
  */
 export async function syncChallenge(id: number, now = new Date()): Promise<SyncResult | null> {
   return db.transaction(async tx => {
-    const c = await loadChallenge(tx, id, true);
+    const peek = await loadChallenge(tx, id);
+    if (!peek) return null;
+    // A proposal: lock its original first (lock order), and let the original's pending sync lapse it.
+    const original = peek.status === 'proposed' && peek.counteredFromId ? await loadChallenge(tx, peek.counteredFromId, true) : undefined;
+    let c = (await loadChallenge(tx, id, true))!;
     if (!c) return null;
     const out: SyncResult = { status: c.status, resolvedNow: null, countingScoreIds: new Set() };
 
-    if (pendingExpired(c, now)) {
-      await tx.update(challenges).set({ status: 'expired' }).where(eq(challenges.id, c.id));
-      const ps = await loadParticipants(tx, c.id);
-      for (const p of ps) if (p.response === 'pending') await settleInvitation(tx, p.userId, c.id, 'read');
-      await logActivity({ type: 'challenge.expired', targetType: 'challenge', targetId: c.id, payload: { challengeType: c.type, machineName: c.machine.name } }, { tx });
-      out.status = 'expired';
+    if (c.status === 'proposed') {
+      if (!original || original.status !== 'pending') {
+        // Its original is gone or closed (normally closed with it — this is the safety net).
+        await closeProposal(tx, c, original?.status === 'cancelled' ? 'cancelled' : 'expired', now);
+      } else {
+        await syncPending(tx, original, now);
+      }
+      out.status = (await loadChallenge(tx, id))!.status;
       return out;
+    }
+    if (c.status === 'pending') {
+      out.status = await syncPending(tx, c, now);
+      if (out.status !== 'active') return out;
+      c = (await loadChallenge(tx, id))!;
     }
     if (c.status !== 'active') return out;
 
@@ -286,7 +496,7 @@ export async function syncChallenge(id: number, now = new Date()): Promise<SyncR
   });
 }
 
-/** Sync every challenge of `userId` that has something due (expiry or deadline). For lazy reads. */
+/** Sync every challenge of `userId` that has something due (expiry, start, lapse or deadline). For lazy reads. */
 async function syncDueFor(userId: number, now: Date): Promise<void> {
   const due = await db
     .select({ id: challenges.id })
@@ -298,7 +508,7 @@ async function syncDueFor(userId: number, now: Date): Promise<void> {
 
 function dueSql(now: Date): SQL {
   return or(
-    and(eq(challenges.status, 'pending'), or(lte(challenges.startsAt, now), lte(challenges.endsAt, now))),
+    and(inArray(challenges.status, ['pending', 'proposed']), or(lte(challenges.startsAt, now), lte(challenges.endsAt, now))),
     and(eq(challenges.status, 'active'), lt(challenges.endsAt, now)),
   )!;
 }
@@ -306,10 +516,11 @@ function dueSql(now: Date): SQL {
 // ── trigger (b): the score-create hook ───────────────────────────────────────
 
 /**
- * Called by POST /api/scores after inserting a score. For each of the uploader's active challenges:
- * sync it (records the lock, resolves a won race); if the new score counts and the challenge is
- * still going, tell the other participant(s). Never throws — a challenge problem must not fail a
- * score upload.
+ * Called by POST /api/scores after inserting a score. For each of the uploader's active challenges
+ * — and pending ones whose fixed start has passed, which start first (a group can sit pending past
+ * its start until someone syncs it) — sync it (records the lock, resolves a won race); if the new
+ * score counts and the challenge is still going, tell the other participant(s). Never throws — a
+ * challenge problem must not fail a score upload.
  */
 export async function onScoreCreated(score: { id: number; userId: number }, now = new Date()): Promise<void> {
   try {
@@ -318,7 +529,7 @@ export async function onScoreCreated(score: { id: number; userId: number }, now 
       .from(challenges)
       .innerJoin(challengeParticipants, eq(challengeParticipants.challengeId, challenges.id))
       .where(and(
-        eq(challenges.status, 'active'),
+        or(eq(challenges.status, 'active'), and(eq(challenges.status, 'pending'), lte(challenges.startsAt, now))),
         eq(challengeParticipants.userId, score.userId),
         eq(challengeParticipants.response, 'accepted'),
         isNull(challengeParticipants.outcome),
@@ -332,8 +543,9 @@ export async function onScoreCreated(score: { id: number; userId: number }, now 
       const [{ value }] = await db.select({ value: scores.score }).from(scores).where(eq(scores.id, score.id));
       for (const p of participants) {
         if (p.userId === score.userId || p.response !== 'accepted' || p.outcome) continue;
+        // One unread "X posted" per challenge per player: the newest replaces the last.
         await raiseNotification(db, p.userId, 'challenge_opponent_scored',
-          { ...userPayload(c!, uploader.user), score: value },
+          { ...userPayload(c!, uploader.user), score: value, players: participants.filter(x => x.response === 'accepted').length },
           { key: 'challengeId', value: id });
       }
     }
@@ -346,12 +558,14 @@ export async function onScoreCreated(score: { id: number; userId: number }, now 
 
 export const NOTIFICATION_RETENTION_DAYS = 30;
 
-export interface SweepResult { expired: number; resolved: number; endingSoon: number; notificationsDeleted: number; errors: number }
+export interface SweepResult {
+  expired: number; resolved: number; endingSoon: number; proposalReminders: number; notificationsDeleted: number; errors: number;
+}
 
 export async function runChallengeSweep(now = new Date()): Promise<SweepResult> {
-  const out: SweepResult = { expired: 0, resolved: 0, endingSoon: 0, notificationsDeleted: 0, errors: 0 };
+  const out: SweepResult = { expired: 0, resolved: 0, endingSoon: 0, proposalReminders: 0, notificationsDeleted: 0, errors: 0 };
 
-  const due = await db.select({ id: challenges.id }).from(challenges).where(dueSql(now));
+  const due = await db.select({ id: challenges.id }).from(challenges).where(dueSql(now)).orderBy(asc(challenges.id));
   for (const { id } of due) {
     try {
       const r = await syncChallenge(id, now);
@@ -396,6 +610,35 @@ export async function runChallengeSweep(now = new Date()): Promise<SweepResult> 
     } catch (err) {
       out.errors++;
       console.error(`Challenge sweep: ending-soon ${challengeId}/${userId} failed:`, err);
+    }
+  }
+
+  // One reminder to the challenger about a suggestion she hasn't answered in 24 h. No timer beyond
+  // that (Will, 2026-09-29); proposal_reminded_at makes it once only.
+  const stale = await db.select({ id: challenges.id }).from(challenges).where(and(
+    eq(challenges.status, 'proposed'), isNull(challenges.proposalRemindedAt), lte(challenges.createdAt, new Date(+now - PROPOSAL_REMINDER_MS)),
+  ));
+  for (const { id } of stale) {
+    try {
+      await db.transaction(async tx => {
+        const claimed = await tx.update(challenges).set({ proposalRemindedAt: now })
+          .where(and(eq(challenges.id, id), eq(challenges.status, 'proposed'), isNull(challenges.proposalRemindedAt)))
+          .returning({ id: challenges.id });
+        if (!claimed.length) return;
+        const p = (await loadChallenge(tx, id))!;
+        const ps = await loadParticipants(tx, id);
+        const proposer = ps.find(x => x.userId === p.proposedById);
+        const [orig] = p.counteredFromId ? await tx.select({ machineId: challenges.machineId, name: machines.name }).from(challenges)
+          .innerJoin(machines, eq(machines.id, challenges.machineId)).where(eq(challenges.id, p.counteredFromId)) : [];
+        await raiseNotification(tx, p.creatorId, 'challenge_countered', {
+          ...userPayload(p, proposer ? refOf(proposer) : undefined), newChallengeId: p.id, counteredFromId: p.counteredFromId,
+          originalMachineName: orig?.name ?? null, proposal: true, reminder: true,
+        }, { key: 'challengeId', value: p.id });
+        out.proposalReminders++;
+      });
+    } catch (err) {
+      out.errors++;
+      console.error(`Challenge sweep: proposal reminder ${id} failed:`, err);
     }
   }
 
@@ -445,10 +688,28 @@ export interface ParticipantView {
   scores?: Array<{ id: number; score: number; playedAt: Date; createdAt: Date; venueId: number | null; venueName: string | null; venueTimezone: string | null; hasFullPhoto: boolean; hasThumbnail: boolean }>;
 }
 
+/** A counter-offer on this challenge, as the challenger (all) or its proposer (their own) sees it. */
+export interface ProposalView {
+  id: number;
+  status: Challenge['status'];
+  proposedBy: UserRef | null;
+  type: Challenge['type'];
+  matchMode: Challenge['matchMode'];
+  machine: { id: number; name: string; imageUrl: string | null };
+  venue: { id: number; name: string } | null;
+  targetScore: number | null;
+  minPlays: number | null;
+  startsAt: Date | null;
+  endsAt: Date;
+  createdAt: Date;
+  decidedAt: Date | null;
+}
+
 export interface ChallengeView {
   id: number;
   type: Challenge['type'];
   status: Challenge['status'];
+  /** Old phases only: proposed → pending, rejected → declined, lapsed → expired (see phaseOf). */
   phase: ReturnType<typeof phaseOf>;
   /**
    * RETIRED (2026-09-26): nobody playing is now abandoned, so new challenges always resolve with
@@ -472,25 +733,44 @@ export interface ChallengeView {
   createdAt: Date;
   resolvedAt: Date | null;
   creatorId: number;
-  /** This challenge is a counter-offer to that one (whose status is 'countered'). */
+  /** This challenge is a counter-offer to that one: a proposal, a taken proposal, or a legacy counter. */
   counteredFromId: number | null;
-  /** This challenge was countered: the counter-offer's id (status 'countered' only). */
+  /** This challenge was countered: the taken counter-offer's id (status 'countered' only). */
   counteredToId: number | null;
+  /** A proposal row (status proposed / rejected / lapsed) — the challenger decides it. */
+  isProposal: boolean;
+  /** Who suggested this one (proposals and taken proposals); null otherwise. */
+  proposedBy: UserRef | null;
+  /** Counter-offers on this challenge the viewer may see: all for the challenger, their own for a proposer. */
+  proposals: ProposalView[];
   /** ms until ends_at while active; null otherwise. */
   timeLeftMs: number | null;
   /** ms until starts_at while scheduled; null otherwise. */
   startsInMs: number | null;
-  me: { response: ParticipantRow['response']; outcome: Outcome | null; canAccept: boolean; canDecline: boolean; canCounter: boolean; canCancel: boolean; canForfeit: boolean };
-  /** 1v1 convenience: the other participant. */
+  me: {
+    response: ParticipantRow['response']; outcome: Outcome | null;
+    canAccept: boolean; canDecline: boolean; canCounter: boolean; canCancel: boolean; canForfeit: boolean;
+    /** "Start with who's in" (challenger, pending, ≥ 1 accepted). */
+    canStart: boolean;
+    /** This is a proposal waiting on the viewer (the challenger): accept = take it, decline = keep mine. */
+    canDecideProposal: boolean;
+  };
+  /** 1v1 convenience: the other participant (in a group, the first other one still in it). */
   opponent: UserRef | null;
+  /** Players still in it (accepted + pending) — or, once started, those who accepted. */
+  playerCount: number;
+  maxPlayers: number;
   participants: ParticipantView[];
 }
 
-function buildView(c: ChallengeRow, participants: ParticipantRow[], candidates: ScoredCandidate[], viewerId: number, now: Date, includeScores: boolean, counteredToId: number | null): ChallengeView {
+interface ViewExtras { counteredToId: number | null; proposals: ProposalView[] }
+
+function buildView(c: ChallengeRow, participants: ParticipantRow[], candidates: ScoredCandidate[], viewerId: number, now: Date, includeScores: boolean, extras: ViewExtras): ChallengeView {
   const ev = evaluate(c, participants, candidates, now);
   const live = ev.started ? projectedRanks(c.type, ev.states) : new Map<number, number>();
   const me = participants.find(p => p.userId === viewerId)!;
   const phase = phaseOf(c, now);
+  const proposer = c.proposedById ? participants.find(p => p.userId === c.proposedById) : undefined;
   return {
     id: c.id, type: c.type, status: c.status, phase, void: c.void,
     abandoned: c.status === 'resolved' && participants.some(p => p.outcome === 'abandoned'),
@@ -498,18 +778,24 @@ function buildView(c: ChallengeRow, participants: ParticipantRow[], candidates: 
     machine: { id: c.machine.id, name: c.machine.name, imageUrl: c.machine.imageUrl },
     venue: c.venue, targetScore: c.targetScore, minPlays: c.minPlays,
     startsAt: c.startsAt, endsAt: c.endsAt, createdAt: c.createdAt, resolvedAt: c.resolvedAt, creatorId: c.creatorId,
-    counteredFromId: c.counteredFromId ?? null, counteredToId,
+    counteredFromId: c.counteredFromId ?? null, counteredToId: extras.counteredToId,
+    isProposal: isProposalStatus(c.status),
+    proposedBy: proposer ? refOf(proposer) : null,
+    proposals: extras.proposals,
     timeLeftMs: c.status === 'active' ? Math.max(0, +c.endsAt - +now) : null,
     startsInMs: phase === 'scheduled' ? +c.startsAt! - +now : null,
     me: {
       response: me.response, outcome: me.outcome,
-      canAccept: canAccept(c, me), canDecline: canDecline(c, me), canCounter: canCounter(c, me), canCancel: canCancel(c, viewerId), canForfeit: canForfeit(c, me),
+      canAccept: canAccept(c, me), canDecline: canDecline(c, me), canCounter: canCounter(c, me), canCancel: canCancel(c, viewerId),
+      canForfeit: canForfeit(c, me), canStart: canStart(c, participants, viewerId), canDecideProposal: canDecideProposal(c, me),
     },
     opponent: otherOf(participants, viewerId) ?? null,
+    playerCount: participants.filter(p => !saidNo(p.response)).length,
+    maxPlayers: MAX_PLAYERS,
     participants: participants.map(p => {
       const st = ev.states.find(s => s.userId === p.userId)?.standing;
       const view: ParticipantView = {
-        user: { id: p.user.id, username: p.user.username, displayName: p.user.displayName },
+        user: refOf(p),
         isCreator: p.userId === c.creatorId,
         response: p.response, declineReason: p.declineReason ?? null, respondedAt: p.respondedAt, outcome: p.outcome, rank: p.rank,
         resultValue: p.resultValue == null ? null : Number(p.resultValue),
@@ -529,6 +815,33 @@ function buildView(c: ChallengeRow, participants: ParticipantRow[], candidates: 
   };
 }
 
+/** The counter-offers on `c` that `viewerId` may see: every one for the challenger, their own for a proposer. */
+async function proposalsFor(c: ChallengeRow, viewerId: number): Promise<ProposalView[]> {
+  const rows = await db
+    .select({
+      id: challenges.id, status: challenges.status, proposedById: challenges.proposedById, type: challenges.type, matchMode: challenges.matchMode,
+      machine: { id: machines.id, name: machines.name, imageUrl: machines.imageUrl },
+      venueId: venues.id, venueName: venues.name,
+      targetScore: challenges.targetScore, minPlays: challenges.minPlays, startsAt: challenges.startsAt, endsAt: challenges.endsAt,
+      createdAt: challenges.createdAt, decidedAt: challenges.proposalDecidedAt,
+      proposer: { id: users.id, username: users.username, displayName: users.displayName },
+    })
+    .from(challenges)
+    .innerJoin(machines, eq(machines.id, challenges.machineId))
+    .leftJoin(venues, eq(venues.id, challenges.venueId))
+    .leftJoin(users, eq(users.id, challenges.proposedById))
+    .where(and(
+      eq(challenges.counteredFromId, c.id), isNotNull(challenges.proposedById),
+      c.creatorId === viewerId ? undefined : eq(challenges.proposedById, viewerId),
+    ))
+    .orderBy(asc(challenges.id));
+  return rows.map(r => ({
+    id: r.id, status: r.status, proposedBy: r.proposer?.id != null ? r.proposer as UserRef : null, type: r.type, matchMode: r.matchMode,
+    machine: r.machine, venue: r.venueId != null ? { id: r.venueId, name: r.venueName! } : null,
+    targetScore: r.targetScore, minPlays: r.minPlays, startsAt: r.startsAt, endsAt: r.endsAt, createdAt: r.createdAt, decidedAt: r.decidedAt,
+  }));
+}
+
 async function viewOf(id: number, viewerId: number, now: Date, includeScores: boolean): Promise<ChallengeView | null> {
   const c = await loadChallenge(db, id);
   if (!c) return null;
@@ -536,12 +849,14 @@ async function viewOf(id: number, viewerId: number, now: Date, includeScores: bo
   if (!participants.some(p => p.userId === viewerId)) return null;
   const accepted = participants.filter(p => p.response === 'accepted').map(p => p.userId);
   const candidates = c.startsAt ? await loadCandidates(db, matchRuleOf(c), accepted, audienceOf(participants)) : [];
-  // The counter-offer that answered this one. Both are between the same two people, so linking to
-  // it tells the viewer nothing new.
+  // The counter-offer that replaced this one: a taken proposal, or (legacy) the counter row.
   const [counter] = c.status === 'countered'
-    ? await db.select({ id: challenges.id }).from(challenges).where(eq(challenges.counteredFromId, c.id)).orderBy(asc(challenges.id)).limit(1)
+    ? await db.select({ id: challenges.id }).from(challenges)
+      .where(and(eq(challenges.counteredFromId, c.id), sql`${challenges.status} NOT IN ('proposed', 'rejected', 'lapsed')`))
+      .orderBy(asc(challenges.id)).limit(1)
     : [];
-  return buildView(c, participants, candidates, viewerId, now, includeScores, counter?.id ?? null);
+  const proposals = isProposalStatus(c.status) ? [] : await proposalsFor(c, viewerId);
+  return buildView(c, participants, candidates, viewerId, now, includeScores, { counteredToId: counter?.id ?? null, proposals });
 }
 
 /** GET /api/challenges/:id — participants only (404 otherwise). Resolves it first if due. */
@@ -556,12 +871,13 @@ export async function getChallenge(id: number, viewer: AppUser, now = new Date()
 }
 
 export type ListFilter = 'pending' | 'active' | 'history' | 'all';
-const HISTORY: Challenge['status'][] = ['resolved', 'declined', 'countered', 'cancelled', 'expired'];
+const PENDING: Challenge['status'][] = ['pending', 'proposed'];
+const HISTORY: Challenge['status'][] = ['resolved', 'declined', 'countered', 'cancelled', 'expired', 'rejected', 'lapsed'];
 
 /** GET /api/challenges?status= — the caller's challenges, newest first, with live standings. */
 export async function listChallenges(viewer: AppUser, filter: ListFilter, now = new Date()): Promise<ChallengeView[]> {
   await syncDueFor(viewer.id, now);
-  const statusSql = filter === 'pending' ? eq(challenges.status, 'pending')
+  const statusSql = filter === 'pending' ? inArray(challenges.status, PENDING)
     : filter === 'active' ? eq(challenges.status, 'active')
     : filter === 'history' ? inArray(challenges.status, HISTORY)
     : undefined;
@@ -588,9 +904,10 @@ export interface RecordView extends Omit<ChallengeRecord, 'headToHead'> {
 }
 
 /**
- * W/L/T/forfeit/no-show totals, streaks and head-to-head from resolved challenges. For your own
- * record head-to-head lists every opponent; for someone else's it only lists their record against
- * you (who else they challenge is between them and those people).
+ * W/L/T/forfeit/no-show totals, streaks and head-to-head from resolved challenges. Headline and
+ * streaks use the subject's own outcome (in a group, below 1st is a loss); head-to-head is pairwise
+ * by rank (pairOutcome). For your own record head-to-head lists every opponent; for someone else's it
+ * only lists their record against you (who else they challenge is between them and those people).
  */
 export async function getRecord(username: string | null, viewer: AppUser, now = new Date()): Promise<RecordView> {
   const [subject] = username
@@ -600,7 +917,7 @@ export async function getRecord(username: string | null, viewer: AppUser, now = 
   await syncDueFor(subject.id, now);
 
   const mine = await db
-    .select({ challengeId: challenges.id, resolvedAt: challenges.resolvedAt, void: challenges.void, outcome: challengeParticipants.outcome })
+    .select({ challengeId: challenges.id, resolvedAt: challenges.resolvedAt, void: challenges.void, outcome: challengeParticipants.outcome, rank: challengeParticipants.rank })
     .from(challenges)
     .innerJoin(challengeParticipants, eq(challengeParticipants.challengeId, challenges.id))
     .where(and(
@@ -609,15 +926,19 @@ export async function getRecord(username: string | null, viewer: AppUser, now = 
     ));
   const ids = mine.map(m => m.challengeId);
   const others = ids.length ? await db
-    .select({ challengeId: challengeParticipants.challengeId, user: { id: users.id, username: users.username, displayName: users.displayName } })
+    .select({
+      challengeId: challengeParticipants.challengeId, outcome: challengeParticipants.outcome, rank: challengeParticipants.rank,
+      user: { id: users.id, username: users.username, displayName: users.displayName },
+    })
     .from(challengeParticipants)
     .innerJoin(users, eq(users.id, challengeParticipants.userId))
     .where(and(inArray(challengeParticipants.challengeId, ids), ne(challengeParticipants.userId, subject.id), eq(challengeParticipants.response, 'accepted')))
     : [];
   const refs = new Map(others.map(o => [o.user.id, o.user]));
   const rec = computeRecord(mine.map(m => ({
-    challengeId: m.challengeId, resolvedAt: m.resolvedAt ?? new Date(0), void: m.void, outcome: m.outcome!,
-    opponentIds: others.filter(o => o.challengeId === m.challengeId).map(o => o.user.id),
+    challengeId: m.challengeId, resolvedAt: m.resolvedAt ?? new Date(0), void: m.void, outcome: m.outcome!, rank: m.rank,
+    opponents: others.filter(o => o.challengeId === m.challengeId && o.outcome)
+      .map(o => ({ userId: o.user.id, outcome: o.outcome!, rank: o.rank })),
   })));
   const self = subject.id === viewer.id;
   return {
@@ -631,20 +952,26 @@ export async function getRecord(username: string | null, viewer: AppUser, now = 
 
 // ── mutations ────────────────────────────────────────────────────────────────
 
-async function resolveInvitee(body: Record<string, unknown>): Promise<UserRef & { role: string }> {
+type InviteeRow = UserRef & { role: string };
+
+/** The create body's invitees, resolved: each a real user, not you, not repeated, and your friend. */
+async function resolveInvitees(me: AppUser, body: Record<string, unknown>): Promise<InviteeRow[]> {
+  const parsed = parseInvitees(body);
+  if (!parsed.ok) throw new ChallengeError(400, parsed.code, parsed.error);
   const cols = { id: users.id, username: users.username, displayName: users.displayName, role: users.role };
-  let row: (UserRef & { role: string }) | undefined;
-  if (body.friendId !== undefined && body.friendId !== null && body.friendId !== '') {
-    const id = Number(body.friendId);
-    if (!Number.isInteger(id) || id <= 0) throw new ChallengeError(400, 'invalid_user', 'friendId must be a user id');
-    [row] = await db.select(cols).from(users).where(eq(users.id, id)).limit(1);
-  } else if (typeof body.friendUsername === 'string' && body.friendUsername.trim()) {
-    [row] = await db.select(cols).from(users).where(eq(users.username, body.friendUsername.trim())).limit(1);
-  } else {
-    throw new ChallengeError(400, 'invalid_user', 'friendId or friendUsername is required');
+  const out: InviteeRow[] = [];
+  for (const ref of parsed.value) {
+    const [row] = await db.select(cols).from(users).where('id' in ref ? eq(users.id, ref.id) : eq(users.username, ref.username)).limit(1);
+    if (!row) throw new ChallengeError(404, 'user_not_found', 'User not found');
+    out.push(row);
   }
-  if (!row) throw new ChallengeError(404, 'user_not_found', 'User not found');
-  return row;
+  if (out.some(u => u.id === me.id)) throw new ChallengeError(400, 'cannot_challenge_self', 'You can’t challenge yourself');
+  if (new Set(out.map(u => u.id)).size !== out.length) throw new ChallengeError(400, 'duplicate_invitee', 'Each friend can only be invited once');
+  for (const u of out) {
+    const [pair] = await db.select({ id: friendships.id }).from(friendships).where(acceptedPairSql(me.id, u.id)).limit(1);
+    if (!pair) throw new ChallengeError(403, 'not_friends', 'You can only challenge your friends');
+  }
+  return out;
 }
 
 // ── venue lock: the venue must have the machine ─────────────────────────────
@@ -752,10 +1079,10 @@ export async function venueOptions(query: Record<string, unknown>): Promise<Venu
     .orderBy(asc(venues.name));
 }
 
-/** A create body that passed every check — what insertChallenge() writes. */
+/** A create body that passed every check — what insertChallenge() / insertProposal() write. */
 interface PreparedChallenge {
   v: CreateInput;
-  friend: UserRef & { role: string };
+  invitees: InviteeRow[];
   machine: { id: number; name: string; opdbId: string | null };
   rule: MatchRule;
   venueId: number | null;
@@ -763,18 +1090,16 @@ interface PreparedChallenge {
 }
 
 /**
- * Validate a create body (type / window / friend / machine / venue lock / race target / baseline).
- * Reads only — nothing is written until insertChallenge().
+ * Validate a create body (type / window / invitees / machine / venue lock / race target / baseline)
+ * for `me` — the challenger, or the proposer of a counter-offer (whose best is the race's "beat my
+ * score" and whose baseline is checked). Reads only — nothing is written until insert.
  */
 async function prepareChallenge(me: AppUser, body: Record<string, unknown>, now: Date): Promise<PreparedChallenge> {
   const input = validateCreate(body, now);
   if (!input.ok) throw new ChallengeError(400, input.code, input.error);
   const v = input.value;
 
-  const friend = await resolveInvitee(body);
-  if (friend.id === me.id) throw new ChallengeError(400, 'cannot_challenge_self', 'You can’t challenge yourself');
-  const [pair] = await db.select({ id: friendships.id }).from(friendships).where(acceptedPairSql(me.id, friend.id)).limit(1);
-  if (!pair) throw new ChallengeError(403, 'not_friends', 'You can only challenge your friends');
+  const invitees = await resolveInvitees(me, body);
 
   const machineId = Number(body.machineId);
   if (!Number.isInteger(machineId) || machineId <= 0) throw new ChallengeError(400, 'invalid_machine', 'machineId is required');
@@ -790,7 +1115,7 @@ async function prepareChallenge(me: AppUser, body: Record<string, unknown>, now:
       ? await db.select({ id: venues.id, isResidence: venues.isResidence, privacyTier: venues.privacyTier, pinballMapId: venues.pinballMapId }).from(venues).where(eq(venues.id, venueId)).limit(1)
       : [];
     if (!venue) throw new ChallengeError(404, 'venue_not_found', 'Venue not found');
-    // A venue lock names the venue to the other participant, so it must be a public one.
+    // A venue lock names the venue to the other participants, so it must be a public one.
     if (isPrivateVenue(venue)) throw new ChallengeError(400, 'venue_private', 'A challenge can only be locked to a public venue');
     // A cache miss here is one roster fetch per venue per 6h (de-duplicated in flight), charged to a
     // per-user limit; past it the check uses TiltTrack's own data instead of calling Pinball Map.
@@ -798,53 +1123,60 @@ async function prepareChallenge(me: AppUser, body: Record<string, unknown>, now:
       throw new ChallengeError(400, 'machine_not_at_venue', 'That venue doesn’t have this machine right now');
     }
   }
-  const audience = [{ id: me.id, role: me.role }, { id: friend.id, role: friend.role }];
-  const creatorScores = await loadCandidates(db, rule, [me.id], audience);
+  const audience = [{ id: me.id, role: me.role }, ...invitees.map(u => ({ id: u.id, role: u.role }))];
+  const myScores = await loadCandidates(db, rule, [me.id], audience);
 
   let targetScore = v.targetScore;
   if (v.type === 'race') {
-    targetScore = raceTarget(v.targetScore, bestOnMachine(rule, creatorScores.filter(s => s.visibleToOthers)));
+    targetScore = raceTarget(v.targetScore, bestOnMachine(rule, myScores.filter(s => s.visibleToOthers)));
     if (targetScore == null) {
       throw new ChallengeError(400, 'race_target_required', 'You have no score on this machine to beat — pick a target score');
     }
   }
-  if (v.type === 'most_improved' && baselineFrom(rule, v.startsAt ?? now, creatorScores) == null) {
-    throw new ChallengeError(409, 'no_baseline', 'Most improved needs a score of yours on this machine from before the challenge');
-  }
-  return { v, friend, machine, rule, venueId, targetScore };
+  if (v.type === 'most_improved' && baselineFrom(rule, v.startsAt ?? now, myScores) == null) throw noBaseline();
+  return { v, invitees, machine, rule, venueId, targetScore };
 }
 
-/**
- * Write a prepared challenge inside the caller's transaction: the row, both participants, and the
- * invitation. A counter-offer (`counteredFrom`) links back to the original and its invitation is a
- * challenge_countered notice instead of challenge_received — one notification for one event.
- */
-async function insertChallenge(
-  tx: Executor, me: AppUser, p: PreparedChallenge, now: Date,
-  counteredFrom?: { id: number; machineName: string },
-): Promise<number> {
-  const { v, friend, machine, rule } = p;
+/** Write a prepared challenge inside the caller's transaction: the row, every participant, the invitations. */
+async function insertChallenge(tx: Executor, me: AppUser, p: PreparedChallenge, now: Date): Promise<number> {
+  const { v, invitees, machine, rule } = p;
   const [row] = await tx.insert(challenges).values({
     creatorId: me.id, type: v.type, machineId: machine.id, matchMode: v.matchMode, matchGroup: rule.matchGroup,
     venueId: p.venueId, targetScore: p.targetScore, minPlays: v.minPlays, startsAt: v.startsAt, endsAt: v.endsAt, status: 'pending',
-    counteredFromId: counteredFrom?.id ?? null,
   }).returning({ id: challenges.id });
   await tx.insert(challengeParticipants).values([
     { challengeId: row.id, userId: me.id, response: 'accepted', respondedAt: now },
-    { challengeId: row.id, userId: friend.id, response: 'pending' },
+    ...invitees.map(u => ({ challengeId: row.id, userId: u.id, response: 'pending' as const })),
   ]);
-  const about = { challengeId: row.id, challengeType: v.type, machineName: machine.name, userId: me.id, username: me.username, displayName: me.displayName };
-  if (counteredFrom) {
-    await raiseNotification(tx, friend.id, 'challenge_countered', {
-      ...about, newChallengeId: row.id, counteredFromId: counteredFrom.id, originalMachineName: counteredFrom.machineName,
-    }, { key: 'challengeId', value: row.id });
-  } else {
-    await raiseNotification(tx, friend.id, 'challenge_received', about, { key: 'challengeId', value: row.id });
-  }
+  const about = { challengeId: row.id, challengeType: v.type, machineName: machine.name, userId: me.id, username: me.username, displayName: me.displayName, players: invitees.length + 1 };
+  for (const u of invitees) await raiseNotification(tx, u.id, 'challenge_received', about, { key: 'challengeId', value: row.id });
   return row.id;
 }
 
-/** POST /api/challenges */
+/**
+ * Write a counter-offer as a PROPOSAL row: creator = the challenger, proposed_by_id = me, status
+ * 'proposed', countered_from_id = the original. Participants: me (accepted) and the challenger
+ * (pending). The challenger's notice is challenge_countered, keyed on the proposal's id.
+ */
+async function insertProposal(tx: Executor, me: AppUser, original: ChallengeRow, p: PreparedChallenge, now: Date): Promise<number> {
+  const { v, machine, rule } = p;
+  const [row] = await tx.insert(challenges).values({
+    creatorId: original.creatorId, proposedById: me.id, counteredFromId: original.id,
+    type: v.type, machineId: machine.id, matchMode: v.matchMode, matchGroup: rule.matchGroup,
+    venueId: p.venueId, targetScore: p.targetScore, minPlays: v.minPlays, startsAt: v.startsAt, endsAt: v.endsAt, status: 'proposed',
+  }).returning({ id: challenges.id });
+  await tx.insert(challengeParticipants).values([
+    { challengeId: row.id, userId: me.id, response: 'accepted', respondedAt: now },
+    { challengeId: row.id, userId: original.creatorId, response: 'pending' },
+  ]);
+  await raiseNotification(tx, original.creatorId, 'challenge_countered', {
+    challengeId: row.id, challengeType: v.type, machineName: machine.name, userId: me.id, username: me.username, displayName: me.displayName,
+    newChallengeId: row.id, counteredFromId: original.id, originalMachineName: original.machine.name, proposal: true,
+  }, { key: 'challengeId', value: row.id });
+  return row.id;
+}
+
+/** POST /api/challenges — body { friendIds | friendId | friendUsername…, type, machineId, … }. */
 export async function createChallenge(me: AppUser, body: Record<string, unknown>, now = new Date()): Promise<ChallengeView> {
   const prepared = await prepareChallenge(me, body, now);
   const id = await db.transaction(tx => insertChallenge(tx, me, prepared, now));
@@ -853,12 +1185,11 @@ export async function createChallenge(me: AppUser, body: Record<string, unknown>
 
 /**
  * POST /api/challenges/:id/counter — "can't get to this one, how about this instead". Body: a create
- * body (machineId, type, matchMode, window, targetScore / minPlays, venueId); the friend is always
- * the original's creator, whatever the body says. One transaction: the original ends 'countered',
- * the counterer's participant row becomes response 'countered' / decline_reason 'cant_reach', their
- * invitation is settled, and the new challenge — created by the counterer, countered_from_id = the
- * original — is written with a challenge_countered notice to the original creator. A counter can
- * itself be countered; there's no depth cap. 409 cannot_counter unless it's pending and yours to answer.
+ * body (machineId, type, matchMode, window, targetScore / minPlays, venueId); invitees in the body
+ * are ignored. One transaction: the counterer's participant row on the original becomes response
+ * 'countered' / decline_reason 'cant_reach' (their invitation is settled), and a PROPOSAL row is
+ * written for the challenger to take or reject. The original stays pending — and an open proposal
+ * blocks it from starting or ending on its own. 409 cannot_counter unless it's pending and waiting on you.
  */
 export async function counterChallenge(id: number, me: AppUser, body: Record<string, unknown>, now = new Date()): Promise<{ original: ChallengeView; counter: ChallengeView }> {
   const synced = await syncChallenge(id, now);
@@ -868,8 +1199,8 @@ export async function counterChallenge(id: number, me: AppUser, body: Record<str
   if (!c0 || !mine0) throw notFound();
   if (!canCounter(c0, mine0)) throw stateError(c0, 'counter');
 
-  const { friendId: _f, friendUsername: _u, ...rest } = body;
-  const prepared = await prepareChallenge(me, { ...rest, friendId: c0.creatorId }, now);
+  const { friendId: _f, friendUsername: _u, friendIds: _fs, friendUsernames: _us, ...rest } = body;
+  const prepared = await prepareChallenge(me, { ...rest, friendIds: [c0.creatorId] }, now);
 
   const newId = await db.transaction(async tx => {
     const c = await loadChallenge(tx, id, true);
@@ -880,30 +1211,99 @@ export async function counterChallenge(id: number, me: AppUser, body: Record<str
     if (!canCounter(c, mine)) throw stateError(c, 'counter');
     await tx.update(challengeParticipants).set({ response: 'countered', declineReason: 'cant_reach', respondedAt: now })
       .where(and(eq(challengeParticipants.challengeId, id), eq(challengeParticipants.userId, me.id)));
-    await tx.update(challenges).set({ status: 'countered' }).where(eq(challenges.id, id));
     await settleInvitation(tx, me.id, id, 'read');
-    return insertChallenge(tx, me, prepared, now, { id, machineName: c.machine.name });
+    return insertProposal(tx, me, c, prepared, now);
   });
   const [original, counter] = await Promise.all([viewOf(id, me.id, now, true), viewOf(newId, me.id, now, true)]);
   return { original: original!, counter: counter! };
 }
 
-type Action = 'accept' | 'decline' | 'cancel' | 'forfeit';
+/**
+ * The challenger takes a proposal "for everyone" (inside the action's transaction; original and
+ * proposal locked, in that order). The original ends 'countered'; the proposal becomes an ordinary
+ * pending challenge with the challenger accepted; everyone else on the original is re-invited
+ * (reinvitees: not `no_thanks` decliners, not ex-friends; everyone re-accepts) with challenge_moved;
+ * other open proposals are rejected as superseded; the proposer gets challenge_counter_accepted.
+ * Then L is evaluated — a 1:1 counter goes straight to active.
+ */
+async function takeProposal(tx: Executor, original: ChallengeRow, proposal: ChallengeRow, me: AppUser, now: Date): Promise<void> {
+  if (original.status !== 'pending') throw stateError(proposal, 'accept');
+  if (proposal.type === 'most_improved') {
+    const rule = matchRuleOf(proposal);
+    const mineScores = await loadCandidates(tx, rule, [me.id], []);
+    if (baselineFrom(rule, proposal.startsAt ?? await dbNow(tx), mineScores) == null) throw noBaseline();
+  }
+  const origParticipants = await loadParticipants(tx, original.id);
+  const proposerId = proposal.proposedById!;
+  const candidateIds = origParticipants.map(p => p.userId).filter(u => u !== me.id && u !== proposerId);
+  const friendIds = new Set<number>();
+  for (const u of candidateIds) {
+    const [pair] = await tx.select({ id: friendships.id }).from(friendships).where(acceptedPairSql(me.id, u)).limit(1);
+    if (pair) friendIds.add(u);
+  }
+  const again = reinvitees(original, origParticipants, proposerId, friendIds);
+
+  await tx.update(challenges).set({ status: 'countered' }).where(eq(challenges.id, original.id));
+  for (const p of origParticipants) if (p.userId !== me.id) await settleInvitation(tx, p.userId, original.id, 'read');
+  await tx.update(challenges).set({ status: 'pending', proposalDecidedAt: now }).where(eq(challenges.id, proposal.id));
+  await tx.update(challengeParticipants).set({ response: 'accepted', respondedAt: now })
+    .where(and(eq(challengeParticipants.challengeId, proposal.id), eq(challengeParticipants.userId, me.id)));
+  await settleInvitation(tx, me.id, proposal.id, 'read');
+
+  const proposalParticipants = await loadParticipants(tx, proposal.id);
+  const proposer = proposalParticipants.find(p => p.userId === proposerId);
+  const asRef = { id: me.id, username: me.username, displayName: me.displayName };
+  if (again.length) {
+    await tx.insert(challengeParticipants).values(again.map(userId => ({ challengeId: proposal.id, userId, response: 'pending' as const })))
+      .onConflictDoNothing();
+    for (const userId of again) {
+      await raiseNotification(tx, userId, 'challenge_moved', {
+        ...userPayload(proposal, asRef), fromChallengeId: original.id, originalMachineName: original.machine.name,
+        proposedBy: proposer ? { userId: proposer.user.id, username: proposer.user.username, displayName: proposer.user.displayName } : null,
+        players: again.length + 2,
+      }, { key: 'challengeId', value: proposal.id });
+    }
+  }
+  for (const other of await openProposals(tx, original.id, true)) await closeProposal(tx, other, 'superseded', now);
+  await raiseNotification(tx, proposerId, 'challenge_counter_accepted', {
+    ...userPayload(proposal, asRef), counteredFromId: original.id, originalMachineName: original.machine.name, reinvited: again.length,
+  });
+  const nowPending = { ...proposal, status: 'pending' as const };
+  await settleAfterAnswer(tx, nowPending, now, { actorId: me.id, strict: true });
+}
 
 /**
- * POST /api/challenges/:id/(accept|decline|cancel|forfeit). A decline may carry `reason`
- * ('cant_reach' | 'no_thanks'), stored on the participant row and passed on in challenge_declined.
+ * Lock a challenge for an action — and, for an open proposal, its original first (lock order). The
+ * returned `c` is the locked target; `original` is set only for a proposal.
  */
-export async function actOnChallenge(
+async function lockForAction(tx: Executor, id: number): Promise<{ c: ChallengeRow; original?: ChallengeRow }> {
+  const peek = await loadChallenge(tx, id);
+  if (!peek) throw notFound();
+  const original = peek.status === 'proposed' && peek.counteredFromId ? await loadChallenge(tx, peek.counteredFromId, true) : undefined;
+  const c = await loadChallenge(tx, id, true);
+  if (!c) throw notFound();
+  return { c, original };
+}
+
+export type Action = 'accept' | 'decline' | 'cancel' | 'forfeit' | 'start';
+/** What an action turned out to be: a plain answer, or the challenger deciding a proposal. */
+export type ActionKind = 'answer' | 'take' | 'reject';
+
+/**
+ * POST /api/challenges/:id/(accept|decline|cancel|forfeit|start). A decline may carry `reason`
+ * ('cant_reach' | 'no_thanks'), stored on the participant row and passed on in challenge_declined.
+ * On a proposal, accept = take it and decline = keep mine (the challenger only).
+ */
+export async function actOnChallengeDetailed(
   id: number, me: AppUser, action: Action, now = new Date(), opts: { reason?: DeclineReason | null } = {},
-): Promise<ChallengeView> {
-  // Bring it up to date first (a past-deadline challenge resolves; an unanswered one expires).
+): Promise<{ view: ChallengeView; kind: ActionKind }> {
+  // Bring it up to date first (a past-deadline challenge resolves; an unanswered one expires or starts).
   const synced = await syncChallenge(id, now);
   if (!synced) throw notFound();
 
+  let kind: ActionKind = 'answer';
   const followUp = await db.transaction(async tx => {
-    const c = await loadChallenge(tx, id, true);
-    if (!c) throw notFound();
+    const { c, original } = await lockForAction(tx, id);
     const participants = await loadParticipants(tx, id);
     const mine = participants.find(p => p.userId === me.id);
     if (!mine) throw notFound();
@@ -912,46 +1312,44 @@ export async function actOnChallenge(
     switch (action) {
       case 'accept': {
         if (!canAccept(c, mine)) throw stateError(c, 'accept');
-        // "Starts when accepted" is stamped with the DATABASE clock, the same clock that stamps
-        // scores.created_at — so an upload a moment after accepting can't fall before the start
-        // because the app server's clock runs a little ahead of Neon's.
-        const [{ dbNowMs }] = await tx.select({ dbNowMs: sql<number>`(extract(epoch from now()) * 1000)::float8` }).from(sql`(select 1) as one`);
-        const startsAt = c.startsAt ?? new Date(Number(dbNowMs));
-        const accepted = participants.map(p => (p.userId === me.id ? { ...p, response: 'accepted' as const } : p));
-        const everyoneIn = accepted.every(p => p.response === 'accepted');
-        // most_improved: freeze each participant's baseline now. No prior score → can't take part.
-        const baselines = new Map<number, number | null>();
+        if (c.status === 'proposed') {
+          if (!original) throw stateError(c, 'accept');
+          kind = 'take';
+          await takeProposal(tx, original, c, me, now);
+          return false;
+        }
+        // most_improved: you need a baseline of your own to take part at all.
         if (c.type === 'most_improved') {
-          const cands = await loadCandidates(tx, matchRuleOf(c), accepted.map(p => p.userId), audienceOf(accepted));
-          for (const p of accepted) baselines.set(p.userId, baselineFrom(matchRuleOf(c), startsAt, cands.filter(s => s.userId === p.userId)));
-          if (baselines.get(me.id) == null) {
-            throw new ChallengeError(409, 'no_baseline', 'Most improved needs a score of yours on this machine from before the challenge');
-          }
-          if (everyoneIn && [...baselines.values()].some(b => b == null)) {
-            throw new ChallengeError(409, 'creator_no_baseline', 'The challenger no longer has a score on this machine to measure improvement from');
-          }
+          const rule = matchRuleOf(c);
+          const cands = await loadCandidates(tx, rule, participants.filter(p => !saidNo(p.response)).map(p => p.userId), audienceOf(participants));
+          const startsAt = c.startsAt ?? await dbNow(tx);
+          if (baselineFrom(rule, startsAt, cands.filter(s => s.userId === me.id)) == null) throw noBaseline();
         }
         await tx.update(challengeParticipants).set({ response: 'accepted', respondedAt: now })
           .where(and(eq(challengeParticipants.challengeId, id), eq(challengeParticipants.userId, me.id)));
-        if (everyoneIn) {
-          for (const [userId, baseline] of baselines) {
-            await tx.update(challengeParticipants).set({ baselineScore: baseline })
-              .where(and(eq(challengeParticipants.challengeId, id), eq(challengeParticipants.userId, userId)));
-          }
-          await tx.update(challenges).set({ status: 'active', startsAt }).where(eq(challenges.id, id));
-        }
         await settleInvitation(tx, me.id, id, 'read');
-        await raiseNotification(tx, c.creatorId, 'challenge_accepted', userPayload(c, asRef));
+        await raiseNotification(tx, c.creatorId, 'challenge_accepted', { ...userPayload(c, asRef), players: participants.length });
+        await settleAfterAnswer(tx, c, now, { actorId: me.id, strict: true });
         return false;
       }
       case 'decline': {
         if (!canDecline(c, mine)) throw stateError(c, 'decline');
+        if (c.status === 'proposed') {
+          kind = 'reject';
+          await closeProposal(tx, c, 'rejected', now);
+          // The proposer stays out; the original carries on (it may now start, or end declined).
+          if (original?.status === 'pending') await settleAfterAnswer(tx, original, now, { actorId: me.id, strict: false });
+          return false;
+        }
         const reason = opts.reason ?? null;
+        const backedOut = mine.response === 'accepted';
         await tx.update(challengeParticipants).set({ response: 'declined', declineReason: reason, respondedAt: now })
           .where(and(eq(challengeParticipants.challengeId, id), eq(challengeParticipants.userId, me.id)));
-        await tx.update(challenges).set({ status: 'declined' }).where(eq(challenges.id, id));
         await settleInvitation(tx, me.id, id, 'read');
-        await raiseNotification(tx, c.creatorId, 'challenge_declined', { ...userPayload(c, asRef), reason });
+        const remaining = participants.filter(p => p.userId !== c.creatorId && p.userId !== me.id && (p.response === 'pending' || p.response === 'accepted')).length;
+        await raiseNotification(tx, c.creatorId, 'challenge_declined', { ...userPayload(c, asRef), reason, remaining, backedOut });
+        // A decline never fails: a missing baseline elsewhere doesn't block the start it may cause.
+        await settleAfterAnswer(tx, c, now, { actorId: me.id, strict: false });
         return false;
       }
       case 'cancel': {
@@ -963,6 +1361,12 @@ export async function actOnChallenge(
           await settleInvitation(tx, p.userId, id, 'delete');
           await raiseNotification(tx, p.userId, 'challenge_cancelled', userPayload(c, asRef));
         }
+        for (const p of await openProposals(tx, id, true)) await closeProposal(tx, p, 'cancelled', now);
+        return false;
+      }
+      case 'start': {
+        if (!canStart(c, participants, me.id)) throw stateError(c, 'start');
+        await activate(tx, c, participants, now, { actorId: me.id, strict: true, closeReason: 'started' });
         return false;
       }
       case 'forfeit': {
@@ -974,13 +1378,20 @@ export async function actOnChallenge(
     }
   });
   if (followUp) await syncChallenge(id, now);
-  return (await viewOf(id, me.id, now, true))!;
+  return { view: (await viewOf(id, me.id, now, true))!, kind };
+}
+
+export async function actOnChallenge(
+  id: number, me: AppUser, action: Action, now = new Date(), opts: { reason?: DeclineReason | null } = {},
+): Promise<ChallengeView> {
+  return (await actOnChallengeDetailed(id, me, action, now, opts)).view;
 }
 
 function stateError(c: ChallengeRow, action: Action | 'counter'): ChallengeError {
   const why: Record<string, string> = {
     active: 'it’s already under way', resolved: 'it’s over', declined: 'it was declined',
-    cancelled: 'it was cancelled', expired: 'it expired', countered: 'it was answered with a counter-offer',
+    cancelled: 'it was cancelled', expired: 'it expired', countered: 'it moved to another machine',
+    rejected: 'that suggestion was turned down', lapsed: 'that suggestion lapsed',
   };
   const reason = why[c.status];
   return new ChallengeError(409, `cannot_${action}`, `You can’t ${action} this challenge${reason ? ` — ${reason}` : ''}.`);

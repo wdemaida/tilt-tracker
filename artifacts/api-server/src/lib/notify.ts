@@ -8,17 +8,34 @@ import { buildActivityRow, isActivityRecorded, logActivity } from './activity.js
 // (to the requester), plus the challenge kinds (feature/challenges, phase 2 — raised from
 // lib/challenges.ts and routes/challenges.ts; every payload carries `challengeId`, `challengeType`,
 // `machineName` and the other person's userId/username/displayName):
-//   challenge_received          → the invitee, on create
-//   challenge_accepted/declined → the creator (declined carries `reason`: 'cant_reach' / 'no_thanks' / null)
-//   challenge_countered         → the original creator, when the invitee answers with a counter-offer:
-//                                 challengeId = the NEW challenge (it's that one's invitation — no
-//                                 challenge_received is raised for a counter), counteredFromId = the
-//                                 original, machineName = the new machine, originalMachineName
-//   challenge_cancelled         → the invitee (the creator withdrew before acceptance)
+//   challenge_received          → each invitee, on create (`players`: how many, the challenger included)
+//   challenge_accepted/declined → the creator (declined carries `reason`: 'cant_reach' / 'no_thanks' / null,
+//                                 `remaining` — invitees still pending or accepted — and `backedOut`
+//                                 when an accepted player pulled out before the start)
+//   challenge_countered         → the challenger, when an invitee suggests another machine: a PROPOSAL
+//                                 (feature/group-challenges; `proposal: true`). challengeId = the
+//                                 proposal, counteredFromId = the original, machineName = the suggested
+//                                 machine, originalMachineName. The daily sweep re-raises it once
+//                                 (`reminder: true`) after 24 h unanswered. For a LEGACY counter row
+//                                 (no `proposal`) it was that challenge's invitation.
+//   challenge_counter_accepted  → the proposer, when the challenger takes the suggestion (challengeId
+//                                 = the proposal, now the challenge; `reinvited` count)
+//   challenge_counter_rejected  → the proposer, when it closes untaken: `reason` 'rejected' (she kept
+//                                 hers), 'superseded' (another was taken), 'started', 'cancelled', 'expired'
+//   challenge_moved             → each re-invited player of the original, when a suggestion is taken:
+//                                 challengeId = the new challenge, fromChallengeId, originalMachineName,
+//                                 `proposedBy` — an invitation (settled on answer, like challenge_received)
+//   challenge_started           → groups only: accepted players other than the actor, when it starts
+//                                 (`players`, `startsAt`, `byChallenger` for "Start with who's in")
+//   challenge_missed            → an invitee who never answered, when it started without them
+//   challenge_cancelled         → the invitees (the creator withdrew before the start)
 //   challenge_opponent_scored   → the other participant(s), when a counting score is posted
-//                                 (deduped per challenge: one unread at a time, carrying `score`)
+//                                 (deduped per challenge: one unread at a time, carrying `score` and
+//                                 the newest poster)
 //   challenge_ending_soon       → each participant once, ~24h before the end (daily sweep)
-//   challenge_result            → every participant on resolution (`outcome`, `void` — retired, always false —, `abandoned`, `reason`)
+//   challenge_result            → every participant on resolution (`outcome`, `rank`, `playerCount`,
+//                                 `winners` [{userId, username, displayName}], `void` — retired, always
+//                                 false —, `abandoned`, `reason`)
 //   challenge_voided            → every participant, when an admin voids the challenge (`byAdmin: true`, no user ref)
 //   badge_earned                → the earner (lib/badges.ts): `badgeId`, `badgeName`, `icon`, `color`,
 //                                 `imageVersion` (null = no image), `granted: true` for a manual grant
@@ -34,7 +51,8 @@ export type NotificationKind =
   | 'friend_request' | 'friend_accepted'
   | 'challenge_received' | 'challenge_accepted' | 'challenge_declined' | 'challenge_cancelled'
   | 'challenge_opponent_scored' | 'challenge_ending_soon' | 'challenge_result' | 'challenge_voided'
-  | 'challenge_countered'
+  | 'challenge_countered' | 'challenge_counter_accepted' | 'challenge_counter_rejected' | 'challenge_moved'
+  | 'challenge_started' | 'challenge_missed'
   | 'badge_earned';
 
 /** Who a friend notification is about, as it was at the time — enough to render and link it. */

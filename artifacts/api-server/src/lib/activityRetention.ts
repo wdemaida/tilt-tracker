@@ -77,6 +77,9 @@ export const TIER_BY_TYPE: Readonly<Record<string, RetentionTier>> = {
   'challenge.expired': 'standard',
   // "can't get to this one" answered with a counter-offer (payload: newChallengeId); badges count these
   'challenge.countered': 'standard',
+  'challenge.started': 'standard',
+  'challenge.counter_accepted': 'standard',
+  'challenge.counter_rejected': 'standard',
   // "Challenge me on" machines / challenge locations changed
   'profile.challenge_prefs_updated': 'standard',
   // notifications — one row per notification raised; the most numerous type after sign-ins

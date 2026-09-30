@@ -496,9 +496,9 @@ async function challengeList(where: SQL | undefined, limit: number, before?: num
   })), limit);
 }
 
-// GET /api/admin/challenges?status=pending|active|resolved|declined|countered|cancelled|expired&before=
+// GET /api/admin/challenges?status=pending|active|resolved|declined|countered|cancelled|expired|proposed|rejected|lapsed&before=
 router.get('/challenges', async (req, res) => {
-  const statuses = ['pending', 'active', 'resolved', 'declined', 'countered', 'cancelled', 'expired'];
+  const statuses = ['pending', 'active', 'resolved', 'declined', 'countered', 'cancelled', 'expired', 'proposed', 'rejected', 'lapsed'];
   const status = typeof req.query.status === 'string' && statuses.includes(req.query.status) ? req.query.status : null;
   try {
     res.json(await challengeList(status ? eq(challenges.status, status as any) : undefined, pageSize(req.query.limit), intParam(req.query.before)));

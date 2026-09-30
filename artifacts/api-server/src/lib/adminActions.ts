@@ -167,7 +167,7 @@ export async function deleteThumbnailAsAdmin(admin: Admin, scoreId: number, meta
 
 // ── challenges ───────────────────────────────────────────────────────────────
 
-const CLOSED: string[] = ['declined', 'countered', 'cancelled', 'expired'];
+const CLOSED: string[] = ['declined', 'countered', 'cancelled', 'expired', 'rejected', 'lapsed'];
 
 export async function voidChallenge(admin: Admin, challengeId: number, reasonRaw: unknown, meta: Meta = {}): Promise<ActionResult> {
   const reason = cleanReason(reasonRaw);
