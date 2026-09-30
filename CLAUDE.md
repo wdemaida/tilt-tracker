@@ -89,8 +89,8 @@ var PUT **replaces all env vars** — send the full set, not just the new key.
 
 **Full-size photos need `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and
 `R2_BUCKET=tilttrack-photos` on Render** (prod bucket, never the `-dev` one). Without them the feature is
-simply off — uploads and thumbnails still work. Shipping it also means running migrate17 on production
-(remove its dev-branch guard deliberately first). Details: api-server CLAUDE.md, "Full-size score photos".
+simply off — uploads and thumbnails still work. migrate17 ran on production on 2026-09-26 (its dev-branch
+guard was removed in 07eb711). Details: api-server CLAUDE.md, "Full-size score photos".
 
 **Git identity must be `wdemaida` / `wdemaida@gmail.com`** — the remote is `https://wdemaida@github.com/wdemaida/tilt-tracker.git`. If Vercel deployments start failing with "not a member" errors, check `git config user.name/email` in the repo.
 

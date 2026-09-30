@@ -426,7 +426,8 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   `mvhd` time); `manual` = typed, AI-read off the screen, a video's file-modified time, or nothing.
   **null = legacy** (every score before migrate24) — provenance unknown, so it **stays editable**.
   Plus `played_at_corrected_by_id` (→ users, ON DELETE SET NULL) / `played_at_corrected_at`: the last
-  admin correction. migrate24 adds all three (additive, idempotent, still dev-guarded).
+  admin correction. migrate24 adds all three (additive, idempotent; ran on production on 2026-09-30,
+  dev-branch guard removed in f4e0203).
 - **The token.** `/api/upload` returns, alongside the naive `playedAt`, `playedAtSource`
   (`photo`/`video` when it's camera metadata, null when AI-read/none) and `playedAtToken`:
   `base64url(JSON {v, u, t, s, e}).base64url(HMAC-SHA256)` — `u` the Clerk user id, `t` the naive
@@ -600,6 +601,7 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
 - **Rules are pure** (`challengeRules.ts`, unit-tested); `challenges.ts` loads rows and applies them.
   Tables: `challenges`, `challenge_participants` (creator included, accepted at creation; a group is
   just more rows — up to 8), `challenge_scores` (the lock). Friends only, checked at creation.
+  `challenges.visibility` (default `'participants'`) is **reserved and unused** — nothing reads or sets it.
 - **Every state change goes through `syncChallenge(id)`** (row-locked `FOR UPDATE`): expiry, writing
   the lock rows, and resolution (race won / forfeit / deadline). Three triggers call it: lazy reads
   (list, detail, record), `onScoreCreated()` in `POST /api/scores`, and the daily
@@ -649,7 +651,7 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   played or not, and ChallengeView has `abandoned: true` (derived from the participant rows, no
   column). **Void is retired** (2026-09-26, Will: "you signed up and were supposed to play"): no
   new challenge resolves void; the `void` column, the ChallengeView/notification field and the
-  record's `voids` count stay for compatibility but are always false / 0 (only a legacy row could
+  record's `voids` count are **retired and unused** — kept for compatibility, always false / 0 (only a legacy row could
   differ; the UI's void handling is left in place for that). The record (and each head-to-head
   row) counts `abandoned` on its own, not as W/L/T/no-show; abandoned **breaks** a win streak. `challenge_result` notifications carry `abandoned` too.
   The outcome CHECK is named `challenge_participants_outcome_check`; migrate15 drops and re-adds it.
@@ -1051,7 +1053,7 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   256x256 WebP `image` in bytea + `image_version`, bumped on every upload and **never reset** — a
   removed-then-re-uploaded image gets a new `?v=`; `activated_at` = first go-live), `user_badges`
   (PK user+badge — earned once; a yearly badge is a new badge row), `user_metric_marks` (PK
-  user+metric+ref). migrate23 is dev-guarded; remove the guard deliberately at ship time.
+  user+metric+ref). migrate23 ran on production on 2026-09-29 (dev-branch guard removed in 8b7f351).
 - **One engine:** every award goes through `awardBadges(userId, { metrics, score })` — it loads only
   live, in-window badges the trigger can affect and the user lacks, evaluates, inserts ON CONFLICT DO
   NOTHING, raises `badge_earned` and logs `badge.earned`. Notifications and events for new awards are written in bulk
@@ -1215,7 +1217,7 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
     "1000" → `{N}`; `deriveSeriesTemplate` — "Posted your first score." has none, so Scores takes
     "Posted 10 scores."), and each series' tiers renumbered 10, 20, 30… into the order they showed
     before the one-key rule (metric by threshold, then rule/manual by sort_order). It imports only
-    the pure `badgeSeries.ts`. It's dev-guarded — remove the guard deliberately at ship time.
+    the pure `badgeSeries.ts`. It ran on production on 2026-09-30 (dev-branch guard removed in f4e0203).
   - **One metric per series** (Will, 2026-09-30 — dev's "Traveler" (venues-12) sat in Venues but
     counted `scores_posted`). Every tier **with a threshold** in a series counts the same metric; the
     series' metric = its metric tiers' metric (`seriesMetric`, excluding the badge being checked; if

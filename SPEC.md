@@ -154,8 +154,9 @@ back gesture steps back rather than leaving; after saving, back can't reopen the
   offered — prominent when the photo is recent or its age is unknown, a quiet "Still there?" link when
   it's older. The device position is used only to find venues; **it is never stored as the score's
   location**.
-- Tapping a venue picks it and advances. A pick with no Pinball Map link is matched to Pinball Map
-  once, on pick, so the machine step can show the roster.
+- Tapping a venue picks it and advances. A pick that already carries a Pinball Map id uses it; one
+  without — from search or the nearby list — is matched to Pinball Map exactly once, on pick, at its
+  own coordinates, so the machine step can show the roster. Private venues are never matched.
 
 **Step 3 — Details**
 - **Machine:** the venue's Pinball Map roster (or a home venue's inventory) with AI-matching names on
@@ -607,7 +608,7 @@ Foursquare, listed in the original spec, was never used.
 - Follow a venue + machine for new-score notices.
 - Per-machine achievements ("did you get Tiger Multiball?").
 - Chart ideas: percentile rank over time; you vs. the running all-time high.
-- Pod visibility to members (a column is reserved; nothing reads it).
+- Pod visibility to members (no column yet; pods are owner-only).
 - Moving `scores.played_at` / `created_at` to `timestamptz` (correct today only because production runs
   in UTC).
 - Server-side (DB-backed) theme colors — they're per browser.
