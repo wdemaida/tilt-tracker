@@ -118,7 +118,9 @@ export const METRICS: readonly MetricDef[] = [
 // 'backed_out' (a counter is response 'countered', so it's excluded too). challenges_backed_out is
 // response 'declined' AND decline_reason 'backed_out' — an accepted invitee who left a pending group
 // (migrate24; the server sets that reason only on the back-out path). Both join challenges and skip
-// proposal rows (status proposed / rejected / lapsed). Seeded badges
+// proposal rows (status proposed / rejected / lapsed) — that exclusion is load-bearing: the
+// challenger's row on a rejected proposal is response 'declined' (decline_reason null) and on a
+// lapsed one 'missed' (closeProposal), which must not count as declining a challenge. Seeded badges
 // on these metrics (migrate23) stay draft until then: activateBadge refuses an unavailable metric.
 export const PENDING_METRICS: ReadonlyArray<Pick<MetricDef, 'key' | 'label' | 'description'>> = [
   { key: 'challenge_wins', label: 'Challenges won', description: 'Resolved challenges the player won.' },

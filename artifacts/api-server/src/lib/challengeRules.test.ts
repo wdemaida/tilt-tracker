@@ -684,13 +684,13 @@ test('reinvitees: everyone except the challenger, the proposer, no_thanks declin
     'a player who backed out is asked again (only no_thanks is final)');
 });
 
-test('proposalClosure: status and notified reason per closing event', () => {
-  assert.deepEqual(proposalClosure('rejected'), { status: 'rejected', notifyReason: 'rejected' });
-  assert.deepEqual(proposalClosure('superseded'), { status: 'rejected', notifyReason: 'superseded' });
-  assert.deepEqual(proposalClosure('started'), { status: 'rejected', notifyReason: 'started' });
-  assert.deepEqual(proposalClosure('fixed_start'), { status: 'lapsed', notifyReason: 'started' });
-  assert.deepEqual(proposalClosure('cancelled'), { status: 'lapsed', notifyReason: 'cancelled' });
-  assert.deepEqual(proposalClosure('expired'), { status: 'lapsed', notifyReason: 'expired' });
+test('proposalClosure: status, notified reason and the challenger closing response per closing event', () => {
+  assert.deepEqual(proposalClosure('rejected'), { status: 'rejected', notifyReason: 'rejected', challengerResponse: 'declined' });
+  assert.deepEqual(proposalClosure('superseded'), { status: 'rejected', notifyReason: 'superseded', challengerResponse: 'declined' });
+  assert.deepEqual(proposalClosure('started'), { status: 'rejected', notifyReason: 'started', challengerResponse: 'declined' });
+  assert.deepEqual(proposalClosure('fixed_start'), { status: 'lapsed', notifyReason: 'started', challengerResponse: 'missed' });
+  assert.deepEqual(proposalClosure('cancelled'), { status: 'lapsed', notifyReason: 'cancelled', challengerResponse: 'missed' });
+  assert.deepEqual(proposalClosure('expired'), { status: 'lapsed', notifyReason: 'expired', challengerResponse: 'missed' });
 });
 
 test('phaseOf maps the new statuses onto old phases (old cached clients have no default branch)', () => {

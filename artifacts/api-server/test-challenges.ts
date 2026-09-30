@@ -611,6 +611,13 @@ try {
   r = await call(alice, 'GET', `/challenges/${orig2}`);
   check('…1:1 original has nobody left → declined', r.body?.status === 'declined' && r.body?.proposals?.[0]?.status === 'rejected', r.body);
   check('bob got challenge_counter_rejected reason rejected', (await inbox(bob)).some(n => n.kind === 'challenge_counter_rejected' && n.payload?.challengeId === ctr2 && n.payload?.reason === 'rejected'));
+  const [aliceOnCtr2] = await db.select().from(challengeParticipants).where(and(eq(challengeParticipants.challengeId, ctr2), eq(challengeParticipants.userId, alice.id)));
+  check("keep mine: the challenger's row on the rejected proposal → declined, responded_at stamped, no reason", aliceOnCtr2?.response === 'declined'
+    && aliceOnCtr2?.respondedAt != null && aliceOnCtr2?.declineReason == null, aliceOnCtr2);
+  const rejEvents = await db.select({ actor: activityEvents.actorUserId, payload: activityEvents.payload }).from(activityEvents)
+    .where(and(eq(activityEvents.type, 'challenge.counter_rejected'), eq(activityEvents.targetId, String(ctr2))));
+  check('keep mine: exactly one challenge.counter_rejected, by the challenger, reason rejected', rejEvents.length === 1
+    && rejEvents[0].actor === alice.id && (rejEvents[0].payload as any)?.reason === 'rejected', rejEvents);
   r = await call(alice, 'POST', `/challenges/${ctr2}/accept`);
   check('a rejected proposal cannot be taken later → 409', r.status === 409, r);
   r = await call(alice, 'GET', '/challenges?status=history');
@@ -818,6 +825,11 @@ try {
   check('carol: challenge_counter_rejected superseded + challenge_moved to the new one', (await inbox(carol)).some(n => n.kind === 'challenge_counter_rejected'
     && n.payload?.challengeId === p2 && n.payload?.reason === 'superseded')
     && (await inbox(carol)).some(n => n.kind === 'challenge_moved' && n.payload?.challengeId === p1 && n.payload?.fromChallengeId === g6));
+  const [aliceOnP2] = await db.select().from(challengeParticipants).where(and(eq(challengeParticipants.challengeId, p2), eq(challengeParticipants.userId, alice.id)));
+  const p2Events = await db.select({ actor: activityEvents.actorUserId }).from(activityEvents)
+    .where(and(eq(activityEvents.type, 'challenge.counter_rejected'), eq(activityEvents.targetId, String(p2))));
+  check("superseded: the challenger's row on it → declined; one event, actor = the challenger (she took the other)", aliceOnP2?.response === 'declined'
+    && aliceOnP2?.respondedAt != null && p2Events.length === 1 && p2Events[0].actor === alice.id, { aliceOnP2, p2Events });
   r = await call(carol, 'POST', `/challenges/${p1}/accept`);
   check('carol re-accepts → everyone in → active', r.status === 200 && r.body?.status === 'active', r.body);
   check("accepting settles carol's challenge_moved", (await inbox(carol)).filter(n => n.payload?.challengeId === p1 && n.kind === 'challenge_moved').every(n => n.readAt));
@@ -868,26 +880,42 @@ try {
   };
   const statusOf = async (id: number) => (await db.select({ s: challenges.status }).from(challenges).where(eq(challenges.id, id)))[0]?.s;
   const reasonTo = async (who: typeof bob, pid: number) => (await inbox(who)).find(n => n.kind === 'challenge_counter_rejected' && n.payload?.challengeId === pid)?.payload?.reason;
+  const challengerOn = async (pid: number) => (await db.select().from(challengeParticipants)
+    .where(and(eq(challengeParticipants.challengeId, pid), eq(challengeParticipants.userId, alice.id))))[0];
+  const rejActors = async (pid: number) => (await db.select({ actor: activityEvents.actorUserId }).from(activityEvents)
+    .where(and(eq(activityEvents.type, 'challenge.counter_rejected'), eq(activityEvents.targetId, String(pid))))).map(e => e.actor);
   let o = await openProposalOn([bob.id, carol.id]);
   await call(alice, 'POST', `/challenges/${o.gid}/start`);
   check('Start with who’s in rejects the open proposal (reason started)', await statusOf(o.gid) === 'active' && await statusOf(o.pid) === 'rejected'
     && await reasonTo(bob, o.pid) === 'started', [await statusOf(o.gid), await statusOf(o.pid), await reasonTo(bob, o.pid)]);
+  let cOn = await challengerOn(o.pid);
+  check("…the challenger's row on it → declined (responded_at stamped); one event, actor = the challenger", cOn?.response === 'declined' && cOn?.respondedAt != null
+    && JSON.stringify(await rejActors(o.pid)) === JSON.stringify([alice.id]), [cOn, await rejActors(o.pid)]);
   await call(carol, 'POST', `/challenges/${o.gid}/forfeit`);
   o = await openProposalOn([bob.id, carol.id], { startsAt: iso(2 * H), endsAt: iso(30 * H) });
   await setWindow(o.gid, new Date(Date.now() - 60_000), new Date(Date.now() + 30 * H));
   await runChallengeSweep();
   check('fixed start: the original starts, the proposal lapses (reason started)', await statusOf(o.gid) === 'active' && await statusOf(o.pid) === 'lapsed'
     && await reasonTo(bob, o.pid) === 'started', [await statusOf(o.gid), await statusOf(o.pid)]);
+  cOn = await challengerOn(o.pid);
+  check("…the challenger's row on it → missed (no responded_at); one event, actor null (system)", cOn?.response === 'missed' && cOn?.respondedAt == null
+    && JSON.stringify(await rejActors(o.pid)) === JSON.stringify([null]), [cOn, await rejActors(o.pid)]);
   await call(carol, 'POST', `/challenges/${o.gid}/forfeit`);
   o = await openProposalOn([bob.id]);
   await call(alice, 'POST', `/challenges/${o.gid}/cancel`);
   check('cancel: the proposal lapses (reason cancelled)', await statusOf(o.gid) === 'cancelled' && await statusOf(o.pid) === 'lapsed'
     && await reasonTo(bob, o.pid) === 'cancelled', [await statusOf(o.gid), await statusOf(o.pid)]);
+  cOn = await challengerOn(o.pid);
+  check("…the challenger's row on it → missed; one event, actor = the challenger (her cancel)", cOn?.response === 'missed'
+    && JSON.stringify(await rejActors(o.pid)) === JSON.stringify([alice.id]), [cOn, await rejActors(o.pid)]);
   o = await openProposalOn([bob.id, carol.id]);
   await setWindow(o.pid, null, new Date(Date.now() - 60_000));
   await runChallengeSweep();
   check("the proposal's own window passed: lapsed (expired), and the original then starts with carol", await statusOf(o.pid) === 'lapsed'
     && await reasonTo(bob, o.pid) === 'expired' && await statusOf(o.gid) === 'active', [await statusOf(o.pid), await statusOf(o.gid)]);
+  cOn = await challengerOn(o.pid);
+  check("…the challenger's row on it → missed; one event, actor null (system)", cOn?.response === 'missed'
+    && JSON.stringify(await rejActors(o.pid)) === JSON.stringify([null]), [cOn, await rejActors(o.pid)]);
   await call(carol, 'POST', `/challenges/${o.gid}/forfeit`);
 
   // most_improved: a decline that makes the group start must never fail on a missing baseline.
@@ -1125,6 +1153,34 @@ try {
     && r.body?.venues?.length === 1 && r.body?.venues?.[0]?.id === BOB_HOME.id, r.body);
   r = await call(bob, 'GET', '/me/challenge-prefs');
   check('…no re-seeding on the next read', r.body?.venues?.length === 1, r.body?.venues);
+
+  // ── run-wide audit: closed proposals, one event per action ─────────────────
+  {
+    const runCids = [...new Set((await db.select({ id: challengeParticipants.challengeId }).from(challengeParticipants)
+      .where(inArray(challengeParticipants.userId, ids))).map(m => m.id))];
+    const dangling = await db.select({ challengeId: challengeParticipants.challengeId, userId: challengeParticipants.userId, status: challenges.status })
+      .from(challengeParticipants).innerJoin(challenges, eq(challenges.id, challengeParticipants.challengeId))
+      .where(and(inArray(challengeParticipants.challengeId, runCids), sql`${challenges.proposedById} IS NOT NULL`,
+        inArray(challenges.status, ['rejected', 'lapsed']), eq(challengeParticipants.response, 'pending')));
+    const closedCount = (await db.select({ id: challenges.id }).from(challenges)
+      .where(and(inArray(challenges.id, runCids), sql`${challenges.proposedById} IS NOT NULL`, inArray(challenges.status, ['rejected', 'lapsed'])))).length;
+    check(`no 'pending' participant on any closed proposal (${closedCount} closed this run)`, closedCount >= 6 && dangling.length === 0, dangling);
+    const cidText = runCids.map(String);
+    const events = await db.select({ type: activityEvents.type, targetId: activityEvents.targetId, actor: activityEvents.actorUserId }).from(activityEvents)
+      .where(and(sql`${activityEvents.createdAt} >= ${startedAt}::timestamp`, eq(activityEvents.targetType, 'challenge'),
+        inArray(activityEvents.targetId, cidText), sql`${activityEvents.type} LIKE 'challenge.%'`));
+    const tally = (rows: typeof events, key: (e: typeof events[number]) => string) => {
+      const m = new Map<string, number>();
+      for (const e of rows) m.set(key(e), (m.get(key(e)) ?? 0) + 1);
+      return [...m].filter(([, n]) => n > 1);
+    };
+    check(`exactly one event per action: no (type, challenge, actor) repeats (${events.length} challenge events)`,
+      events.length > 0 && tally(events, e => `${e.type}|${e.targetId}|${e.actor}`).length === 0, tally(events, e => `${e.type}|${e.targetId}|${e.actor}`));
+    const once = new Set(['challenge.counter_rejected', 'challenge.counter_accepted', 'challenge.started', 'challenge.expired', 'challenge.resolved', 'challenge.created', 'challenge.cancelled']);
+    const onceRepeats = tally(events.filter(e => once.has(e.type)), e => `${e.type}|${e.targetId}`);
+    check('…and at most one per challenge, any actor, for created / cancelled / started / expired / resolved / counter_accepted / counter_rejected',
+      onceRepeats.length === 0, onceRepeats);
+  }
 
   // ── notification retention + clear all ─────────────────────────────────────
   const old = new Date(Date.now() - 31 * 24 * H);

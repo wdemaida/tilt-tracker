@@ -490,11 +490,19 @@ export function reinvitees(
  */
 export type ProposalCloseReason = 'rejected' | 'superseded' | 'started' | 'fixed_start' | 'cancelled' | 'expired';
 export type ProposalNotifyReason = 'rejected' | 'superseded' | 'started' | 'cancelled' | 'expired';
-export function proposalClosure(reason: ProposalCloseReason): { status: 'rejected' | 'lapsed'; notifyReason: ProposalNotifyReason } {
+//
+// The challenger's own participant row on the proposal (response 'pending' while it's open) is closed
+// with it, by status, so no closed proposal is ever left "waiting" on her: 'rejected' -> 'declined'
+// (responded_at stamped, decline_reason null: she decided - kept hers, took another, or started the
+// original) and 'lapsed' -> 'missed' (no responded_at: it closed without her answer, the same meaning
+// as a pending player of an expired challenge). The proposer's row stays 'accepted'.
+export function proposalClosure(reason: ProposalCloseReason): {
+  status: 'rejected' | 'lapsed'; notifyReason: ProposalNotifyReason; challengerResponse: 'declined' | 'missed';
+} {
   switch (reason) {
-    case 'rejected': case 'superseded': case 'started': return { status: 'rejected', notifyReason: reason };
-    case 'fixed_start': return { status: 'lapsed', notifyReason: 'started' };
-    case 'cancelled': case 'expired': return { status: 'lapsed', notifyReason: reason };
+    case 'rejected': case 'superseded': case 'started': return { status: 'rejected', notifyReason: reason, challengerResponse: 'declined' };
+    case 'fixed_start': return { status: 'lapsed', notifyReason: 'started', challengerResponse: 'missed' };
+    case 'cancelled': case 'expired': return { status: 'lapsed', notifyReason: reason, challengerResponse: 'missed' };
   }
 }
 

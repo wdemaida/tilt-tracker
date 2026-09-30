@@ -18,6 +18,10 @@
 //     accepted invitee who leaves a group before it starts is recorded response 'declined' with
 //     decline_reason 'backed_out' — set only by the server's back-out path, never from a decline body.
 //  8. Backfill: pending participants of expired challenges become 'missed'.
+//  9. Backfill: the challenger's row on a CLOSED proposal is closed with it (the server does this in
+//     closeProposal from now on — see proposalClosure): status 'rejected' → response 'declined'
+//     (responded_at = proposal_decided_at, decline_reason stays null), 'lapsed' → 'missed'. Only rows
+//     still 'pending', so it's a no-op on re-run.
 //
 // Legacy counter rows (countered_from_id set, proposed_by_id null — created by the counterer under
 // migrate22's model) are untouched and keep working as ordinary challenges.
@@ -75,10 +79,23 @@ await sql.begin(async tx => {
     WHERE c.id = cp.challenge_id AND c.status = 'expired' AND cp.response = 'pending'
     RETURNING cp.challenge_id`;
   console.log(`migrate24: backfilled ${missed.length} pending participant(s) of expired challenges → missed`);
+
+  const closed = await tx`
+    UPDATE challenge_participants cp
+       SET response = CASE WHEN c.status = 'rejected' THEN 'declined' ELSE 'missed' END,
+           responded_at = CASE WHEN c.status = 'rejected' THEN coalesce(c.proposal_decided_at, now()) ELSE NULL END
+      FROM challenges c
+     WHERE c.id = cp.challenge_id AND c.proposed_by_id IS NOT NULL AND c.status IN ('rejected', 'lapsed')
+       AND cp.user_id = c.creator_id AND cp.response = 'pending'
+    RETURNING cp.challenge_id, cp.response`;
+  const declined = closed.filter(r => r.response === 'declined').length;
+  console.log(`migrate24: closed ${closed.length} challenger row(s) on closed proposals (${declined} → declined, ${closed.length - declined} → missed)`);
 });
 
-const [counts] = await sql<Array<{ legacy: number; proposals: number }>>`
+const [counts] = await sql<Array<{ legacy: number; proposals: number; dangling: number }>>`
   SELECT (SELECT count(*)::int FROM challenges WHERE countered_from_id IS NOT NULL AND proposed_by_id IS NULL) AS legacy,
-         (SELECT count(*)::int FROM challenges WHERE proposed_by_id IS NOT NULL) AS proposals`;
-console.log(`migrate24: done — ${counts.legacy} legacy counter row(s), ${counts.proposals} proposal row(s)`);
+         (SELECT count(*)::int FROM challenges WHERE proposed_by_id IS NOT NULL) AS proposals,
+         (SELECT count(*)::int FROM challenge_participants cp JOIN challenges c ON c.id = cp.challenge_id
+           WHERE c.proposed_by_id IS NOT NULL AND c.status IN ('rejected', 'lapsed') AND cp.response = 'pending') AS dangling`;
+console.log(`migrate24: done — ${counts.legacy} legacy counter row(s), ${counts.proposals} proposal row(s), ${counts.dangling} pending row(s) left on closed proposals`);
 await sql.end();

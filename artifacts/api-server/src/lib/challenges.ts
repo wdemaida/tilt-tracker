@@ -261,12 +261,19 @@ function creatorRefOf(c: Pick<Challenge, 'creatorId'>, participants: Participant
 
 /**
  * Close an open proposal: 'rejected' (kept / superseded / the challenger started the original) or
- * 'lapsed' (the original's fixed start, cancel or expiry, or its own window). Settles the
- * challenger's notice and tells the proposer (challenge_counter_rejected, with the reason).
+ * 'lapsed' (the original's fixed start, cancel or expiry, or its own window). The challenger's own
+ * row on it closes too - 'declined' (rejected) or 'missed' (lapsed), see proposalClosure - so no
+ * closed proposal keeps a 'pending' participant. Settles the challenger's notice and tells the
+ * proposer (challenge_counter_rejected, with the reason). The one challenge.counter_rejected event is
+ * written here (the route doesn't log it again): `actorId` is whoever's action closed it (the
+ * challenger's keep / take / Start / cancel), null when it closed on its own (fixed start, expiry).
  */
-async function closeProposal(tx: Executor, p: ChallengeRow, reason: ProposalCloseReason, now: Date): Promise<void> {
-  const { status, notifyReason } = proposalClosure(reason);
+async function closeProposal(tx: Executor, p: ChallengeRow, reason: ProposalCloseReason, now: Date, actorId: number | null): Promise<void> {
+  const { status, notifyReason, challengerResponse } = proposalClosure(reason);
   await tx.update(challenges).set({ status, proposalDecidedAt: now }).where(and(eq(challenges.id, p.id), eq(challenges.status, 'proposed')));
+  await tx.update(challengeParticipants)
+    .set({ response: challengerResponse, respondedAt: challengerResponse === 'declined' ? now : null })
+    .where(and(eq(challengeParticipants.challengeId, p.id), eq(challengeParticipants.userId, p.creatorId), eq(challengeParticipants.response, 'pending')));
   await settleInvitation(tx, p.creatorId, p.id, 'read');
   const ps = await loadParticipants(tx, p.id);
   const challenger = creatorRefOf(p, ps);
@@ -276,7 +283,7 @@ async function closeProposal(tx: Executor, p: ChallengeRow, reason: ProposalClos
     });
   }
   await logActivity({
-    type: 'challenge.counter_rejected', subjectUserId: p.proposedById, targetType: 'challenge', targetId: p.id,
+    type: 'challenge.counter_rejected', actorUserId: actorId, subjectUserId: p.proposedById, targetType: 'challenge', targetId: p.id,
     payload: { counteredFromId: p.counteredFromId, reason: notifyReason, status, challengeType: p.type, machineName: p.machine.name },
   }, { tx });
 }
@@ -326,7 +333,7 @@ async function activate(tx: Executor, c: ChallengeRow, participants: Participant
       await raiseNotification(tx, p.userId, 'challenge_missed', { ...userPayload(c, creator), players: accepted.length });
     }
   }
-  if (o.closeReason) for (const p of await openProposals(tx, c.id, true)) await closeProposal(tx, p, o.closeReason, now);
+  if (o.closeReason) for (const p of await openProposals(tx, c.id, true)) await closeProposal(tx, p, o.closeReason, now, o.actorId);
   await tx.update(challenges).set({ status: 'active', startsAt }).where(eq(challenges.id, c.id));
   if (isGroup(participants)) {
     const actor = participants.find(p => p.userId === o.actorId);
@@ -355,7 +362,7 @@ async function expireChallenge(tx: Executor, c: ChallengeRow, participants: Part
       .where(and(eq(challengeParticipants.challengeId, c.id), inArray(challengeParticipants.userId, pending.map(p => p.userId))));
   }
   for (const p of pending) await settleInvitation(tx, p.userId, c.id, 'read');
-  for (const p of await openProposals(tx, c.id, true)) await closeProposal(tx, p, 'expired', now);
+  for (const p of await openProposals(tx, c.id, true)) await closeProposal(tx, p, 'expired', now, null);
   await logActivity({ type: 'challenge.expired', targetType: 'challenge', targetId: c.id, payload: { challengeType: c.type, machineName: c.machine.name } }, { tx });
 }
 
@@ -396,7 +403,7 @@ async function syncPending(tx: Executor, c: ChallengeRow, now: Date): Promise<Ch
   let lapsed = 0;
   for (const p of await openProposals(tx, c.id, true)) {
     if (pendingDue(p, [], now) === 'lapse') {
-      await closeProposal(tx, p, 'expired', now);
+      await closeProposal(tx, p, 'expired', now, null);
       lapsed++;
     }
   }
@@ -463,7 +470,7 @@ export async function syncChallenge(id: number, now = new Date()): Promise<SyncR
     if (c.status === 'proposed') {
       if (!original || original.status !== 'pending') {
         // Its original is gone or closed (normally closed with it — this is the safety net).
-        await closeProposal(tx, c, original?.status === 'cancelled' ? 'cancelled' : 'expired', now);
+        await closeProposal(tx, c, original?.status === 'cancelled' ? 'cancelled' : 'expired', now, null);
       } else {
         await syncPending(tx, original, now);
       }
@@ -1264,7 +1271,7 @@ async function takeProposal(tx: Executor, original: ChallengeRow, proposal: Chal
       }, { key: 'challengeId', value: proposal.id });
     }
   }
-  for (const other of await openProposals(tx, original.id, true)) await closeProposal(tx, other, 'superseded', now);
+  for (const other of await openProposals(tx, original.id, true)) await closeProposal(tx, other, 'superseded', now, me.id);
   await raiseNotification(tx, proposerId, 'challenge_counter_accepted', {
     ...userPayload(proposal, asRef), counteredFromId: original.id, originalMachineName: original.machine.name, reinvited: again.length,
   });
@@ -1337,7 +1344,7 @@ export async function actOnChallengeDetailed(
         if (!canDecline(c, mine)) throw stateError(c, 'decline');
         if (c.status === 'proposed') {
           kind = 'reject';
-          await closeProposal(tx, c, 'rejected', now);
+          await closeProposal(tx, c, 'rejected', now, me.id);
           // The proposer stays out; the original carries on (it may now start, or end declined).
           if (original?.status === 'pending') await settleAfterAnswer(tx, original, now, { actorId: me.id, strict: false });
           return false;
@@ -1364,7 +1371,7 @@ export async function actOnChallengeDetailed(
           await settleInvitation(tx, p.userId, id, 'delete');
           await raiseNotification(tx, p.userId, 'challenge_cancelled', userPayload(c, asRef));
         }
-        for (const p of await openProposals(tx, id, true)) await closeProposal(tx, p, 'cancelled', now);
+        for (const p of await openProposals(tx, id, true)) await closeProposal(tx, p, 'cancelled', now, me.id);
         return false;
       }
       case 'start': {

@@ -619,7 +619,14 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   score" target (frozen into `target_score`). **`/decline` = keep mine** — the proposal → `rejected`,
   the proposer stays out, the original is re-checked (a 1:1 then ends `declined`). Proposals also
   close when the original starts / is cancelled / expires, or when their own window passes
-  (`lapsed`, `challenge_counter_rejected` with `reason`). No timer: the daily sweep re-raises
+  (`lapsed`, `challenge_counter_rejected` with `reason`). **Closing a proposal closes the
+  challenger's row on it too** (`closeProposal`, `proposalClosure().challengerResponse`; 2026-09-30):
+  `rejected` → response `declined` + `responded_at` (decline_reason null — she decided: kept hers,
+  took another, started the original), `lapsed` → `missed` (no `responded_at`). No closed proposal
+  keeps a `pending` participant (migrate24 backfills older ones). Every closing writes exactly **one**
+  `challenge.counter_rejected` event, inside `closeProposal`, with `actor_user_id` = the challenger
+  when her action closed it (keep / take another / Start / cancel) and null when it closed on its own
+  (fixed start, expiry, own window) — the route doesn't log it again. No timer: the daily sweep re-raises
   `challenge_countered` once (`reminder: true`) 24 h after an unanswered one
   (`proposal_reminded_at`). Proposers can't withdraw in v1; the challenger can't counter a proposal.
   **Lock order: the original first, then its proposals** (`lockForAction`, `syncChallenge`'s peek).

@@ -127,7 +127,9 @@ for (const action of ['accept', 'decline', 'cancel', 'forfeit', 'start'] as cons
     if (reason === 'invalid') return res.status(400).json({ error: "reason must be 'cant_reach' or 'no_thanks'", code: 'invalid_reason' });
     try {
       const { view, kind } = await actOnChallengeDetailed(id, (req as any).appUser, action, undefined, { reason });
-      const type = kind === 'take' ? 'challenge.counter_accepted' : kind === 'reject' ? 'challenge.counter_rejected' : EVENT[action];
+      // A reject ("keep mine") is logged once, with the actor, by closeProposal inside the
+      // transaction (it logs every proposal closing), so nothing more here.
+      const type = kind === 'take' ? 'challenge.counter_accepted' : kind === 'reject' ? null : EVENT[action];
       if (type) {
         await logActivity({
           type, ...actorOf(req), subjectUserId: kind !== 'answer' ? view.proposedBy?.id ?? null : null, targetType: 'challenge', targetId: id,
@@ -136,7 +138,7 @@ for (const action of ['accept', 'decline', 'cancel', 'forfeit', 'start'] as cons
             // The stored reason ('backed_out' for a back-out), not just what the body said.
             ...(action === 'decline' && kind === 'answer'
               ? { reason: view.participants.find(p => p.user.id === (req as any).appUser.id)?.declineReason ?? null } : {}),
-            ...(kind !== 'answer' ? { counteredFromId: view.counteredFromId, ...(kind === 'reject' ? { reason: 'rejected' } : {}) } : {}),
+            ...(kind === 'take' ? { counteredFromId: view.counteredFromId } : {}),
           },
         });
       }
