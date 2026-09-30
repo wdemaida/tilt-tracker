@@ -124,7 +124,7 @@ function check(label: string, ok: boolean, detail?: unknown) {
 
 const inbox = async (who: { id: number }) => ((await call(who, 'GET', '/notifications?limit=50')).body?.items ?? []) as any[];
 const kinds = async (who: { id: number }, challengeId: number) =>
-  (await inbox(who)).filter(n => n.payload?.challengeId === challengeId).map(n => n.kind as string);
+  (await inbox(who)).filter(n => n.payload?.challengeId === challengeId || (n.payload?.challengeIds ?? []).includes(challengeId)).map(n => n.kind as string);
 const iso = (msFromNow: number) => new Date(Date.now() + msFromNow).toISOString();
 const setWindow = (id: number, startsAt: Date | null, endsAt: Date) =>
   db.update(challenges).set({ startsAt, endsAt }).where(eq(challenges.id, id));
@@ -757,6 +757,8 @@ try {
   r = await call(dave, 'GET', `/challenges/${g3}`);
   check('live ranks for the group', standing(r.body, alice.id)?.liveRank === 1 && standing(r.body, bob.id)?.liveRank === 2
     && standing(r.body, carol.id)?.liveRank === 3, r.body?.participants);
+  check('…dave, with no counting score, is not ranked (liveRank null, not 4th)', standing(r.body, dave.id) != null
+    && standing(r.body, dave.id)?.liveRank === null && standing(r.body, dave.id)?.countingCount === 0, standing(r.body, dave.id));
   await setWindow(g3, new Date(+g3Row.startsAt! - 60_000), new Date(Date.now() - 500));
   await runChallengeSweep();
   r = await call(bob, 'GET', `/challenges/${g3}`);
@@ -775,6 +777,77 @@ try {
     && h2h(r.body, dave.id)?.wins === 1 && typeof r.body?.bestLossStreak === 'number', r.body);
   r = await call(bob, 'GET', `/challenges/record/${encodeURIComponent(carol.username)}`);
   check("bob sees carol's record vs him only: carol 0–1", r.body?.headToHead?.length === 1 && h2h(r.body, bob.id)?.losses === 1, r.body?.headToHead);
+
+  // ── one "X posted" notice per score, however many challenges it counts in (2026-09-30) ──
+  // mx = alice + bob + carol (group), my = alice vs bob (1:1), both on OTHER (exact) so
+  // no earlier upload in this run can land in their windows. Will saw three identical
+  // "@bumper_brit posted 12,480,000" notices for one score before.
+  r = await postG([bob.id, carol.id], { machineId: OTHER, matchMode: 'exact' });
+  const mx = r.body.id;
+  await call(bob, 'POST', `/challenges/${mx}/accept`);
+  await call(carol, 'POST', `/challenges/${mx}/accept`);
+  r = await post(alice, { friendId: bob.id, type: 'high_score', machineId: OTHER, matchMode: 'exact' });
+  const my = r.body.id;
+  await call(bob, 'POST', `/challenges/${my}/accept`);
+  for (const id of [mx, my]) {
+    const [row] = await db.select({ startsAt: challenges.startsAt, status: challenges.status }).from(challenges).where(eq(challenges.id, id));
+    check(`collapse fixture ${id} is active`, row.status === 'active', row);
+    await setWindow(id, new Date(+row.startsAt! - 60_000), new Date(Date.now() + 48 * H));
+  }
+  const about = (n: any, id: number) => n.payload?.challengeId === id || (n.payload?.challengeIds ?? []).includes(id);
+  const unreadPosted = async (who: { id: number }) => (await inbox(who))
+    .filter(n => n.kind === 'challenge_opponent_scored' && !n.readAt && (about(n, mx) || about(n, my)));
+  // Before anyone posts: a live group where nobody has a counting score ranks nobody.
+  r = await call(bob, 'GET', `/challenges/${mx}`);
+  check('live, nobody posted yet: nobody ranked', ['alice', 'bob', 'carol'].every((_, i) => standing(r.body, [alice.id, bob.id, carol.id][i])?.liveRank === null), r.body?.participants);
+  let cs = await upload(alice, { score: 4_000_000, machineId: OTHER });
+  const a1 = cs.body.id;
+  let up = await unreadPosted(bob);
+  check('one score counting in two challenges → ONE notice for bob, listing both', up.length === 1 && up[0].payload.scoreId === a1
+    && about(up[0], mx) && about(up[0], my) && up[0].payload.challengeCount === up[0].payload.challengeIds?.length
+    && up[0].payload.challengeCount >= 2 && typeof up[0].payload.scoreMachineName === 'string', up);
+  check('…backward compatible: top-level challengeId is one of them, with type, machine, score and the scorer',
+    up.length === 1 && [mx, my].includes(up[0].payload.challengeId) && up[0].payload.challengeType === 'high_score'
+    && typeof up[0].payload.machineName === 'string' && up[0].payload.score === 4_000_000 && up[0].payload.userId === alice.id
+    && up[0].payload.username === alice.username, up[0]?.payload);
+  up = await unreadPosted(carol);
+  check('carol (in the group only) gets one notice, about the group only', up.length === 1 && about(up[0], mx) && !about(up[0], my)
+    && up[0].payload.challengeCount === 1, up);
+  // Unposted players are not ranked — detail and list.
+  r = await call(bob, 'GET', `/challenges/${mx}`);
+  check('live standings: alice (posted) ranked 1st; bob and carol (no score) unranked', standing(r.body, alice.id)?.liveRank === 1
+    && standing(r.body, bob.id)?.liveRank === null && standing(r.body, carol.id)?.liveRank === null, r.body?.participants);
+  r = await call(bob, 'GET', '/challenges?status=active');
+  const myRow = (r.body ?? []).find((c: any) => c.id === my);
+  check('list: in the 1:1, bob (no score) has no live rank — not "2nd of 2"', myRow && standing(myRow, bob.id)?.liveRank === null
+    && standing(myRow, alice.id)?.liveRank === 1, myRow?.participants);
+  cs = await upload(alice, { score: 4_500_000, machineId: OTHER });
+  const a2 = cs.body.id;
+  up = await unreadPosted(bob);
+  check('a newer score from the same scorer replaces the older unread notice (no stacking)', up.length === 1 && up[0].payload.scoreId === a2
+    && up[0].payload.score === 4_500_000 && about(up[0], mx) && about(up[0], my), up);
+  cs = await upload(carol, { score: 1_000_000, machineId: OTHER }); // counts in mx only
+  up = await unreadPosted(bob);
+  const fromCarol = up.filter(n => n.payload.userId === carol.id);
+  const fromAlice = up.filter(n => n.payload.userId === alice.id);
+  check('another scorer in one of them: her notice takes that challenge; the older one keeps only the other', fromCarol.length === 1
+    && about(fromCarol[0], mx) && !about(fromCarol[0], my) && fromAlice.length === 1 && about(fromAlice[0], my) && !about(fromAlice[0], mx)
+    && fromAlice[0].payload.scoreId === a2 && fromAlice[0].payload.challengeCount === fromAlice[0].payload.challengeIds.length, up);
+  check('…each challenge still has exactly one unread opponent-scored notice', [mx, my].every(id => up.filter(n => about(n, id)).length === 1), up);
+  r = await call(bob, 'GET', `/challenges/${mx}`);
+  check('now alice 1st, carol 2nd, bob (no score) unranked', standing(r.body, alice.id)?.liveRank === 1 && standing(r.body, carol.id)?.liveRank === 2
+    && standing(r.body, bob.id)?.liveRank === null, r.body?.participants);
+  // A read notice is left alone; the next score raises a fresh one.
+  await db.update(notifications).set({ readAt: new Date() }).where(and(eq(notifications.userId, bob.id), eq(notifications.kind, 'challenge_opponent_scored'),
+    sql`(${notifications.payload} ->> 'challengeId')::int IN (${mx}, ${my})`));
+  cs = await upload(alice, { score: 5_000_000, machineId: OTHER });
+  const readKept = (await inbox(bob)).filter(n => n.kind === 'challenge_opponent_scored' && n.readAt && n.payload.scoreId === a2);
+  up = await unreadPosted(bob);
+  check('read notices are never rewritten; a new score raises one fresh unread', readKept.length === 1 && about(readKept[0], my) && !about(readKept[0], mx)
+    && up.length === 1 && up[0].payload.scoreId === cs.body.id, { readKept, up });
+  await call(bob, 'POST', `/challenges/${my}/forfeit`);
+  await call(bob, 'POST', `/challenges/${mx}/forfeit`);
+  await call(carol, 'POST', `/challenges/${mx}/forfeit`);
 
   // Fixed start: it starts with whoever accepted; the rest are missed. Sweep path, then the score-hook path.
   r = await postG([bob.id, carol.id], { startsAt: iso(2 * H), endsAt: iso(30 * H) });

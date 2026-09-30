@@ -389,6 +389,20 @@ test('projectedRanks: live ranks if it ended now', () => {
   assert.equal(m.get(A), 2);
 });
 
+test('projectedRanks: a player with no counting score is not ranked', () => {
+  const m = projectedRanks('high_score', [state('high_score', A, []), state('high_score', B, [9]), state('high_score', C, [4])]);
+  assert.equal(m.get(B), 1);
+  assert.equal(m.get(C), 2);
+  assert.equal(m.has(A), false);
+  // Nobody posted: nobody ranked (not "1st of 2" each).
+  const none = projectedRanks('high_score', [state('high_score', A, []), state('high_score', B, [])]);
+  assert.equal(none.size, 0);
+  // A race nobody has beaten yet: players who posted still rank, the one who hasn't doesn't.
+  const race = projectedRanks('race', [state('race', A, [5]), state('race', B, [])]);
+  assert.equal(race.get(A), 1);
+  assert.equal(race.has(B), false);
+});
+
 // ── lifecycle ────────────────────────────────────────────────────────────────
 
 test('pending expires when its chosen start passes, or its end when it had none', () => {

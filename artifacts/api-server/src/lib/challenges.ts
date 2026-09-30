@@ -434,10 +434,12 @@ async function applyResolution(
   const winners = r.participants.filter(p => p.rank === 1 && (p.outcome === 'win' || p.outcome === 'tie'))
     .map(p => byId.get(p.userId)).filter((p): p is ParticipantRow => !!p).map(refOf)
     .map(u => ({ userId: u.id, username: u.username, displayName: u.displayName }));
+  // Who posted a counting score: result copy ranks only them ("You placed 2nd of 3 who posted").
+  const postedIds = new Set(states.filter(s => s.standing.countingCount > 0).map(s => s.userId));
   for (const p of r.participants) {
     await raiseNotification(tx, p.userId, 'challenge_result', {
       ...userPayload(c, otherOf(participants, p.userId)), outcome: p.outcome, rank: p.rank, void: r.void, abandoned: r.abandoned, reason,
-      playerCount: r.participants.length, winners,
+      playerCount: r.participants.length, winners, postedCount: postedIds.size, posted: postedIds.has(p.userId),
     });
   }
   await logActivity({
@@ -541,24 +543,93 @@ export async function onScoreCreated(score: { id: number; userId: number }, now 
         eq(challengeParticipants.response, 'accepted'),
         isNull(challengeParticipants.outcome),
       ));
-    for (const { id } of mine) {
+    // Which of each other player's challenges this score counts in — one notice per recipient, not one
+    // per challenge (a score can count in several challenges on the same machine at once).
+    const byRecipient = new Map<number, ScoredInEntry[]>();
+    let uploader: UserRef | undefined;
+    for (const { id } of [...mine].sort((a, b) => a.id - b.id)) {
       const r = await syncChallenge(id, now);
       if (!r || !r.countingScoreIds.has(score.id) || r.status !== 'active') continue;
       const c = await loadChallenge(db, id);
       const participants = await loadParticipants(db, id);
-      const uploader = participants.find(p => p.userId === score.userId)!;
-      const [{ value }] = await db.select({ value: scores.score }).from(scores).where(eq(scores.id, score.id));
+      uploader ??= refOf(participants.find(p => p.userId === score.userId)!);
+      const entry: ScoredInEntry = {
+        challengeId: id, challengeType: c!.type, machineName: c!.machine.name,
+        players: participants.filter(x => x.response === 'accepted').length,
+      };
       for (const p of participants) {
         if (p.userId === score.userId || p.response !== 'accepted' || p.outcome) continue;
-        // One unread "X posted" per challenge per player: the newest replaces the last.
-        await raiseNotification(db, p.userId, 'challenge_opponent_scored',
-          { ...userPayload(c!, uploader.user), score: value, players: participants.filter(x => x.response === 'accepted').length },
-          { key: 'challengeId', value: id });
+        byRecipient.set(p.userId, [...(byRecipient.get(p.userId) ?? []), entry]);
       }
+    }
+    if (!byRecipient.size || !uploader) return;
+    const [row] = await db.select({ value: scores.score, machineName: machines.name }).from(scores)
+      .innerJoin(machines, eq(machines.id, scores.machineId)).where(eq(scores.id, score.id));
+    for (const [recipientId, entries] of byRecipient) {
+      await raiseOpponentScored(recipientId, uploader, { id: score.id, value: row.value, machineName: row.machineName }, entries);
     }
   } catch (err) {
     console.error('Challenge score hook failed:', err);
   }
+}
+
+/** One challenge a score counted in, as a challenge_opponent_scored notice lists it. */
+interface ScoredInEntry { challengeId: number; challengeType: Challenge['type']; machineName: string; players: number }
+
+/** The challenges an unread challenge_opponent_scored notice is about (a pre-2026-09-30 one: just its challengeId). */
+function scoredEntriesOf(payload: Record<string, any>): ScoredInEntry[] {
+  if (Array.isArray(payload.challenges)) return payload.challenges as ScoredInEntry[];
+  return typeof payload.challengeId === 'number'
+    ? [{ challengeId: payload.challengeId, challengeType: payload.challengeType, machineName: payload.machineName, players: payload.players }]
+    : [];
+}
+
+/** The top-level challenge fields of an opponent_scored payload — what clients before the collapse read. */
+function scoredHead(entries: ScoredInEntry[]) {
+  const first = entries[0];
+  return {
+    challengeId: first.challengeId, challengeType: first.challengeType, machineName: first.machineName, players: first.players,
+    challengeIds: entries.map(e => e.challengeId), challengeCount: entries.length, challenges: entries,
+  };
+}
+
+/**
+ * ONE "X posted N" notice per (recipient, score), however many of the recipient's challenges it counts
+ * in (Will, 2026-09-30 — three identical notices for one score before). Keeps the older rule too:
+ * each challenge has at most one UNREAD opponent-scored notice, the newest. So before inserting, every
+ * older unread notice of the recipient's that covers one of these challenges loses them — a notice
+ * about the same score is replaced, one about an earlier score (same scorer or another) keeps only the
+ * challenges this score didn't count in, and one left with none is deleted. A newer score from the same
+ * scorer in the same challenges therefore replaces the older notice rather than stacking; one on a
+ * different machine (disjoint challenges) is a different thing to tell you about and stays.
+ *
+ * Payload (backward compatible — the top-level challengeId / challengeType / machineName / players are
+ * the first challenge, so an older client renders "posted N in your challenge: …" and links there):
+ * userId / username / displayName (the scorer), score, scoreId, scoreMachineName, and
+ * challengeIds / challengeCount / challenges [{challengeId, challengeType, machineName, players}].
+ */
+async function raiseOpponentScored(
+  recipientId: number, scorer: UserRef, s: { id: number; value: number; machineName: string }, entries: ScoredInEntry[],
+): Promise<void> {
+  const covered = new Set(entries.map(e => e.challengeId));
+  await db.transaction(async tx => {
+    const older = await tx.select({ id: notifications.id, payload: notifications.payload }).from(notifications)
+      .where(and(eq(notifications.userId, recipientId), eq(notifications.kind, 'challenge_opponent_scored'), isNull(notifications.readAt)))
+      .for('update');
+    for (const n of older) {
+      const payload = (n.payload ?? {}) as Record<string, any>;
+      const was = scoredEntriesOf(payload);
+      const left = payload.scoreId === s.id ? [] : was.filter(e => !covered.has(e.challengeId));
+      if (left.length === was.length && payload.scoreId !== s.id) continue;
+      if (!left.length) await tx.delete(notifications).where(eq(notifications.id, n.id));
+      else await tx.update(notifications).set({ payload: { ...payload, ...scoredHead(left) } }).where(eq(notifications.id, n.id));
+    }
+    await raiseNotification(tx, recipientId, 'challenge_opponent_scored', {
+      ...scoredHead(entries),
+      userId: scorer.id, username: scorer.username, displayName: scorer.displayName,
+      score: s.value, scoreId: s.id, scoreMachineName: s.machineName,
+    });
+  });
 }
 
 // ── trigger (c): the daily sweep ─────────────────────────────────────────────

@@ -358,7 +358,11 @@ export function resolveChallenge(type: ChallengeType, states: ParticipantState[]
 export function projectedRanks(type: ChallengeType, states: ParticipantState[]): Map<number, number> {
   const winner = type === 'race' ? raceWinner(states) : null;
   const r = resolveChallenge(type, states, winner ? 'race_target' : 'deadline');
-  return new Map(r.participants.map(p => [p.userId, p.rank]));
+  // Only players with a counting score are ranked live: someone who hasn't posted isn't "2nd of 2",
+  // they just haven't played yet (Will, 2026-09-30). No-shows sort after everyone who played, so
+  // leaving them out doesn't move anyone else's rank.
+  const posted = new Set(states.filter(s => s.standing.countingCount > 0).map(s => s.userId));
+  return new Map(r.participants.filter(p => posted.has(p.userId)).map(p => [p.userId, p.rank]));
 }
 
 // ── lifecycle ────────────────────────────────────────────────────────────────

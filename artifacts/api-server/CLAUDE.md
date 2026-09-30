@@ -600,8 +600,15 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   `missed`, proposals `lapsed`; nobody → expired (pending → `missed` too). Groups send
   `challenge_started` to the accepted players except the actor. `onScoreCreated` also syncs pending
   rows whose fixed start has passed (they start on the upload and the score counts).
-  `challenge_result` carries `rank`, `playerCount`, `winners`; one unread `challenge_opponent_scored`
-  per challenge (the newest poster). `phaseOf()` maps the new statuses onto old phases (proposed →
+  `challenge_result` carries `rank`, `playerCount`, `winners`, `postedCount`, `posted`.
+  **`challenge_opponent_scored` is one notice per (recipient, score)** (2026-09-30 — one score counting
+  in three of Will's challenges used to raise three identical ones): `raiseOpponentScored()` lists
+  them in `challengeIds` / `challengeCount` / `challenges`, with the first one's `challengeId` etc. at
+  the top level for older clients. Still one unread per challenge: a newer score trims its challenges
+  out of the recipient's older unread notices (deleting one left with none — so the same scorer
+  again replaces rather than stacks); read notices are never touched. **Live ranks only cover players
+  with a counting score** (`projectedRanks`): someone who hasn't posted has `liveRank: null`, not
+  "2nd of 2"; the final `rank` column still orders no-shows last. `phaseOf()` maps the new statuses onto old phases (proposed →
   pending, rejected → declined, lapsed → expired) because old cached clients' status line has no
   default branch; new clients read `status`.
 - **Counter-offers are proposals — 1:1 too (behavior change, 2026-09-29).** `POST /:id/counter` no

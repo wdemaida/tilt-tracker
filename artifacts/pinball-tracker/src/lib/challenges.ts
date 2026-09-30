@@ -3,6 +3,7 @@ import { useAuth } from '@clerk/clerk-react';
 import { useQuery } from '@tanstack/react-query';
 import { useApi } from './useApi';
 import { queryClient } from './queryClient';
+import { formatScoreTime } from './scoreTime';
 import type { Challenge, ChallengeOutcome, ChallengeParticipant, ChallengeType } from './api';
 
 // Challenges UI helpers (feature/challenges, phase 3): copy, formatting, query keys and the shared
@@ -140,6 +141,30 @@ export function timingText(c: Challenge, now: number): string | null {
   if (c.startsAt && +new Date(c.startsAt) > now) return `Starts in ${formatDuration(+new Date(c.startsAt) - now)}`;
   const left = +new Date(c.endsAt) - now;
   return left > 0 ? `${formatDuration(left)} left` : 'Ended — settling';
+}
+
+/**
+ * When it (will) start — the agreed start, so two challenges on the same machine can be told apart:
+ * "Started Sep 29, 8:41 PM" / "Starts Oct 2, 7:00 PM" / "Starts when everyone answers". A start is an
+ * instant, not a venue wall clock, so it's rendered in the viewer's zone (formatScoreTime with no
+ * venue zone). Null where it never ran or it's history (the row says how it ended instead).
+ */
+export function startText(c: Challenge, now: number): string | null {
+  const when = (iso: string) => formatScoreTime(iso, null, new Date(iso).getFullYear() === new Date(now).getFullYear() ? 'MMM d, h:mm a' : 'MMM d, yyyy, h:mm a');
+  if (c.status === 'active') {
+    if (!c.startsAt) return null;
+    return +new Date(c.startsAt) > now ? `Starts ${when(c.startsAt)}` : `Started ${when(c.startsAt)}`;
+  }
+  if (c.status === 'pending' || c.status === 'proposed') {
+    if (c.startsAt) return `Starts ${when(c.startsAt)}`;
+    return isGroupChallenge(c) ? 'Starts when everyone answers' : 'Starts when they accept';
+  }
+  return null;
+}
+
+/** A player has a counting score in a live challenge — the only players who get a live rank. */
+export function hasPostedLive(p: ChallengeParticipant | undefined) {
+  return (p?.standing?.countingCount ?? 0) > 0;
 }
 
 const ERROR_COPY: Record<string, string> = {

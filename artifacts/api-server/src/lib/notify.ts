@@ -29,12 +29,18 @@ import { buildActivityRow, isActivityRecorded, logActivity } from './activity.js
 //                                 (`players`, `startsAt`, `byChallenger` for "Start with who's in")
 //   challenge_missed            → an invitee who never answered, when it started without them
 //   challenge_cancelled         → the invitees (the creator withdrew before the start)
-//   challenge_opponent_scored   → the other participant(s), when a counting score is posted
-//                                 (deduped per challenge: one unread at a time, carrying `score` and
-//                                 the newest poster)
+//   challenge_opponent_scored   → the other participant(s), when a counting score is posted: ONE per
+//                                 (recipient, score) however many of their challenges it counts in
+//                                 (`challengeIds`, `challengeCount`, `challenges` [{challengeId,
+//                                 challengeType, machineName, players}], `score`, `scoreId`,
+//                                 `scoreMachineName`; top-level challengeId etc. = the first one, for
+//                                 older clients). Still one unread per challenge: a newer score trims
+//                                 its challenges out of older unread notices (raiseOpponentScored in
+//                                 lib/challenges.ts)
 //   challenge_ending_soon       → each participant once, ~24h before the end (daily sweep)
 //   challenge_result            → every participant on resolution (`outcome`, `rank`, `playerCount`,
-//                                 `winners` [{userId, username, displayName}], `void` — retired, always
+//                                 `winners` [{userId, username, displayName}], `postedCount` (players with a
+//                                 counting score), `posted` (the recipient has one), `void` — retired, always
 //                                 false —, `abandoned`, `reason`)
 //   challenge_voided            → every participant, when an admin voids the challenge (`byAdmin: true`, no user ref)
 //   badge_earned                → the earner (lib/badges.ts): `badgeId`, `badgeName`, `icon`, `color`,

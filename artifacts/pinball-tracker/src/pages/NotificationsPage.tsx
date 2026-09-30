@@ -136,19 +136,30 @@ function describe(n: AppNotification): { text: React.ReactNode; href: string | n
         return { text: <>An admin voided {what} — it won’t count toward anyone’s record</>, href, Icon: Ban };
       case 'challenge_opponent_scored': {
         const score = n.payload.score;
-        return {
-          text: <>{name} posted {typeof score === 'number' ? <span className="text-primary font-semibold">{Math.round(score).toLocaleString()}</span> : 'a score'} in your challenge: {what}</>,
-          href, Icon: TrendingUp,
-        };
+        const scoreText = typeof score === 'number' ? <span className="text-primary font-semibold">{Math.round(score).toLocaleString()}</span> : 'a score';
+        // One notice per score (2026-09-30): `challengeCount` is how many of your challenges it counts
+        // in. Older notices have no count — one challenge.
+        const count = typeof n.payload.challengeCount === 'number' ? n.payload.challengeCount : 1;
+        if (count > 1) {
+          const machine = typeof n.payload.scoreMachineName === 'string' ? n.payload.scoreMachineName : machineName;
+          return {
+            text: <>{name} posted {scoreText}{machine && <> on <span className="text-machine font-semibold">{machine}</span></>} — counts in {count} of your challenges</>,
+            href: '/crew?tab=challenges', Icon: TrendingUp,
+          };
+        }
+        return { text: <>{name} posted {scoreText} in your challenge: {what}</>, href, Icon: TrendingUp };
       }
       case 'challenge_ending_soon':
         return { text: <>Less than a day left: {what}</>, href, Icon: Timer };
       case 'challenge_result': {
         const count = typeof n.payload.playerCount === 'number' ? n.payload.playerCount : 2;
         const rank = typeof n.payload.rank === 'number' ? n.payload.rank : null;
-        const placed = count > 2 && rank != null && (n.payload.outcome === 'loss' || n.payload.outcome === 'tie' || n.payload.outcome === 'win');
+        // Only players with a counting score are ranked (newer servers say who posted; older ones don't).
+        const postedCount = typeof n.payload.postedCount === 'number' ? n.payload.postedCount : null;
+        const placed = count > 2 && rank != null && n.payload.posted !== false
+          && (n.payload.outcome === 'loss' || n.payload.outcome === 'tie' || n.payload.outcome === 'win');
         const outcome = n.payload.void ? 'Nobody played, so no result'
-          : placed ? `You placed ${ordinal(rank!)} of ${count}`
+          : placed ? (postedCount != null && postedCount < count ? `You placed ${ordinal(rank!)} of ${postedCount} who posted` : `You placed ${ordinal(rank!)} of ${count}`)
           : RESULT_TEXT[String(n.payload.outcome)] ?? 'Challenge over';
         return { text: <>{outcome}: {what}</>, href, Icon: n.payload.outcome === 'win' ? Trophy : Flag };
       }

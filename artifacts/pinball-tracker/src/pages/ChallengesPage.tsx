@@ -10,7 +10,7 @@ import { useApi } from '../lib/useApi';
 import { useAppUser } from '../lib/useAppUser';
 import {
   useChallengeList, invalidateChallengeQueries, challengeErrorText, typeLabel, meAndThem, formatResult,
-  timingText, useNow, historyOutcome, isGroupChallenge, othersOf, ordinal,
+  timingText, useNow, historyOutcome, isGroupChallenge, othersOf, ordinal, startText, hasPostedLive,
 } from '../lib/challenges';
 import type { Challenge, ChallengeDeclineChoice } from '../lib/api';
 
@@ -20,7 +20,9 @@ import type { Challenge, ChallengeDeclineChoice } from '../lib/api';
 // cancel). "Can't get to this one" offers a counter-offer (/challenges/new?counterOf=) or a decline.
 // A counter-offer is a suggestion to the challenger: it sits under "Waiting on you" for her (Take it
 // for everyone / Keep mine) and under "Sent" for whoever suggested it. Groups read "vs @bob +2" and
-// the live line is your place ("2nd of 4").
+// the live line is your place ("2nd of 4"; only players with a counting score are ranked). Every row
+// says when it started (or will), so two challenges on one machine can be told apart. Phones stack
+// everything under the title; from sm: up the live standing moves to a panel on the right.
 
 function Section({ title, count, children }: { title: string; count?: number; children: React.ReactNode }) {
   return (
@@ -52,9 +54,19 @@ function ChallengeRow({ c, myId, now }: { c: Challenge; myId: number | null; now
   const others = othersOf(c, myId);
   const timing = timingText(c, now);
   const outcome = historyOutcome(c);
-  const live = !group && c.status === 'active' && me?.standing && them?.standing;
-  const groupLive = group && c.status === 'active' && me?.standing ? me.standing : null;
+  const start = startText(c, now);
+  const scheduled = !!start && !!timing?.startsWith('Starts in ');
   const inCount = c.participants.filter(p => p.response === 'accepted').length;
+  // Live standings, once the window has started (the server sends standings only then). Only players
+  // with a counting score are ranked: "You haven't posted yet", never "2nd of 2" on no score.
+  const started = c.status === 'active' && !!me?.standing;
+  const myPosted = hasPostedLive(me);
+  const postedCount = c.participants.filter(p => p.response === 'accepted' && hasPostedLive(p)).length;
+  const myRank = myPosted ? me?.standing?.liveRank ?? null : null;
+  const leaders = c.participants.filter(p => p.response === 'accepted' && hasPostedLive(p) && p.standing?.liveRank === 1);
+  const leader = leaders.length === 1 ? leaders[0] : null;
+  const ofText = postedCount < inCount ? `${postedCount} posted` : String(inCount);
+  const rankText = myRank != null ? `${ordinal(myRank)} of ${ofText}` : null;
   const deciding = !!c.me.canDecideProposal;
   const busy = act.isPending;
   const spin = <Loader2 className="w-3 h-3 animate-spin" aria-hidden />;
@@ -95,33 +107,49 @@ function ChallengeRow({ c, myId, now }: { c: Challenge; myId: number | null; now
             ) : opponent ? <span className="relative z-10"><UsernameLink username={opponent.username} className="text-friend hover:text-friend/80" /></span> : <span>—</span>}
             {c.venue && <span className="inline-flex items-center gap-0.5"><Lock className="w-3 h-3" aria-hidden /> <span className="text-venue truncate max-w-[10rem]">{c.venue.name}</span></span>}
           </p>
-          {live && (
-            <p className="text-xs mt-1 flex flex-wrap items-center gap-x-2">
-              <span>
-                <span className="text-username font-semibold">You</span>{' '}
-                <span className={`font-black ${me!.standing!.liveRank === 1 ? 'text-primary' : 'text-white/80'}`}>{formatResult(c.type, me!.standing!.resultValue)}</span>
-              </span>
-              <span className="text-muted-foreground">vs</span>
-              <span>
-                <span className="text-friend font-semibold">Them</span>{' '}
-                <span className={`font-black ${them!.standing!.liveRank === 1 ? 'text-primary' : 'text-white/80'}`}>{formatResult(c.type, them!.standing!.resultValue)}</span>
-              </span>
+          {/* Phone: the standing sits under the title. From sm: up it moves to the right-hand panel. */}
+          {started && (
+            <p className="sm:hidden text-xs mt-1 flex flex-wrap items-center gap-x-2">
+              {!group ? (
+                <>
+                  <span>
+                    <span className="text-username font-semibold">You</span>{' '}
+                    {myPosted
+                      ? <span className={`font-black ${myRank === 1 ? 'text-primary' : 'text-white/80'}`}>{formatResult(c.type, me!.standing!.resultValue)}</span>
+                      : <span className="text-muted-foreground">haven’t posted yet</span>}
+                  </span>
+                  <span className="text-muted-foreground">vs</span>
+                  <span>
+                    <span className="text-friend font-semibold">Them</span>{' '}
+                    <span className={`font-black ${hasPostedLive(them) && them?.standing?.liveRank === 1 ? 'text-primary' : 'text-white/80'}`}>{hasPostedLive(them) ? formatResult(c.type, them!.standing!.resultValue) : '—'}</span>
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span>
+                    <span className="text-username font-semibold">You</span>{' '}
+                    {rankText
+                      ? <span className={`font-black ${myRank === 1 ? 'text-primary' : 'text-white/80'}`}>{rankText}</span>
+                      : <span className="text-muted-foreground">haven’t posted yet</span>}
+                  </span>
+                  {myPosted && <span className="text-muted-foreground">· {formatResult(c.type, me!.standing!.resultValue)}</span>}
+                </>
+              )}
             </p>
           )}
-          {groupLive && (
-            <p className="text-xs mt-1 flex flex-wrap items-center gap-x-2">
-              <span>
-                <span className="text-username font-semibold">You</span>{' '}
-                <span className={`font-black ${groupLive.liveRank === 1 ? 'text-primary' : 'text-white/80'}`}>
-                  {groupLive.liveRank != null ? `${ordinal(groupLive.liveRank)} of ${inCount}` : `— of ${inCount}`}
-                </span>
-              </span>
-              {groupLive.resultValue != null && <span className="text-muted-foreground">· {formatResult(c.type, groupLive.resultValue)}</span>}
-            </p>
-          )}
-          {timing && (
-            <p className="text-[11px] text-muted-foreground mt-1 inline-flex items-center gap-1">
-              <Timer className="w-3 h-3" aria-hidden /> {timing}
+          {(timing || start || (group && c.status === 'active')) && (
+            <p className="text-[11px] text-muted-foreground mt-1 flex flex-wrap items-center gap-x-1.5">
+              {scheduled ? (
+                // Not started yet: "Starts Oct 2, 7:00 PM · in 2d 3h" rather than saying "Starts" twice.
+                <span className="inline-flex items-center gap-1"><Timer className="w-3 h-3" aria-hidden /> {start} · in {timing!.slice('Starts in '.length)}</span>
+              ) : (
+                <>
+                  {timing && <span className="inline-flex items-center gap-1"><Timer className="w-3 h-3" aria-hidden /> {timing}</span>}
+                  {timing && start && <span aria-hidden>·</span>}
+                  {start && <span>{start}</span>}
+                </>
+              )}
+              {group && c.status === 'active' && <><span aria-hidden>·</span><span>{c.participants.length} invited · {inCount} playing</span></>}
             </p>
           )}
           {c.status === 'pending' && (
@@ -141,7 +169,7 @@ function ChallengeRow({ c, myId, now }: { c: Challenge; myId: number | null; now
             <p className="text-[11px] text-muted-foreground mt-1">Ended {formatDistanceToNow(new Date(c.resolvedAt), { addSuffix: true })}</p>
           )}
           {(c.counteredFromId || c.counteredToId) && (
-            <p className="relative z-10 text-[11px] text-muted-foreground mt-1 inline-flex items-center gap-1">
+            <p className="relative z-10 text-[11px] text-muted-foreground mt-1 flex items-center gap-1">
               <CornerDownRight className="w-3 h-3" aria-hidden />
               {c.counteredToId
                 ? <Link href={`/challenges/${c.counteredToId}`} className="text-friend hover:underline">See the counter-offer</Link>
@@ -200,6 +228,44 @@ function ChallengeRow({ c, myId, now }: { c: Challenge; myId: number | null; now
           )}
           {error && <p className="relative z-10 text-[11px] text-red-400 mt-1">{error}</p>}
         </div>
+        {/* sm: and up — the live standing on the right, where a phone has no room. */}
+        {started && (
+          <div className="hidden sm:flex flex-col items-end justify-center text-right flex-shrink-0 w-44 self-stretch pl-4 border-l border-white/10">
+            {!group ? (
+              <>
+                <p className="text-xs whitespace-nowrap">
+                  <span className="text-username font-semibold">You</span>{' '}
+                  {myPosted
+                    ? <span className={`text-sm font-black ${myRank === 1 ? 'text-primary' : 'text-white/80'}`}>{formatResult(c.type, me!.standing!.resultValue)}</span>
+                    : <span className="text-muted-foreground">not posted yet</span>}
+                </p>
+                <p className="text-xs whitespace-nowrap mt-0.5 max-w-full truncate">
+                  <span className="text-friend font-semibold">{opponent ? `@${opponent.username}` : 'Them'}</span>{' '}
+                  <span className={`text-sm font-black ${hasPostedLive(them) && them?.standing?.liveRank === 1 ? 'text-primary' : 'text-white/80'}`}>{hasPostedLive(them) ? formatResult(c.type, them!.standing!.resultValue) : '—'}</span>
+                </p>
+              </>
+            ) : (
+              <>
+                {rankText ? (
+                  <p className="whitespace-nowrap">
+                    <span className={`text-lg font-black ${myRank === 1 ? 'text-primary' : 'text-white/80'}`}>{ordinal(myRank!)}</span>
+                    <span className="text-[11px] text-muted-foreground"> of {ofText}</span>
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">You haven’t posted yet</p>
+                )}
+                {leader ? (
+                  <p className="text-[11px] text-muted-foreground mt-0.5 max-w-full truncate">
+                    {leader.user.id === myId ? 'You lead' : <>Leader <span className="text-friend">@{leader.user.username}</span></>}{' '}
+                    <span className="text-white/80 font-semibold">{formatResult(c.type, leader.standing!.resultValue)}</span>
+                  </p>
+                ) : postedCount === 0 ? (
+                  <p className="text-[11px] text-muted-foreground mt-0.5">Nobody’s posted yet</p>
+                ) : null}
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -76,7 +76,20 @@ function statusLine(c: Challenge, now: number): { text: string; tone: string } {
   }
 }
 
-function OutcomeBanner({ c, myRank }: { c: Challenge; myRank: number | null }) {
+/** A player has a counting score: only they're ranked (a no-show is "—", not "4th of 4"). */
+function hasPosted(c: Challenge, p: ChallengeParticipant | undefined) {
+  if (!p) return false;
+  return c.status === 'resolved' ? p.resultValue != null : (p.standing?.countingCount ?? 0) > 0;
+}
+
+/** "You placed 2nd of 4." — counting only the players who posted when someone didn't. */
+function placedText(c: Challenge, rank: number) {
+  const players = c.participants.filter(p => p.response === 'accepted');
+  const posted = players.filter(p => hasPosted(c, p)).length;
+  return posted < players.length ? `You placed ${ordinal(rank)} of ${posted} who posted.` : `You placed ${ordinal(rank)} of ${players.length}.`;
+}
+
+function OutcomeBanner({ c, myRank, meP }: { c: Challenge; myRank: number | null; meP: ChallengeParticipant | undefined }) {
   const o = historyOutcome(c);
   if (!o) return null;
   const m = outcomeMeta(o);
@@ -92,8 +105,8 @@ function OutcomeBanner({ c, myRank }: { c: Challenge; myRank: number | null }) {
     : o === 'no_show' ? 'You didn’t post a counting score.'
     : o === 'forfeit' ? 'You withdrew from this challenge.'
     : o === 'win' && !isGroupChallenge(c) && c.opponent && c.participants.find(p => p.user.id === c.opponent!.id)?.outcome === 'forfeit' ? 'They forfeited.'
-    : isGroupChallenge(c) && (o === 'loss' || o === 'tie' || o === 'win') && myRank != null
-      ? `You placed ${ordinal(myRank)} of ${c.participants.filter(p => p.response === 'accepted').length}.`
+    : isGroupChallenge(c) && (o === 'loss' || o === 'tie' || o === 'win') && myRank != null && hasPosted(c, meP)
+      ? placedText(c, myRank)
     : null;
   return (
     <div className={`rounded-xl border p-4 mb-6 flex items-center gap-3 ${m.tone}`}>
@@ -195,7 +208,8 @@ function StandingCard({ c, p, isMe, leader }: { c: Challenge; p: ChallengePartic
 function StandingsList({ c, myId, leaderId }: { c: Challenge; myId: number | null; leaderId: number | null }) {
   const resolved = c.status === 'resolved';
   const players = c.participants.filter(p => p.response === 'accepted');
-  const rankOf = (p: ChallengeParticipant) => (resolved ? p.rank : p.standing?.liveRank) ?? null;
+  // Only players with a counting score get a rank; the rest show "—" (and sort last).
+  const rankOf = (p: ChallengeParticipant) => (hasPosted(c, p) ? (resolved ? p.rank : p.standing?.liveRank) ?? null : null);
   const sorted = [...players].sort((a, b) => (rankOf(a) ?? 99) - (rankOf(b) ?? 99) || (valueOf(b) ?? -Infinity) - (valueOf(a) ?? -Infinity));
   return (
     <ol className="flex flex-col gap-1.5">
@@ -631,7 +645,7 @@ export default function ChallengePage() {
         </div>
       </div>
 
-      <OutcomeBanner c={c} myRank={me?.rank ?? null} />
+      <OutcomeBanner c={c} myRank={me?.rank ?? null} meP={me} />
       <CounterLinks c={c} myId={myId} />
       <Actions c={c} />
       <ProposalsPanel c={c} />
