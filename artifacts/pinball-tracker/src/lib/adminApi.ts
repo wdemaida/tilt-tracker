@@ -181,7 +181,9 @@ export interface BadgeRule {
 }
 
 export interface AdminBadge {
-  id: number; key: string; name: string; description: string; icon: string; color: string;
+  /** `color` = what it's drawn in (its series' color for a tier); `ownColor` = its own column. */
+  id: number; key: string; name: string; description: string; icon: string; color: string; ownColor: string;
+  seriesId: number | null;
   imageVersion: number | null; hasImage: boolean;
   kind: BadgeKind; metric: string | null; threshold: number | null; rule: BadgeRule | null;
   retroactive: boolean; status: BadgeStatus;
@@ -189,6 +191,14 @@ export interface AdminBadge {
   sortOrder: number; createdAt: string; updatedAt: string;
   requirement: string; earnedCount: number; metricAvailable: boolean; activationBlocker: string | null;
 }
+
+/** A badge series (ladder). One color for every tier; `sortOrder` shares the top-level order with singles. */
+export interface AdminBadgeSeries {
+  id: number; key: string; name: string; color: string; sortOrder: number; badgeCount: number;
+}
+
+/** One draggable row of /admin/badges: a whole series or a single badge. */
+export type BadgeOrderItem = { type: 'series' | 'badge'; id: number };
 
 export interface BadgeMetricInfo {
   key: string; label: string; description: string; source: 'derived' | 'marks'; triggers: string[]; available: boolean;
@@ -212,6 +222,9 @@ export type BadgeInput = Partial<{
   key: string; name: string; description: string; icon: string; color: string; kind: BadgeKind;
   metric: string | null; threshold: number | null; rule: BadgeRule | null; retroactive: boolean;
   availableFrom: string | null; availableTo: string | null; sortOrder: number;
+  /** null = a single. Omitted on create = the metric's series, when it has exactly one. */
+  seriesId: number | null;
+  newSeries: { name: string; color: string };
 }>;
 
 function qs(params: Record<string, string | number | null | undefined | boolean>): string {
@@ -255,7 +268,12 @@ export function createAdminApi(getToken: () => Promise<string | null>) {
     saveRetention: (s: RetentionSettings) => put<RetentionView>('/admin/settings/retention', s),
     photoOrphans: () => get<PhotoOrphanStatus>('/admin/photo-orphans'),
     runPhotoOrphans: (dryRun: boolean) => post<PhotoOrphanRunResult>('/admin/photo-orphans/run', { dryRun }),
-    badges: () => get<{ items: AdminBadge[]; limits: Record<string, number>; image: { maxBytes: number; size: number; types: string[] } }>('/admin/badges'),
+    badges: () => get<{ items: AdminBadge[]; series: AdminBadgeSeries[]; order: BadgeOrderItem[]; limits: Record<string, number>; image: { maxBytes: number; size: number; types: string[] } }>('/admin/badges'),
+    reorderBadges: (items: BadgeOrderItem[]) => put<{ order: BadgeOrderItem[]; changed: number }>('/admin/badges/order', { items }),
+    createBadgeSeries: (body: { name: string; color: string }) => post<{ series: AdminBadgeSeries }>('/admin/badge-series', body),
+    updateBadgeSeries: async (id: number, body: { name?: string; color?: string }) =>
+      request<{ series: AdminBadgeSeries }>(`/admin/badge-series/${id}`, { method: 'PATCH', body: JSON.stringify(body) }, await tok()),
+    deleteBadgeSeries: (id: number) => del<{ ok: true }>(`/admin/badge-series/${id}`),
     badge: (id: number) => get<{ badge: AdminBadge; holders: BadgeHolder[] }>(`/admin/badges/${id}`),
     badgeMetrics: () => get<BadgeMetricInfo[]>('/admin/badges/metrics'),
     createBadge: (body: BadgeInput) => post<{ badge: AdminBadge }>('/admin/badges', body),

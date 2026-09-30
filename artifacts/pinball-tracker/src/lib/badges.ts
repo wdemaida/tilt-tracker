@@ -8,6 +8,17 @@ import { request } from './api';
 
 const BASE = import.meta.env.VITE_API_URL ? `${import.meta.env.VITE_API_URL}/api` : '/api';
 
+/** Where a tier sits in its series: "Tier 2 of 4" (live tiers + the ones this viewer earned). */
+export interface BadgeSeriesRef {
+  id: number;
+  key: string;
+  name: string;
+  /** The series' one color — every tier is drawn in it (already applied to the badge's `color`). */
+  color: string;
+  tier: number;
+  tierCount: number;
+}
+
 /** A badge as the server's publicBadge() shapes it. `imageVersion` null = no image → lucide icon. */
 export interface Badge {
   id: number;
@@ -15,8 +26,12 @@ export interface Badge {
   name: string;
   description: string;
   icon: string;
+  /** The color to draw it in — the series' color for a tier. */
   color: string;
   imageVersion: number | null;
+  seriesId?: number | null;
+  /** Set on catalog/shelf entries that are a tier of a series. */
+  series?: BadgeSeriesRef | null;
   /** What earns it, in plain English ("Post 100 scores"). */
   requirement: string;
   availableFrom: string | null;
@@ -37,10 +52,52 @@ export interface ShelfBadge extends Badge {
   sourceChallengeId: number | null;
 }
 
+/**
+ * The shelf as the profile draws it (server-collapsed, in the shared sort order): a series once, as
+ * its highest earned tier with pips and the whole ladder; a single as itself.
+ */
+export type ShelfItem =
+  | { type: 'badge'; badge: ShelfBadge }
+  | {
+    type: 'series';
+    series: { id: number; key: string; name: string; color: string };
+    /** The highest tier they've earned. */
+    top: ShelfBadge;
+    tier: number;
+    tierCount: number;
+    /** Filled pips; tierCount − earnedCount hollow ones (remaining live tiers). */
+    earnedCount: number;
+    tiers: Array<{ badge: Badge; earnedAt: string | null }>;
+  };
+
 export interface BadgeShelfData {
   user: { id: number; username: string; displayName: string };
   isSelf: boolean;
+  /** Every earned badge, flat, in the shared order. */
   badges: ShelfBadge[];
+  /** Absent from an api-server older than badge series — fall back to one item per badge. */
+  items?: ShelfItem[];
+}
+
+/** The shelf items, or (an older server) one per badge. */
+export function shelfItems(data: BadgeShelfData): ShelfItem[] {
+  return data.items ?? data.badges.map(badge => ({ type: 'badge' as const, badge }));
+}
+
+/** The catalog grouped for display: a series' consecutive tiers become one ladder. */
+export type CatalogGroup =
+  | { type: 'badge'; badge: CatalogBadge }
+  | { type: 'series'; series: BadgeSeriesRef; tiers: CatalogBadge[] };
+
+export function groupCatalog(items: CatalogBadge[]): CatalogGroup[] {
+  const out: CatalogGroup[] = [];
+  for (const b of items) {
+    const last = out[out.length - 1];
+    if (b.series && last?.type === 'series' && last.series.id === b.series.id) last.tiers.push(b);
+    else if (b.series) out.push({ type: 'series', series: b.series, tiers: [b] });
+    else out.push({ type: 'badge', badge: b });
+  }
+  return out;
 }
 
 /** The image URL — the version is in the query so each upload is a new, immutably cached URL. */

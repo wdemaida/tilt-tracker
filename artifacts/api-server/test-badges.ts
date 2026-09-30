@@ -12,6 +12,12 @@
 // in-process retention loader. At the end it deletes everything it made — badges (awards cascade),
 // the badge notifications and events, the friend rows/notifications/events among the three users,
 // the marks it wrote, its scores, machine and venues.
+// Badge series (feature/badge-series): a throwaway `zz-badge-test-*` series of rule tiers — the
+// profile collapses to the highest earned tier, pips count only live tiers, the series color is
+// applied everywhere (catalog, shelf, notification), a new metric tier auto-joins its metric's
+// series, and the reorder endpoint validates + persists. The reorder touches every badge's and
+// series' sort_order, so the script snapshots (sort_order, updated_at) first and restores them
+// exactly at the end — Will's dev badges keep their numbers.
 // TODO(phase 3): "challenge resolution awards streak and tie badges".
 //
 //   cd artifacts/api-server && npx tsx test-badges.ts
@@ -30,7 +36,7 @@ const { default: express } = await import('express');
 const { clerkMiddleware } = await import('@clerk/express');
 const { Webhook } = await import('svix');
 const { default: sharp } = await import('sharp');
-const { db, users, friendships, notifications, activityEvents, badges, userBadges, userMetricMarks, scores, machines, venues } = await import('@workspace/db');
+const { db, users, friendships, notifications, activityEvents, badges, badgeSeries, userBadges, userMetricMarks, scores, machines, venues } = await import('@workspace/db');
 const { and, eq, gt, inArray, like, or, sql } = await import('drizzle-orm');
 const { setAuthForTests } = await import('./src/middleware/requireAuth.js');
 const { default: adminBadgesRouter } = await import('./src/routes/adminBadges.js');
@@ -42,7 +48,7 @@ const { default: notificationsRouter } = await import('./src/routes/notification
 const { createClerkWebhookHandler } = await import('./src/routes/clerkWebhook.js');
 const { insertActivity, isActivityRecorded } = await import('./src/lib/activity.js');
 const { setRetentionLoaderForTests } = await import('./src/lib/activityRetention.js');
-const { awardBadges, onSignInBadges, runBadgeSweep } = await import('./src/lib/badges.js');
+const { awardBadges, onSignInBadges, runBadgeSweep, badgeCatalog } = await import('./src/lib/badges.js');
 const { raiseNotificationsBulk } = await import('./src/lib/notify.js');
 const { readMetric } = await import('./src/lib/badgeMetrics.js');
 
@@ -115,7 +121,15 @@ const holds = async (userId: number, badgeId: number) =>
   (await db.select().from(userBadges).where(and(eq(userBadges.userId, userId), eq(userBadges.badgeId, badgeId)))).length;
 
 const badgeIds: number[] = [];
+const seriesIds: number[] = [];
 const scoreIds: number[] = [];
+// Restored exactly at the end (the reorder test rewrites every top-level sort_order).
+// updated_at goes through ::text both ways — naive timestamps must not pick up this machine's zone.
+type OrderRow = { id: number; sort_order: number; updated_at: string };
+const orderSnapshot = {
+  badges: await db.execute(sql`SELECT id, sort_order, updated_at::text AS updated_at FROM badges`) as unknown as OrderRow[],
+  series: await db.execute(sql`SELECT id, sort_order, updated_at::text AS updated_at FROM badge_series`) as unknown as OrderRow[],
+};
 let machineId = 0;
 const venueIds: number[] = [];
 const LOGIN_DAY = '2001-01-01';
@@ -413,6 +427,137 @@ try {
   const liveIds = new Set((await db.select({ id: badges.id }).from(badges).where(eq(badges.status, 'live'))).map(b => b.id));
   check('catalog has only live badges', r.body.every((b: any) => liveIds.has(b.id)), r.body.map((b: any) => b.key));
 
+  // ── badge series ────────────────────────────────────────────────────────────
+  r = await call(alice, 'POST', '/admin/badge-series', { name: 'ZZ Badge Test Ladder', color: '#123456' });
+  check('create a series → 201, keyed from its name', r.status === 201 && r.body.series?.key === 'zz-badge-test-ladder' && r.body.series?.badgeCount === 0, r.body);
+  const ladder = r.body.series?.id as number;
+  if (ladder) seriesIds.push(ladder);
+  r = await call(alice, 'POST', '/admin/badge-series', { name: '', color: 'red' });
+  check('series validation → 400 invalid_series with name + color errors', r.status === 400 && r.body.code === 'invalid_series' && r.body.errors?.name && r.body.errors?.color, r.body);
+  // Four rule tiers (ordered by their tier sort_order, auto-placed 10/20/30/40): 1 and 2 earnable by
+  // everyone (a score on the zz machine), 3 by nobody, 4 stays draft. Their own colors differ.
+  const tier = async (n: number, rule: Record<string, unknown>, color: string) =>
+    createBadge({ key: `zz-badge-test-tier-${n}`, name: `ZZ Tier ${n}`, description: `Tier ${n} desc`, kind: 'rule', rule, retroactive: true, color, seriesId: ladder });
+  const tier1 = await tier(1, anyRule, '#ff0000');
+  const tier2 = await tier(2, { ...anyRule, minScore: 1 }, '#00ff00');
+  const tier3 = await tier(3, { ...anyRule, minScore: 999_999_999 }, '#0000ff');
+  const tier4 = await tier(4, anyRule, '#ffffff');
+  r = await call(alice, 'GET', '/admin/badges');
+  const adminTier = (id: number) => r.body.items.find((b: any) => b.id === id);
+  check('tiers auto-placed after each other in the series (10, 20, 30, 40)', [tier1, tier2, tier3, tier4].map(id => adminTier(id)?.sortOrder).join() === '10,20,30,40', [tier1, tier2, tier3, tier4].map(id => adminTier(id)?.sortOrder));
+  check('admin list: tiers drawn in the series color, own color kept as ownColor', adminTier(tier2)?.color === '#123456' && adminTier(tier2)?.ownColor === '#00ff00' && adminTier(tier2)?.seriesId === ladder, adminTier(tier2));
+  check('admin list: the series with its count, and in `order` as one item (no tier rows)',
+    r.body.series.some((x: any) => x.id === ladder && x.badgeCount === 4) && r.body.order.some((o: any) => o.type === 'series' && o.id === ladder)
+    && !r.body.order.some((o: any) => o.type === 'badge' && [tier1, tier2, tier3, tier4].includes(o.id)), r.body.order);
+  const idxs = [tier1, tier2, tier3, tier4].map(id => r.body.items.findIndex((b: any) => b.id === id));
+  check('admin list: tiers consecutive, lowest first', idxs.every((x, i) => i === 0 || x === idxs[i - 1] + 1), idxs);
+  for (const id of [tier1, tier2, tier3]) await call(alice, 'POST', `/admin/badges/${id}/activate`);
+  check('alice earned tiers 1 and 2, not 3', await holds(alice.id, tier1) === 1 && await holds(alice.id, tier2) === 1 && await holds(alice.id, tier3) === 0);
+  const [tierNotif] = await db.select().from(notifications).where(and(eq(notifications.userId, alice.id), eq(notifications.kind, 'badge_earned'), sql`${notifications.payload} ->> 'badgeId' = ${String(tier2)}`));
+  check('the badge_earned notification carries the series color', (tierNotif?.payload as any)?.color === '#123456', tierNotif?.payload);
+
+  r = await call(null, 'GET', `/users/${encodeURIComponent(alice.username)}/badges`);
+  const item = r.body?.items?.find((it: any) => it.type === 'series' && it.series.id === ladder);
+  check('shelf: the series is ONE item, its top = the highest earned tier (2)', !!item && item.top?.id === tier2 && r.body.items.filter((it: any) => it.type === 'series' && it.series.id === ladder).length === 1, item);
+  check('shelf: pips = 2 earned of 3 live tiers (the draft tier 4 isn’t a pip)', item?.earnedCount === 2 && item?.tierCount === 3 && item?.tier === 2, item && { e: item.earnedCount, n: item.tierCount, t: item.tier });
+  check('shelf: the ladder lists tiers 1–3 lowest first with earn dates only for 1 and 2',
+    item?.tiers?.map((t: any) => t.badge.id).join() === [tier1, tier2, tier3].join() && !!item.tiers[0].earnedAt && !!item.tiers[1].earnedAt && item.tiers[2].earnedAt === null, item?.tiers);
+  check('shelf: tier entries carry requirement text and the series color, no rule internals',
+    item?.tiers?.every((t: any) => typeof t.badge.requirement === 'string' && t.badge.color === '#123456' && !('rule' in t.badge)) && item?.top?.color === '#123456', item?.tiers?.[0]);
+  check('shelf: tiers aren’t repeated as single items', !r.body.items.some((it: any) => it.type === 'badge' && [tier1, tier2].includes(it.badge.id)), r.body.items.map((it: any) => it.type));
+  const flat2 = r.body?.badges?.find((b: any) => b.id === tier2);
+  check('shelf: the flat list still has both tiers, each with series.tier', flat2?.series?.tier === 2 && flat2?.series?.tierCount === 3 && r.body.badges.some((b: any) => b.id === tier1), flat2?.series);
+  r = await call(null, 'GET', '/badges');
+  const catTiers = r.body.filter((b: any) => b.series?.id === ladder);
+  check('catalog: the 3 live tiers, consecutive, tier 1..3 of 3, series color', catTiers.map((b: any) => b.id).join() === [tier1, tier2, tier3].join()
+    && catTiers.every((b: any, i: number) => b.series.tier === i + 1 && b.series.tierCount === 3 && b.color === '#123456')
+    && r.body.findIndex((b: any) => b.id === tier2) === r.body.findIndex((b: any) => b.id === tier1) + 1, catTiers.map((b: any) => [b.id, b.series]));
+  // The public route resolves the viewer from a Clerk session, which this harness can't mint — so the
+  // signed-in view is checked on badgeCatalog() directly.
+  const mineCat = (await badgeCatalog({ id: alice.id, role: alice.role } as any)).filter(b => b.series?.id === ladder);
+  check('catalog (signed in as alice): earn dates on tiers 1–2 only', !!mineCat[0]?.earnedAt && !!mineCat[1]?.earnedAt && mineCat[2]?.earnedAt === null, mineCat.map(b => b.earnedAt));
+
+  // One color per series: recolor it and every tier follows.
+  r = await call(alice, 'PATCH', `/admin/badge-series/${ladder}`, { color: '#abcdef' });
+  check('recolor the series → 200', r.status === 200 && r.body.series?.color === '#abcdef', r.body);
+  r = await call(null, 'GET', '/badges');
+  check('…every live tier is now #abcdef in the catalog', r.body.filter((b: any) => b.series?.id === ladder).every((b: any) => b.color === '#abcdef'));
+  r = await call(alice, 'PATCH', `/admin/badges/${tier3}`, { color: '#999999' });
+  r = await call(null, 'GET', '/badges');
+  check('a tier’s own color edit doesn’t break away from the series', r.body.find((b: any) => b.id === tier3)?.color === '#abcdef');
+
+  // Retire a tier alice earned: it still counts for her (filled), and leaves the catalog.
+  await call(alice, 'POST', `/admin/badges/${tier1}/retire`);
+  r = await call(null, 'GET', `/users/${encodeURIComponent(alice.username)}/badges`);
+  const item2 = r.body?.items?.find((it: any) => it.type === 'series' && it.series.id === ladder);
+  check('retired-but-earned tier 1 still a filled pip (2 of 3), top still tier 2', item2?.earnedCount === 2 && item2?.tierCount === 3 && item2?.top?.id === tier2, item2 && { e: item2.earnedCount, n: item2.tierCount });
+  r = await call(null, 'GET', `/users/${encodeURIComponent(bob.username)}/badges`);
+  const bobItem = r.body?.items?.find((it: any) => it.type === 'series' && it.series.id === ladder);
+  check('bob (earned tiers 1+2 too) sees the same ladder', bobItem?.earnedCount === 2 && bobItem?.tierCount === 3, bobItem && { e: bobItem.earnedCount, n: bobItem.tierCount });
+
+  // Membership: a new metric badge joins its metric's series by default; null = explicitly single.
+  const mKey = 'friend_requests_declined_by_you';
+  const seeded = await createBadge({ key: 'zz-badge-test-m-1', name: 'ZZ M1', kind: 'metric', metric: mKey, threshold: 900_001, newSeries: { name: 'ZZ Badge Test Metric', color: '#654321' } });
+  r = await call(alice, 'GET', `/admin/badges/${seeded}`);
+  const mSeries = r.body.badge?.seriesId as number;
+  if (mSeries) seriesIds.push(mSeries);
+  check('newSeries on create → a fresh series holding the badge', !!mSeries && mSeries !== ladder && r.body.badge.color === '#654321', r.body.badge);
+  const joined = await createBadge({ key: 'zz-badge-test-m-2', name: 'ZZ M2', kind: 'metric', metric: mKey, threshold: 900_002 });
+  r = await call(alice, 'GET', `/admin/badges/${joined}`);
+  check('a new tier on that metric (no seriesId sent) auto-joins its series', r.body.badge?.seriesId === mSeries, r.body.badge?.seriesId);
+  const single = await createBadge({ key: 'zz-badge-test-m-3', name: 'ZZ M3', kind: 'metric', metric: mKey, threshold: 900_003, seriesId: null });
+  r = await call(alice, 'GET', '/admin/badges');
+  const maxTop = Math.max(...r.body.order.map((o: any) => o.type === 'series' ? r.body.series.find((x: any) => x.id === o.id).sortOrder : r.body.items.find((b: any) => b.id === o.id).sortOrder));
+  const singleRow = r.body.items.find((b: any) => b.id === single);
+  check('seriesId: null → a single, placed after the last item', singleRow?.seriesId === null && singleRow?.sortOrder === maxTop && r.body.order[r.body.order.length - 1]?.id === single, { s: singleRow?.sortOrder, maxTop, last: r.body.order.at(-1) });
+  r = await call(alice, 'POST', '/admin/badges', { key: 'zz-badge-test-m-bad', name: 'x', kind: 'manual', seriesId: 999_999_999 });
+  check('an unknown seriesId → 400 unknown_series', r.status === 400 && r.body.code === 'unknown_series', r.body);
+  r = await call(alice, 'PATCH', `/admin/badges/${joined}`, { seriesId: null });
+  check('PATCH seriesId null → leaves the series', r.status === 200 && r.body.badge.seriesId === null, r.body.badge);
+  r = await call(alice, 'PATCH', `/admin/badges/${joined}`, { seriesId: mSeries });
+  check('PATCH seriesId → rejoins', r.status === 200 && r.body.badge.seriesId === mSeries && r.body.badge.color === '#654321', r.body.badge);
+  r = await call(alice, 'DELETE', `/admin/badge-series/${mSeries}`);
+  check('deleting a non-empty series → 409 series_not_empty', r.status === 409 && r.body.code === 'series_not_empty', r.body);
+  for (const id of [seeded, joined]) await call(alice, 'PATCH', `/admin/badges/${id}`, { seriesId: null });
+  r = await call(alice, 'DELETE', `/admin/badge-series/${mSeries}`);
+  check('…emptied, it deletes', r.status === 200 && (await db.select().from(badgeSeries).where(eq(badgeSeries.id, mSeries))).length === 0, r.body);
+
+  // Reorder: the full top-level list, validated, one transaction, persisted.
+  r = await call(alice, 'GET', '/admin/badges');
+  const order0 = r.body.order as Array<{ type: string; id: number }>;
+  const reversed = [...order0].reverse();
+  r = await call(alice, 'PUT', '/admin/badges/order', { items: order0.slice(1) });
+  check('reorder missing an item → 409 order_stale', r.status === 409 && r.body.code === 'order_stale', r.body);
+  r = await call(alice, 'PUT', '/admin/badges/order', { items: [...order0, order0[0]] });
+  check('reorder with a duplicate → 400 duplicate_item', r.status === 400 && r.body.code === 'duplicate_item', r.body);
+  r = await call(alice, 'PUT', '/admin/badges/order', { items: [...order0.slice(1), { type: 'badge', id: tier2 }] });
+  check('reorder naming a tier → 400 unknown_item', r.status === 400 && r.body.code === 'unknown_item', r.body);
+  r = await call(alice, 'PUT', '/admin/badges/order', { items: 'nope' });
+  check('reorder with a bad body → 400 invalid_order', r.status === 400 && r.body.code === 'invalid_order', r.body);
+  const [{ n: evBefore }] = await db.select({ n: sql<number>`count(*)::int` }).from(activityEvents).where(and(eq(activityEvents.type, 'admin.badge_order_changed'), gt(activityEvents.id, Number(maxEvent))));
+  r = await call(alice, 'PUT', '/admin/badges/order', { items: reversed });
+  check('reorder (reversed) → 200 with changes', r.status === 200 && r.body.changed > 0, r.body);
+  r = await call(alice, 'GET', '/admin/badges');
+  check('…persisted: GET returns the reversed order', JSON.stringify(r.body.order) === JSON.stringify(reversed), { got: r.body.order.slice(0, 4), want: reversed.slice(0, 4) });
+  const seriesPos = reversed.findIndex(o => o.type === 'series' && o.id === ladder);
+  const sortOf = (o: { type: string; id: number }) => o.type === 'series' ? r.body.series.find((x: any) => x.id === o.id)?.sortOrder : r.body.items.find((b: any) => b.id === o.id)?.sortOrder;
+  check('…sort orders are 10, 20, 30, …', reversed.every((o, i) => sortOf(o) === (i + 1) * 10), reversed.slice(0, 5).map(sortOf));
+  check('…tiers kept their tier order', [tier1, tier2, tier3, tier4].map(id => r.body.items.find((b: any) => b.id === id)?.sortOrder).join() === '10,20,30,40');
+  const [{ n: evAfter }] = await db.select({ n: sql<number>`count(*)::int` }).from(activityEvents).where(and(eq(activityEvents.type, 'admin.badge_order_changed'), gt(activityEvents.id, Number(maxEvent))));
+  check('…logged as admin.badge_order_changed', evAfter === evBefore + 1, { evBefore, evAfter });
+  r = await call(alice, 'PUT', '/admin/badges/order', { items: reversed });
+  check('the same order again → changed 0, nothing logged', r.status === 200 && r.body.changed === 0, r.body);
+  r = await call(null, 'GET', '/badges');
+  const liveTop = reversed.filter(o => o.type === 'series' ? r.body.some((b: any) => b.series?.id === o.id) : r.body.some((b: any) => b.id === o.id));
+  const firstIdx = (o: { type: string; id: number }) => r.body.findIndex((b: any) => (o.type === 'series' ? b.series?.id === o.id : b.id === o.id && !b.series));
+  const catIdx = liveTop.map(firstIdx);
+  check('the catalog follows the new order (series as a unit)', catIdx.every((x, i) => x >= 0 && (i === 0 || x > catIdx[i - 1])), catIdx);
+  r = await call(null, 'GET', `/users/${encodeURIComponent(alice.username)}/badges`);
+  const shelfKeys = r.body.items.map((it: any) => (it.type === 'series' ? `series:${it.series.id}` : `badge:${it.badge.id}`));
+  const wantKeys = reversed.map(o => `${o.type}:${o.id}`).filter(k => shelfKeys.includes(k));
+  check('alice’s shelf follows the new order', JSON.stringify(shelfKeys) === JSON.stringify(wantKeys), { shelfKeys, wantKeys });
+  void seriesPos;
+
   // ── retire; the sweep ──────────────────────────────────────────────────────
   r = await call(alice, 'POST', `/admin/badges/${big}/retire`);
   check('retire → ok; earned one stays', r.status === 200 && await holds(alice.id, big) === 1, r);
@@ -426,6 +571,9 @@ try {
 } finally {
   // ── cleanup ─────────────────────────────────────────────────────────────────
   setRetentionLoaderForTests(null);
+  // Put every pre-existing badge's and series' sort_order (and updated_at) back exactly.
+  for (const b of orderSnapshot.badges) await db.execute(sql`UPDATE badges SET sort_order = ${b.sort_order}, updated_at = ${b.updated_at}::timestamp WHERE id = ${b.id}`);
+  for (const x of orderSnapshot.series) await db.execute(sql`UPDATE badge_series SET sort_order = ${x.sort_order}, updated_at = ${x.updated_at}::timestamp WHERE id = ${x.id}`);
   const zz = await db.select({ id: badges.id }).from(badges).where(like(badges.key, 'zz-badge-test-%'));
   const allBadgeIds = [...new Set([...badgeIds, ...zz.map(b => b.id)])];
   if (allBadgeIds.length) {
@@ -436,6 +584,12 @@ try {
       and(eq(activityEvents.type, 'notification.sent'), sql`${activityEvents.payload} ->> 'kind' = 'badge_earned'`, inArray(sql`${activityEvents.payload} ->> 'badgeId'`, idText)),
     ));
     await db.delete(badges).where(inArray(badges.id, allBadgeIds)); // user_badges cascade
+  }
+  const zzSeries = await db.select({ id: badgeSeries.id }).from(badgeSeries).where(like(badgeSeries.key, 'zz-badge-test-%'));
+  const allSeriesIds = [...new Set([...seriesIds, ...zzSeries.map(x => x.id)])];
+  if (allSeriesIds.length) {
+    await db.delete(activityEvents).where(and(eq(activityEvents.targetType, 'badge_series'), inArray(activityEvents.targetId, allSeriesIds.map(String))));
+    await db.delete(badgeSeries).where(inArray(badgeSeries.id, allSeriesIds));
   }
   // Awards of anyone's *other* live badges (an admin's manual testing state, e.g. a live "send a
   // friend request" badge) that this run's friend events / scores triggered for the borrowed users.
@@ -464,7 +618,8 @@ try {
   if (venueIds.length) await db.delete(venues).where(inArray(venues.id, venueIds));
   const [left] = await db.select({ n: sql<number>`count(*)::int` }).from(badges).where(like(badges.key, 'zz-badge-test-%'));
   const [leftF] = await db.select({ n: sql<number>`count(*)::int` }).from(friendships).where(and(inArray(friendships.requesterId, ids), inArray(friendships.addresseeId, ids)));
-  console.log(`cleanup: ${left.n} zz badges, ${leftF.n} test friendships left`);
+  const [leftS] = await db.select({ n: sql<number>`count(*)::int` }).from(badgeSeries).where(like(badgeSeries.key, 'zz-badge-test-%'));
+  console.log(`cleanup: ${left.n} zz badges, ${leftS.n} zz series, ${leftF.n} test friendships left`);
   server.close();
   console.log(failures ? `\n${failures} FAILED` : '\nALL PASSED');
   process.exit(failures ? 1 : 0);

@@ -414,6 +414,22 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () =>
 // threshold, rule needs a rule) that Drizzle doesn't model here.
 export type BadgeKind = 'metric' | 'rule' | 'manual';
 export type BadgeStatus = 'draft' | 'live' | 'retired';
+
+// Badge series (migrate25) — a ladder of tiers ("Scores": First Ball → Regular → Centurion → Wizard
+// Mode). A series has ONE color: every tier renders in `color` (a tier's own badges.color is ignored
+// while it's in a series), so the tiers can't drift. `sortOrder` places the whole series in the same
+// ordering space as single badges' badges.sort_order. Within a series, metric tiers are ordered by
+// threshold, rule/manual tiers by their own sort_order (src/lib/badgeSeries.ts).
+export const badgeSeries = pgTable('badge_series', {
+  id: serial('id').primaryKey(),
+  key: text('key').unique().notNull(),
+  name: text('name').notNull(),
+  color: varchar('color', { length: 7 }).default('#f59e0b').notNull(),
+  sortOrder: integer('sort_order').default(0).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
 export const badges = pgTable('badges', {
   id: serial('id').primaryKey(),
   key: text('key').unique().notNull(),
@@ -433,11 +449,14 @@ export const badges = pgTable('badges', {
   availableTo: timestamp('available_to'),
   activatedAt: timestamp('activated_at'),
   sortOrder: integer('sort_order').default(0).notNull(),
+  // migrate25: the series this badge is a tier of (null = a single badge).
+  seriesId: integer('series_id').references(() => badgeSeries.id, { onDelete: 'set null' }),
   createdById: integer('created_by_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
   statusIdx: index('badges_status_idx').on(table.status),
+  seriesIdx: index('badges_series_id_idx').on(table.seriesId),
 }));
 
 // Who has which badge. A badge is earned once (the primary key); a yearly badge is a new badge row
@@ -471,6 +490,7 @@ export const userMetricMarks = pgTable('user_metric_marks', {
 }));
 
 export type Badge = typeof badges.$inferSelect;
+export type BadgeSeries = typeof badgeSeries.$inferSelect;
 export type UserBadge = typeof userBadges.$inferSelect;
 export type UserMetricMark = typeof userMetricMarks.$inferSelect;
 

@@ -1,4 +1,4 @@
-import { db, badges, userBadges, users, scores, machines, venues, notifications, challengeParticipants, activityEvents, type Badge } from '@workspace/db';
+import { db, badges, badgeSeries, userBadges, users, scores, machines, venues, notifications, challengeParticipants, activityEvents, type Badge } from '@workspace/db';
 import { and, asc, desc, eq, gte, inArray, isNull, lte, notExists, or, sql, type SQL } from 'drizzle-orm';
 import sharp from 'sharp';
 import { buildActivityRow, isActivityRecorded, logActivity, type Executor } from './activity.js';
@@ -9,6 +9,7 @@ import {
   loginMark, metricsFor, type FriendEvent,
 } from './badgeMetrics.js';
 import { normalizeRule, ruleSatisfied, describeRule, type BadgeRule, type RuleScore } from './badgeRules.js';
+import { orderBadges, tierNumbers, collapseShelf, normalizeSeriesInput, type SeriesRef } from './badgeSeries.js';
 
 // Badges — the engine (feature/badges). Every award goes through here, whatever earned it:
 //
@@ -34,15 +35,21 @@ import { normalizeRule, ruleSatisfied, describeRule, type BadgeRule, type RuleSc
 
 // ── shapes ───────────────────────────────────────────────────────────────────
 
-/** Every badge column except the image bytes. */
+/**
+ * Every badge column except the image bytes. `color` is the color the badge is drawn in — its
+ * series' color when it's a tier (one color per series, so tiers can't drift), else its own;
+ * `ownColor` is the badge's own column (the admin editor's value for a single).
+ */
 export const badgeCols = {
-  id: badges.id, key: badges.key, name: badges.name, description: badges.description, icon: badges.icon, color: badges.color,
+  id: badges.id, key: badges.key, name: badges.name, description: badges.description, icon: badges.icon,
+  color: sql<string>`coalesce((SELECT bs.color FROM badge_series bs WHERE bs.id = ${badges.seriesId}), ${badges.color})`,
+  ownColor: badges.color, seriesId: badges.seriesId,
   imageVersion: badges.imageVersion, hasImage: sql<boolean>`(${badges.image} IS NOT NULL)`,
   kind: badges.kind, metric: badges.metric, threshold: badges.threshold, rule: badges.rule, retroactive: badges.retroactive,
   status: badges.status, availableFrom: badges.availableFrom, availableTo: badges.availableTo, activatedAt: badges.activatedAt,
   sortOrder: badges.sortOrder, createdById: badges.createdById, createdAt: badges.createdAt, updatedAt: badges.updatedAt,
 };
-export type BadgeRow = Omit<Badge, 'image'> & { hasImage: boolean };
+export type BadgeRow = Omit<Badge, 'image'> & { hasImage: boolean; ownColor: string };
 
 /** What earns it, in plain English. */
 export function requirementText(b: Pick<BadgeRow, 'kind' | 'metric' | 'threshold' | 'rule'>): string {
@@ -56,6 +63,7 @@ export function publicBadge(b: BadgeRow) {
   return {
     id: b.id, key: b.key, name: b.name, description: b.description, icon: b.icon, color: b.color,
     imageVersion: b.hasImage ? b.imageVersion : null,
+    seriesId: b.seriesId ?? null,
     requirement: requirementText(b),
     availableFrom: b.availableFrom?.toISOString() ?? null,
     availableTo: b.availableTo?.toISOString() ?? null,
@@ -487,29 +495,57 @@ async function earnedCounts(badgeIds?: number[]): Promise<Map<number, number>> {
   return new Map(rows.map(r => [r.badgeId, Number(r.n)]));
 }
 
-/** GET /api/badges — the live catalog, with how many players have each and the viewer's own earn dates. */
+/** Every series, for ordering and the public `series` field. */
+export async function loadSeries(): Promise<SeriesRef[]> {
+  return db.select({ id: badgeSeries.id, key: badgeSeries.key, name: badgeSeries.name, color: badgeSeries.color, sortOrder: badgeSeries.sortOrder })
+    .from(badgeSeries).orderBy(asc(badgeSeries.sortOrder), asc(badgeSeries.id));
+}
+
+/** The public `series` field of a tier: which ladder, and where in it ("Tier 2 of 4"). */
+export type PublicSeriesRef = { id: number; key: string; name: string; color: string; tier: number; tierCount: number };
+function seriesField(b: Pick<BadgeRow, 'id' | 'seriesId'>, byId: Map<number, SeriesRef>, tiers: Map<number, { tier: number; tierCount: number }>): PublicSeriesRef | null {
+  const s = b.seriesId != null ? byId.get(b.seriesId) : undefined;
+  const t = tiers.get(b.id);
+  return s && t ? { id: s.id, key: s.key, name: s.name, color: s.color, ...t } : null;
+}
+
+/**
+ * GET /api/badges — the live catalog in the shared order (series as a unit, tiers consecutive, then
+ * by threshold), with how many players have each and the viewer's own earn dates. Still a flat
+ * array: a tier carries `series` (tier N of the series' live tiers), so the page groups consecutive
+ * tiers into a ladder and an older client just lists them.
+ */
 export async function badgeCatalog(viewer?: Viewer) {
-  const rows = await db.select(badgeCols).from(badges).where(eq(badges.status, 'live')).orderBy(asc(badges.sortOrder), asc(badges.id)) as BadgeRow[];
+  const series = await loadSeries();
+  const rows = orderBadges(await db.select(badgeCols).from(badges).where(eq(badges.status, 'live')) as BadgeRow[], series);
   const counts = await earnedCounts(rows.map(r => r.id));
   const mine = viewer
     ? new Map((await db.select({ badgeId: userBadges.badgeId, earnedAt: userBadges.earnedAt }).from(userBadges).where(eq(userBadges.userId, viewer.id)))
       .map(r => [r.badgeId, r.earnedAt]))
     : new Map<number, Date>();
-  return rows.map(b => ({ ...publicBadge(b), earnedCount: counts.get(b.id) ?? 0, earnedAt: mine.get(b.id)?.toISOString() ?? null }));
+  const byId = new Map(series.map(s => [s.id, s]));
+  const tiers = tierNumbers(rows);
+  return rows.map(b => ({
+    ...publicBadge(b), series: seriesField(b, byId, tiers), earnedCount: counts.get(b.id) ?? 0, earnedAt: mine.get(b.id)?.toISOString() ?? null,
+  }));
 }
 
 /**
  * GET /api/users/:username/badges — public: anyone who can view the profile sees the badges, no
  * friend or pod check. A source score is linked only when the viewer may see it (canSeeScore); a
  * source challenge only for its participants (the challenge record is totals-only for others).
+ *
+ * `badges` is every earned badge (flat, in the shared order — older clients render it as is);
+ * `items` is the shelf as the profile draws it: one entry per series — its highest earned tier, the
+ * pips (earned tiers filled, remaining live tiers hollow) and the whole ladder — and each single.
  */
 export async function userBadgeShelf(username: string, viewer?: Viewer) {
   const [user] = await db.select({ id: users.id, username: users.username, displayName: users.displayName }).from(users).where(eq(users.username, username)).limit(1);
   if (!user) return null;
-  const rows = await db.select({ ...badgeCols, earnedAt: userBadges.earnedAt, sourceScoreId: userBadges.sourceScoreId, sourceChallengeId: userBadges.sourceChallengeId, note: userBadges.note, granted: sql<boolean>`(${userBadges.grantedById} IS NOT NULL)` })
+  const series = await loadSeries();
+  const rows = orderBadges(await db.select({ ...badgeCols, earnedAt: userBadges.earnedAt, sourceScoreId: userBadges.sourceScoreId, sourceChallengeId: userBadges.sourceChallengeId, note: userBadges.note, granted: sql<boolean>`(${userBadges.grantedById} IS NOT NULL)` })
     .from(userBadges).innerJoin(badges, eq(badges.id, userBadges.badgeId))
-    .where(eq(userBadges.userId, user.id))
-    .orderBy(desc(userBadges.earnedAt), desc(badges.id));
+    .where(eq(userBadges.userId, user.id)), series);
   const counts = await earnedCounts(rows.map(r => r.id));
 
   const scoreIds = rows.map(r => r.sourceScoreId).filter((x): x is number => x != null);
@@ -529,18 +565,48 @@ export async function userBadgeShelf(username: string, viewer?: Viewer) {
       .where(and(eq(challengeParticipants.userId, viewer.id), inArray(challengeParticipants.challengeId, challengeIds)))).map(r => r.id))
     : new Set<number>();
 
+  // Every tier of each series they've earned anything in (any status — collapseShelf keeps the live
+  // ones and the ones they earned).
+  const seriesIds = [...new Set(rows.map(r => r.seriesId).filter((x): x is number => x != null))];
+  const tierRows = seriesIds.length ? await db.select(badgeCols).from(badges).where(inArray(badges.seriesId, seriesIds)) as BadgeRow[] : [];
+  const items = collapseShelf(rows, tierRows, series);
+
+  const entry = (r: (typeof rows)[number], seriesRef: PublicSeriesRef | null) => ({
+    ...publicBadge(r as unknown as BadgeRow),
+    series: seriesRef,
+    earnedAt: r.earnedAt.toISOString(),
+    earnedCount: counts.get(r.id) ?? 0,
+    granted: !!r.granted,
+    note: r.note,
+    sourceScore: r.sourceScoreId != null ? visibleScore.get(r.sourceScoreId) ?? null : null,
+    sourceChallengeId: r.sourceChallengeId != null && mineChallenges.has(r.sourceChallengeId) ? r.sourceChallengeId : null,
+  });
+  // A tier's number is its place in the ladder this viewer sees (live tiers + the ones they earned).
+  const ladderTier = new Map<number, PublicSeriesRef>();
+  for (const it of items) {
+    if (it.type !== 'series') continue;
+    it.tiers.forEach((t, i) => ladderTier.set(t.badge.id, { ...it.series, tier: i + 1, tierCount: it.tierCount }));
+  }
+  const tierRef = (id: number) => ladderTier.get(id) ?? null;
+
   return {
     user,
     isSelf: viewer?.id === user.id,
-    badges: rows.map(r => ({
-      ...publicBadge(r as unknown as BadgeRow),
-      earnedAt: r.earnedAt.toISOString(),
-      earnedCount: counts.get(r.id) ?? 0,
-      granted: !!r.granted,
-      note: r.note,
-      sourceScore: r.sourceScoreId != null ? visibleScore.get(r.sourceScoreId) ?? null : null,
-      sourceChallengeId: r.sourceChallengeId != null && mineChallenges.has(r.sourceChallengeId) ? r.sourceChallengeId : null,
-    })),
+    badges: rows.map(r => entry(r, tierRef(r.id))),
+    items: items.map(it => it.type === 'badge'
+      ? { type: 'badge' as const, badge: entry(it.badge, null) }
+      : {
+        type: 'series' as const,
+        series: it.series,
+        top: entry(it.top, tierRef(it.top.id)),
+        tier: it.tier,
+        tierCount: it.tierCount,
+        earnedCount: it.earnedCount,
+        tiers: it.tiers.map(t => ({
+          badge: { ...publicBadge(t.badge), series: tierRef(t.badge.id) },
+          earnedAt: t.earned ? t.earned.earnedAt.toISOString() : null,
+        })),
+      }),
   };
 }
 
@@ -555,6 +621,10 @@ export interface BadgeInput {
   key?: string; name?: string; description?: string; icon?: string; color?: string;
   kind?: 'metric' | 'rule' | 'manual'; metric?: string | null; threshold?: number | null; rule?: BadgeRule | null;
   retroactive?: boolean; availableFrom?: Date | null; availableTo?: Date | null; sortOrder?: number;
+  /** The series it's a tier of (null = a single). Omitted on create = the metric's series, if it has exactly one. */
+  seriesId?: number | null;
+  /** Create a series and put the badge in it (instead of `seriesId`). */
+  newSeries?: { name: string; color: string };
 }
 
 function dateOrNull(v: unknown): Date | null | 'bad' {
@@ -634,6 +704,18 @@ export function normalizeBadgeInput(body: unknown, partial: boolean): { values: 
     if (!Number.isSafeInteger(b.sortOrder) || Math.abs(b.sortOrder) > 1_000_000) errors.sortOrder = 'Sort order: a whole number';
     else v.sortOrder = b.sortOrder;
   }
+  if (has('seriesId')) {
+    if (b.seriesId === null) v.seriesId = null;
+    else if (!Number.isSafeInteger(b.seriesId) || b.seriesId <= 0) errors.seriesId = 'Series: pick one or none';
+    else v.seriesId = b.seriesId;
+  }
+  if (has('newSeries') && b.newSeries !== null) {
+    const s = normalizeSeriesInput(b.newSeries, false);
+    if ('errors' in s) Object.assign(errors, { seriesName: s.errors.name, seriesColor: s.errors.color });
+    else v.newSeries = s.values as { name: string; color: string };
+    if (v.seriesId != null) errors.seriesId = 'Pick an existing series or a new one, not both';
+  }
+  for (const k of Object.keys(errors)) if (errors[k] === undefined) delete errors[k];
   if (v.availableFrom && v.availableTo && +v.availableFrom > +v.availableTo) errors.availableTo = 'Must be after the start';
 
   // Kind-specific requirements — only checkable here when the body carries the kind (a create).

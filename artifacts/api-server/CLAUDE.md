@@ -920,8 +920,44 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   year only when `v` is current), `GET /api/users/:username/badges` (no friend/pod check; a source
   score is linked only if `canSeeScore`, a source challenge only for its participants). Never
   select `badges.image` in a list — `badgeCols` is the column list without it.
+- **Series** (`badgeSeries.ts` pure + unit-tested, migrate25, feature/badge-series, 2026-09-29): a
+  ladder of tiers ("Scores": First Ball 1 → Regular 10 → Centurion 100 → Wizard Mode 1,000).
+  `badge_series` (id, key unique, name, color, sort_order) + `badges.series_id` (nullable FK, ON
+  DELETE SET NULL). **One color per series:** `badgeCols.color` is `coalesce(series color, own
+  color)` via a subquery, so every read (catalog, shelf, `newBadges`, the `badge_earned` payload,
+  admin) draws a tier in its series' color and tiers can't drift; `ownColor` is the badge's own
+  column (the editor's value for a single). **Ordering:** one shared space — a whole series at
+  `badge_series.sort_order`, singles at `badges.sort_order` (tie: series first, then id); inside a
+  series metric tiers by threshold, then rule/manual tiers by their own sort_order (`tierCompare`).
+  Shelf and catalog use it, **not** newest-first.
+  - `GET /api/users/:username/badges` keeps the flat `badges` (now in that order, each tier with
+    `series {id,key,name,color,tier,tierCount}`) and adds `items` — `collapseShelf()`: a series
+    once, as its **highest earned tier** (`top`), `tier`/`tierCount`, `earnedCount` (filled pips),
+    and the ladder `tiers[] {badge, earnedAt|null}`. The ladder = live tiers + any tier this user
+    earned (a retired one still counts filled; drafts and unearned retired tiers aren't pips).
+  - `GET /api/badges` stays a flat array in the shared order (tiers consecutive), each tier with
+    `series` (tier N of the series' **live** tiers) — the page groups consecutive tiers.
+  - Admin: `GET /badges` adds `series[]` (with `badgeCount`) and `order` (the draggable top-level
+    items: every series, empty ones too, and every single). `PUT /badges/order {items:[{type,id}]}`
+    must list exactly that set once each (400 `invalid_order` / `duplicate_item` / `unknown_item` —
+    a tier can't be listed; 409 `order_stale` when something's missing), one transaction under a
+    `badge_series` table lock, sort_orders become 10, 20, 30…, logged `admin.badge_order_changed`
+    (admin tier) only when something moved. `POST/PATCH/DELETE /badge-series[/:id]` (delete only when
+    empty → 409 `series_not_empty`), logged `admin.badge_updated {action: series_*}` with
+    `target_type 'badge_series'`. Badge create/PATCH take `seriesId` (null = single) or `newSeries
+    {name, color}`; a create **without** `seriesId` joins the metric's series when that metric's
+    badges are in exactly one. Placement is automatic: a new single (or series) after the last item,
+    a new/moved rule/manual tier after its series' last tier, a badge leaving a series after the last item.
+  - migrate25 seeded Scores / Machines / Venues / Challenge wins / Win streaks / Loss streaks /
+    Sign-ins from migrate23's keys, only when that series key doesn't exist yet (a re-run never
+    re-attaches a badge moved out), color = the lowest tier's color on that DB, sort_order = the
+    lowest tier sort_order. It's dev-guarded — remove the guard deliberately at ship time.
 - Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/badgeRules.test.ts
-  src/lib/badgeMetrics.test.ts src/lib/badges.test.ts` (metrics SQL runs in PGlite);
+  src/lib/badgeMetrics.test.ts src/lib/badges.test.ts src/lib/badgeSeries.test.ts` (metrics SQL runs in PGlite);
   `npx tsx test-badges.ts` (dev branch only — borrows 3 friendless users, zz-badge-test machine /
   venues / badges, simulates the webhook with a throwaway Svix secret and high-volume = 0 via the
-  in-process retention loader, cleans up everything incl. marks, notifications and events).
+  in-process retention loader, cleans up everything incl. marks, notifications and events). Its
+  series section uses `zz-badge-test-*` series; the reorder check rewrites every top-level
+  sort_order, so the script snapshots `(sort_order, updated_at)` of every badge and series first and
+  restores them exactly (through `::text`) at the end. The signed-in catalog view is checked on
+  `badgeCatalog()` directly — the harness can't mint a Clerk session for the public routes.

@@ -170,6 +170,7 @@ Feature-specific gotchas live in `artifacts/pinball-tracker/CLAUDE.md` (frontend
 | `artifacts/api-server/src/lib/badges.ts` | Badge engine — awardBadges (the one award path), preview/activate/grant/revoke, public reads |
 | `artifacts/api-server/src/lib/badgeMetrics.ts` | Badge metric library (derived + event marks) — add a metric here |
 | `artifacts/api-server/src/lib/badgeRules.ts` | Badge rule vocabulary (pure, venue-local dates, grace window) |
+| `artifacts/api-server/src/lib/badgeSeries.ts` | Badge series (tier ladders): shared shelf/catalog order, reorder validation, shelf collapsing + pips |
 | `artifacts/pinball-tracker/src/components/BadgeImage.tsx` | Draws every badge — image, or lucide icon + color fallback |
 | `lib/db/src/schema.ts` | Drizzle schema — source of truth for DB types |
 | `artifacts/api-server/migrate*.ts` | Numbered migration scripts (run once, keep for history) |

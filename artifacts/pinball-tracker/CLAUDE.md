@@ -324,10 +324,18 @@
   else the lucide `icon` (`BADGE_ICONS`, kebab-case names; unknown → award) in `color` on a tinted
   disc. `locked` = grayscale + dimmed (the catalog's not-yet-earned look — same asset). Image URLs
   carry `?v=<imageVersion>` and are cached immutably, so never build one without the version.
-- Profile (`UserPage` → `BadgeShelf`): public for everyone, 48px grid newest first, "View all" past
-  12, tap → `BadgeDetail` (96px). No badges → hidden, except on your own profile (link to `/badges`).
-- `/badges` catalog (public route): live badges; unearned ones locked; `availabilityText()` gives
-  "Earn it on Dec 25, 2026" for a one-day rule, else the window.
+- Profile (`UserPage` → `BadgeShelf`): public for everyone, 48px grid in the **admin's sort order**
+  (not newest first), "View all" past 12 items, tap → `BadgeDetail` (96px). No badges → hidden,
+  except on your own profile (link to `/badges`). **Series** (feature/badge-series): renders the
+  server's collapsed `items` (`shelfItems()` falls back to one per badge for an older server) — a
+  series is one tile, its highest earned tier with `SeriesPips` under it (filled = earned tiers,
+  hollow = remaining live tiers, series color); the hover tooltip adds "Tier 2 of 4"; the detail
+  shows "Scores · Tier 2 of 4" and `SeriesLadder` (every tier: ✓ + earn date, or ○ "Not yet", with
+  its requirement). A tier's `color` is already the series color — never recolor it client-side.
+- `/badges` catalog (public route): live badges in the shared order; unearned ones locked;
+  `availabilityText()` gives "Earn it on Dec 25, 2026" for a one-day rule, else the window.
+  `groupCatalog()` turns a series' consecutive tiers into one full-width ladder card (header in the
+  series color + pips); tapping a tier opens its detail with the ladder.
 - AddScorePage step 4 shows `newBadges` from the score POST at 96px; the notifications page renders
   `badge_earned`.
 - `/admin/badges`: list + editor (kind, metric + N or the rule form builder, window, retroactive),
@@ -342,6 +350,18 @@
   an edit collapses it with a toast. Icon = `IconPicker` (searchable grid in the badge color); rule
   machine = `components/MachineCombobox.tsx` (attached dropdown, keyboard, chip with ×). Admin
   actions also invalidate `['notifications']` — they can award the admin themself.
+- `/admin/badges` **series + order** (feature/badge-series): the list is the shared order from the
+  server's `order` — series rows (header in the series color → inline `SeriesEditor`: rename,
+  recolor every tier, delete only when empty) with their tiers indented beneath (not draggable),
+  and singles. Reorder a top-level row by dragging its grip handle (HTML5 drag, armed only from the
+  handle, `sm:` and up) or the ▲/▼ buttons (keyboard + phones; an `aria-live` line announces the
+  move). Each move is optimistic and PUTs the full order (`reorderBadges`); a failure restores and
+  toasts. Reordering is off unless the status filter is All. Editor: **Series** select (None /
+  existing / "New series…"); in a series the badge's own Color is hidden and "Series color" (+ name)
+  shows instead — saving PATCHes the series first (dirty-tracked like the rest); a new metric badge
+  preselects its metric's series until the admin touches the select. The old Order field is now
+  "Tier order", shown only for a rule/manual tier (singles are placed by the list, metric tiers by
+  threshold).
 - **Toasts** (`lib/toast.ts` + `components/Toaster.tsx`, mounted in `Layout`): `toast({ title, body,
   tone, icon, href })` for confirmations and passive news; errors that need fixing stay inline.
   `lib/badgeToasts.tsx` toasts new unread `badge_earned` notifications off the bell's 30 s unread-count

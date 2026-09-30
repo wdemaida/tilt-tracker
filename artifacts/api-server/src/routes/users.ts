@@ -58,7 +58,8 @@ router.post('/setup', requireAuth, async (req, res) => {
   }
 });
 
-// GET /api/users/:username/badges — the profile's badge shelf, newest first. Public: anyone who can
+// GET /api/users/:username/badges — the profile's badge shelf, in the admin's sort order (`items`
+// collapses each series to its highest earned tier + pips; `badges` stays flat). Public: anyone who can
 // view the profile (guests included) sees it, no friend or pod check. Source scores are linked only
 // when the viewer may see them; source challenges only for participants (lib/badges.ts).
 router.get('/:username/badges', async (req, res) => {
