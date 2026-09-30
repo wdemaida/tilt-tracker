@@ -1211,6 +1211,17 @@ export default function MachinePage() {
         </div>
       )}
 
+      {/* Scores span 2+ venues, but nobody has played this machine at more than one of them. */}
+      {uniqueVenues.length >= 2 && venueDifficulty.length === 0 && (
+        <div className="rounded-xl border border-white/10 bg-card p-5 mb-6">
+          <h2 className="text-sm font-bold uppercase tracking-wider text-white mb-1">Venue Difficulty</h2>
+          <p className="text-xs text-muted-foreground">
+            Venue difficulty appears once someone has played this machine at more than one venue.
+            {scopeLabel && <> Computed from the scores in this view ({scopeLabel.toLowerCase()}).</>}
+          </p>
+        </div>
+      )}
+
       {/* Scores Table */}
       <div className="rounded-xl border border-white/10 bg-card overflow-x-auto">
         <table className="w-full text-sm min-w-[500px]">
