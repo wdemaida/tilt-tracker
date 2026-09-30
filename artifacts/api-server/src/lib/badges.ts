@@ -24,11 +24,11 @@ import { orderBadges, tierNumbers, collapseShelf, normalizeSeriesInput, type Ser
 //
 // Triggers wired today: POST /api/scores, the friend routes (marks + both users), the Clerk
 // webhook's session.created (login_days mark, written even when the retention gate skips the
-// event), the daily sweep.
-// TODO(phase 3): challenge triggers — call awardBadges(userId, { metrics: metricsFor('challenge'),
-// challengeId }) for every participant from applyResolution() (lib/challenges.ts) and from the
-// decline / counter routes (routes/challenges.ts), and set source_challenge_id on the award (the
-// `challengeId` option is accepted and stored already). Phases 1–2 deliberately don't touch those files.
+// event), the challenge lifecycle (phase 3 — onChallengeBadges, below), the daily sweep.
+// Challenge triggers are queued inside lib/challenges.ts's transactions (queueChallengeBadges) and
+// run after the commit: applyResolution (every player — outcome and streak metrics), a decline or
+// back-out, a counter, a proposal taken (the proposer) or rejected (the proposer), and players who
+// became `missed` (activate / expire). A challenge-triggered award stores source_challenge_id.
 //
 // Every new award inserts user_badges ON CONFLICT DO NOTHING (earned once — the PK), raises a
 // `badge_earned` notification and logs `badge.earned` (or `badge.granted`).
@@ -195,7 +195,10 @@ async function logAwardEvents(out: AwardInput[], byId: Map<number, BadgeRow>, ct
         actorUserId: granted ? a.grantedById : a.userId,
         subjectUserId: granted ? a.userId : null,
         targetType: 'badge', targetId: b.id,
-        payload: { badgeKey: b.key, name: b.name, trigger: ctx.trigger, sourceScoreId: a.sourceScoreId ?? null, ...(a.note ? { note: a.note } : {}) },
+        payload: {
+          badgeKey: b.key, name: b.name, trigger: ctx.trigger, sourceScoreId: a.sourceScoreId ?? null,
+          ...(a.sourceChallengeId ? { sourceChallengeId: a.sourceChallengeId } : {}), ...(a.note ? { note: a.note } : {}),
+        },
       }));
     }
     for (let i = 0; i < rows.length; i += 500) await db.insert(activityEvents).values(rows.slice(i, i + 500));
@@ -270,6 +273,18 @@ export async function onFriendBadges(ev: FriendEvent): Promise<void> {
   }
 }
 
+/**
+ * A challenge changed for these players (lib/challenges.ts calls it after the transaction commits):
+ * re-check every challenge metric badge for each, crediting `challengeId` as the award's source.
+ * `players` maps user id → the challenge that triggered it. Never throws.
+ */
+export async function onChallengeBadges(players: Map<number, number>): Promise<void> {
+  const metrics = metricsFor('challenge');
+  for (const [userId, challengeId] of players) {
+    await awardBadges(userId, { metrics, challengeId, trigger: 'challenge' });
+  }
+}
+
 /** A sign-in (Clerk webhook): one login_days mark per Eastern day. Never throws. */
 export async function onSignInBadges(userId: number, at: Date = new Date()): Promise<void> {
   try {
@@ -283,16 +298,24 @@ export async function onSignInBadges(userId: number, at: Date = new Date()): Pro
 // ── daily sweep ──────────────────────────────────────────────────────────────
 
 /**
- * Safety net: re-check every metric badge for users active in the last day (posted a score or got
- * a mark), in case a trigger was missed (a crash between insert and award, a badge that went live
- * after the event). Bounded by activity, not by the user table.
+ * Safety net: re-check every metric badge (challenge metrics included) for users active in the
+ * last day — posted a score, got a mark, or had a challenge change: answered one, or one they're in
+ * resolved, started, ended or had a suggestion decided — in case a trigger was missed (a crash
+ * between commit and award, a badge that went live after the event). Bounded by activity, not by
+ * the user table.
  */
 export async function runBadgeSweep(now = new Date()): Promise<{ users: number; awarded: number }> {
   const since = new Date(+now - 25 * 3_600_000);
+  const s = sql`${since.toISOString()}::timestamptz AT TIME ZONE 'UTC'`;
+  const n = sql`${now.toISOString()}::timestamptz AT TIME ZONE 'UTC'`;
   const active = await db.execute(sql`
-    SELECT user_id FROM scores WHERE created_at >= ${since.toISOString()}::timestamptz AT TIME ZONE 'UTC'
+    SELECT user_id FROM scores WHERE created_at >= ${s}
     UNION
-    SELECT user_id FROM user_metric_marks WHERE at >= ${since.toISOString()}::timestamptz AT TIME ZONE 'UTC'`) as unknown as Array<{ user_id: number }>;
+    SELECT user_id FROM user_metric_marks WHERE at >= ${s}
+    UNION
+    SELECT cp.user_id FROM challenge_participants cp JOIN challenges c ON c.id = cp.challenge_id
+    WHERE cp.responded_at >= ${s} OR c.resolved_at >= ${s} OR c.proposal_decided_at >= ${s}
+      OR (c.starts_at >= ${s} AND c.starts_at <= ${n}) OR (c.ends_at >= ${s} AND c.ends_at <= ${n})`) as unknown as Array<{ user_id: number }>;
   const keys = METRICS.map(m => m.key);
   let awarded = 0;
   for (const { user_id } of active) awarded += (await awardBadges(Number(user_id), { metrics: keys, now, trigger: 'sweep' })).length;
@@ -315,7 +338,7 @@ export function activationBlocker(b: { kind: string; metric: string | null; thre
     if (!b.metric || b.threshold == null) return { code: 'invalid_badge', error: 'A metric badge needs a metric and a threshold' };
     if (!metricByKey(b.metric)) {
       return PENDING_METRICS.some(p => p.key === b.metric)
-        ? { code: 'metric_unavailable', error: 'That metric arrives with the challenge hooks (phase 3) — it can’t go live yet' }
+        ? { code: 'metric_unavailable', error: 'That metric isn’t built yet — it can’t go live' }
         : { code: 'unknown_metric', error: `Unknown metric ${b.metric}` };
     }
   }

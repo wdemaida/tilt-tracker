@@ -8,7 +8,7 @@ import { FUTURE_SKEW_MS } from './playedAtClock.js';
 // this registry through GET /api/admin/badges/metrics; adding a metric is one entry here.
 //
 // Two sources:
-//   derived — computed from tables that are never purged (scores today; challenges in phase 3)
+//   derived — computed from tables that are never purged (scores; challenges since phase 3)
 //   marks   — COUNT(*) of user_metric_marks rows (migrate23), for events whose source rows get
 //             deleted (unfriend deletes the friendship) or purged (activity_events retention). Each
 //             mark's `ref` makes it idempotent: a login day's ref is the America/New_York date, a
@@ -77,7 +77,7 @@ function scoresMetric(def: Omit<MetricDef, 'source' | 'countSql' | 'triggers'>, 
   };
 }
 
-export const METRICS: readonly MetricDef[] = [
+const BASE_METRICS: readonly MetricDef[] = [
   scoresMetric({
     key: 'scores_posted', label: 'Scores posted', description: 'How many scores the player has posted.',
     phrase: n => (n === 1 ? 'Post your first score' : `Post ${plural(n, 'score')}`),
@@ -116,36 +116,168 @@ export const METRICS: readonly MetricDef[] = [
   }),
 ];
 
-// TODO(phase 3): the challenge-derived metrics. They read challenges.status,
-// challenge_participants.response / decline_reason, challenges.countered_from_id and (group
-// challenges, migrate24) challenges.proposed_by_id / proposal_decided_at. Implement each as a
-// MetricDef with source 'derived', triggers ['challenge', 'sweep'] — wins/losses/ties/abandoned/
-// streaks from computeRecord() (challengeRules.ts: bestStreak and bestLossStreak), the rest as
-// GROUP BY queries that exclude proposal rows (status proposed / rejected / lapsed) — move it into
-// METRICS, and delete it from this list. counters_accepted is now a proposal fact (proposed_by_id),
-// not "challenges you created"; the exact SQL is in the badges plan's "Phase 3 notes".
-// challenges_declined is a TRUE decline only: response 'declined' AND decline_reason IS DISTINCT FROM
-// 'backed_out' (a counter is response 'countered', so it's excluded too). challenges_backed_out is
-// response 'declined' AND decline_reason 'backed_out' — an accepted invitee who left a pending group
-// (migrate24; the server sets that reason only on the back-out path). Both join challenges and skip
-// proposal rows (status proposed / rejected / lapsed) — that exclusion is load-bearing: the
-// challenger's row on a rejected proposal is response 'declined' (decline_reason null) and on a
-// lapsed one 'missed' (closeProposal), which must not count as declining a challenge. Seeded badges
-// on these metrics (migrate23) stay draft until then: activateBadge refuses an unavailable metric.
-export const PENDING_METRICS: ReadonlyArray<Pick<MetricDef, 'key' | 'label' | 'description'>> = [
-  { key: 'challenge_wins', label: 'Challenges won', description: 'Resolved challenges the player won.' },
-  { key: 'challenge_losses', label: 'Challenges lost', description: 'Resolved challenges the player lost.' },
-  { key: 'challenges_tied', label: 'Challenges tied', description: 'Resolved challenges that ended in a tie.' },
-  { key: 'challenges_abandoned', label: 'Challenges abandoned', description: 'Challenges nobody finished.' },
-  { key: 'win_streak_achieved', label: 'Best win streak', description: 'Longest run of consecutive challenge wins.' },
-  { key: 'loss_streak_achieved', label: 'Worst loss streak', description: 'Longest run of consecutive challenge losses.' },
-  { key: 'challenges_declined', label: 'Challenges declined', description: 'Challenges the player declined outright (not counter-offers, not backing out after accepting).' },
-  { key: 'challenges_backed_out', label: 'Challenges backed out of', description: 'Group challenges the player accepted, then left before they started.' },
-  { key: 'challenges_countered', label: 'Counter-offers made', description: 'Challenges the player answered with a counter-offer.' },
-  { key: 'challenges_cant_reach', label: '"Can’t get there" answers', description: 'Declines or counters because the player can’t reach the venue.' },
-  { key: 'challenges_passed', label: 'Challenges passed on', description: 'Declines with "no thanks".' },
-  { key: 'counters_accepted', label: 'Counter-offers accepted', description: 'The player’s counter-offers that were taken up.' },
+// ── challenge metrics (badges phase 3) ───────────────────────────────────────
+//
+// Every one is derived from durable challenge columns — never from activity events (retention can
+// purge those): challenges.status / resolved_at / void / proposed_by_id / proposal_decided_at /
+// countered_from_id and challenge_participants.response / decline_reason / outcome.
+//
+// RECORD metrics (wins, losses, ties, abandoned, the two streaks) are the SQL twin of computeRecord()
+// (challengeRules.ts) over exactly the rows getRecord() feeds it: status 'resolved', the player's own
+// row accepted with an outcome. The headline uses the player's own outcome, so in a group placing
+// below 1st is a loss. An admin-voided challenge is status 'cancelled' with every outcome cleared
+// (adminActions.voidChallenge), so it drops out of all of them — nothing is revoked (no automatic
+// revocation), it just stops counting. Streaks are "best ever ≥ N": consecutive wins (losses) in
+// (resolved_at, id) order; any other outcome ends a run, abandoned included, and a legacy void row
+// (challenges.void — retired) neither extends nor breaks one. badgeMetrics.test.ts checks the SQL
+// against computeRecord on random histories.
+//
+// PARTICIPANT metrics (declined, backed out, countered, can't reach, passed, missed) never count a
+// PROPOSAL row (status proposed / rejected / lapsed): its participants are the proposer ('accepted' —
+// not a real acceptance) and the challenger, whose row closes 'declined' (rejected) or 'missed'
+// (lapsed) — her decision is the row's status, not a declined or missed challenge.
+//
+// PROPOSAL metrics (counters_accepted, counters_rejected) read the proposal rows themselves.
+
+/** The rows computeRecord() sees for each player (getRecord's query), in its order. */
+const RECORD_ROWS = sql`SELECT cp.user_id, c.id AS challenge_id, coalesce(c.resolved_at, 'epoch'::timestamp) AS resolved_at, c.void, cp.outcome
+  FROM challenge_participants cp JOIN challenges c ON c.id = cp.challenge_id
+  WHERE c.status = 'resolved' AND cp.response = 'accepted' AND cp.outcome IS NOT NULL`;
+
+/** Proposal rows are never a participant fact (see above). */
+const NOT_PROPOSAL = sql`c.status NOT IN ('proposed', 'rejected', 'lapsed')`;
+
+const CHALLENGE_TRIGGERS: MetricTrigger[] = ['challenge', 'sweep'];
+
+/** A count of the player's resolved challenges with this outcome (computeRecord's wins / losses / …). */
+function outcomeMetric(def: Omit<MetricDef, 'source' | 'countSql' | 'triggers'>, outcome: string): MetricDef {
+  return {
+    ...def,
+    source: 'derived',
+    triggers: CHALLENGE_TRIGGERS,
+    countSql: ({ userIds, min }) => sql`SELECT user_id, count(*)::int AS value FROM (${RECORD_ROWS}) r
+      WHERE outcome = ${outcome}${userFilter(sql`user_id`, userIds)}
+      GROUP BY user_id${having(sql`count(*)`, min)}`,
+  };
+}
+
+/**
+ * Best-ever run of `outcome` (computeRecord's bestStreak / bestLossStreak) — gaps and islands: within
+ * a player's non-void rows in record order, row_number() minus row_number() per outcome is constant
+ * along a run of the same outcome.
+ */
+function streakMetric(def: Omit<MetricDef, 'source' | 'countSql' | 'triggers'>, outcome: string): MetricDef {
+  return {
+    ...def,
+    source: 'derived',
+    triggers: CHALLENGE_TRIGGERS,
+    countSql: ({ userIds, min }) => sql`SELECT user_id, max(run)::int AS value FROM (
+        SELECT user_id, count(*) AS run FROM (
+          SELECT user_id, outcome,
+            row_number() OVER (PARTITION BY user_id ORDER BY resolved_at, challenge_id)
+              - row_number() OVER (PARTITION BY user_id, outcome ORDER BY resolved_at, challenge_id) AS island
+          FROM (${RECORD_ROWS}) r WHERE NOT void${userFilter(sql`user_id`, userIds)}
+        ) x WHERE outcome = ${outcome} GROUP BY user_id, island
+      ) runs GROUP BY user_id${having(sql`max(run)`, min)}`,
+  };
+}
+
+/** A count of the player's participant rows matching `where` (proposal rows excluded). */
+function participantMetric(def: Omit<MetricDef, 'source' | 'countSql' | 'triggers'>, where: SQL): MetricDef {
+  return {
+    ...def,
+    source: 'derived',
+    triggers: CHALLENGE_TRIGGERS,
+    countSql: ({ userIds, min }) => sql`SELECT cp.user_id, count(*)::int AS value
+      FROM challenge_participants cp JOIN challenges c ON c.id = cp.challenge_id
+      WHERE ${NOT_PROPOSAL} AND ${where}${userFilter(sql`cp.user_id`, userIds)}
+      GROUP BY cp.user_id${having(sql`count(*)`, min)}`,
+  };
+}
+
+/** A count of challenges rows per `userCol` matching `where` (the proposal metrics). */
+function challengeRowMetric(def: Omit<MetricDef, 'source' | 'countSql' | 'triggers'>, userCol: SQL, where: SQL): MetricDef {
+  return {
+    ...def,
+    source: 'derived',
+    triggers: CHALLENGE_TRIGGERS,
+    countSql: ({ userIds, min }) => sql`SELECT user_id, count(*)::int AS value FROM (
+        SELECT ${userCol} AS user_id FROM challenges c WHERE ${where}
+      ) x WHERE user_id IS NOT NULL${userFilter(sql`user_id`, userIds)}
+      GROUP BY user_id${having(sql`count(*)`, min)}`,
+  };
+}
+
+const CHALLENGE_METRICS: readonly MetricDef[] = [
+  outcomeMetric({
+    key: 'challenge_wins', label: 'Challenges won', description: 'Resolved challenges the player won (1st place in a group).',
+    phrase: n => (n === 1 ? 'Win your first challenge' : `Win ${plural(n, 'challenge')}`),
+  }, 'win'),
+  outcomeMetric({
+    key: 'challenge_losses', label: 'Challenges lost', description: 'Resolved challenges the player lost (in a group, placing below 1st).',
+    phrase: n => `Lose ${plural(n, 'challenge')}`,
+  }, 'loss'),
+  outcomeMetric({
+    key: 'challenges_tied', label: 'Challenges tied', description: 'Resolved challenges the player tied.',
+    phrase: n => (n === 1 ? 'Tie a challenge' : `Tie ${plural(n, 'challenge')}`),
+  }, 'tie'),
+  outcomeMetric({
+    key: 'challenges_abandoned', label: 'Challenges abandoned', description: 'Resolved challenges the player was in that nobody finished.',
+    phrase: n => `Be in ${plural(n, 'abandoned challenge')}`,
+  }, 'abandoned'),
+  streakMetric({
+    key: 'win_streak_achieved', label: 'Best win streak', description: 'Longest run of consecutive challenge wins, ever (a streak once reached stays reached).',
+    phrase: n => `Win ${plural(n, 'challenge')} in a row`,
+  }, 'win'),
+  streakMetric({
+    key: 'loss_streak_achieved', label: 'Worst loss streak', description: 'Longest run of consecutive challenge losses, ever.',
+    phrase: n => `Lose ${plural(n, 'challenge')} in a row`,
+  }, 'loss'),
+  participantMetric({
+    key: 'challenges_declined', label: 'Challenges declined', description: 'Challenges the player declined outright (not counter-offers, not backing out after accepting).',
+    phrase: n => `Decline ${plural(n, 'challenge')}`,
+  }, sql`cp.response = 'declined' AND cp.decline_reason IS DISTINCT FROM 'backed_out'`),
+  participantMetric({
+    key: 'challenges_backed_out', label: 'Challenges backed out of', description: 'Group challenges the player accepted, then left before they started.',
+    phrase: n => `Back out of ${plural(n, 'challenge')}`,
+  }, sql`cp.response = 'declined' AND cp.decline_reason = 'backed_out'`),
+  participantMetric({
+    key: 'challenges_countered', label: 'Counter-offers made', description: 'Challenges the player answered with a counter-offer.',
+    phrase: n => (n === 1 ? 'Make a counter-offer' : `Make ${plural(n, 'counter-offer')}`),
+  }, sql`cp.response = 'countered'`),
+  participantMetric({
+    key: 'challenges_cant_reach', label: '"Can’t get there" answers', description: 'Declines or counter-offers because the player can’t reach the venue.',
+    phrase: n => `Answer “can’t get there” ${plural(n, 'time')}`,
+  }, sql`cp.decline_reason = 'cant_reach'`),
+  participantMetric({
+    key: 'challenges_passed', label: 'Challenges passed on', description: 'Declines with "no thanks".',
+    phrase: n => `Pass on ${plural(n, 'challenge')}`,
+  }, sql`cp.decline_reason = 'no_thanks'`),
+  participantMetric({
+    key: 'challenges_missed', label: 'Challenges missed', description: 'Challenges that started (or expired) before the player answered.',
+    phrase: n => `Miss ${plural(n, 'challenge')}`,
+  }, sql`cp.response = 'missed'`),
+  challengeRowMetric({
+    key: 'counters_accepted', label: 'Counter-offers accepted', description: 'The player’s counter-offers that the challenger took up.',
+    phrase: n => (n === 1 ? 'Have a counter-offer accepted' : `Have ${plural(n, 'counter-offer')} accepted`),
+  },
+  // A proposal the challenger took (it's a normal challenge from then on), or a legacy counter row
+  // (migrate22: created by the counterer, no proposed_by_id) that went ahead.
+  sql`CASE WHEN c.proposed_by_id IS NOT NULL THEN c.proposed_by_id ELSE c.creator_id END`,
+  sql`(c.proposed_by_id IS NOT NULL AND c.proposal_decided_at IS NOT NULL AND c.status NOT IN ('proposed', 'rejected', 'lapsed'))
+    OR (c.proposed_by_id IS NULL AND c.countered_from_id IS NOT NULL AND c.status IN ('active', 'resolved'))`),
+  challengeRowMetric({
+    key: 'counters_rejected', label: 'Counter-offers turned down', description: 'The player’s counter-offers that closed untaken (kept the original, took another, or started without it).',
+    phrase: n => `Have ${plural(n, 'counter-offer')} turned down`,
+  }, sql`c.proposed_by_id`, sql`c.status = 'rejected'`),
 ];
+
+export const METRICS: readonly MetricDef[] = [...BASE_METRICS, ...CHALLENGE_METRICS];
+
+// Metrics the admin form lists but that can't be evaluated yet (none today — every challenge metric
+// landed in phase 3). A badge on one can be saved as a draft; activateBadge refuses it
+// (metric_unavailable) until it moves into METRICS.
+export const PENDING_METRICS: ReadonlyArray<Pick<MetricDef, 'key' | 'label' | 'description'>> = [];
 
 const BY_KEY = new Map(METRICS.map(m => [m.key, m]));
 
@@ -158,7 +290,7 @@ export function metricsFor(trigger: MetricTrigger): string[] {
   return METRICS.filter(m => m.triggers.includes(trigger)).map(m => m.key);
 }
 
-/** The registry as the admin form sees it — available metrics first, phase-3 ones flagged. */
+/** The registry as the admin form sees it — available metrics first, any pending ones flagged. */
 export function metricCatalog() {
   return [
     ...METRICS.map(m => ({ key: m.key, label: m.label, description: m.description, source: m.source, triggers: m.triggers, available: true })),

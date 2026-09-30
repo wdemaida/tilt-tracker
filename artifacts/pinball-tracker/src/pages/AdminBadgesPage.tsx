@@ -812,7 +812,7 @@ function BadgeEditor({ badge, prefill, series, allBadges, onSaved, onClose }: {
                 ? <>All tiers in {pickedSeries.name} count {metricLabel(seriesMetric!)}.</>
                 : metrics.data?.find(m => m.key === d.metric)?.description}>
               <select className={input} disabled={locked || metricBySeries} value={d.metric} onChange={e => pickMetric(e.target.value)}>
-                {(metrics.data ?? []).map(m => <option key={m.key} value={m.key}>{m.label}{m.available ? '' : ' — phase 3, not yet'}</option>)}
+                {(metrics.data ?? []).map(m => <option key={m.key} value={m.key}>{m.label}{m.available ? '' : ' — not built yet'}</option>)}
               </select>
             </Field>
             <Field label="At least (N)" error={errors.threshold}
@@ -1055,7 +1055,7 @@ function BadgeListRow({ b, current, indent = false, onClick }: { b: AdminBadge; 
           <span className="text-sm font-bold text-white [overflow-wrap:anywhere]">{b.name}</span>
           <Pill tone={STATUS_TONE[b.status]}>{b.status}</Pill>
           <span className="text-[11px] text-muted-foreground">{b.kind}</span>
-          {!b.metricAvailable && <Pill tone="warn">phase 3</Pill>}
+          {!b.metricAvailable && <Pill tone="warn">metric not built</Pill>}
         </span>
         <span className="block text-xs text-muted-foreground truncate">{b.requirement}</span>
       </span>

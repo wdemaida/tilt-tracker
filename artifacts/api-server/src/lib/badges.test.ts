@@ -34,8 +34,8 @@ test('normalizeBadgeInput: errors per field', () => {
   assert.ok('errors' in noRule && noRule.errors.rule);
   const window = normalizeBadgeInput({ availableFrom: '2026-12-28T00:00:00Z', availableTo: '2026-12-24T00:00:00Z' }, true);
   assert.ok('errors' in window && window.errors.availableTo);
-  const pending = normalizeBadgeInput({ key: 'wins-9', name: 'W', kind: 'metric', metric: 'challenge_wins', threshold: 9 }, false);
-  assert.ok('values' in pending, 'a phase-3 metric can be saved as a draft');
+  const wins = normalizeBadgeInput({ key: 'wins-9', name: 'W', kind: 'metric', metric: 'challenge_wins', threshold: 9 }, false);
+  assert.ok('values' in wins, 'a challenge metric is an ordinary metric since phase 3');
 });
 
 test('normalizeBadgeInput: a PATCH only carries what was sent', () => {
@@ -53,9 +53,11 @@ test('availability window', () => {
   assert.equal(windowOpen({ availableFrom: new Date('2026-12-24T00:00:00Z'), availableTo: new Date('2026-12-26T00:00:00Z') }, now), true);
 });
 
-test('activationBlocker: unknown, phase-3 and invalid configurations', () => {
+test('activationBlocker: unknown and invalid configurations; challenge metrics can go live', () => {
   assert.equal(activationBlocker({ kind: 'metric', metric: 'scores_posted', threshold: 10, rule: null }), null);
-  assert.equal(activationBlocker({ kind: 'metric', metric: 'challenge_wins', threshold: 1, rule: null })?.code, 'metric_unavailable');
+  for (const metric of ['challenge_wins', 'challenge_losses', 'challenges_tied', 'challenges_abandoned', 'win_streak_achieved', 'loss_streak_achieved', 'challenges_declined', 'challenges_backed_out', 'counters_accepted']) {
+    assert.equal(activationBlocker({ kind: 'metric', metric, threshold: 1, rule: null }), null, metric);
+  }
   assert.equal(activationBlocker({ kind: 'metric', metric: 'bogus', threshold: 1, rule: null })?.code, 'unknown_metric');
   assert.equal(activationBlocker({ kind: 'rule', metric: null, threshold: null, rule: {} })?.code, 'invalid_rule');
   assert.equal(activationBlocker({ kind: 'manual', metric: null, threshold: null, rule: null }), null);

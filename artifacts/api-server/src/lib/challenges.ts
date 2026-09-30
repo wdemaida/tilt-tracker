@@ -16,6 +16,7 @@ import { isPrivateVenue } from './venueAddress.js';
 import { acceptedPairSql } from './friendships.js';
 import { raiseNotification, settleNotifications, type Executor } from './notify.js';
 import { logActivity } from './activity.js';
+import { onChallengeBadges } from './badges.js';
 import { getVenueRoster } from './pmRosterCache.js';
 import { getCatalogOrNull, getStoredCatalog, type PinballMachine } from './pinballMap.js';
 import { challengePmLimiter } from './pmGuards.js';
@@ -257,6 +258,37 @@ function creatorRefOf(c: Pick<Challenge, 'creatorId'>, participants: Participant
   return p ? refOf(p) : undefined;
 }
 
+// ── badge triggers (badges phase 3) ──────────────────────────────────────────
+//
+// A challenge change that can move a badge metric queues its players on the transaction
+// (queueChallengeBadges); txWithBadges runs the badge engine for them only AFTER the commit, so
+// awardBadges (which reads through `db`) sees the new rows, and a rolled-back action awards nothing.
+// Queued: applyResolution (every player), a decline / back-out, a counter, a proposal taken or
+// rejected (its proposer), missed players (activate / expire) and a legacy counter row's creator
+// when it starts (counters_accepted). A queue on an unregistered executor is dropped — the daily
+// badge sweep re-checks challenge metrics for anyone whose challenges changed that day.
+
+const badgeQueues = new WeakMap<object, Map<number, number>>();
+
+/** Queue `userIds` for a challenge-metric re-check after this transaction commits (first challenge wins as the source). */
+function queueChallengeBadges(tx: Executor, challengeId: number, userIds: Array<number | null | undefined>): void {
+  const q = badgeQueues.get(tx as object);
+  if (!q) return;
+  for (const u of userIds) if (u != null && !q.has(u)) q.set(u, challengeId);
+}
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+/** db.transaction, then the queued badge re-checks (never throws — onChallengeBadges' contract). */
+async function txWithBadges<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
+  const queue = new Map<number, number>();
+  const out = await db.transaction(async tx => {
+    badgeQueues.set(tx, queue);
+    return fn(tx);
+  });
+  if (queue.size) await onChallengeBadges(queue);
+  return out;
+}
+
 // ── state transitions (inside the caller's transaction, rows already locked) ─
 
 /**
@@ -275,6 +307,7 @@ async function closeProposal(tx: Executor, p: ChallengeRow, reason: ProposalClos
     .set({ response: challengerResponse, respondedAt: challengerResponse === 'declined' ? now : null })
     .where(and(eq(challengeParticipants.challengeId, p.id), eq(challengeParticipants.userId, p.creatorId), eq(challengeParticipants.response, 'pending')));
   await settleInvitation(tx, p.creatorId, p.id, 'read');
+  if (status === 'rejected') queueChallengeBadges(tx, p.id, [p.proposedById]); // counters_rejected
   const ps = await loadParticipants(tx, p.id);
   const challenger = creatorRefOf(p, ps);
   if (p.proposedById) {
@@ -332,7 +365,10 @@ async function activate(tx: Executor, c: ChallengeRow, participants: Participant
       await settleInvitation(tx, p.userId, c.id, 'read');
       await raiseNotification(tx, p.userId, 'challenge_missed', { ...userPayload(c, creator), players: accepted.length });
     }
+    queueChallengeBadges(tx, c.id, missed.map(p => p.userId)); // challenges_missed
   }
+  // A legacy counter row (migrate22: created by the counterer) that goes ahead is a counter accepted.
+  if (c.counteredFromId && !c.proposedById) queueChallengeBadges(tx, c.id, [c.creatorId]);
   if (o.closeReason) for (const p of await openProposals(tx, c.id, true)) await closeProposal(tx, p, o.closeReason, now, o.actorId);
   await tx.update(challenges).set({ status: 'active', startsAt }).where(eq(challenges.id, c.id));
   if (isGroup(participants)) {
@@ -362,6 +398,7 @@ async function expireChallenge(tx: Executor, c: ChallengeRow, participants: Part
       .where(and(eq(challengeParticipants.challengeId, c.id), inArray(challengeParticipants.userId, pending.map(p => p.userId))));
   }
   for (const p of pending) await settleInvitation(tx, p.userId, c.id, 'read');
+  queueChallengeBadges(tx, c.id, pending.map(p => p.userId)); // challenges_missed
   for (const p of await openProposals(tx, c.id, true)) await closeProposal(tx, p, 'expired', now, null);
   await logActivity({ type: 'challenge.expired', targetType: 'challenge', targetId: c.id, payload: { challengeType: c.type, machineName: c.machine.name } }, { tx });
 }
@@ -430,6 +467,8 @@ async function applyResolution(
   }
   // r.void is always false now (void is retired — nobody playing is abandoned); the column stays.
   await tx.update(challenges).set({ status: 'resolved', void: r.void, resolvedAt: now }).where(eq(challenges.id, c.id));
+  // Every player's record changed: wins / losses / ties / abandoned and both streaks.
+  queueChallengeBadges(tx, c.id, r.participants.map(p => p.userId));
   const byId = new Map(participants.map(p => [p.userId, p]));
   const winners = r.participants.filter(p => p.rank === 1 && (p.outcome === 'win' || p.outcome === 'tie'))
     .map(p => byId.get(p.userId)).filter((p): p is ParticipantRow => !!p).map(refOf)
@@ -460,7 +499,7 @@ async function applyResolution(
  * deadline passed. Idempotent; safe to call from any trigger at any time.
  */
 export async function syncChallenge(id: number, now = new Date()): Promise<SyncResult | null> {
-  return db.transaction(async tx => {
+  return txWithBadges(async tx => {
     const peek = await loadChallenge(tx, id);
     if (!peek) return null;
     // A proposal: lock its original first (lock order), and let the original's pending sync lapse it.
@@ -1331,7 +1370,7 @@ export async function counterChallenge(id: number, me: AppUser, body: Record<str
   const { friendId: _f, friendUsername: _u, friendIds: _fs, friendUsernames: _us, ...rest } = body;
   const prepared = await prepareChallenge(me, { ...rest, friendIds: [c0.creatorId] }, now);
 
-  const newId = await db.transaction(async tx => {
+  const newId = await txWithBadges(async tx => {
     const c = await loadChallenge(tx, id, true);
     if (!c) throw notFound();
     const mine = (await loadParticipants(tx, id)).find(p => p.userId === me.id);
@@ -1341,6 +1380,7 @@ export async function counterChallenge(id: number, me: AppUser, body: Record<str
     await tx.update(challengeParticipants).set({ response: 'countered', declineReason: 'cant_reach', respondedAt: now })
       .where(and(eq(challengeParticipants.challengeId, id), eq(challengeParticipants.userId, me.id)));
     await settleInvitation(tx, me.id, id, 'read');
+    queueChallengeBadges(tx, id, [me.id]); // challenges_countered, challenges_cant_reach
     return insertProposal(tx, me, c, prepared, now);
   });
   const [original, counter] = await Promise.all([viewOf(id, me.id, now, true), viewOf(newId, me.id, now, true)]);
@@ -1397,6 +1437,7 @@ async function takeProposal(tx: Executor, original: ChallengeRow, proposal: Chal
   await raiseNotification(tx, proposerId, 'challenge_counter_accepted', {
     ...userPayload(proposal, asRef), counteredFromId: original.id, originalMachineName: original.machine.name, reinvited: again.length,
   });
+  queueChallengeBadges(tx, proposal.id, [proposerId]); // counters_accepted
   const nowPending = { ...proposal, status: 'pending' as const };
   await settleAfterAnswer(tx, nowPending, now, { actorId: me.id, strict: true });
 }
@@ -1432,7 +1473,7 @@ export async function actOnChallengeDetailed(
   if (!synced) throw notFound();
 
   let kind: ActionKind = 'answer';
-  const followUp = await db.transaction(async tx => {
+  const followUp = await txWithBadges(async tx => {
     const { c, original } = await lockForAction(tx, id);
     const participants = await loadParticipants(tx, id);
     const mine = participants.find(p => p.userId === me.id);
@@ -1478,7 +1519,8 @@ export async function actOnChallengeDetailed(
         await tx.update(challengeParticipants).set({ response: 'declined', declineReason: reason, respondedAt: now })
           .where(and(eq(challengeParticipants.challengeId, id), eq(challengeParticipants.userId, me.id)));
         await settleInvitation(tx, me.id, id, 'read');
-        const remaining = participants.filter(p => p.userId !== c.creatorId && p.userId !== me.id && (p.response === 'pending' || p.response === 'accepted')).length;
+        queueChallengeBadges(tx, id, [me.id]); // declined / passed / cant_reach, or backed_out
+        const remaining =participants.filter(p => p.userId !== c.creatorId && p.userId !== me.id && (p.response === 'pending' || p.response === 'accepted')).length;
         await raiseNotification(tx, c.creatorId, 'challenge_declined', { ...userPayload(c, asRef), reason, remaining, backedOut });
         // A decline never fails: a missing baseline elsewhere doesn't block the start it may cause.
         await settleAfterAnswer(tx, c, now, { actorId: me.id, strict: false });

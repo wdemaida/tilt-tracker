@@ -47,6 +47,7 @@ const { default: meRouter } = await import('./src/routes/me.js');
 const { default: usersRouter } = await import('./src/routes/users.js');
 const { runChallengeSweep, scoreChallengeSummary } = await import('./src/lib/challenges.js');
 const { pmClient } = await import('./src/lib/pmClient.js');
+const { readMetric } = await import('./src/lib/badgeMetrics.js');
 const {
   db, users, friendships, notifications, challenges, challengeParticipants, challengeScores, scores, machines, venues, venueMachineHistory,
   pmLocationCache, venueInventory, userChallengeMachines, userChallengeVenues, activityEvents, userBadges,
@@ -1046,6 +1047,25 @@ try {
   const bo = await backedOutCount(bob.id), dc = await declinedCount(bob.id), all = await allDeclined(bob.id);
   check('badge fact challenges_backed_out (bob = 1: g1)', bo === 1, bo);
   check('badge fact challenges_declined excludes back-outs (bob = 5 of his 6 declined rows)', dc === 5 && all === 6, { dc, bo, all });
+  // Badges phase 3: the registry's metrics read exactly these facts. challenges_missed also skips
+  // proposal rows (a lapsed suggestion's challenger row is 'missed' — not a challenge she missed).
+  const missedNoProposals = (u: number) => n(sql`SELECT count(*)::int AS n FROM challenge_participants cp JOIN challenges c ON c.id = cp.challenge_id
+    WHERE cp.user_id = ${u} AND cp.response = 'missed' AND c.status NOT IN ('proposed', 'rejected', 'lapsed')`);
+  const facts: Array<[string, (u: number) => Promise<number>]> = [
+    ['counters_accepted', countersAccepted], ['counters_rejected', countersRejected], ['challenges_backed_out', backedOutCount],
+    ['challenges_declined', declinedCount], ['challenges_missed', missedNoProposals],
+  ];
+  const mismatches: unknown[] = [];
+  for (const p of people) {
+    for (const [key, fact] of facts) {
+      const [metric, expected] = [await readMetric(db, key, p.id), await fact(p.id)];
+      if (metric !== expected) mismatches.push({ user: p.username, key, metric, expected });
+    }
+  }
+  check('badge metrics (readMetric) match the durable facts for all four players', mismatches.length === 0, mismatches);
+  check('challenges_missed metric: carol = 3, dave = 1', await readMetric(db, 'challenges_missed', carol.id) === 3 && await readMetric(db, 'challenges_missed', dave.id) === 1);
+  const aliceMissedRaw = await missedCount(alice.id), aliceMissed = await readMetric(db, 'challenges_missed', alice.id);
+  check('…and it leaves out the challenger’s rows on lapsed suggestions', aliceMissed <= aliceMissedRaw, { aliceMissed, aliceMissedRaw });
 
   // ── challenge prefs + recommendations (zero Pinball Map calls) ─────────────
   const madeHome = await db.insert(machines).values([{ name: 'zz-challenge-test home' }, { name: 'zz-challenge-test hidden home' }]).returning({ id: machines.id });

@@ -25,7 +25,13 @@
 // after its created_at (inserted directly — the routes refuse one) earns no rule badge (preview,
 // retroactive backfill and the live award path) and counts toward no score metric; one inside the
 // 15-minute skew still does.
-// TODO(phase 3): "challenge resolution awards streak and tie badges".
+// Challenge badges (phase 3): challenges among the borrowed users, inserted directly and resolved
+// through syncChallenge (the real applyResolution path) or answered through the real challenges
+// router — a win awards with source_challenge_id set, a 3-win streak and a 3-loss streak award, a
+// tie awards, a back-out counts as backed out and NOT declined, a counter and a taken counter award
+// (counters_accepted, sourced from the proposal), an admin-voided challenge stops counting without
+// revoking anything, and the backfill query (preview) agrees with the single-user reads. The
+// borrowed users must have no challenges beforehand (checked); everything is deleted at the end.
 //
 //   cd artifacts/api-server && npx tsx test-badges.ts
 
@@ -43,7 +49,13 @@ const { default: express } = await import('express');
 const { clerkMiddleware } = await import('@clerk/express');
 const { Webhook } = await import('svix');
 const { default: sharp } = await import('sharp');
-const { db, users, friendships, notifications, activityEvents, badges, badgeSeries, userBadges, userMetricMarks, scores, machines, venues } = await import('@workspace/db');
+const {
+  db, users, friendships, notifications, activityEvents, badges, badgeSeries, userBadges, userMetricMarks, scores, machines, venues,
+  challenges, challengeParticipants,
+} = await import('@workspace/db');
+const { default: challengesRouter } = await import('./src/routes/challenges.js');
+const { syncChallenge } = await import('./src/lib/challenges.js');
+const { voidChallenge } = await import('./src/lib/adminActions.js');
 const { and, eq, gt, inArray, like, or, sql } = await import('drizzle-orm');
 const { setAuthForTests } = await import('./src/middleware/requireAuth.js');
 const { default: adminBadgesRouter } = await import('./src/routes/adminBadges.js');
@@ -94,6 +106,7 @@ app.use(express.json());
 app.use(clerkMiddleware());
 app.use('/api/admin', stub, adminBadgesRouter);
 app.use('/api/friends', stub, friendsRouter);
+app.use('/api/challenges', stub, challengesRouter);
 app.use('/api/notifications', stub, notificationsRouter);
 app.use('/api/scores', scoresRouter);
 app.use('/api/users', usersRouter);
@@ -141,6 +154,9 @@ const orderSnapshot = {
 let machineId = 0;
 const extraMachineIds: number[] = [];
 const venueIds: number[] = [];
+const challengeIds: number[] = [];
+let madeFriendship: number | null = null;
+let noPriorChallenges = false; // only then may cleanup delete every challenge the borrowed users are in
 const LOGIN_DAY = '2001-01-01';
 
 async function createBadge(body: Record<string, unknown>) {
@@ -293,8 +309,9 @@ try {
   check('key is frozen once awarded → 409 locked_field', r.status === 409 && r.body.code === 'locked_field', r);
   r = await call(alice, 'PATCH', `/admin/badges/${retro}`, { name: 'ZZ Xmas (retro, renamed)', description: 'd' });
   check('name/description still editable', r.status === 200 && r.body.badge.name === 'ZZ Xmas (retro, renamed)', r);
-  r = await call(alice, 'PATCH', `/admin/badges/${fwd}`, { kind: 'metric', metric: 'challenge_wins', threshold: 1 });
-  check('a live badge can’t move onto a phase-3 metric → 400 metric_unavailable', r.status === 400 && r.body.code === 'metric_unavailable', r);
+  r = await call(alice, 'PATCH', `/admin/badges/${fwd}`, { kind: 'metric', metric: 'zz_no_such_metric', threshold: 1 });
+  const [fwdRow] = await db.select({ kind: badges.kind }).from(badges).where(eq(badges.id, fwd));
+  check('a live badge can’t move onto an unknown metric → 400, unchanged', r.status === 400 && fwdRow?.kind === 'rule', r);
 
   // ── friend metrics award to the correct side ────────────────────────────────
   const pre = async (metric: string) => Object.fromEntries(await Promise.all(people.map(async p => [p.id, await readMetric(db, metric, p.id)])));
@@ -751,19 +768,168 @@ try {
     check('…the live award path (awardBadges on that score) agrees', !live.some(b => b.id === futureBadge) && await holds(carol.id, futureBadge) === 0, live);
   }
 
+  // ── challenge badges (phase 3) ─────────────────────────────────────────────
+  const [{ priorChallenges }] = await db.select({ priorChallenges: sql<number>`count(*)::int` }).from(challengeParticipants).where(inArray(challengeParticipants.userId, ids));
+  if (priorChallenges > 0) {
+    check(`challenge badges need borrowed users with no challenges (they have ${priorChallenges} participant rows)`, false);
+  } else {
+    noPriorChallenges = true;
+    const HOUR = 3_600_000;
+    const at = (msFromNow: number) => new Date(Date.now() + msFromNow);
+    const chBadge = async (key: string, metric: string, threshold: number) => {
+      const id = await createBadge({ key: `zz-badge-test-ch-${key}`, name: `ZZ ${key}`, kind: 'metric', metric, threshold, retroactive: false });
+      const a = await call(alice, 'POST', `/admin/badges/${id}/activate`);
+      if (a.status !== 200) throw new Error(`activate ${key}: ${JSON.stringify(a)}`);
+      return id;
+    };
+    const wins1 = await chBadge('wins-1', 'challenge_wins', 1);
+    const streak3 = await chBadge('win-streak-3', 'win_streak_achieved', 3);
+    const lossStreak3 = await chBadge('loss-streak-3', 'loss_streak_achieved', 3);
+    const tie1 = await chBadge('ties-1', 'challenges_tied', 1);
+    const declined1 = await chBadge('declined-1', 'challenges_declined', 1);
+    const backedOut1 = await chBadge('backed-out-1', 'challenges_backed_out', 1);
+    const countered1 = await chBadge('countered-1', 'challenges_countered', 1);
+    const countersAccepted1 = await chBadge('counters-accepted-1', 'counters_accepted', 1);
+    const award = async (userId: number, badgeId: number) =>
+      (await db.select().from(userBadges).where(and(eq(userBadges.userId, userId), eq(userBadges.badgeId, badgeId))))[0];
+
+    // A high_score challenge that ended in the past with one counting score per player, so the next
+    // syncChallenge resolves it on its deadline (applyResolution — the real trigger path). Each gets
+    // its own 2-hour window, further back each time, so no score counts in two of them.
+    let slot = 0;
+    const played = async (players: Array<{ id: number; score: number }>) => {
+      const end = -(1 + 3 * slot++) * HOUR;
+      const [c] = await db.insert(challenges).values({
+        creatorId: players[0].id, type: 'high_score', machineId, matchMode: 'exact', startsAt: at(end - 2 * HOUR), endsAt: at(end), status: 'active',
+      }).returning({ id: challenges.id });
+      challengeIds.push(c.id);
+      await db.insert(challengeParticipants).values(players.map(p => ({ challengeId: c.id, userId: p.id, response: 'accepted' as const, respondedAt: at(end - 2 * HOUR) })));
+      for (const p of players) await hist(p.id, la.id, at(end - HOUR).toISOString(), at(end - HOUR).toISOString(), p.score);
+      const s = await syncChallenge(c.id);
+      if (s?.status !== 'resolved') throw new Error(`challenge ${c.id} did not resolve: ${JSON.stringify(s)}`);
+      return c.id;
+    };
+
+    const c1 = await played([{ id: alice.id, score: 90_000 }, { id: bob.id, score: 10_000 }]);
+    const w = await award(alice.id, wins1);
+    check('a resolved challenge awards wins-1 to the winner, sourced from that challenge', w?.sourceChallengeId === c1, w);
+    check('…not to the loser', !(await award(bob.id, wins1)));
+    const [wNotif] = await db.select().from(notifications).where(and(eq(notifications.userId, alice.id), eq(notifications.kind, 'badge_earned'), sql`${notifications.payload} ->> 'badgeId' = ${String(wins1)}`));
+    check('…with a badge_earned notification', !!wNotif, wNotif);
+    const [wEv] = await db.select().from(activityEvents).where(and(eq(activityEvents.type, 'badge.earned'), eq(activityEvents.targetId, String(wins1)), eq(activityEvents.actorUserId, alice.id)));
+    check('…and badge.earned (trigger challenge, sourceChallengeId)', (wEv?.payload as any)?.trigger === 'challenge' && (wEv?.payload as any)?.sourceChallengeId === c1, wEv);
+    check('no streak badge after one win', !(await award(alice.id, streak3)));
+
+    await played([{ id: alice.id, score: 90_000 }, { id: bob.id, score: 10_000 }]);
+    const c3 = await played([{ id: bob.id, score: 10_000 }, { id: alice.id, score: 90_000 }]);
+    const s3 = await award(alice.id, streak3);
+    check('three wins in a row award the win-streak-3 badge (sourced from the third)', s3?.sourceChallengeId === c3 && await readMetric(db, 'win_streak_achieved', alice.id) === 3, s3);
+    const l3 = await award(bob.id, lossStreak3);
+    check('three losses in a row award the loss-streak-3 badge to the loser', l3?.sourceChallengeId === c3 && await readMetric(db, 'loss_streak_achieved', bob.id) === 3, l3);
+    check('wins-1 was awarded once (earned once)', (await db.select().from(userBadges).where(eq(userBadges.badgeId, wins1))).length === 1);
+
+    const c4 = await played([{ id: alice.id, score: 50_000 }, { id: carol.id, score: 50_000 }]);
+    check('a tie awards ties-1 to both players', (await award(alice.id, tie1))?.sourceChallengeId === c4 && (await award(carol.id, tie1))?.sourceChallengeId === c4);
+    check('…and a tie is not a win (carol has no wins-1)', !(await award(carol.id, wins1)));
+    check('…and a tie ends a win streak (alice’s best stays 3)', await readMetric(db, 'win_streak_achieved', alice.id) === 3);
+
+    // Admin void: it stops counting; nothing is revoked (no automatic revocation).
+    const c5 = await played([{ id: carol.id, score: 99_000 }, { id: alice.id, score: 1_000 }]);
+    const carolWon = await readMetric(db, 'challenge_wins', carol.id);
+    check('carol wins one → wins-1', carolWon === 1 && (await award(carol.id, wins1))?.sourceChallengeId === c5, carolWon);
+    const v = await voidChallenge(alice, c5, 'zz-badge-test void');
+    check('admin void → the win stops counting (challenge_wins 0, alice’s loss gone too)',
+      v.status === 200 && await readMetric(db, 'challenge_wins', carol.id) === 0 && await readMetric(db, 'challenge_losses', alice.id) === 0, v);
+    check('…but carol keeps the badge she earned (no automatic revocation)', !!(await award(carol.id, wins1)));
+
+    // Back-out vs a true decline, through the real decline route. A pending group: alice (creator),
+    // bob accepted, carol invited.
+    const [g] = await db.insert(challenges).values({ creatorId: alice.id, type: 'high_score', machineId, matchMode: 'exact', endsAt: at(48 * HOUR), status: 'pending' }).returning({ id: challenges.id });
+    challengeIds.push(g.id);
+    await db.insert(challengeParticipants).values([
+      { challengeId: g.id, userId: alice.id, response: 'accepted', respondedAt: at(0) },
+      { challengeId: g.id, userId: bob.id, response: 'accepted', respondedAt: at(0) },
+      { challengeId: g.id, userId: carol.id, response: 'pending' },
+    ]);
+    r = await call(bob, 'POST', `/challenges/${g.id}/decline`, { reason: 'no_thanks' });
+    check('bob backs out (200)', r.status === 200, r);
+    check('…counts for challenges_backed_out, NOT challenges_declined',
+      await readMetric(db, 'challenges_backed_out', bob.id) === 1 && await readMetric(db, 'challenges_declined', bob.id) === 0 && await readMetric(db, 'challenges_passed', bob.id) === 0);
+    check('…awards backed-out-1 (sourced from the group), not declined-1',
+      (await award(bob.id, backedOut1))?.sourceChallengeId === g.id && !(await award(bob.id, declined1)));
+    r = await call(carol, 'POST', `/challenges/${g.id}/decline`, { reason: 'cant_reach' });
+    check('carol’s plain decline awards declined-1', r.status === 200 && (await award(carol.id, declined1))?.sourceChallengeId === g.id
+      && await readMetric(db, 'challenges_cant_reach', carol.id) === 1, r);
+
+    // A counter-offer, then the challenger takes it (counters_accepted for the proposer). A counter
+    // needs the pair to be friends.
+    const [pair] = await db.select({ id: friendships.id }).from(friendships).where(sql`${friendships.status} = 'accepted' AND least(${friendships.requesterId}, ${friendships.addresseeId}) = ${Math.min(alice.id, bob.id)} AND greatest(${friendships.requesterId}, ${friendships.addresseeId}) = ${Math.max(alice.id, bob.id)}`);
+    if (!pair) {
+      await db.delete(friendships).where(or(and(eq(friendships.requesterId, alice.id), eq(friendships.addresseeId, bob.id)), and(eq(friendships.requesterId, bob.id), eq(friendships.addresseeId, alice.id))));
+      const [f] = await db.insert(friendships).values({ requesterId: alice.id, addresseeId: bob.id, status: 'accepted', respondedAt: new Date() }).returning({ id: friendships.id });
+      madeFriendship = f.id;
+    }
+    const [o] = await db.insert(challenges).values({ creatorId: alice.id, type: 'high_score', machineId, matchMode: 'exact', endsAt: at(48 * HOUR), status: 'pending' }).returning({ id: challenges.id });
+    challengeIds.push(o.id);
+    await db.insert(challengeParticipants).values([
+      { challengeId: o.id, userId: alice.id, response: 'accepted', respondedAt: at(0) },
+      { challengeId: o.id, userId: bob.id, response: 'pending' },
+    ]);
+    r = await call(bob, 'POST', `/challenges/${o.id}/counter`, { type: 'high_score', machineId, matchMode: 'exact', endsAt: at(24 * HOUR).toISOString() });
+    const proposalId = r.body?.counter?.id as number | undefined;
+    if (proposalId) challengeIds.push(proposalId);
+    check('bob counters (201) → countered-1, sourced from the original', r.status === 201 && (await award(bob.id, countered1))?.sourceChallengeId === o.id, r);
+    check('…the counter is not a decline, and no counters_accepted yet',
+      await readMetric(db, 'challenges_declined', bob.id) === 0 && await readMetric(db, 'counters_accepted', bob.id) === 0 && !(await award(bob.id, countersAccepted1)));
+    r = await call(alice, 'POST', `/challenges/${proposalId}/accept`);
+    check('alice takes the suggestion → counters_accepted 1, counters-accepted-1 sourced from the proposal',
+      r.status === 200 && await readMetric(db, 'counters_accepted', bob.id) === 1 && (await award(bob.id, countersAccepted1))?.sourceChallengeId === proposalId, r);
+
+    // The backfill query (preview) agrees with the single-user reads, and excludes the voided win.
+    const bf = await createBadge({ key: 'zz-badge-test-ch-backfill', name: 'ZZ wins backfill', kind: 'metric', metric: 'challenge_wins', threshold: 1, retroactive: true });
+    r = await call(alice, 'POST', `/admin/badges/${bf}/preview`);
+    const q = (r.body?.qualifying ?? []) as Array<{ user: { id: number }; value?: number }>;
+    const bulk = await metricCounts(db, 'challenge_wins', { min: 1 });
+    let agree = q.length <= bulk.size; // the preview lists at most PREVIEW_LIMIT; `total` is all of them
+    for (const x of q) if (x.value != null && x.value !== await readMetric(db, 'challenge_wins', x.user.id)) agree = false;
+    for (const [u, value] of bulk) if (value !== await readMetric(db, 'challenge_wins', u)) agree = false;
+    check('backfill (preview) of a challenge_wins badge matches the single-user reads', r.status === 200 && agree && r.body.total === bulk.size, { total: r.body?.total, bulk: bulk.size });
+    check('…alice qualifies with 3 wins; carol (voided win only) does not',
+      q.some(x => x.user.id === alice.id) && bulk.get(alice.id) === 3 && !q.some(x => x.user.id === carol.id), q.filter(x => ids.includes(x.user.id)));
+    for (const k of ['challenges_backed_out', 'counters_accepted', 'win_streak_achieved', 'loss_streak_achieved']) {
+      const all = await metricCounts(db, k, { min: 1 });
+      let same = true;
+      for (const [u, value] of all) if (value !== await readMetric(db, k, u)) same = false;
+      check(`backfill form of ${k} agrees with the single-user reads`, same);
+    }
+  }
+
   // ── retire; the sweep ──────────────────────────────────────────────────────
   r = await call(alice, 'POST', `/admin/badges/${big}/retire`);
   check('retire → ok; earned one stays', r.status === 200 && await holds(alice.id, big) === 1, r);
   const sweep = await runBadgeSweep();
   check('daily sweep runs', typeof sweep.users === 'number' && typeof sweep.awarded === 'number', sweep);
   r = await call(alice, 'GET', '/admin/badges/metrics');
-  check('metrics endpoint lists available and phase-3 metrics', r.body.some((x: any) => x.key === 'scores_posted' && x.available) && r.body.some((x: any) => x.key === 'challenge_wins' && !x.available), r.body);
+  check('metrics endpoint lists every metric as available, challenge metrics included',
+    r.body.some((x: any) => x.key === 'scores_posted' && x.available) && r.body.some((x: any) => x.key === 'challenge_wins' && x.available)
+    && r.body.some((x: any) => x.key === 'counters_rejected' && x.available) && r.body.every((x: any) => x.available), r.body);
 } catch (err) {
   failures++;
   console.error('FAIL  threw:', err);
 } finally {
   // ── cleanup ─────────────────────────────────────────────────────────────────
   setRetentionLoaderForTests(null);
+  // Challenges among the borrowed users (they had none — checked), before their scores: challenge_scores
+  // cascades with the challenge, and a locked score can't be deleted while it has a row there.
+  const theirs = noPriorChallenges
+    ? await db.select({ id: challengeParticipants.challengeId }).from(challengeParticipants).where(inArray(challengeParticipants.userId, ids))
+    : [];
+  const allChallengeIds = [...new Set([...challengeIds, ...theirs.map(x => x.id)])];
+  if (allChallengeIds.length) {
+    await db.delete(activityEvents).where(and(gt(activityEvents.id, Number(maxEvent)), eq(activityEvents.targetType, 'challenge'), inArray(activityEvents.targetId, allChallengeIds.map(String))));
+    await db.delete(challenges).where(inArray(challenges.id, allChallengeIds)); // participants + challenge_scores cascade
+  }
+  if (madeFriendship) await db.delete(friendships).where(eq(friendships.id, madeFriendship));
   // Put every pre-existing badge's and series' sort_order (and updated_at) back exactly.
   for (const b of orderSnapshot.badges) await db.execute(sql`UPDATE badges SET sort_order = ${b.sort_order}, updated_at = ${b.updated_at}::timestamp WHERE id = ${b.id}`);
   for (const x of orderSnapshot.series) await db.execute(sql`UPDATE badge_series SET sort_order = ${x.sort_order}, updated_at = ${x.updated_at}::timestamp WHERE id = ${x.id}`);
