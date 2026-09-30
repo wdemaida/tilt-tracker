@@ -768,6 +768,9 @@ export default function AddScorePage() {
     },
   });
 
+  // POST /api/scores refused the played time as in the future — shown under Date & Time, not up top.
+  const playedInFuture = createScore.isError && (createScore.error as any)?.code === 'played_at_in_future';
+
   const createVenueMutation = useMutation({
     mutationFn: (body: { name: string; address: string; isResidence: boolean; privacyTier: 'full' | 'city_state' | 'hidden'; allowDuplicate?: boolean }) =>
       api.venues.create(body),
@@ -1670,7 +1673,7 @@ export default function AddScorePage() {
           }
           createScore.mutate(d);
         })} className="rounded-xl border border-white/10 bg-card p-6 flex flex-col gap-4">
-          {createScore.isError && (
+          {createScore.isError && !playedInFuture && (
             <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-400">
               {(createScore.error as any)?.message ?? 'Failed to save score — please try again'}
             </div>
@@ -2042,15 +2045,30 @@ export default function AddScorePage() {
                 <span>{formatWallClock(watch('playedAt'))}</span>
                 <span className="text-xs text-muted-foreground whitespace-nowrap">From your {lockedFromLabel(playedTimeLock.kind)}</span>
               </div>
-              <p className="text-xs text-muted-foreground mt-1">Wrong time? Ask an admin to correct it after saving.</p>
+              {playedInFuture ? (
+                // The camera's clock (or the venue's zone) puts it in the future: the server refuses it
+                // (played_at_in_future), so offer the way out a photo without a time already has.
+                <p className="err">
+                  {(createScore.error as any)?.message} — check the venue (its time zone sets the clock), or{' '}
+                  <button type="button" className="underline" onClick={() => { setPlayedAtInstant(null); setPlayedTimeLock(null); createScore.reset(); }}>
+                    enter the time yourself
+                  </button>.
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground mt-1">Wrong time? Ask an admin to correct it after saving.</p>
+              )}
             </div>
           ) : (
             <div>
               <label className="label">Date & Time</label>
-              <input {...register('playedAt', { onChange: () => { setPlayedAtInstant(null); setPlayedTimeLock(null); } })} type="datetime-local" className="input" />
+              {/* max = now in the venue's zone (the zone the field is read in); the server allows 15
+                  minutes of clock skew past it and refuses the rest (400 played_at_in_future). */}
+              <input {...register('playedAt', { onChange: () => { setPlayedAtInstant(null); setPlayedTimeLock(null); if (playedInFuture) createScore.reset(); } })}
+                type="datetime-local" className="input" max={toLocalInput(new Date(), selectedVenue?.timezone)} />
               {playedTimeLock?.kind === 'unverified' && (
                 <p className="text-xs text-amber-300 mt-1">Couldn't read when this video was recorded — check the time.</p>
               )}
+              {playedInFuture && <p className="err">{(createScore.error as any)?.message}</p>}
             </div>
           )}
 

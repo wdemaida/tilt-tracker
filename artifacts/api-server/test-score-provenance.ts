@@ -4,7 +4,9 @@
 // 'video', no token → 'manual'; PATCH of a photo score's played time by its owner → 403
 // played_at_locked (other fields still editable, re-sending the same minute is fine), by an admin →
 // 400 without a reason, 200 with one (row stamped, source kept, `admin.played_at_corrected` logged),
-// and still locked to the owner afterwards; manual and legacy (null) scores stay editable.
+// and still locked to the owner afterwards; manual and legacy (null) scores stay editable. A played
+// time in the future (lib/playedAtClock.ts) → 400 played_at_in_future on POST, PATCH and admin
+// correction alike; 10 minutes ahead (phone clock skew) is fine.
 //
 // Creates `zz-provenance-test-*` users, one machine and one venue (America/Chicago), and deletes
 // everything it made at the end — scores, badge awards / marks / notifications its scores raised,
@@ -180,6 +182,41 @@ try {
   check('PATCH with only the same minute (nothing to write) → 200', r.status === 200, r);
   r = await call(clerkIds.alice, 'POST', '/scores', { ...base, playedAt: 'nope' });
   check('POST with a junk playedAt → 400 invalid_played_at', r.status === 400 && r.body?.code === 'invalid_played_at', r);
+
+  // ── never in the future (lib/playedAtClock.ts, 15 min of skew) ─────────────
+  const inMin = (m: number) => new Date(Date.now() + m * 60_000).toISOString();
+  const countOnMachine = async () => (await db.select({ n: sql<number>`count(*)::int` }).from(scores).where(eq(scores.machineId, machine.id)))[0].n;
+  const n0 = await countOnMachine();
+  r = await call(clerkIds.alice, 'POST', '/scores', { ...base, playedAt: inMin(60) });
+  check('POST an hour in the future → 400 played_at_in_future', r.status === 400 && r.body?.code === 'played_at_in_future', r);
+  r = await call(clerkIds.alice, 'POST', '/scores', { ...base, playedAt: inMin(16) });
+  check('POST 16 minutes ahead → 400 played_at_in_future', r.status === 400 && r.body?.code === 'played_at_in_future', r);
+  check('… neither wrote a score', (await countOnMachine()) === n0);
+  r = await call(clerkIds.alice, 'POST', '/scores', { ...base, playedAt: inMin(10) });
+  check('POST 10 minutes ahead (a fast phone clock) → 201', r.status === 201, r);
+  r = await call(clerkIds.alice, 'PATCH', `/scores/${manualId}`, { playedAt: inMin(600) });
+  check('owner PATCHes a manual score 10 h into the future → 400 played_at_in_future', r.status === 400 && r.body?.code === 'played_at_in_future', r);
+  check('… unchanged', (await row(manualId)).playedAt.startsWith('2026-06-01'), await row(manualId));
+  const beforeFuture = await row(photoId);
+  r = await call(clerkIds.admin, 'PATCH', `/scores/${photoId}`, { playedAt: inMin(600), playedAtReason: 'testing the future' });
+  check('admin correction into the future → 400 played_at_in_future', r.status === 400 && r.body?.code === 'played_at_in_future', r);
+  check('… unchanged', (await row(photoId)).playedAt === beforeFuture.playedAt, await row(photoId));
+  r = await call(clerkIds.admin, 'PATCH', `/scores/${manualId}`, { playedAt: inMin(600) });
+  check('admin PATCH of a manual score into the future → 400', r.status === 400 && r.body?.code === 'played_at_in_future', r);
+  // Logged two days ago: a time yesterday is in the past but after it was logged — impossible too.
+  const [old] = await db.insert(scores).values({ userId: alice.id, machineId: machine.id, score: 43, playedAt: new Date(Date.now() - 3 * 86_400_000), createdAt: new Date(Date.now() - 2 * 86_400_000), venueId: venue.id }).returning();
+  r = await call(clerkIds.alice, 'PATCH', `/scores/${old.id}`, { playedAt: new Date(Date.now() - 86_400_000).toISOString() });
+  check('PATCH to after the score was logged (yesterday, logged 2 days ago) → 400 played_at_in_future', r.status === 400 && r.body?.code === 'played_at_in_future', r);
+  r = await call(clerkIds.alice, 'PATCH', `/scores/${old.id}`, { playedAt: new Date(Date.now() - 2.5 * 86_400_000).toISOString() });
+  check('… to before it was logged → 200', r.status === 200, r);
+  // A legacy row already dated in the future (like dev #1276): its other fields stay editable, and
+  // re-sending its (future) time unchanged is not a change.
+  const futureAt = new Date(Math.floor((Date.now() + 10 * 3_600_000) / 60_000) * 60_000);
+  const [ahead] = await db.insert(scores).values({ userId: alice.id, machineId: machine.id, score: 44, playedAt: futureAt, venueId: venue.id }).returning();
+  r = await call(clerkIds.alice, 'PATCH', `/scores/${ahead.id}`, { score: 45, playedAt: futureAt.toISOString() });
+  check('legacy future-dated row: edit the score, re-send its time unchanged → 200', r.status === 200 && (await row(ahead.id)).score === 45, r);
+  r = await call(clerkIds.alice, 'PATCH', `/scores/${ahead.id}`, { playedAt: new Date(+futureAt + 60_000).toISOString() });
+  check('… moving it to another future time → 400', r.status === 400 && r.body?.code === 'played_at_in_future', r);
 
   // The GET list carries the source (the edit dialog reads it).
   r = await call(clerkIds.alice, 'GET', '/scores?mine=true');

@@ -20,6 +20,7 @@ import { onScoreBadges } from '../lib/badges.js';
 import {
   checkPlayedAtToken, decidePlayedAtSource, playedAtChanged, playedAtEditDecision,
 } from '../lib/playedAtProvenance.js';
+import { playedAfter, PLAYED_AT_IN_FUTURE, PLAYED_AT_AFTER_LOGGED } from '../lib/playedAtClock.js';
 
 // Optional — resolves the caller's app user + role, without requiring auth.
 async function resolveRequester(req: any): Promise<{ id: number; role: string } | undefined> {
@@ -113,6 +114,11 @@ router.post('/', requireAppUser, async (req, res) => {
   const playedAtDate = new Date(playedAt);
   if (Number.isNaN(playedAtDate.getTime())) {
     return res.status(400).json({ error: 'playedAt must be a date', code: 'invalid_played_at' });
+  }
+  // Not in the future (beyond 15 minutes of phone-clock skew) — lib/playedAtClock.ts. Challenges and
+  // badges compare played_at against their windows, so a future time would count early.
+  if (playedAfter(playedAtDate, new Date())) {
+    return res.status(400).json(PLAYED_AT_IN_FUTURE);
   }
   // Played-time provenance (lib/playedAtProvenance.ts): a camera time is 'photo'/'video' only with
   // the token /api/upload signed for this user. A forged / someone else's token is refused before
@@ -221,6 +227,10 @@ router.patch('/:id', requireAppUser, async (req, res) => {
       return res.status(400).json({ error: 'playedAt must be a date', code: 'invalid_played_at' });
     }
     if (playedAtChanged(existing.playedAt, next)) {
+      // Not after the score was logged (beyond the skew) — admins included (lib/playedAtClock.ts).
+      // created_at <= now, so this also refuses anything in the future. Only a real change is
+      // checked, so a legacy future-dated row can still have its other fields edited.
+      if (playedAfter(next, existing.createdAt)) return res.status(400).json(PLAYED_AT_AFTER_LOGGED);
       const d = playedAtEditDecision(existing.playedAtSource, appUser.role === 'admin', req.body.playedAtReason);
       if (!d.allow) return res.status(d.status).json(d.body);
       updates.playedAt = next;

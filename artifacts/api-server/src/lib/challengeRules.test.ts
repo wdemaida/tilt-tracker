@@ -137,6 +137,19 @@ test('a score the opponent may not see (hidden home-venue activity) does not cou
   assert.equal(exclusionReason(gameRule, sc({ userId: A, score: 1, visibleToOthers: false })), 'hidden');
 });
 
+test('a played time in the future (after it was logged, beyond 15 min of skew) never counts', () => {
+  const MIN = 60_000;
+  // Legacy dev score #1276: logged 13:09, played_at edited to 23:30 the same day.
+  assert.equal(exclusionReason(gameRule, sc({ userId: A, score: 1, playedAt: at(12), createdAt: at(2) })), 'played_in_future');
+  // Just past the skew: out. At it (a phone clock 15 minutes fast): still counts.
+  assert.equal(exclusionReason(gameRule, sc({ userId: A, score: 1, playedAt: new Date(+at(2) + 15 * MIN + 1), createdAt: at(2) })), 'played_in_future');
+  assert.equal(exclusionReason(gameRule, sc({ userId: A, score: 1, playedAt: new Date(+at(2) + 15 * MIN), createdAt: at(2) })), null);
+  // Checked before venue / photo: it's the reason the player should see.
+  assert.equal(exclusionReason({ ...gameRule, venueId: 7 }, sc({ userId: A, score: 1, playedAt: at(12), createdAt: at(2), hasPhoto: false, venueId: 8 })), 'played_in_future');
+  // Still 'machine' first — another game's score isn't reported at all.
+  assert.equal(exclusionReason(gameRule, sc({ userId: A, score: 1, playedAt: at(12), createdAt: at(2), machineId: OTHER.id, opdbId: OTHER.opdb })), 'machine');
+});
+
 // ── scoreChallengeFits: the Add Score / edit summary ─────────────────────────
 
 let nextChallenge = 500;
@@ -176,9 +189,11 @@ test('scoreChallengeFits: counted, and each failing rule maps to its reason (sam
   assert.equal(one({ venueId: 8 }, { ...ok, venueId: 7 }).venueName, null);
   assert.equal(one({}, { ...ok, hasPhoto: false }).reason, 'no_photo');
   assert.equal(one({}, { ...ok, playedAt: at(80), createdAt: at(80) }).reason, 'played_after_end');
-  assert.equal(one({}, { ...ok, createdAt: at(-1) }).reason, 'posted_before_start');
+  // (Played within the 15 minutes of skew after it was logged — any later is played_in_future.)
+  assert.equal(one({}, { ...ok, playedAt: T0, createdAt: at(-0.1) }).reason, 'posted_before_start');
   assert.equal(one({}, { ...ok, playedAt: at(70), createdAt: at(73) }).reason, 'posted_after_end');
   assert.equal(one({}, { ...ok, visibleToOthers: false }).reason, 'not_visible');
+  assert.deepEqual([one({}, { ...ok, playedAt: at(12) }).status, one({}, { ...ok, playedAt: at(12) }).reason], ['not_counted', 'played_in_future']);
   // First failing rule wins: no photo AND played before the start → no_photo (photo is checked first).
   assert.equal(one({}, { ...ok, hasPhoto: false, playedAt: at(-5) }).reason, 'no_photo');
 });
@@ -208,6 +223,13 @@ test('scoreChallengeFits: a locked score counted, whatever the rules say now (a 
   assert.equal(f.status, 'counted');
   assert.equal(f.challengeId > 0, true);
   assert.deepEqual(f.opponents, ['Bee']);
+});
+
+test('scoreChallengeFits: a played time in the future reads not counted even with a (legacy) lock row', () => {
+  // Lock rows are append-only, so #1276's stay — but the standings dropped it, and so does the summary.
+  const score = sc({ userId: A, score: 1, playedAt: at(12), createdAt: at(2) });
+  const [f] = scoreChallengeFits([fc({ score, locked: true })], NOW);
+  assert.deepEqual([f.status, f.reason], ['not_counted', 'played_in_future']);
 });
 
 // ── baseline / race target ───────────────────────────────────────────────────

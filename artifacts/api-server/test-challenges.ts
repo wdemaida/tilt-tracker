@@ -45,7 +45,7 @@ const { default: notificationsRouter } = await import('./src/routes/notification
 const { default: scoresRouter } = await import('./src/routes/scores.js');
 const { default: meRouter } = await import('./src/routes/me.js');
 const { default: usersRouter } = await import('./src/routes/users.js');
-const { runChallengeSweep } = await import('./src/lib/challenges.js');
+const { runChallengeSweep, scoreChallengeSummary } = await import('./src/lib/challenges.js');
 const { pmClient } = await import('./src/lib/pmClient.js');
 const {
   db, users, friendships, notifications, challenges, challengeParticipants, challengeScores, scores, machines, venues, venueMachineHistory,
@@ -349,11 +349,27 @@ try {
   const [hsWin] = await db.select({ startsAt: challenges.startsAt, endsAt: challenges.endsAt }).from(challenges).where(eq(challenges.id, hs));
   await db.update(scores).set({ playedAt: new Date(+hsWin.startsAt! + 1000), createdAt: new Date(+hsWin.endsAt + H) }).where(eq(scores.id, lateUpload));
   await db.delete(challengeScores).where(eq(challengeScores.scoreId, lateUpload));
+  // A played time in the future (dev score #1276, lib/playedAtClock.ts): POST refuses it outright; a
+  // legacy row planted with one — lock row and all, as #1276 had — stops counting on the next sync.
+  s = await upload(bob, { score: 11_000_000, playedAt: new Date(Date.now() + 2 * H).toISOString() });
+  check('POST a played time 2 h in the future → 400 played_at_in_future', s.status === 400 && s.body?.code === 'played_at_in_future', s);
+  s = await upload(bob, { score: 55_000_000 });
+  const futureDated = s.body.id;
+  check('(the planted score counted when it was uploaded — lock row written)', (await db.select().from(challengeScores)
+    .where(and(eq(challengeScores.challengeId, hs), eq(challengeScores.scoreId, futureDated)))).length === 1);
+  await db.update(scores).set({ playedAt: new Date(Date.now() + 2 * H) }).where(eq(scores.id, futureDated));
 
   r = await call(alice, 'GET', `/challenges/${hs}`);
   const standing = (b: any, u: number) => b?.participants?.find((p: any) => p.user.id === u)?.standing;
   check('detail: live standings (alice leads)', standing(r.body, alice.id)?.bestScore === 60_000 && standing(r.body, alice.id)?.liveRank === 1
     && standing(r.body, alice.id)?.countingCount === 2, r.body?.participants);
+  check('future-dated legacy score: dropped from the standings (bob best 40,000, one counting)',
+    standing(r.body, bob.id)?.bestScore === 40_000 && standing(r.body, bob.id)?.countingCount === 1, standing(r.body, bob.id));
+  check('… and from his listed counting scores', !r.body?.participants?.find((p: any) => p.user.id === bob.id)?.scores?.some((x: any) => x.id === futureDated));
+  check('… its lock row stays (append-only)', (await db.select().from(challengeScores)
+    .where(and(eq(challengeScores.challengeId, hs), eq(challengeScores.scoreId, futureDated)))).length === 1);
+  const futureFits = await scoreChallengeSummary({ id: futureDated, userId: bob.id });
+  check('… the summary says not counted: played_in_future', futureFits.some(f => f.challengeId === hs && f.status === 'not_counted' && f.reason === 'played_in_future'), futureFits);
   check('detail: timeLeftMs and per-participant scores', r.body?.timeLeftMs > 0 && Array.isArray(r.body?.participants?.[0]?.scores), r.body);
 
   r = await call(alice, 'PATCH', `/scores/${aliceScore}`, { score: 1 });
@@ -367,7 +383,7 @@ try {
   await setWindow(hs, hsWin.startsAt, new Date(Date.now() - 1000));
   sweep = await runChallengeSweep();
   r = await call(bob, 'GET', `/challenges/${hs}`);
-  check('deadline: alice wins high score (late upload ignored)', r.body?.status === 'resolved' && byUser(r.body)[alice.id] === 'win' && byUser(r.body)[bob.id] === 'loss', r.body?.participants);
+  check('deadline: alice wins high score (late upload and future-dated 55M ignored)', r.body?.status === 'resolved' && byUser(r.body)[alice.id] === 'win' && byUser(r.body)[bob.id] === 'loss', r.body?.participants);
   check('late upload (created after the end) did not count', !(await db.select().from(challengeScores).where(eq(challengeScores.scoreId, lateUpload))).length);
   const results = (await inbox(alice)).filter(n => n.payload?.challengeId === hs && n.kind === 'challenge_result');
   check('alice got challenge_result: win', results.length === 1 && results[0].payload.outcome === 'win', results);

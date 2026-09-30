@@ -31,7 +31,9 @@
 //                     nobody qualified → abandoned, like a race nobody finished.
 //  - What counts: machine matches (OPDB group for 'game' mode, exact id otherwise), venue matches if
 //    the challenge is venue-locked, the score has a photo, BOTH played_at and created_at are inside
-//    [starts_at, ends_at] (blocks backdated uploads), and every other participant may see the score
+//    [starts_at, ends_at] (blocks backdated uploads), played_at is no more than FUTURE_SKEW_MS after
+//    created_at (a time in the future — playedAtClock.ts; the score routes refuse new ones, this
+//    stops legacy rows counting), and every other participant may see the score
 //    (a score at a home venue whose owner hid its activity doesn't count — see venueActivity.ts).
 //  - Outcomes: win / loss / tie / forfeit (withdrew after accepting; when only one participant is
 //    left they win on the spot) / no_show (no counting score while someone else did play) / abandoned
@@ -43,6 +45,8 @@
 //    the schema and API don't change, but a new resolution always writes void = false.
 //  - Streaks (records): every outcome but a win, abandoned included, breaks one. (A legacy void
 //    challenge still neither extends nor breaks one.)
+
+import { playedAfter } from './playedAtClock.js';
 
 export const CHALLENGE_TYPES = ['high_score', 'race', 'most_improved', 'average'] as const;
 export type ChallengeType = (typeof CHALLENGE_TYPES)[number];
@@ -147,13 +151,16 @@ export interface CountRule extends MatchRule {
 }
 
 export type ExclusionReason =
-  | 'machine' | 'venue' | 'no_photo' | 'played_outside_window' | 'uploaded_outside_window' | 'hidden';
+  | 'machine' | 'played_in_future' | 'venue' | 'no_photo' | 'played_outside_window' | 'uploaded_outside_window' | 'hidden';
 
 const inWindow = (t: Date, rule: CountRule) => +t >= +rule.startsAt && +t <= +rule.endsAt;
 
 /** Why a score doesn't count (the first failing rule), or null when it does. */
 export function exclusionReason(rule: CountRule, s: CandidateScore): ExclusionReason | null {
   if (!machineMatches(rule, s)) return 'machine';
+  // Played after it was logged (beyond clock skew): impossible, so never counts — checked before the
+  // other rules because it's the one the player should hear about.
+  if (playedAfter(s.playedAt, s.createdAt)) return 'played_in_future';
   if (rule.venueId != null && s.venueId !== rule.venueId) return 'venue';
   if (!s.hasPhoto) return 'no_photo';
   if (!inWindow(s.playedAt, rule)) return 'played_outside_window';
@@ -182,13 +189,14 @@ export function challengeStarted(c: { status: ChallengeStatus; startsAt: Date | 
  * standings — with the window reasons split by which side of it the time fell:
  *   played_before_start / played_after_end   (played_at outside [starts_at, ends_at])
  *   posted_before_start / posted_after_end   (created_at outside it — a backdated upload)
- *   wrong_venue (venue lock), no_photo, not_visible (another participant can't see it — canSeeScore).
+ *   wrong_venue (venue lock), no_photo, not_visible (another participant can't see it — canSeeScore),
+ *   played_in_future (played_at more than FUTURE_SKEW_MS after created_at).
  * 'machine' never appears: a score on another machine isn't reported at all.
  */
 export type ChallengeFitReason =
   | 'counted' | 'not_started'
   | 'wrong_venue' | 'no_photo' | 'played_before_start' | 'played_after_end'
-  | 'posted_before_start' | 'posted_after_end' | 'not_visible';
+  | 'posted_before_start' | 'posted_after_end' | 'not_visible' | 'played_in_future';
 export type ChallengeFitStatus = 'counted' | 'not_counted' | 'not_started';
 
 /** One of the scorer's challenges, as scoreChallengeFits() needs it. */
@@ -225,6 +233,7 @@ function fitReason(rule: CountRule, s: CandidateScore): ChallengeFitReason | 'ma
   switch (exclusionReason(rule, s)) {
     case null: return 'counted';
     case 'machine': return 'machine';
+    case 'played_in_future': return 'played_in_future';
     case 'venue': return 'wrong_venue';
     case 'no_photo': return 'no_photo';
     case 'played_outside_window': return +s.playedAt < +rule.startsAt ? 'played_before_start' : 'played_after_end';
@@ -237,7 +246,9 @@ function fitReason(rule: CountRule, s: CandidateScore): ChallengeFitReason | 'ma
  * How one score fares in each of its author's challenges on the same machine: counted, not counted
  * (with the first failing rule), or not started yet (pending, or active with a start still ahead — it
  * will count if it's played after the start). Challenges on another machine are left out, so a score
- * on an unrelated game lists nothing. `locked` wins: a score recorded in challenge_scores counted.
+ * on an unrelated game lists nothing. `locked` wins: a score recorded in challenge_scores counted —
+ * except a played time in the future, which the standings stopped counting (exclusionReason) even
+ * though its append-only lock row stays (a legacy row locked before the rule existed).
  */
 export function scoreChallengeFits(challenges: FitChallenge[], now: Date): ChallengeFit[] {
   const out: ChallengeFit[] = [];
@@ -247,6 +258,10 @@ export function scoreChallengeFits(challenges: FitChallenge[], now: Date): Chall
       challengeId: c.challengeId, machineName: c.machineName, type: c.type,
       startsAt: c.startsAt, endsAt: c.endsAt, venueName: c.venueName, opponents: c.opponents,
     };
+    if (playedAfter(c.score.playedAt, c.score.createdAt)) {
+      out.push({ ...base, status: 'not_counted', reason: 'played_in_future' });
+      continue;
+    }
     if (c.locked) { out.push({ ...base, status: 'counted', reason: 'counted' }); continue; }
     if (!challengeStarted(c, now)) {
       if (c.status === 'pending' || c.status === 'active') out.push({ ...base, status: 'not_started', reason: 'not_started' });

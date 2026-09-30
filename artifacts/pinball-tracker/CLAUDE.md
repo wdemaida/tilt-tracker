@@ -436,7 +436,8 @@
   `played_after_end` "…after they ended"; `posted_before_start` / `posted_after_end` "…logged
   before they started / after they ended"; `no_photo` "…challenge scores need a photo";
   `wrong_venue` "…they only count at <venue>"; `not_visible` "…the other players can't see scores at
-  this venue"; `not_started` "Your … challenge hasn't started yet — plays after it starts will
+  this venue"; `played_in_future` "…its played time is later than when it was logged" (no Edit action — such
+  legacy rows are usually challenge-locked); `not_started` "Your … challenge hasn't started yet — plays after it starts will
   count". Nothing renders when the list is empty (no challenge on that machine). **Edit played time**
   shows only for a played-time reason and only when nothing counted (a counted score is locked, 409).
 - **One edit-score dialog** (`components/EditScoreDialog.tsx`), used by Home's cards and step 4's

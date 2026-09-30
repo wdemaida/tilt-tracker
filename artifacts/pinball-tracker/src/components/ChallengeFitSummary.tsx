@@ -70,6 +70,7 @@ export function fitLine(
     case 'posted_before_start': return `${head} — logged before ${it} started`;
     case 'posted_after_end': return `${head} — logged after ${it} ended`;
     case 'no_photo': return `${head} — challenge scores need a photo`;
+    case 'played_in_future': return `${head} — its played time is later than when it was logged`;
     case 'not_visible': return `${head} — the other players can't see scores at this venue`;
     case 'wrong_venue': {
       const venues = [...new Set(g.fits.map(f => f.venueName).filter(Boolean))];

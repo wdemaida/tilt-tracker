@@ -22,11 +22,12 @@
 // drizzle reads them as UTC instants, which is what these functions expect.
 
 import { machineMatches } from './challengeRules.js';
+import { FUTURE_SKEW_MS } from './playedAtClock.js';
 
 export const DEFAULT_TZ = 'America/New_York';
 export const DEFAULT_POSTED_WITHIN_HOURS = 48;
-/** A played_at this far after created_at is still "now" (client clock skew). */
-export const FUTURE_SKEW_MS = 15 * 60 * 1000;
+/** A played_at this far after created_at is still "now" (client clock skew) — shared, see playedAtClock.ts. */
+export { FUTURE_SKEW_MS };
 export const MAX_RULE_COUNT = 1000;
 
 export interface BadgeRule {

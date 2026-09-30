@@ -329,7 +329,7 @@ export interface CreateChallengeBody {
 export type ChallengeFitReason =
   | 'counted' | 'not_started'
   | 'wrong_venue' | 'no_photo' | 'played_before_start' | 'played_after_end'
-  | 'posted_before_start' | 'posted_after_end' | 'not_visible' | (string & {});
+  | 'posted_before_start' | 'posted_after_end' | 'not_visible' | 'played_in_future' | (string & {});
 export interface ChallengeFit {
   challengeId: number;
   machineName: string;

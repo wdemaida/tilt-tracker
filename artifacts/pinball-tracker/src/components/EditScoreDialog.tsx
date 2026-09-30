@@ -87,6 +87,11 @@ export default function EditScoreDialog({ score, onClose, onSaved }: {
   /** The player can't change a camera-recorded time; an admin can, with a reason. */
   const playedAtReadOnly = !!lockedSource && !isAdmin;
   const needsReason = !!lockedSource && isAdmin && editPlayedAt !== loadedPlayedAt;
+  // A played time can't be in the future (admins included). max = now in the venue's zone — the zone
+  // the field is read in; both are "YYYY-MM-DDTHH:mm", so they compare as strings. The server also
+  // refuses a time later than when the score was logged (400 played_at_in_future, shown here too).
+  const maxPlayedAt = toLocalInput(new Date(), editScore?.venueTimezone);
+  const playedAtInFuture = !playedAtReadOnly && editPlayedAt !== loadedPlayedAt && editPlayedAt > maxPlayedAt;
 
   const { data: machineSuggestions = [] } = useQuery({
     queryKey: ['machine-search-edit', editMachineSearch],
@@ -124,6 +129,10 @@ export default function EditScoreDialog({ score, onClose, onSaved }: {
       });
     },
   });
+
+  // PATCH refused the time (400 played_at_in_future) — shown under Date & Time, not at the bottom.
+  const serverPlayedAtError = patchMutation.isError && (patchMutation.error as any)?.code === 'played_at_in_future'
+    ? (patchMutation.error as any)?.message as string : null;
 
   useEffect(() => {
     setSaved(null);
@@ -249,9 +258,13 @@ export default function EditScoreDialog({ score, onClose, onSaved }: {
                 <input
                   type="datetime-local"
                   value={editPlayedAt}
-                  onChange={e => setEditPlayedAt(e.target.value)}
+                  max={maxPlayedAt}
+                  onChange={e => { setEditPlayedAt(e.target.value); if (serverPlayedAtError) patchMutation.reset(); }}
                   className="rounded-lg border border-white/10 bg-background px-3 py-2 text-sm text-white focus:outline-none focus:border-primary/50"
                 />
+              )}
+              {(playedAtInFuture || serverPlayedAtError) && (
+                <span className="text-xs text-red-400">{serverPlayedAtError ?? "The played time can't be in the future"}</span>
               )}
               {lockedSource && isAdmin && (
                 <span className="text-xs text-amber-300">
@@ -309,7 +322,7 @@ export default function EditScoreDialog({ score, onClose, onSaved }: {
               </div>
             )}
 
-            {patchMutation.isError && (
+            {patchMutation.isError && !serverPlayedAtError && (
               <p className="text-xs text-red-400">{(patchMutation.error as any)?.message}</p>
             )}
             <div className="flex gap-3 pt-1">
@@ -318,7 +331,7 @@ export default function EditScoreDialog({ score, onClose, onSaved }: {
               </Dialog.Close>
               <button
                 onClick={handleSave}
-                disabled={patchMutation.isPending || (needsReason && !correctionReason.trim())}
+                disabled={patchMutation.isPending || (needsReason && !correctionReason.trim()) || playedAtInFuture}
                 className="flex-1 py-2.5 rounded-lg bg-primary text-white font-bold text-sm hover:opacity-90 transition-opacity disabled:opacity-50"
               >
                 {patchMutation.isPending ? 'Saving...' : 'Save'}

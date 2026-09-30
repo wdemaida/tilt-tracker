@@ -452,6 +452,10 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   (admin tier; payload from/to/reason/source/machineId) besides the usual `score.edited`. Other fields
   stay editable under the existing rules. `manual` and legacy null → editable as before. The
   challenge lock (409 `score_locked_by_challenge`) still applies first, admins included.
+- **Never in the future** (`lib/playedAtClock.ts`, `FUTURE_SKEW_MS` = 15 min, shared with badges):
+  POST refuses a `playedAt` > server now + 15 min; PATCH refuses a *changed* one > the row's
+  `created_at` + 15 min (you can't play after logging it; stricter than now) — both **400
+  `played_at_in_future`**, admin corrections included. Server clock vs DB clock (created_at): ~1 s apart.
 - **How strong it is:** the browser reads EXIF before downscaling (which strips it) and sends it as
   `meta`, so the token proves "this is the time /api/upload told this user", not that the camera was
   right. Beating it takes a hand-built upload request — about the effort of editing a photo's EXIF,
@@ -602,7 +606,9 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   `POST /api/cron/challenge-sweep` (`.github/workflows/challenge-sweep.yml`, same `CRON_SECRET`).
 - **What counts**: matching machine (`match_group` = OPDB group captured at creation for 'game'
   mode, else exact id), venue if locked, a photo, `played_at` AND `created_at` inside
-  [starts_at, ends_at], and visible to every other participant (`canSeeScore`) — a score at a home
+  [starts_at, ends_at], `played_at` no more than 15 min after `created_at` (else `played_in_future` —
+  `lib/playedAtClock.ts`; stops legacy future-dated rows counting even though their append-only lock
+  rows stay), and visible to every other participant (`canSeeScore`) — a score at a home
   venue with activity hidden doesn't count. **"Has a photo" = `photo_url` OR `photo_thumbnail`**:
   the client only ever sends the data-URL thumbnail; `photo_url` is never written.
 - **A venue lock must have the machine** (`venueMachineSource`, 400 `machine_not_at_venue`). Sources,
