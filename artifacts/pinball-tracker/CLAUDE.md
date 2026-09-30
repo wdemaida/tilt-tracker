@@ -370,6 +370,16 @@
   shows instead — saving PATCHes the series first (dirty-tracked like the rest); a new metric badge
   preselects its metric's series until the admin touches the select. There's no order field any
   more (the old "Tier order" is gone): singles are placed by the list, tiers by N or the in-series drag.
+- `/admin/badges` **one metric per series** (2026-09-30; server: 400 `series_metric_mismatch`,
+  shown inline on Metric via `errors.metric`). `seriesMetricOf()` mirrors the server's
+  `seriesMetric` (ignores the badge being edited). When the badge's series was *chosen* (an existing
+  badge's, the admin's pick, or Add tier) and its other metric tiers have a metric, Metric is locked
+  to it — hint "All tiers in <Series> count <label>" — and picking a series or switching Kind to
+  Metric sets it (`withSeriesMetric`). Otherwise Metric is free and the Series select offers only
+  compatible series (+ None / New series; the hint counts the hidden ones); a new badge's auto-picked
+  series still follows its metric. A tier that already disagrees is never switched silently: Metric
+  stays editable with an amber "change it to …, or move it out" hint, the series row shows the
+  server's `metricConflict.message`, and the odd tier gets its own amber line.
 - **Toasts** (`lib/toast.ts` + `components/Toaster.tsx`, mounted in `Layout`): `toast({ title, body,
   tone, icon, href })` for confirmations and passive news; errors that need fixing stay inline.
   `lib/badgeToasts.tsx` toasts new unread `badge_earned` notifications off the bell's 30 s unread-count

@@ -12,7 +12,8 @@ import {
 } from '../lib/badges.js';
 import {
   orderBadges, topLevelOrder, validateOrder, sortOrdersFor, nextSortOrder, normalizeSeriesInput, seriesKeyFor, SERIES_LIMITS,
-  hasThreshold, placeTier, validateTierOrder, tierSortOrders, newTierDraft, type SeriesValues,
+  hasThreshold, placeTier, validateTierOrder, tierSortOrders, newTierDraft, checkSeriesMetric, seriesMetric, seriesMetricConflict,
+  type SeriesValues,
 } from '../lib/badgeSeries.js';
 import type { Executor } from '../lib/activity.js';
 import type { BadgeRule } from '../lib/badgeRules.js';
@@ -49,6 +50,12 @@ import type { BadgeRule } from '../lib/badgeRules.js';
 // one ordering key is each tier's sort_order: a tier with a threshold is seated by its N whenever it
 // joins a series or its N changes (placeTier); a rule/manual tier joins at the end and is then moved
 // with PUT /badge-series/:id/order. `sortOrder` in a body only places a single — a tier ignores it.
+//
+// One metric per series: a tier with a threshold must count the series' metric (the metric of its
+// other metric tiers; none yet = any). Create, or a PATCH that moves a badge into a series or changes
+// its kind/metric, answers 400 series_metric_mismatch { seriesMetric, seriesMetricLabel, seriesId,
+// seriesName, errors.metric } otherwise. Existing disagreement is never rewritten — GET /badges flags
+// it per series (`metricConflict`).
 
 const router = Router();
 
@@ -76,8 +83,26 @@ async function maxTopOrder(ex: Executor): Promise<number | null> {
 }
 /** A series' tiers — what the in-series order is computed from. */
 async function seriesTiers(ex: Executor, seriesId: number) {
-  return ex.select({ id: badges.id, seriesId: badges.seriesId, sortOrder: badges.sortOrder, kind: badges.kind, threshold: badges.threshold, name: badges.name })
+  return ex.select({ id: badges.id, seriesId: badges.seriesId, sortOrder: badges.sortOrder, kind: badges.kind, threshold: badges.threshold, name: badges.name, metric: badges.metric })
     .from(badges).where(eq(badges.seriesId, seriesId));
+}
+/** A metric key's admin label ("Different venues"), pending (phase-3) metrics included. */
+function metricLabel(key: string): string {
+  return metricCatalog().find(m => m.key === key)?.label ?? key;
+}
+/**
+ * One metric per series: refuse (400 series_metric_mismatch) a tier with a threshold whose metric
+ * isn't the series' (badgeSeries.checkSeriesMetric). Locks the series row first, so two edits can't
+ * each add a different first metric. Returns the refusal instead of throwing when `soft`.
+ */
+async function assertSeriesMetric(ex: Executor, seriesId: number, badge: { id: number; kind: string; threshold: number | null; metric: string | null }, soft = false) {
+  const [s] = await ex.select({ id: badgeSeries.id, name: badgeSeries.name }).from(badgeSeries).where(eq(badgeSeries.id, seriesId)).limit(1).for('update');
+  if (!s) throw unknownSeries();
+  const bad = checkSeriesMetric(await seriesTiers(ex, seriesId), badge, s.name, metricLabel);
+  if (!bad) return null;
+  const refusal = new Refusal(400, { ...bad, seriesId, seriesName: s.name, errors: { metric: bad.error } });
+  if (soft) return refusal;
+  throw refusal;
 }
 /** Write a series' tier order as sort_order 10, 20, 30, … (only the rows that change). Returns how many. */
 async function renumberTiers(ex: Executor, seriesId: number, ids: number[]): Promise<number> {
@@ -152,10 +177,17 @@ router.get('/badges', async (_req, res) => {
       .from(badges), series);
     const counts = new Map<number, number>();
     for (const r of rows) if (r.seriesId != null) counts.set(r.seriesId, (counts.get(r.seriesId) ?? 0) + 1);
+    const tiersOf = (sid: number) => rows.filter(r => r.seriesId === sid);
     res.json({
       // In the shared order, each series' tiers together (lowest first).
       items: rows.map(({ earnedCount, ...b }) => adminBadge(b as BadgeRow, Number(earnedCount))),
-      series: series.map(s => ({ ...s, badgeCount: counts.get(s.id) ?? 0 })),
+      // `metric` = what its tiers with a threshold count (null = none yet: any metric may be first);
+      // `metricConflict` = they already disagree (data from before the one-metric rule) → a warning.
+      series: series.map(s => ({
+        ...s, badgeCount: counts.get(s.id) ?? 0,
+        metric: seriesMetric(tiersOf(s.id)),
+        metricConflict: seriesMetricConflict(tiersOf(s.id), s.name, metricLabel),
+      })),
       // The draggable rows: every series (empty ones too) and every single, in order.
       order: topLevelOrder(rows, series),
       limits: { ...BADGE_LIMITS, seriesName: SERIES_LIMITS.name }, image: BADGE_IMAGE,
@@ -218,6 +250,13 @@ router.post('/badges', async (req, res) => {
         seriesId = v.seriesId;
       } else if (v.kind === 'metric' && v.metric) {
         seriesId = await seriesOfMetric(tx, v.metric);
+      }
+      // One metric per series. The metric's own ladder (seriesId omitted) never refuses: if it
+      // somehow goes by another metric, the badge is created as a single instead.
+      const asTier = { id: 0, kind: v.kind!, threshold: v.kind === 'metric' ? v.threshold! : null, metric: v.kind === 'metric' ? v.metric! : null };
+      if (seriesId != null && !created) {
+        const auto = v.seriesId === undefined;
+        if (await assertSeriesMetric(tx, seriesId, asTier, auto)) seriesId = null;
       }
       const [inserted] = await tx.insert(badges).values({
         key: v.key!, name: v.name!, description: v.description ?? '', icon: v.icon ?? 'award', color: v.color ?? '#f59e0b',
@@ -306,6 +345,12 @@ router.patch('/badges/:id', async (req, res) => {
       }
       const moved = target !== (b.seriesId ?? null);
       if (moved) set.seriesId = target;
+      // One metric per series — checked when the badge joins a series or its kind/metric changes
+      // (an unrelated edit to a tier that already disagrees, e.g. a rename, is left alone).
+      const metricChanged = merged.kind !== b.kind || merged.metric !== b.metric || !hasThreshold(b);
+      if (target != null && !v.newSeries && hasThreshold(merged) && (moved || metricChanged)) {
+        await assertSeriesMetric(tx, target, { id, kind: merged.kind, threshold: merged.threshold, metric: merged.metric });
+      }
       // A single takes an explicit sortOrder, or (leaving a series) goes after the last item. A tier
       // ignores sortOrder: it's seated by N (below) or moved with PUT /badge-series/:id/order.
       if (target == null) {
@@ -399,7 +444,7 @@ router.post('/badge-series', async (req, res) => {
       await logActivity({ type: 'admin.badge_updated', ...fromReq(req), targetType: 'badge_series', targetId: created.id, payload: { action: 'series_created', seriesKey: created.key, name: created.name } }, { tx });
       return created;
     });
-    res.status(201).json({ series: { ...row, badgeCount: 0 } });
+    res.status(201).json({ series: { ...row, badgeCount: 0, metric: null, metricConflict: null } });
   } catch (err) {
     fail500(res, 'create series', err);
   }
@@ -422,8 +467,8 @@ router.patch('/badge-series/:id', async (req, res) => {
         payload: { action: 'series_edited', seriesKey: row.key, name: row.name, fields, ...(fields.includes('color') ? { colorFrom: before.color, colorTo: row.color } : {}) },
       });
     }
-    const [n] = await db.select({ n: sql<number>`count(*)::int` }).from(badges).where(eq(badges.seriesId, id));
-    res.json({ series: { ...row, badgeCount: Number(n?.n ?? 0) } });
+    const tiers = await seriesTiers(db, id);
+    res.json({ series: { ...row, badgeCount: tiers.length, metric: seriesMetric(tiers), metricConflict: seriesMetricConflict(tiers, row.name, metricLabel) } });
   } catch (err) {
     fail500(res, 'update series', err);
   }

@@ -197,6 +197,18 @@ export interface AdminBadgeSeries {
   id: number; key: string; name: string; color: string; sortOrder: number; badgeCount: number;
   /** How the tiers' descriptions read, with {N} for the threshold ("Posted {N} scores."); null = none. */
   descriptionTemplate: string | null;
+  /** What its tiers with a threshold count — one metric per series. null = none yet (any metric may be first). */
+  metric: string | null;
+  /** Its tiers with a threshold already count different metrics (from before the rule) — never auto-fixed. */
+  metricConflict: SeriesMetricConflict | null;
+}
+
+/** A series whose metric tiers disagree (badgeSeries.seriesMetricConflict on the api-server). */
+export interface SeriesMetricConflict {
+  seriesMetric: string; seriesMetricLabel: string;
+  metrics: Array<{ metric: string; label: string; badges: Array<{ id: number; name: string }> }>;
+  offenders: Array<{ id: number; name: string; metric: string; label: string }>;
+  message: string;
 }
 
 /** "Add tier" on a series: the new badge's prefill (GET /admin/badge-series/:id/new-tier). */

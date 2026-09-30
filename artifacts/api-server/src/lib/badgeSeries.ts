@@ -16,6 +16,8 @@
 //   placeTier / validateTierOrder / tierSortOrders   the in-series order (above)
 //   renderTemplate / deriveTemplate                  badge_series.description_template ("Posted {N} scores.")
 //   nextThreshold / newTierDraft                     "Add tier": the new tier's prefill
+//   seriesMetric / checkSeriesMetric                 one metric per series (400 series_metric_mismatch)
+//   seriesMetricConflict                             existing data that disagrees → admin warning
 //
 //   orderBadges        every badge in the shared order, each series' tiers together (catalog, admin list)
 //   topLevelOrder      the draggable items: every series (even an empty one) and every single badge
@@ -381,11 +383,9 @@ export function newTierDraft(
   };
   if (!top) return draft;
   const withN = ordered.filter(hasThreshold);
-  if (withN.length) {
-    const count = new Map<string, number>();
-    for (const t of withN) if (t.metric) count.set(t.metric, (count.get(t.metric) ?? 0) + 1);
-    const most = Math.max(...count.values());
-    const metric = [...withN].reverse().find(t => t.metric && count.get(t.metric) === most)!.metric!;
+  const metric = seriesMetric(ordered);
+  if (withN.length && metric) {
+    // One metric per series (checkSeriesMetric): the new tier counts the series' metric.
     const base = withN.filter(t => t.metric === metric);
     const baseTop = base.reduce((a, b) => (b.threshold! >= a.threshold! ? b : a));
     const n = nextThreshold(base.map(t => t.threshold!), maxThreshold);
@@ -407,6 +407,96 @@ export function newTierDraft(
     description: top.description, descriptionFrom: top.description ? 'copied' : 'none',
   });
   return draft;
+}
+
+// ── one metric per series ───────────────────────────────────────────────────
+//
+// Every tier with a threshold in a series counts the SAME metric (Will, 2026-09-30 — dev's
+// "Traveler" (venues-12) sat in Venues but counted scores_posted). The series' metric is the metric
+// of its metric tiers; a series with none accepts any metric for its first one. Rule/manual tiers
+// have no threshold and are unaffected. Create/PATCH refuse a metric tier whose metric differs
+// (400 series_metric_mismatch — checkSeriesMetric); data that already disagrees is never changed
+// automatically, only reported (seriesMetricConflict → the admin list's warning).
+
+export interface MetricTier extends OrderableBadge { metric: string | null; name?: string }
+
+/**
+ * The metric a series' tiers count: the metric of its tiers with a threshold, excluding `excludeId`
+ * (the badge being checked, so its own current metric never decides). When they already disagree
+ * (data from before the rule), the one most of them use, a tie → the highest tier's (the last in
+ * tier order) — the same pick as "Add tier". null = no metric tier (any metric may be first).
+ */
+export function seriesMetric(tiers: MetricTier[], excludeId?: number): string | null {
+  const withN = tiers.filter(t => t.id !== excludeId && hasThreshold(t) && t.metric).sort(tierCompare);
+  if (!withN.length) return null;
+  const count = new Map<string, number>();
+  for (const t of withN) count.set(t.metric!, (count.get(t.metric!) ?? 0) + 1);
+  const most = Math.max(...count.values());
+  return [...withN].reverse().find(t => count.get(t.metric!) === most)!.metric!;
+}
+
+export interface SeriesMetricMismatch {
+  code: 'series_metric_mismatch';
+  error: string;
+  seriesMetric: string;
+  seriesMetricLabel: string;
+}
+
+/**
+ * Whether `badge` may be a tier of the series whose tiers are `tiers` (its own row, if listed, is
+ * ignored). null = fine: it has no threshold, the series has no metric tier yet, or it counts the
+ * series' metric. `label` turns a metric key into its admin label.
+ */
+export function checkSeriesMetric(
+  tiers: MetricTier[],
+  badge: Pick<MetricTier, 'id' | 'kind' | 'threshold' | 'metric'>,
+  seriesName: string,
+  label: (metric: string) => string = m => m,
+): SeriesMetricMismatch | null {
+  if (!hasThreshold(badge)) return null;
+  const want = seriesMetric(tiers, badge.id);
+  if (want == null || want === badge.metric) return null;
+  const have = badge.metric ? label(badge.metric) : 'no metric';
+  return {
+    code: 'series_metric_mismatch',
+    error: `All tiers in “${seriesName}” count ${label(want)} — this one counts ${have}. Pick ${label(want)}, or put it in another series (or none).`,
+    seriesMetric: want,
+    seriesMetricLabel: label(want),
+  };
+}
+
+export interface SeriesMetricConflict {
+  /** The metric the series goes by (seriesMetric) — what the other tiers should change to. */
+  seriesMetric: string;
+  seriesMetricLabel: string;
+  /** Every metric its tiers with a threshold count, most-used first, with those tiers. */
+  metrics: Array<{ metric: string; label: string; badges: Array<{ id: number; name: string }> }>;
+  /** The tiers that don't count seriesMetric — the ones to fix. */
+  offenders: Array<{ id: number; name: string; metric: string; label: string }>;
+  /** One line for the admin list. */
+  message: string;
+}
+
+/**
+ * A series whose tiers with a threshold already count different metrics (created before the rule),
+ * or null. Reported, never fixed automatically: the admin changes the odd tier's metric (if nobody
+ * has it yet) or moves it out of the series.
+ */
+export function seriesMetricConflict(tiers: MetricTier[], seriesName: string, label: (metric: string) => string = m => m): SeriesMetricConflict | null {
+  const withN = tiers.filter(t => hasThreshold(t) && t.metric).sort(tierCompare);
+  const byMetric = new Map<string, Array<{ id: number; name: string }>>();
+  for (const t of withN) byMetric.set(t.metric!, [...(byMetric.get(t.metric!) ?? []), { id: t.id, name: t.name ?? `badge ${t.id}` }]);
+  if (byMetric.size < 2) return null;
+  const main = seriesMetric(tiers)!;
+  const metrics = [...byMetric.entries()]
+    .map(([metric, badges]) => ({ metric, label: label(metric), badges }))
+    .sort((a, b) => (a.metric === main ? -1 : b.metric === main ? 1 : b.badges.length - a.badges.length));
+  const offenders = withN.filter(t => t.metric !== main).map(t => ({ id: t.id, name: t.name ?? `badge ${t.id}`, metric: t.metric!, label: label(t.metric!) }));
+  const names = offenders.map(o => `“${o.name}” (${o.label})`).join(', ');
+  return {
+    seriesMetric: main, seriesMetricLabel: label(main), metrics, offenders,
+    message: `Tiers in “${seriesName}” count different metrics — it goes by ${label(main)}, but ${names} ${offenders.length === 1 ? 'doesn’t' : 'don’t'}. Change ${offenders.length === 1 ? 'its' : 'their'} metric to ${label(main)} (possible while nobody has the badge), or move ${offenders.length === 1 ? 'it' : 'them'} out of the series.`,
+  };
 }
 
 // ── admin input ──────────────────────────────────────────────────────────────

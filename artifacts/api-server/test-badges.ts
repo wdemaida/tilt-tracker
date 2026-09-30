@@ -656,6 +656,60 @@ try {
   const added = await createBadge({ key: draft.key, name: 'ZZ Mix added', kind: draft.kind, metric: draft.metric, threshold: draft.threshold, description: draft.description, icon: draft.icon, seriesId: draft.seriesId });
   check('creating from the prefill → a draft tier at the top of the ladder', JSON.stringify(await mixedOrder()) === JSON.stringify([mRule, mLow, mMid, mHigh, added]), await mixedOrder());
 
+  // ── one metric per series ─────────────────────────────────────────────────
+  // The mixed series goes by mKey (its metric tiers); a rule tier (mRule) was already accepted.
+  const otherKey = 'your_requests_declined';
+  r = await call(alice, 'GET', '/admin/badges');
+  check('GET /admin/badges: each series’ metric (mixed → its tiers’ metric; the rule ladder → null), no conflict',
+    r.body.series.find((x: any) => x.id === mixed)?.metric === mKey && r.body.series.find((x: any) => x.id === ladder)?.metric === null
+    && r.body.series.find((x: any) => x.id === mixed)?.metricConflict === null, r.body.series.filter((x: any) => x.id === mixed || x.id === ladder));
+  r = await call(alice, 'POST', '/admin/badges', { key: 'zz-badge-test-om-1', name: 'ZZ Other metric', kind: 'metric', metric: otherKey, threshold: 900_020, seriesId: mixed });
+  check('create a metric tier on another metric in the series → 400 series_metric_mismatch, naming the series’ metric',
+    r.status === 400 && r.body.code === 'series_metric_mismatch' && r.body.seriesMetric === mKey && typeof r.body.seriesMetricLabel === 'string'
+    && r.body.seriesId === mixed && r.body.seriesName === 'ZZ Badge Test Mixed' && typeof r.body.errors?.metric === 'string', r.body);
+  console.log(`      (error: ${r.body.error})`);
+  check('…nothing was created', (await db.select().from(badges).where(eq(badges.key, 'zz-badge-test-om-1'))).length === 0);
+  const ruleOk = await createBadge({ key: 'zz-badge-test-om-rule', name: 'ZZ OM rule', kind: 'manual', seriesId: mixed });
+  check('a manual tier (no threshold) still joins any series', !!ruleOk);
+  // Moving an other-metric single into the series, or changing a tier's metric, is refused too.
+  const om = await createBadge({ key: 'zz-badge-test-om-2', name: 'ZZ OM single', kind: 'metric', metric: otherKey, threshold: 900_021, seriesId: null });
+  r = await call(alice, 'PATCH', `/admin/badges/${om}`, { seriesId: mixed });
+  check('PATCH moving an other-metric badge into the series → 400 series_metric_mismatch, not moved',
+    r.status === 400 && r.body.code === 'series_metric_mismatch' && (await db.select({ s: badges.seriesId }).from(badges).where(eq(badges.id, om)))[0]?.s === null, r.body);
+  r = await call(alice, 'PATCH', `/admin/badges/${mMid}`, { metric: otherKey });
+  check('PATCH a tier’s metric to another metric → 400 series_metric_mismatch, unchanged',
+    r.status === 400 && r.body.code === 'series_metric_mismatch' && (await db.select({ m: badges.metric }).from(badges).where(eq(badges.id, mMid)))[0]?.m === mKey, r.body);
+  r = await call(alice, 'PATCH', `/admin/badges/${mRule}`, { kind: 'metric', metric: otherKey, threshold: 900_030 });
+  check('PATCH a rule tier into a metric tier on another metric → 400', r.status === 400 && r.body.code === 'series_metric_mismatch', r.body);
+  r = await call(alice, 'PATCH', `/admin/badges/${om}`, { metric: mKey, seriesId: mixed });
+  check('…with the series’ metric, the move is accepted', r.status === 200 && r.body.badge.seriesId === mixed && r.body.badge.metric === mKey, r.body.badge);
+  // An empty series accepts any metric for its first tier; after that it goes by that metric.
+  r = await call(alice, 'POST', '/admin/badge-series', { name: 'ZZ Badge Test OneMetric', color: '#135790' });
+  const oneM = r.body.series?.id as number;
+  if (oneM) seriesIds.push(oneM);
+  const first = await createBadge({ key: 'zz-badge-test-om-3', name: 'ZZ OM first', kind: 'metric', metric: otherKey, threshold: 900_040, seriesId: oneM });
+  check('an empty series takes any metric for its first tier', !!first);
+  r = await call(alice, 'POST', '/admin/badges', { key: 'zz-badge-test-om-4', name: 'ZZ OM second', kind: 'metric', metric: mKey, threshold: 900_041, seriesId: oneM });
+  check('…then refuses a second metric', r.status === 400 && r.body.code === 'series_metric_mismatch' && r.body.seriesMetric === otherKey, r.body);
+  r = await call(alice, 'PATCH', `/admin/badges/${first}`, { metric: mKey });
+  check('its only metric tier may still change metric (nothing else to match)', r.status === 200 && r.body.badge.metric === mKey, r.body);
+  r = await call(alice, 'POST', '/admin/badges', { key: 'zz-badge-test-om-5', name: 'ZZ OM new series', kind: 'metric', metric: otherKey, threshold: 900_042, newSeries: { name: 'ZZ Badge Test OM New', color: '#975310' } });
+  check('newSeries always accepts (a fresh series has no metric yet)', r.status === 201, r.body);
+  if (r.status === 201) { badgeIds.push(r.body.badge.id); seriesIds.push(r.body.badge.seriesId); }
+  // Data from before the rule: planted directly (the API can't make it) → flagged, never rewritten.
+  await db.update(badges).set({ metric: otherKey }).where(eq(badges.id, mMid));
+  r = await call(alice, 'GET', '/admin/badges');
+  const conflict = r.body.series.find((x: any) => x.id === mixed)?.metricConflict;
+  check('a series whose tiers already disagree → metricConflict: goes by the majority, names the odd tier + a fix hint',
+    conflict?.seriesMetric === mKey && conflict.offenders?.length === 1 && conflict.offenders[0].id === mMid && /move it out of the series/.test(conflict.message), conflict);
+  console.log(`      (warning: ${conflict?.message})`);
+  check('…and nothing was changed by listing it', (await db.select({ m: badges.metric }).from(badges).where(eq(badges.id, mMid)))[0]?.m === otherKey);
+  r = await call(alice, 'PATCH', `/admin/badges/${mMid}`, { name: 'ZZ Mix mid renamed' });
+  check('an unrelated edit to the odd tier (rename) is allowed', r.status === 200, r.body);
+  r = await call(alice, 'PATCH', `/admin/badges/${mMid}`, { metric: mKey });
+  check('fixing its metric to the series’ one → 200, conflict gone', r.status === 200
+    && (await call(alice, 'GET', '/admin/badges')).body.series.find((x: any) => x.id === mixed)?.metricConflict === null, r.body);
+
   // ── retire; the sweep ──────────────────────────────────────────────────────
   r = await call(alice, 'POST', `/admin/badges/${big}/retire`);
   check('retire → ok; earned one stays', r.status === 200 && await holds(alice.id, big) === 1, r);

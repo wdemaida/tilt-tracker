@@ -2,7 +2,7 @@
 //
 // Badge series, the pure rules: tier order (one key, N-tiers seated by threshold), the shared
 // shelf/catalog order, both reorder bodies' validation, collapsing a profile to one item per series
-// with pips, description templates, "Add tier" prefill, series input and keys.
+// with pips, description templates, "Add tier" prefill, one metric per series, series input and keys.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -12,6 +12,7 @@ const {
   tierCompare, orderBadges, topLevelOrder, tierNumbers, validateOrder, sortOrdersFor, nextSortOrder, collapseShelf, ladderOf,
   normalizeSeriesInput, seriesKeyFor, placeTier, validateTierOrder, tierSortOrders, hasThreshold,
   formatN, renderTemplate, deriveTemplate, deriveSeriesTemplate, nextThreshold, newTierDraft,
+  seriesMetric, checkSeriesMetric, seriesMetricConflict,
 } = await import('./badgeSeries.js');
 const { normalizeBadgeInput } = await import('./badges.js');
 
@@ -267,6 +268,69 @@ test('newTierDraft: metric series → next N, template description, key; icon fr
   assert.deepEqual([empty.kind, empty.icon, empty.description, empty.color], [null, null, '', '#14b8a6']);
   // Tiers of another series passed in are ignored.
   assert.equal(newTierDraft({ ...venuesSeries, id: 4 }, tiers, new Set()).kind, null);
+});
+
+test('seriesMetric: the metric tiers’ metric; excludes the badge checked; rule/manual tiers don’t count', () => {
+  const M = (id: number, metric: string | null, o: Partial<{ kind: string; threshold: number | null; sortOrder: number }> = {}) =>
+    ({ id, seriesId: 5, sortOrder: o.sortOrder ?? id * 10, kind: o.kind ?? 'metric', threshold: o.threshold === undefined ? id : o.threshold, metric, name: `T${id}` });
+  assert.equal(seriesMetric([]), null, 'an empty series has no metric');
+  assert.equal(seriesMetric([M(1, null, { kind: 'rule', threshold: null }), M(2, null, { kind: 'manual', threshold: null })]), null, 'only rule/manual tiers → none');
+  assert.equal(seriesMetric([M(1, 'distinct_venues'), M(2, 'distinct_venues')]), 'distinct_venues');
+  assert.equal(seriesMetric([M(1, 'distinct_venues')], 1), null, 'its only metric tier, excluded → any metric may be first');
+  // Existing disagreement: the majority, a tie → the highest tier's (last in tier order).
+  assert.equal(seriesMetric([M(1, 'distinct_venues'), M(2, 'scores_posted'), M(3, 'distinct_venues')]), 'distinct_venues');
+  assert.equal(seriesMetric([M(1, 'distinct_venues'), M(2, 'scores_posted')]), 'scores_posted');
+  assert.equal(seriesMetric([M(1, 'distinct_venues', { sortOrder: 20 }), M(2, 'scores_posted', { sortOrder: 10 })]), 'distinct_venues', 'tier order, not id');
+});
+
+test('checkSeriesMetric: refuses a metric tier on another metric; rule/manual and first tiers pass', () => {
+  const M = (id: number, metric: string | null, o: Partial<{ kind: string; threshold: number | null }> = {}) =>
+    ({ id, seriesId: 5, sortOrder: id * 10, kind: o.kind ?? 'metric', threshold: o.threshold === undefined ? id * 5 : o.threshold, metric, name: `T${id}` });
+  const venuesTiers = [M(1, 'distinct_venues'), M(2, 'distinct_venues'), M(3, null, { kind: 'rule', threshold: null })];
+  const label = (m: string) => ({ distinct_venues: 'Different venues', scores_posted: 'Scores posted' } as Record<string, string>)[m] ?? m;
+  // New tier (id 99), same metric → fine; another metric → refused, naming the series' metric.
+  assert.equal(checkSeriesMetric(venuesTiers, { id: 99, kind: 'metric', threshold: 100, metric: 'distinct_venues' }, 'Venues', label), null);
+  const bad = checkSeriesMetric(venuesTiers, { id: 99, kind: 'metric', threshold: 12, metric: 'scores_posted' }, 'Venues', label);
+  assert.ok(bad);
+  assert.equal(bad!.code, 'series_metric_mismatch');
+  assert.equal(bad!.seriesMetric, 'distinct_venues');
+  assert.equal(bad!.seriesMetricLabel, 'Different venues');
+  assert.match(bad!.error, /All tiers in “Venues” count Different venues — this one counts Scores posted/);
+  // Rule / manual tiers (no threshold) are unaffected.
+  assert.equal(checkSeriesMetric(venuesTiers, { id: 99, kind: 'rule', threshold: null, metric: null }, 'Venues'), null);
+  assert.equal(checkSeriesMetric(venuesTiers, { id: 99, kind: 'manual', threshold: null, metric: null }, 'Venues'), null);
+  // A series with no metric tier accepts any metric for its first one.
+  assert.equal(checkSeriesMetric([M(3, null, { kind: 'rule', threshold: null })], { id: 99, kind: 'metric', threshold: 1, metric: 'login_days' }, 'Holidays'), null);
+  assert.equal(checkSeriesMetric([], { id: 99, kind: 'metric', threshold: 1, metric: 'login_days' }, 'Empty'), null);
+  // Editing a tier already in the series: its own row is ignored. The only metric tier may change
+  // metric; one of two may not.
+  assert.equal(checkSeriesMetric([M(1, 'distinct_venues')], { id: 1, kind: 'metric', threshold: 5, metric: 'scores_posted' }, 'Venues'), null);
+  assert.ok(checkSeriesMetric(venuesTiers, { id: 1, kind: 'metric', threshold: 5, metric: 'scores_posted' }, 'Venues'));
+  // Fixing dev's Traveler: its siblings all count distinct_venues → switching it to that passes.
+  const withTraveler = [...venuesTiers, M(4, 'scores_posted')];
+  assert.equal(checkSeriesMetric(withTraveler, { id: 4, kind: 'metric', threshold: 12, metric: 'distinct_venues' }, 'Venues'), null);
+  assert.ok(checkSeriesMetric(withTraveler, { id: 4, kind: 'metric', threshold: 12, metric: 'scores_posted' }, 'Venues'));
+});
+
+test('seriesMetricConflict: reports tiers that already disagree, with the fix; consistent series → null', () => {
+  const M = (id: number, metric: string | null, name: string, o: Partial<{ kind: string; threshold: number | null }> = {}) =>
+    ({ id, seriesId: 5, sortOrder: id * 10, kind: o.kind ?? 'metric', threshold: o.threshold === undefined ? id * 5 : o.threshold, metric, name });
+  const label = (m: string) => ({ distinct_venues: 'Different venues', scores_posted: 'Scores posted' } as Record<string, string>)[m] ?? m;
+  assert.equal(seriesMetricConflict([], 'Empty'), null);
+  assert.equal(seriesMetricConflict([M(1, 'distinct_venues', 'A'), M(2, 'distinct_venues', 'B'), M(3, null, 'Holiday', { kind: 'rule', threshold: null })], 'Venues'), null);
+  const c = seriesMetricConflict([M(1, 'distinct_venues', 'Explorer'), M(2, 'scores_posted', 'Traveler'), M(3, 'distinct_venues', 'Globetrotter')], 'Venues', label);
+  assert.ok(c);
+  assert.equal(c!.seriesMetric, 'distinct_venues');
+  assert.deepEqual(c!.offenders, [{ id: 2, name: 'Traveler', metric: 'scores_posted', label: 'Scores posted' }]);
+  assert.deepEqual(c!.metrics.map(m => [m.metric, m.badges.map(b => b.name)]), [['distinct_venues', ['Explorer', 'Globetrotter']], ['scores_posted', ['Traveler']]]);
+  assert.match(c!.message, /goes by Different venues, but “Traveler” \(Scores posted\) doesn’t\. Change its metric to Different venues/);
+  assert.match(c!.message, /move it out of the series/);
+});
+
+test('newTierDraft follows seriesMetric (one metric per series)', () => {
+  const T = (id: number, o: Record<string, any>) => ({ id, seriesId: 3, sortOrder: id * 10, kind: 'metric', threshold: null, key: 'k' + id, metric: 'distinct_venues', rule: null, icon: 'award', description: '', ...o });
+  const tiers = [T(1, { threshold: 5 }), T(2, { threshold: 12, metric: 'scores_posted' }), T(3, { threshold: 25 })];
+  assert.equal(newTierDraft({ id: 3, color: '#000000', descriptionTemplate: null }, tiers, new Set()).metric, seriesMetric(tiers));
 });
 
 test('normalizeSeriesInput and seriesKeyFor', () => {

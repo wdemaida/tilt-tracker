@@ -983,6 +983,21 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
     "Posted 10 scores."), and each series' tiers renumbered 10, 20, 30… into the order they showed
     before the one-key rule (metric by threshold, then rule/manual by sort_order). It imports only
     the pure `badgeSeries.ts`. It's dev-guarded — remove the guard deliberately at ship time.
+  - **One metric per series** (Will, 2026-09-30 — dev's "Traveler" (venues-12) sat in Venues but
+    counted `scores_posted`). Every tier **with a threshold** in a series counts the same metric; the
+    series' metric = its metric tiers' metric (`seriesMetric`, excluding the badge being checked; if
+    they already disagree, the one most use, tie → the highest tier's — same pick as Add tier). A
+    series with no metric tier accepts any metric for its first; rule/manual tiers are unaffected;
+    `newSeries` always passes. Create, and a PATCH that **moves a badge into a series or changes its
+    kind/metric**, answer **400 `series_metric_mismatch`** `{ error, code, seriesMetric,
+    seriesMetricLabel, seriesId, seriesName, errors: { metric } }` (`checkSeriesMetric`, checked in the
+    transaction under the series row lock). An unrelated edit (rename, N) to a tier that already
+    disagrees is allowed. A create **without** `seriesId` whose metric's ladder goes by another metric
+    becomes a single instead of failing. **Existing data is never rewritten**: `GET /badges` gives each
+    series `metric` and `metricConflict` (`seriesMetricConflict`: the metric it goes by, the offending
+    tiers, a fix-hint `message`) → an amber warning in the admin list. Prod: migrate23's seeded tiers
+    have one metric per migrate25 series key, so the seeds can't create a conflict — only a tier added
+    or re-metriced by hand could (the warning will show it).
 - Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/badgeRules.test.ts
   src/lib/badgeMetrics.test.ts src/lib/badges.test.ts src/lib/badgeSeries.test.ts` (metrics SQL runs in PGlite);
   `npx tsx test-badges.ts` (dev branch only — borrows 3 friendless users, zz-badge-test machine /

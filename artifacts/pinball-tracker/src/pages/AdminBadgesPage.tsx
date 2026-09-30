@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Upload, Trash2, Eye, Rocket, Archive, Loader2, UserPlus, X, ChevronDown, ChevronUp, Search, History, GripVertical, Layers } from 'lucide-react';
+import { Plus, Upload, Trash2, Eye, Rocket, Archive, Loader2, UserPlus, X, ChevronDown, ChevronUp, Search, History, GripVertical, Layers, AlertTriangle } from 'lucide-react';
 import {
   useAdminApi, type AdminBadge, type AdminBadgeSeries, type BadgeOrderItem, type BadgeInput, type BadgeKind, type BadgeRule, type BadgePreview,
   type BadgeBackfillResult, type UserRef, type NewTierDraft,
@@ -41,6 +41,14 @@ import { BADGES_KEY } from '../lib/badges';
 // metric, next N, icon, series color, description from the series' {N} template). While a tier's
 // description still equals the template's text (`descLinked`), editing N rewrites it; once the
 // admin edits the description by hand it stays theirs.
+//
+// One metric per series (the server refuses otherwise: 400 series_metric_mismatch, shown inline on
+// Metric): with a series whose tiers already have a metric picked, Metric is locked to it ("All tiers
+// in Venues count Different venues"), and picking a series (or switching Kind to Metric in one) sets
+// it. With no series yet, the Series select offers only the series compatible with the chosen metric
+// (plus None / New series). Data from before the rule is never rewritten here: a series whose metric
+// tiers disagree gets an amber warning in the list (the server's `metricConflict`), the odd tier a
+// line of its own, and its editor says how to fix it (change the metric, or move it out).
 
 const STATUS_TONE = { draft: 'muted', live: 'ok', retired: 'warn' } as const;
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -236,6 +244,21 @@ function draftOf(b: AdminBadge, series: AdminBadgeSeries[]): Draft {
 function seriesOfMetric(items: AdminBadge[], metric: string, series: AdminBadgeSeries[]): AdminBadgeSeries | null {
   const ids = new Set(items.filter(b => b.kind === 'metric' && b.metric === metric && b.seriesId != null).map(b => b.seriesId!));
   return ids.size === 1 ? series.find(s => ids.has(s.id)) ?? null : null;
+}
+
+/**
+ * What a series' tiers with a threshold count, ignoring `excludeId` (the badge being edited) — the
+ * mirror of the server's badgeSeries.seriesMetric: the metric most of them use, a tie → the highest
+ * tier's. null = no metric tier (any metric may be first).
+ */
+function seriesMetricOf(items: AdminBadge[], seriesId: number, excludeId?: number): string | null {
+  const withN = items.filter(b => b.seriesId === seriesId && b.id !== excludeId && hasThreshold(b) && b.metric)
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id);
+  if (!withN.length) return null;
+  const count = new Map<string, number>();
+  for (const b of withN) count.set(b.metric!, (count.get(b.metric!) ?? 0) + 1);
+  const most = Math.max(...count.values());
+  return [...withN].reverse().find(b => count.get(b.metric!) === most)!.metric!;
 }
 
 /** The PATCH for an existing series' name/color that this draft would send, or null. */
@@ -585,6 +608,30 @@ function BadgeEditor({ badge, prefill, series, allBadges, onSaved, onClose }: {
   const dirty = !!badge && !!live && (!!seriesPatch || JSON.stringify(bodyOf(d, locked)) !== JSON.stringify(bodyOf(draftOf(live, series), locked)));
   const pickedSeries = d.seriesId !== '' && d.seriesId !== 'new' ? series.find(s => String(s.id) === d.seriesId) ?? null : null;
   const inSeries = d.seriesId !== '';
+  // One metric per series: what the chosen series' other metric tiers count (null = any).
+  const metricLabel = (key: string) => metrics.data?.find(m => m.key === key)?.label ?? key;
+  const seriesMetric = d.kind === 'metric' && pickedSeries ? seriesMetricOf(allBadges, pickedSeries.id, badge?.id) : null;
+  // A tier that already disagrees (saved before the rule) isn't silently switched — it's explained.
+  const metricMismatch = seriesMetric != null && d.metric !== seriesMetric;
+  // Locked only when the series was chosen (an existing badge's, the admin's pick, or "Add tier") —
+  // a new badge's auto-picked series follows its metric instead (pickMetric), so Metric stays free.
+  const metricBySeries = seriesMetric != null && !metricMismatch && (!!badge || seriesTouched);
+  /** Series this badge could join with its metric (always the chosen one, so the select keeps its value). */
+  const seriesChoices = series.filter(s => {
+    if (String(s.id) === d.seriesId || d.kind !== 'metric') return true;
+    // In a series that sets the metric, any series may be picked — it sets the metric in turn —
+    // unless the metric is frozen (players have the badge).
+    if (metricBySeries && !locked) return true;
+    const m = seriesMetricOf(allBadges, s.id, badge?.id);
+    return m == null || m === d.metric;
+  });
+  const hiddenSeries = series.length - seriesChoices.length;
+  /** Picking a series (or Kind → Metric inside one) sets the metric to the series' metric. */
+  function withSeriesMetric(next: Draft): Partial<Draft> {
+    if (locked || next.kind !== 'metric' || next.seriesId === '' || next.seriesId === 'new') return {};
+    const m = seriesMetricOf(allBadges, Number(next.seriesId), badge?.id);
+    return m ? { metric: m } : {};
+  }
   const drawColor = inSeries ? d.seriesColor : d.color;
   // A change to N / series / kind rewrites a description that still follows the series template
   // (or is empty); a hand-written one is left alone.
@@ -609,14 +656,17 @@ function BadgeEditor({ badge, prefill, series, allBadges, onSaved, onClose }: {
   function pickSeries(v: string) {
     setSeriesTouched(true);
     const s = series.find(x => String(x.id) === v);
-    setFollowing(v === 'new'
+    const patch: Partial<Draft> = v === 'new'
       ? { seriesId: 'new', seriesName: '', seriesColor: d.color }
-      : { seriesId: v, seriesName: s?.name ?? '', seriesColor: s?.color ?? d.color });
+      : { seriesId: v, seriesName: s?.name ?? '', seriesColor: s?.color ?? d.color };
+    setFollowing({ ...patch, ...withSeriesMetric({ ...d, ...patch }) });
   }
   function pickMetric(metric: string) {
     const patch: Partial<Draft> = { metric };
     if (!badge && !seriesTouched) {
-      const s = seriesOfMetric(allBadges, metric, series);
+      const found = seriesOfMetric(allBadges, metric, series);
+      // Only a series that counts this metric (one whose tiers already disagree may go by another).
+      const s = found && seriesMetricOf(allBadges, found.id) === metric ? found : null;
       Object.assign(patch, s ? { seriesId: String(s.id), seriesName: s.name, seriesColor: s.color } : { seriesId: '', seriesName: '' });
     }
     setFollowing(patch);
@@ -720,10 +770,10 @@ function BadgeEditor({ badge, prefill, series, allBadges, onSaved, onClose }: {
       <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-3 items-start rounded-xl border border-white/10 p-3">
         <Field label="Series" error={errors.seriesId} hint={inSeries
           ? (d.kind === 'metric' ? 'Placed in the ladder by its N' : 'Joins the end of the ladder — drag it in the list to move it')
-          : 'A single badge — placed in the list by drag or the move buttons'}>
+          : `A single badge — placed in the list by drag or the move buttons${hiddenSeries > 0 ? ` · ${hiddenSeries} ${hiddenSeries === 1 ? 'series counts' : 'series count'} another metric` : ''}`}>
           <select className={input} value={d.seriesId} onChange={e => pickSeries(e.target.value)}>
             <option value="">None — a single badge</option>
-            {series.map(s => <option key={s.id} value={s.id}>{s.name} ({s.badgeCount} {s.badgeCount === 1 ? 'tier' : 'tiers'})</option>)}
+            {seriesChoices.map(s => <option key={s.id} value={s.id}>{s.name} ({s.badgeCount} {s.badgeCount === 1 ? 'tier' : 'tiers'})</option>)}
             <option value="new">New series…</option>
           </select>
         </Field>
@@ -747,15 +797,21 @@ function BadgeEditor({ badge, prefill, series, allBadges, onSaved, onClose }: {
         <div className="flex flex-wrap items-center gap-3">
           <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Kind</span>
           {locked ? <Pill>{d.kind}</Pill> : (
-            <Segmented<BadgeKind> value={d.kind} onChange={k => setFollowing({ kind: k })} options={[
+            <Segmented<BadgeKind> value={d.kind} onChange={k => setFollowing({ kind: k, ...withSeriesMetric({ ...d, kind: k }) })} options={[
               { value: 'metric', label: 'Metric' }, { value: 'rule', label: 'Rule' }, { value: 'manual', label: 'Manual' },
             ]} />
           )}
         </div>
         {d.kind === 'metric' && (
           <div className="grid grid-cols-1 sm:grid-cols-[1fr_8rem] gap-3">
-            <Field label="Metric" error={errors.metric} hint={metrics.data?.find(m => m.key === d.metric)?.description}>
-              <select className={input} disabled={locked} value={d.metric} onChange={e => pickMetric(e.target.value)}>
+            <Field label="Metric" error={errors.metric} hint={metricMismatch && pickedSeries
+              ? <span className="text-amber-300">All tiers in {pickedSeries.name} count {metricLabel(seriesMetric!)} — this one counts {metricLabel(d.metric)}. {locked
+                ? 'Its metric is frozen (players have it), so move it out of the series.'
+                : <>Change it to {metricLabel(seriesMetric!)}, or move it out of the series.</>}</span>
+              : metricBySeries && pickedSeries
+                ? <>All tiers in {pickedSeries.name} count {metricLabel(seriesMetric!)}.</>
+                : metrics.data?.find(m => m.key === d.metric)?.description}>
+              <select className={input} disabled={locked || metricBySeries} value={d.metric} onChange={e => pickMetric(e.target.value)}>
                 {(metrics.data ?? []).map(m => <option key={m.key} value={m.key}>{m.label}{m.available ? '' : ' — phase 3, not yet'}</option>)}
               </select>
             </Field>
@@ -1148,6 +1204,7 @@ export default function AdminBadgesPage() {
         {shown.map(b => {
           const ti = allTiers.indexOf(b);
           const fixed = hasThreshold(b);
+          const odd = s.metricConflict?.offenders.find(o => o.id === b.id);
           const dragging = tierDrag?.seriesId === s.id;
           const tierDropProps = {
             draggable: canReorder && !fixed && tierArmed === b.id,
@@ -1192,6 +1249,7 @@ export default function AdminBadgesPage() {
                 )}
                 <div className="flex-1 min-w-0"><BadgeListRow b={b} indent current={current?.id === b.id} onClick={() => setEditing(inlineId === b.id ? null : b)} /></div>
               </div>
+              {odd && <p className="pl-16 pr-3 pb-2 -mt-1 text-[11px] text-amber-300">Counts {odd.label} — the rest of {s.name} counts {s.metricConflict!.seriesMetricLabel}. Change its metric or move it out of the series.</p>}
               {inlineId === b.id && <div className="px-2 pb-3 sm:px-3 bg-black/20">{editor}</div>}
             </li>
           );
@@ -1268,6 +1326,12 @@ export default function AdminBadgesPage() {
                       </span>
                     </button>
                   </div>
+                  {s.metricConflict && (
+                    <p role="note" className="flex items-start gap-1.5 pl-12 pr-3 pb-2 text-[11px] text-amber-300">
+                      <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-px" aria-hidden />
+                      <span>{s.metricConflict.message}</span>
+                    </p>
+                  )}
                   {editingSeries === s.id && <div className="px-2 pb-3 sm:px-3 bg-black/20"><SeriesEditor series={s} onClose={() => setEditingSeries(null)} /></div>}
                   {tierList(s, g.tiers)}
                   {prefillInline && prefill!.prefill.seriesId === s.id && <div className="px-2 pb-3 pt-2 sm:px-3 bg-black/20">{editor}</div>}
