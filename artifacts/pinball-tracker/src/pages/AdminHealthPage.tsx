@@ -131,6 +131,14 @@ export default function AdminHealthPage() {
                   {data.database.status === 'ok' && (
                     <>
                       <span className="text-muted-foreground">{data.database.postgresVersion}</span>
+                      {data.database.timeZone != null && (
+                        <span
+                          className={data.database.timeZoneOk ? 'text-muted-foreground' : 'text-red-400 font-bold'}
+                          title="The database session's TimeZone. Expected UTC/GMT: raw SQL timestamp text and naive casts follow it."
+                        >
+                          TZ {data.database.timeZone}{data.database.timeZoneOk ? '' : ' — expected UTC'}
+                        </span>
+                      )}
                       <span className="text-green-400 font-medium">{data.database.latencyMs} ms</span>
                     </>
                   )}
