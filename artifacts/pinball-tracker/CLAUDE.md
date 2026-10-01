@@ -314,6 +314,23 @@
   z-50; hand-rolled pointer zoom (pinch/drag, wheel, click on desktop, double-tap on touch), closes via ×,
   Escape, backdrop tap or swipe down at 1×. Home `ScoreCard` thumbnails with `hasFullPhoto` open it (tiny
   expand badge); user/machine/venue/challenge rows use `FullPhotoButton` (camera icon).
+- **Step 3's photo strip** (`components/PhotoStrip.tsx`, added 2026-10-01 — a user couldn't see the
+  photo they'd just uploaded): whenever `photoPreviews` has any, step 3 shows 64px thumbnails (black,
+  object-contain, expand badge) under the heading; each is a button ("View photo 2 full size") that
+  opens the viewer on that photo. The player picker and the partial-read block show a 128px strip in
+  place of the top one, so there's only ever one. A HEIC the browser can't draw shows a camera icon.
+- **Viewer local mode:** `PhotoViewer` takes `sources` + `initialIndex` instead of `scoreId` (a
+  discriminated union). No request (the query is disabled), no upload controls or thumbnail-only text;
+  the aspect ratio comes from the loaded `<img>`. Several photos get prev/next buttons, ←/→ and a
+  sideways swipe at 1× (the drag's axis locks on its first move, so swipe-down still dismisses); zoom
+  resets on every switch.
+- **Back closes the viewer, not step 3** (`src/lib/photoViewerHistory.ts`, `historyEntry` prop —
+  only PhotoStrip sets it; Home doesn't push). Open pushes a same-URL entry
+  `{ ...history.state, photoViewer: <token> }`; popping it closes the viewer. ×/Escape/backdrop/swipe
+  just unmount it, and the cleanup `history.back()`s to consume the entry (a tick later, so StrictMode's
+  dev remount can cancel it). AddScorePage's popstate handler returns early on `isPhotoViewerPop()`,
+  which is true for both of those pops — without that, a pop landing on an entry with no
+  `addScoreStep` would read as "step 1" and throw the user back. Form state is untouched either way.
 - **Thumbnail-only scores** (added 2026-09-26 — a user posted one from an old cached app and the tap
   did nothing) open the same viewer: `GET /photo` answers `url: null` + `thumbnail`, shown unblurred and
   capped at `THUMB_MAX_UPSCALE` (3×) its natural size, with "Thumbnail only — the full-size photo wasn't

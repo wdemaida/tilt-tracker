@@ -11,6 +11,11 @@
 // a few lines of pointer maths rather than a library: pinch / drag on touch, wheel / click on desktop,
 // double-tap to toggle. Closes with ×, Escape, a tap on the backdrop, or a swipe down at 1×.
 //
+// Local mode (`sources`): photos that aren't saved anywhere yet — AddScorePage step 3's object URLs.
+// No request, no upload controls; several photos get prev / next buttons, ←/→ and a sideways swipe
+// at 1×. `historyEntry` gives the open viewer its own browser-history entry so the back gesture
+// closes it (src/lib/photoViewerHistory.ts).
+//
 // Portalled to <body> at z-50: above the mobile tab bar (z-40) and the sticky header, like every
 // other modal.
 
@@ -18,8 +23,9 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Pointer
 import { createPortal } from 'react-dom';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '@clerk/clerk-react';
-import { Camera, Loader2, X, AlertTriangle } from 'lucide-react';
+import { Camera, ChevronLeft, ChevronRight, Loader2, X, AlertTriangle } from 'lucide-react';
 import { useApi } from '../lib/useApi';
+import { usePhotoViewerHistory } from '../lib/photoViewerHistory';
 import { FullPhotoUploadButton } from './FullPhotoUpload';
 import { formatScoreTime } from '../lib/scoreTime';
 
@@ -31,19 +37,39 @@ export interface PhotoCaption {
   username?: string | null;
 }
 
-interface Props {
+interface CommonProps {
+  caption?: PhotoCaption;
+  onClose: () => void;
+  /** Push a history entry while open, so the back gesture closes the viewer (photoViewerHistory.ts). */
+  historyEntry?: boolean;
+}
+
+/** A saved score's photo, fetched from the API. */
+interface ScoreProps extends CommonProps {
   scoreId: number;
   /** The list's data-URL thumbnail, shown blurred until the full image arrives. Lists that don't
    *  carry thumbnails omit it; a thumbnail-only score's arrives with the photo response instead. */
   thumbnail?: string | null;
-  caption?: PhotoCaption;
-  onClose: () => void;
+  sources?: never;
+  initialIndex?: never;
 }
+
+/** Local images (object or data URLs) — nothing is fetched and there's nothing to upload. */
+interface LocalProps extends CommonProps {
+  sources: string[];
+  initialIndex?: number;
+  scoreId?: never;
+  thumbnail?: never;
+}
+
+type Props = ScoreProps | LocalProps;
 
 const MAX_SCALE = 6;
 const DOUBLE_TAP_MS = 300;
 const TAP_SLOP_PX = 8;
 const DISMISS_DRAG_PX = 110;
+/** A sideways swipe at 1× past this moves to the next / previous local photo. */
+const SWIPE_PHOTO_PX = 60;
 /** A thumbnail-only score is shown at most this many times its natural (~160px) size. */
 const THUMB_MAX_UPSCALE = 3;
 
@@ -60,7 +86,11 @@ export function captionText(c: PhotoCaption | undefined): string {
   ].filter(Boolean).join(' · ');
 }
 
-export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Props) {
+export default function PhotoViewer(props: Props) {
+  const { caption, onClose, historyEntry = false } = props;
+  const sources = props.sources ?? null;
+  const local = sources != null;
+  const scoreId = props.scoreId ?? null;
   const api = useApi();
   // `canUpload` depends on who's asking, so the viewer's identity is part of the key. Invalidating
   // ['score-photo', id] (FullPhotoUpload) still matches every variant.
@@ -68,28 +98,46 @@ export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Pr
   // The signed URL lives ~10 minutes; refetch well inside that.
   const { data, isError } = useQuery({
     queryKey: ['score-photo', scoreId, userId ?? 'guest'],
-    queryFn: () => api.scores.photo(scoreId),
+    queryFn: () => api.scores.photo(scoreId!),
+    enabled: !local && scoreId != null,
     staleTime: 4 * 60_000,
     gcTime: 8 * 60_000,
     retry: 1,
   });
+  const count = sources?.length ?? 1;
+  const [index, setIndex] = useState(() => Math.min(Math.max(0, props.initialIndex ?? 0), Math.max(0, count - 1)));
+  const fullSrc = local ? sources[index] ?? null : data?.url ?? null;
   const [loaded, setLoaded] = useState(false);
   const [imgError, setImgError] = useState(false);
-  const failed = isError || imgError;
-  const thumbOnly = !!data && !data.url;
-  const thumbSrc = thumbnail ?? data?.thumbnail ?? null;
+  const failed = (!local && isError) || imgError;
+  const thumbOnly = !local && !!data && !data.url;
+  const thumbSrc = local ? null : props.thumbnail ?? data?.thumbnail ?? null;
   // A refetch re-signs the same object (new query string); only a different object — a replacement
-  // upload — should drop back to the placeholder.
-  const photoIdentity = data?.url ? data.url.split('?')[0] : null;
-  useEffect(() => { setLoaded(false); setImgError(false); }, [photoIdentity]);
-  const loading = !failed && (!data || (!!data.url && !loaded));
+  // upload, or the next local photo — should drop back to the placeholder.
+  const photoIdentity = local ? fullSrc : data?.url ? data.url.split('?')[0] : null;
+  // A local photo's aspect ratio comes from the loaded <img> (there's no API response to carry it).
+  const [naturalSize, setNaturalSize] = useState<{ w: number; h: number } | null>(null);
+  // Reset during render rather than in an effect: a local object URL can load before a passive
+  // effect runs, and an effect would then hide an image that's already there.
+  const [shownIdentity, setShownIdentity] = useState(photoIdentity);
+  if (shownIdentity !== photoIdentity) {
+    setShownIdentity(photoIdentity);
+    setLoaded(false);
+    setImgError(false);
+    setNaturalSize(null);
+  }
+  const loading = !failed && (local ? !loaded : (!data || (!!data.url && !loaded)));
+
+  usePhotoViewerHistory(historyEntry, onClose);
 
   // ── layout: the photo box is sized from its aspect ratio to fit the stage ──
   const stageRef = useRef<HTMLDivElement>(null);
   const [stage, setStage] = useState({ w: 0, h: 0 });
   const [thumbSize, setThumbSize] = useState<{ w: number; h: number } | null>(null);
   const thumbRatio = thumbSize ? thumbSize.w / thumbSize.h : null;
-  const ratio = data?.width && data?.height ? data.width / data.height : thumbRatio ?? 4 / 3;
+  const ratio = local
+    ? (naturalSize ? naturalSize.w / naturalSize.h : 4 / 3)
+    : data?.width && data?.height ? data.width / data.height : thumbRatio ?? 4 / 3;
   const fit = stage.w && stage.h
     ? (stage.w / stage.h > ratio ? { w: stage.h * ratio, h: stage.h } : { w: stage.w, h: stage.w / ratio })
     : { w: 0, h: 0 };
@@ -111,6 +159,7 @@ export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Pr
   const [view, setViewState] = useState<View>(IDENTITY);
   const viewRef = useRef<View>(IDENTITY);
   const [dragY, setDragY] = useState(0);
+  const [dragX, setDragX] = useState(0);
   const [animating, setAnimating] = useState(false);
   const boxRef = useRef(box);
   boxRef.current = box;
@@ -145,13 +194,32 @@ export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Pr
     return { x: clientX - r.left - r.width / 2, y: clientY - r.top - r.height / 2 };
   };
 
+  // ── local photos: prev / next, always back at 1× ──
+  const canStep = local && count > 1;
+  const goTo = useCallback((delta: number) => {
+    if (!canStep) return;
+    setIndex(i => (i + delta + count) % count);
+    viewRef.current = IDENTITY;
+    setAnimating(false);
+    setViewState(IDENTITY);
+    setDragX(0);
+    setDragY(0);
+    lastTap.current = null;
+  }, [canStep, count]);
+  const goToRef = useRef(goTo);
+  goToRef.current = goTo;
+
   // ── close: Escape, scroll lock, focus ──
   const closeRef = useRef<HTMLButtonElement>(null);
   // Callers pass an inline arrow; a ref keeps this effect to one run per open, not one per render.
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCloseRef.current(); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCloseRef.current();
+      else if (e.key === 'ArrowLeft') goToRef.current(-1);
+      else if (e.key === 'ArrowRight') goToRef.current(1);
+    };
     window.addEventListener('keydown', onKey);
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
@@ -178,10 +246,11 @@ export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Pr
     return () => el.removeEventListener('wheel', onWheel);
   }, [setView, zoomAbout]);
 
-  // ── pointers: pinch, pan, swipe-to-dismiss, taps ──
+  // ── pointers: pinch, pan, swipe-to-dismiss, swipe between local photos, taps ──
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const gesture = useRef<
-    | { kind: 'pan'; start: { x: number; y: number }; from: View; moved: boolean; onPhoto: boolean; type: string }
+    // `axis` locks a 1× touch drag on its first move: down dismisses, sideways changes photo.
+    | { kind: 'pan'; start: { x: number; y: number }; from: View; moved: boolean; onPhoto: boolean; type: string; axis?: 'x' | 'y' }
     | { kind: 'pinch'; dist: number; mid: { x: number; y: number }; from: View }
     | null
   >(null);
@@ -198,6 +267,7 @@ export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Pr
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (pointers.current.size === 2) {
       setDragY(0);
+      setDragX(0);
       gesture.current = { kind: 'pinch', ...pinchInfo(), from: viewRef.current };
     } else if (pointers.current.size === 1) {
       const onPhoto = !!(e.target as HTMLElement).closest('[data-viewer-photo]');
@@ -218,10 +288,16 @@ export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Pr
     } else if (g.kind === 'pan') {
       const dx = e.clientX - g.start.x;
       const dy = e.clientY - g.start.y;
-      if (!g.moved && Math.hypot(dx, dy) > TAP_SLOP_PX) g.moved = true;
+      if (!g.moved && Math.hypot(dx, dy) > TAP_SLOP_PX) {
+        g.moved = true;
+        g.axis = canStep && Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
+      }
       if (!g.moved) return;
       if (g.from.s > 1) setView({ ...g.from, x: g.from.x + dx, y: g.from.y + dy });
-      else if (g.type !== 'mouse') setDragY(Math.max(0, dy)); // swipe down to dismiss
+      else if (g.type !== 'mouse') {
+        if (g.axis === 'x') setDragX(dx); // swipe sideways to change photo
+        else setDragY(Math.max(0, dy)); // swipe down to dismiss
+      }
     }
   };
 
@@ -231,7 +307,7 @@ export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Pr
     if (g?.kind === 'pinch') {
       // One finger still down after a pinch: carry on as a pan from here, never as a tap.
       const rest = [...pointers.current.values()][0];
-      gesture.current = rest ? { kind: 'pan', start: rest, from: viewRef.current, moved: true, onPhoto: true, type: 'touch' } : null;
+      gesture.current = rest ? { kind: 'pan', start: rest, from: viewRef.current, moved: true, onPhoto: true, type: 'touch', axis: 'y' } : null;
       if (viewRef.current.s < 1.05) setView(IDENTITY, true);
       return;
     }
@@ -240,8 +316,10 @@ export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Pr
 
     if (g.moved) {
       if (dragY > DISMISS_DRAG_PX) return onClose();
+      if (Math.abs(dragX) > SWIPE_PHOTO_PX) return goTo(dragX < 0 ? 1 : -1);
       setAnimating(true);
       setDragY(0);
+      setDragX(0);
       return;
     }
     // A tap.
@@ -267,17 +345,22 @@ export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Pr
     gesture.current = null;
     setAnimating(true);
     setDragY(0);
+    setDragX(0);
   };
 
   const text = captionText(caption);
   const zoomed = view.s > 1;
   const backdropOpacity = Math.max(0.35, 1 - dragY / 500);
+  const position = canStep ? `Photo ${index + 1} of ${count}` : '';
+  const photoAlt = local
+    ? (canStep ? `Your photo ${index + 1} of ${count}` : 'Your photo')
+    : text ? `Score photo: ${text}` : 'Score photo';
 
   return createPortal(
     <div
       role="dialog"
       aria-modal="true"
-      aria-label={text ? `Photo: ${text}` : 'Score photo'}
+      aria-label={text ? `Photo: ${text}` : local ? (position || 'Your photo') : 'Score photo'}
       className="fixed inset-0 z-50 flex flex-col select-none"
       style={{ backgroundColor: `rgba(0,0,0,${0.97 * backdropOpacity})` }}
     >
@@ -296,7 +379,7 @@ export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Pr
           style={{
             width: box.w,
             height: box.h,
-            transform: `translate3d(${view.x}px, ${view.y + dragY}px, 0) scale(${view.s})`,
+            transform: `translate3d(${view.x + dragX}px, ${view.y + dragY}px, 0) scale(${view.s})`,
             transition: animating ? 'transform 200ms ease-out' : 'none',
             cursor: zoomed ? 'zoom-out' : 'zoom-in',
           }}
@@ -316,12 +399,17 @@ export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Pr
               style={{ filter: failed || thumbOnly ? 'none' : 'blur(14px)', opacity: loaded ? 0 : 1 }}
             />
           )}
-          {data?.url && !imgError && (
+          {fullSrc && !imgError && (
             <img
-              src={data.url}
-              alt={text ? `Score photo: ${text}` : 'Score photo'}
+              key={local ? fullSrc : undefined}
+              src={fullSrc}
+              alt={photoAlt}
               draggable={false}
-              onLoad={() => setLoaded(true)}
+              onLoad={e => {
+                const t = e.currentTarget;
+                if (t.naturalWidth && t.naturalHeight) setNaturalSize({ w: t.naturalWidth, h: t.naturalHeight });
+                setLoaded(true);
+              }}
               onError={() => setImgError(true)}
               className="absolute inset-0 w-full h-full object-contain transition-opacity duration-300"
               style={{ opacity: loaded ? 1 : 0 }}
@@ -331,7 +419,7 @@ export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Pr
 
         {loading && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-            <Loader2 className="w-8 h-8 text-white/80 animate-spin" aria-label="Loading full-size photo" />
+            <Loader2 className="w-8 h-8 text-white/80 animate-spin" aria-label={local ? 'Loading photo' : 'Loading full-size photo'} />
           </div>
         )}
         {failed && (
@@ -340,6 +428,29 @@ export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Pr
               <AlertTriangle className="w-3.5 h-3.5" /> Couldn't load the photo
             </p>
           </div>
+        )}
+
+        {canStep && (
+          <>
+            <button
+              type="button"
+              data-viewer-chrome
+              onClick={() => goTo(-1)}
+              aria-label="Previous photo"
+              className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/60 p-2 text-white hover:bg-black/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            >
+              <ChevronLeft className="w-5 h-5" />
+            </button>
+            <button
+              type="button"
+              data-viewer-chrome
+              onClick={() => goTo(1)}
+              aria-label="Next photo"
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/60 p-2 text-white hover:bg-black/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            >
+              <ChevronRight className="w-5 h-5" />
+            </button>
+          </>
         )}
 
         <button
@@ -361,12 +472,13 @@ export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Pr
         style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))', opacity: backdropOpacity }}
       >
         {text && <p className="text-sm font-semibold text-white truncate">{text}</p>}
+        {position && <p className="text-xs font-semibold text-white/80" aria-live="polite">{position}</p>}
         {thumbOnly && (
           <p className="mt-1 text-xs text-amber-200/90">
             Thumbnail only — the full-size photo wasn't saved for this score.
           </p>
         )}
-        {data?.canUpload && (
+        {!local && scoreId != null && data?.canUpload && (
           <div className="mt-2 flex justify-center">
             {thumbOnly
               ? <FullPhotoUploadButton scoreId={scoreId} label="Upload the full-size photo" />
@@ -374,7 +486,9 @@ export default function PhotoViewer({ scoreId, thumbnail, caption, onClose }: Pr
           </div>
         )}
         <p className="mt-1 text-[11px] text-white/50">
-          {zoomed ? 'Drag to pan · double-tap or click to reset' : 'Pinch, scroll or double-tap to zoom'}
+          {zoomed
+            ? 'Drag to pan · double-tap or click to reset'
+            : canStep ? 'Pinch, scroll or double-tap to zoom · swipe for the next photo' : 'Pinch, scroll or double-tap to zoom'}
         </p>
       </div>
     </div>,

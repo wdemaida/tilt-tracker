@@ -22,6 +22,8 @@ import { useAppUser } from '../lib/useAppUser';
 import { ScoreDigitInput } from '../components/ScoreDigitInput';
 import { MissingLocationNotice, type CurrentLocationState } from '../components/MissingLocationNotice';
 import BadgeImage from '../components/BadgeImage';
+import PhotoStrip from '../components/PhotoStrip';
+import { isPhotoViewerPop } from '../lib/photoViewerHistory';
 import ChallengeFitSummary from '../components/ChallengeFitSummary';
 import EditScoreDialog, { type EditScoreTarget } from '../components/EditScoreDialog';
 import DuplicateVenuePrompt, { duplicateCandidates, type DuplicateCandidate } from '../components/DuplicateVenuePrompt';
@@ -191,7 +193,7 @@ export default function AddScorePage() {
   const pendingCarryRef = useRef<{ prevRead: string; prevValue: string } | null>(null);
   const needsPlayerChoice = playerReads.length > 1 && selectedPlayer == null;
   const showPlayerPicker = playerReads.length > 1 && (selectedPlayer == null || choosingPlayer);
-  // Object URLs for the larger photo preview shown while filling in x's. Revoked on replace/unmount.
+  // Object URLs of the prepared photos, for step 3's PhotoStrip (and its viewer). Revoked on replace/unmount.
   const [photoPreviews, setPhotoPreviews] = useState<string[]>([]);
   const photoPreviewsRef = useRef<string[]>([]);
   // Every photo/video read so far (already prepared), so "Add another" can re-read the whole set.
@@ -246,15 +248,19 @@ export default function AddScorePage() {
   const fromPopRef = useRef(false); // this step change came from a popstate, not from the app
   useEffect(() => {
     // Remounted on an entry an earlier visit tagged (back/forward from another page): the form is
-    // fresh, so the tag no longer describes it.
+    // fresh, so the tag no longer describes it. Same for a photo viewer's tag (photoViewerHistory.ts),
+    // which the step pushes below would otherwise copy forward.
     const st = window.history.state;
-    if (st && typeof st === 'object' && 'addScoreStep' in st) {
-      const { addScoreStep: _s, addScoreDepth: _d, ...rest } = st;
+    if (st && typeof st === 'object' && ('addScoreStep' in st || 'photoViewer' in st)) {
+      const { addScoreStep: _s, addScoreDepth: _d, photoViewer: _pv, ...rest } = st;
       window.history.replaceState(rest, '');
     }
     const onPop = (e: PopStateEvent) => {
       // Includes the pop fired by the post-save unwind below.
       if (stepRef.current === 4) return;
+      // Step 3's photo viewer has its own entry on top of the step's: popping it (back gesture, or
+      // the viewer's own history.back() on close) closes the photo, never steps the wizard back.
+      if (isPhotoViewerPop()) return;
       const target = (e.state?.addScoreStep ?? 1) as Step;
       if (target < stepRef.current) {
         fromPopRef.current = true;
@@ -1644,6 +1650,20 @@ export default function AddScorePage() {
             )}
           </div>
 
+          {/* The photos, always one tap from full size. When the score field needs the digits (player
+              picker, partial read) the larger strip sits there instead, so there's only ever one. */}
+          {photoPreviews.length > 0 && !(showPlayerPicker || (scoreTemplate != null && scoreRead && hasUnknown(scoreRead.template))) && (
+            <div className="flex items-center gap-3">
+              <PhotoStrip sources={photoPreviews} className="min-w-0 flex-shrink-0 max-w-full" />
+              {/* Three or more thumbnails fill a phone's width; the expand badges say enough there. */}
+              {photoPreviews.length <= 2 && (
+                <p className="text-xs text-muted-foreground min-w-0">
+                  {photoPreviews.length > 1 ? 'Tap a photo to check it' : 'Tap to check the photo'}
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Machine */}
           <div>
             <label className="label">Machine</label>
@@ -1799,19 +1819,7 @@ export default function AddScorePage() {
                     );
                   })}
                 </div>
-                {photoPreviews.length > 0 && (
-                  <div className="flex gap-2 overflow-x-auto">
-                    {photoPreviews.map((src, i) => (
-                      <img
-                        key={src}
-                        src={src}
-                        alt={`Uploaded photo ${i + 1}`}
-                        className="max-h-64 rounded-lg border border-white/10 object-contain bg-black flex-shrink-0"
-                        style={{ maxWidth: photoPreviews.length > 1 ? '80%' : '100%' }}
-                      />
-                    ))}
-                  </div>
-                )}
+                <PhotoStrip sources={photoPreviews} size="lg" />
                 <div className="flex items-center gap-3">
                   <button
                     type="button"
@@ -1856,19 +1864,7 @@ export default function AddScorePage() {
                     <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
                     Display was mid-refresh — fill in the x's from the machine
                   </p>
-                  {photoPreviews.length > 0 && (
-                    <div className="flex gap-2 overflow-x-auto">
-                      {photoPreviews.map((src, i) => (
-                        <img
-                          key={src}
-                          src={src}
-                          alt={`Uploaded photo ${i + 1}`}
-                          className="max-h-64 rounded-lg border border-white/10 object-contain bg-black flex-shrink-0"
-                          style={{ maxWidth: photoPreviews.length > 1 ? '80%' : '100%' }}
-                        />
-                      ))}
-                    </div>
-                  )}
+                  <PhotoStrip sources={photoPreviews} size="lg" />
                 </div>
               )}
               {scoreTemplate != null ? (
