@@ -493,9 +493,22 @@
   defaults on the first render and swaps in overrides when `GET /api/content/welcome` answers; the page
   never waits on it. Merge is field by field, so a field added later keeps its default under an old row.
 - Render copy with `<RichText>` (body: paragraphs, **bold**, *italic*, links) or `<InlineText>`
-  (headings: also ==glow== and `
-` line breaks). Never `dangerouslySetInnerHTML` for this text.
-- As of feature/site-content only the hero and How it works read the hook; the other sections have
-  defaults and are editable, waiting for the redesigned layout to render them.
-- Tests: `npx tsx --tsconfig tsconfig.app.json --test src/lib/richText.test.ts src/lib/welcomeContent.test.ts`
+  (headings: also ==glow== and `\n` line breaks). Never `dangerouslySetInnerHTML` for this text.
+- **Every word on /welcome comes from the hook** (feature/welcome-redesign). The only fixed parts are
+  illustrations: the sample score card, the two example challenge cards, the badge ladder's icons and
+  the screenshot fallbacks. List conventions (`lib/welcomeParts.ts`, unit-tested): a social fact's
+  `chips` is comma-separated with `*` marking the highlighted one; `badges.ladder` is ≤ 4 names; an
+  action shot's `image` is a bare file name in `public/welcome/` (anything else is ignored — stored
+  text can't point the page at another URL); a socials link with no URL renders as "Soon".
+- **Media may not exist yet.** `components/welcome/WelcomeMedia.tsx` plays `/welcome/score-submission.mp4`
+  (muted, looped, inline; only while on screen; poster `score-submission-poster.jpg`) and shows each
+  screenshot from `/welcome/<image>`. Unknown paths come back as the SPA's index.html, so only the
+  element's own load/error event says whether a file is there — until it loads, the slot shows its
+  illustration ("Video coming soon" for the phone), never a broken image.
+- **The timeline** (`components/welcome/WelcomeTimeline.tsx`) sits left of the founder's letter
+  (stacked above it on phones). Stops show only `when` + `title`; a mouse hover opens the story, a
+  click/tap/Enter toggles it, one open at a time, the first open on load, the last one glows. A click
+  on the stop the mouse just opened keeps it open — that rule reads a ref, not render state, because a
+  fast mouse enters and clicks before React re-renders.
+- Tests: `npx tsx --tsconfig tsconfig.app.json --test src/lib/richText.test.ts src/lib/welcomeContent.test.ts src/lib/welcomeParts.test.ts`
   (the `--tsconfig` gives tsx the automatic JSX runtime).

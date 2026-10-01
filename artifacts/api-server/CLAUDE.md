@@ -1324,8 +1324,8 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   rejected request; checks both rows and the summary, deletes them).
 
 ## Site content (`src/lib/siteContent.ts`, `site_content`, migrate28, feature/site-content, 2026-10-01)
-- **Admin-editable copy for public pages** — today the /welcome page's 8 sections (`welcome.hero`,
-  `.how`, `.social`, `.badges`, `.action`, `.founder`, `.timeline`, `.socials`). One jsonb value per
+- **Admin-editable copy for public pages** — today the /welcome page's 9 sections (`welcome.hero`,
+  `.how`, `.social`, `.badges`, `.action`, `.founder`, `.timeline`, `.closing`, `.socials`). One jsonb value per
   key; **defaults live in the frontend** (`artifacts/pinball-tracker/src/lib/welcomeContent.ts`) and a
   row overrides its whole key. No row = default, so an empty or missing table changes nothing.
 - **`CONTENT_SPEC` is the one place the shapes live**: field kinds (`plain`, `inline` = headings with

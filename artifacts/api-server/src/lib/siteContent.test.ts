@@ -19,7 +19,7 @@ afterEach(() => setPublicContentLoaderForTests(null));
 test('the spec covers exactly the welcome sections', () => {
   assert.deepEqual(CONTENT_KEYS, [
     'welcome.hero', 'welcome.how', 'welcome.social', 'welcome.badges', 'welcome.action',
-    'welcome.founder', 'welcome.timeline', 'welcome.socials',
+    'welcome.founder', 'welcome.timeline', 'welcome.closing', 'welcome.socials',
   ]);
   for (const key of CONTENT_KEYS) assert.ok(Object.keys(CONTENT_SPEC[key].fields).length > 0, key);
 });
@@ -91,6 +91,8 @@ test('lists: item paths, min and max', () => {
   assert.match((extra as any).errors['steps.0.icon'], /Unknown field/);
   // Socials may have no links yet.
   assert.ok(validateContent('welcome.socials', { title: 'Follow', email: '', links: [] }).ok);
+  // A link with no URL yet is allowed — the page shows it as "Soon".
+  assert.ok(validateContent('welcome.socials', { title: 'Follow', email: '', links: [{ label: 'Discord', url: '' }] }).ok);
 });
 
 test('links: only http, https and mailto — in markdown and in url fields', () => {

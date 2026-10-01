@@ -30,12 +30,14 @@ const list = (label: string, itemLabel: string, min: number, max: number, fields
 const GLOW_HELP = 'Wrap words in ==double equals== to make them glow. Enter starts a new line.';
 const MD_HELP = 'Blank line = new paragraph. **bold**, *italic*, [link text](https://…).';
 
+const EYEBROW = (help?: string) => text('plain', 'Eyebrow (small line above the title)', 60, false, help);
+
 export const CONTENT_SPEC: Readonly<Record<string, SectionSpec>> = {
   'welcome.hero': {
     title: 'Hero',
     help: 'The top of the page.',
     fields: {
-      eyebrow: text('plain', 'Eyebrow (small line above the headline)', 80, false),
+      eyebrow: text('plain', 'Eyebrow (small line above the headline)', 80, false, 'Leave empty for none.'),
       headline: text('inline', 'Headline', 120, true, GLOW_HELP),
       subhead: text('markdown', 'Subhead', 600, true, MD_HELP),
     },
@@ -43,6 +45,8 @@ export const CONTENT_SPEC: Readonly<Record<string, SectionSpec>> = {
   'welcome.how': {
     title: 'How it works',
     fields: {
+      tagline: text('plain', 'Tagline (small colored line above the section)', 60, false),
+      eyebrow: EYEBROW(),
       title: text('inline', 'Title', 120, true, GLOW_HELP),
       steps: list('Steps', 'Step', 1, 6, {
         title: text('plain', 'Title', 80),
@@ -52,13 +56,21 @@ export const CONTENT_SPEC: Readonly<Record<string, SectionSpec>> = {
   },
   'welcome.social': {
     title: 'Play together',
-    help: 'Friends and challenges.',
+    help: 'Friends and challenges. The two example score cards under the challenge types are illustrations, not copy.',
     fields: {
+      eyebrow: EYEBROW(),
       title: text('inline', 'Title', 120, true, GLOW_HELP),
       intro: text('markdown', 'Intro', 800, false, MD_HELP),
-      cards: list('Cards', 'Card', 1, 8, {
+      types: list('Challenge type cards', 'Card', 1, 4, {
+        kicker: text('plain', 'Kicker (small line above the title)', 40, false),
+        title: text('plain', 'Title', 60),
+        body: text('markdown', 'Text', 400, true, MD_HELP),
+      }),
+      also: text('markdown', 'Line under the cards', 300, false, MD_HELP),
+      facts: list('Facts panel', 'Fact', 1, 5, {
         title: text('plain', 'Title', 80),
         body: text('markdown', 'Text', 600, true, MD_HELP),
+        chips: text('plain', 'Chips (optional)', 200, false, 'Comma-separated. Start one with * to highlight it, e.g. "3 days, *1 week".'),
       }),
     },
   },
@@ -67,19 +79,26 @@ export const CONTENT_SPEC: Readonly<Record<string, SectionSpec>> = {
     fields: {
       title: text('inline', 'Title', 120, true, GLOW_HELP),
       body: text('markdown', 'Text', 600, true, MD_HELP),
+      ladder: text('plain', 'Badge ladder', 200, false, 'Up to four badge names, comma-separated, drawn left to right.'),
     },
   },
   'welcome.action': {
     title: 'See it in action',
-    help: 'The screenshots / video section.',
+    help: 'The video and screenshots section. The video is public/welcome/score-submission.mp4.',
     fields: {
+      eyebrow: EYEBROW(),
       title: text('inline', 'Title', 120, true, GLOW_HELP),
       caption: text('markdown', 'Caption', 300, false, MD_HELP),
+      shots: list('Screenshots', 'Screenshot', 0, 6, {
+        title: text('plain', 'Caption', 60),
+        image: text('plain', 'Image file', 80, false, 'A file name in public/welcome/ (e.g. trend.png). Until it exists, an illustration shows.'),
+      }),
     },
   },
   'welcome.founder': {
     title: "Founder's note",
     fields: {
+      eyebrow: EYEBROW(),
       title: text('inline', 'Title', 120, true, GLOW_HELP),
       body: text('markdown', 'Note', 6000, true, MD_HELP),
       signature: text('plain', 'Signature', 80, false, 'An @handle in it is colored like a username.'),
@@ -87,24 +106,34 @@ export const CONTENT_SPEC: Readonly<Record<string, SectionSpec>> = {
   },
   'welcome.timeline': {
     title: 'Timeline',
-    help: 'Shown under the founder’s note, top to bottom.',
+    help: 'Beside the founder’s note, top to bottom. Each stop shows its “When” and title; the text opens on hover or tap. The last stop glows.',
     fields: {
-      entries: list('Entries', 'Entry', 1, 12, {
-        year: text('plain', 'When', 40),
+      title: text('plain', 'Heading above the timeline', 80, false),
+      hint: text('plain', 'Hint (e.g. "Tap a stop for the story.")', 80, false),
+      entries: list('Stops', 'Stop', 1, 12, {
+        when: text('plain', 'When', 40),
         title: text('plain', 'Title', 80),
-        body: text('markdown', 'Text', 600, true, MD_HELP),
+        body: text('markdown', 'Story', 1200, true, MD_HELP),
       }),
+    },
+  },
+  'welcome.closing': {
+    title: 'Closing',
+    help: 'The sign-up block after the founder’s note.',
+    fields: {
+      title: text('inline', 'Title', 120, true, GLOW_HELP),
     },
   },
   'welcome.socials': {
     title: 'Socials & contact',
-    help: 'The closing strip. Links with no URL yet can be left out.',
+    help: 'The closing strip. A link with no URL yet shows as “Soon”.',
     fields: {
       title: text('inline', 'Title', 120, true, GLOW_HELP),
+      intro: text('markdown', 'Text', 300, false, MD_HELP),
       email: text('email', 'Contact email', 120, false),
       links: list('Links', 'Link', 0, 10, {
         label: text('plain', 'Label (e.g. Instagram)', 40),
-        url: text('url', 'URL', 300),
+        url: text('url', 'URL', 300, false, 'Leave empty to show it as “Soon”.'),
       }),
     },
   },

@@ -57,7 +57,7 @@ const startedAt = new Date(Date.now() - 5_000);
 try {
   // Admin GET: every section with its spec.
   const list = await hit('GET', '/api/admin/content');
-  check(list.status === 200 && list.body.sections.length === 8, `GET /admin/content → 8 sections (${list.status})`);
+  check(list.status === 200 && list.body.sections.length === 9, `GET /admin/content → 9 sections (${list.status})`);
   check(!!list.body.sections.find((s: any) => s.key === 'welcome.hero')?.spec?.fields?.headline, 'the spec comes with each section');
 
   // Guest is refused.

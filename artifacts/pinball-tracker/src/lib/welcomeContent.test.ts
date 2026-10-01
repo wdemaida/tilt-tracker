@@ -33,8 +33,8 @@ test('wrong types and unknown keys are ignored', () => {
   assert.ok(!('welcome.unknown' in m));
 });
 
-test('defaults cover the eight sections, with the founder note free of private details', () => {
-  assert.equal(WELCOME_KEYS.length, 8);
+test('defaults cover the nine sections, with the founder note free of private details', () => {
+  assert.equal(WELCOME_KEYS.length, 9);
   const all = JSON.stringify(WELCOME_DEFAULTS).toLowerCase();
   for (const word of ['brother', 'waterbury', 'cancer', 'diagnos']) assert.ok(!all.includes(word), word);
 });
