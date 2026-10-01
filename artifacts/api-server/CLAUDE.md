@@ -1298,3 +1298,27 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   sort_order, so the script snapshots `(sort_order, updated_at)` of every badge and series first and
   restores them exactly (through `::text`) at the end. The signed-in catalog view is checked on
   `badgeCatalog()` directly — the harness can't mint a Clerk session for the public routes.
+
+## AI usage log (`src/lib/aiUsage.ts`, `ai_usage`, migrate27, feature/ai-usage, 2026-10-01)
+- **One row per model call** — today the two score-photo reads in `anthropic.ts` (`score_read`,
+  `display_windows`): provider, model, operation, input/output tokens, ms, `est_cost_usd`, `user_id`
+  (resolved from the Clerk id inside the INSERT — no extra lookup), `ok` + `error`. Success, `max_tokens`
+  truncation (`error = 'max_tokens'`, usage known) and API errors (`"400 BadRequestError"`, 0 tokens)
+  are all recorded. Plus one `[AI] <provider> <model> <op> in/out tokens <ms>` log line, like `[PM live]`.
+- **Provider-neutral on purpose** (Will may swap the OCR vendor): a new provider calls `recordAiUsage()`
+  with its own `provider`/`model` and adds its price to `AI_PRICES`.
+- **Fire-and-forget**: `recordAiUsage()` returns nothing and never throws; the insert runs off the
+  request path and a failure (DB down, table missing) is one `[AI] failed to record usage` line.
+- **Cost** = `AI_PRICES[model]` (USD per million input/output tokens; Sonnet 4.6 = $3 / $15, from the
+  claude-api skill's model table, 2026-09-25), computed at write time so a later price change never
+  rewrites history. An unpriced model stores null and the admin row says "+N unpriced". **Update the
+  table when the model changes.**
+- **Admin**: `/api/admin/overview` → `health.ai` (`aiUsageSummary()` in adminArea.ts — one GROUP BY
+  over 30 days, "today" = the New York day like the overview's other today counts; null if the table
+  can't be read) → the "AI (photo reads)" row in the System card. Counts are from the DB, so they
+  survive restarts (unlike the PM row's per-process count).
+- **Retention**: daily housekeeping deletes rows older than 365 days (`purgeAiUsage`). Not part of
+  the activity-log tiers — it's a separate table.
+- Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/aiUsage.test.ts`;
+  `npx tsx test-ai-usage.ts <photo.jpg>` (dev branch only — one real read, ~1-2 cents, plus one
+  rejected request; checks both rows and the summary, deletes them).

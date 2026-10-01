@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { sanitizeImageDisplays, defaultBestImageIndex, type ImageRead } from './scoreRead.js';
+import { recordAiUsage, type AiCallContext, type AiOperation } from './aiUsage.js';
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -21,6 +22,24 @@ export function readRequestOptions(imageCount: number): { timeout: number; maxRe
 }
 const CROP_REQUEST = { timeout: 20_000, maxRetries: 0 };
 const TOOL_NAME = 'record_score_read';
+
+/** One ai_usage row per call (aiUsage.ts): success, max_tokens truncation, or an API error. */
+function track(
+  operation: AiOperation, ctx: AiCallContext | undefined, started: number,
+  usage: { input_tokens: number; output_tokens: number } | null, error: string | null,
+): void {
+  recordAiUsage({
+    provider: 'anthropic', model: MODEL, operation,
+    inputTokens: usage?.input_tokens ?? 0, outputTokens: usage?.output_tokens ?? 0, ms: Date.now() - started,
+    ok: !error, error, clerkId: ctx?.clerkId,
+  });
+}
+
+/** "400 BadRequestError", "connection APIConnectionTimeoutError" — the SDK 0.36 errors' `.name` is just "Error". */
+function apiErrorLabel(err: any): string {
+  const name = err?.constructor?.name && err.constructor.name !== 'Error' ? err.constructor.name : String(err?.name ?? 'Error');
+  return err instanceof Anthropic.APIError ? `${err.status ?? 'connection'} ${name}` : name;
+}
 
 /** Output budget for the whole-photo read: ~800 tokens per image, within a non-streaming-safe cap. */
 export function readMaxTokens(imageCount: number): number {
@@ -185,7 +204,9 @@ Rules:
 Call ${TOOL_NAME} with one read per image, each listing that image's player displays.`;
 
 /** `onRawInput` is a debugging hook (used by local test scripts) that sees the unsanitized tool input. */
-export async function extractScoreReads(images: ExtractionImage[], onRawInput?: (raw: unknown) => void): Promise<ExtractedScoreReads> {
+export async function extractScoreReads(
+  images: ExtractionImage[], onRawInput?: (raw: unknown) => void, ctx?: AiCallContext,
+): Promise<ExtractedScoreReads> {
   const content: Anthropic.ContentBlockParam[] = [];
   images.forEach((img, i) => {
     if (images.length > 1) content.push({ type: 'text', text: `Image ${i}:` });
@@ -197,23 +218,31 @@ export async function extractScoreReads(images: ExtractionImage[], onRawInput?: 
   content.push({ type: 'text', text: PROMPT });
 
   const started = Date.now();
-  const message = await client.messages.create({
-    model: MODEL,
-    // Scaled by image count: a 4-player photo measured 510-614 output tokens, and an upload can
-    // carry nine images. A cut-off tool call is incomplete JSON, so it's checked below.
-    max_tokens: readMaxTokens(images.length),
-    // A transcription task — the same photo should read the same way every time.
-    temperature: 0,
-    tools: [scoreReadTool],
-    tool_choice: { type: 'tool', name: TOOL_NAME },
-    messages: [{ role: 'user', content }],
-  }, readRequestOptions(images.length));
+  let message: Anthropic.Message;
+  try {
+    message = await client.messages.create({
+      model: MODEL,
+      // Scaled by image count: a 4-player photo measured 510-614 output tokens, and an upload can
+      // carry nine images. A cut-off tool call is incomplete JSON, so it's checked below.
+      max_tokens: readMaxTokens(images.length),
+      // A transcription task — the same photo should read the same way every time.
+      temperature: 0,
+      tools: [scoreReadTool],
+      tool_choice: { type: 'tool', name: TOOL_NAME },
+      messages: [{ role: 'user', content }],
+    }, readRequestOptions(images.length));
+  } catch (err) {
+    track('score_read', ctx, started, null, apiErrorLabel(err));
+    throw err;
+  }
 
   if (message.stop_reason === 'max_tokens') {
+    track('score_read', ctx, started, message.usage, 'max_tokens');
     // A truncated read would silently drop displays (or whole images) off the end — fail instead.
     console.error(`Score read hit max_tokens (${message.usage.output_tokens} output tokens, ${images.length} images)`);
     throw new ScoreReadTruncatedError();
   }
+  track('score_read', ctx, started, message.usage, null);
   const toolUse = message.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === TOOL_NAME);
   onRawInput?.(toolUse?.input);
   const input = (toolUse?.input ?? {}) as {
@@ -308,7 +337,7 @@ export interface CropImage {
  * API failure — the caller falls back to the whole-photo read.
  */
 export async function readDisplayWindows(
-  crops: CropImage[], onRawInput?: (raw: unknown) => void,
+  crops: CropImage[], onRawInput?: (raw: unknown) => void, ctx?: AiCallContext,
 ): Promise<{ reads: Array<{ windowCount: unknown; windows: unknown } | null>; usage: TokenUsage }> {
   const content: Anthropic.ContentBlockParam[] = [];
   crops.forEach((c, i) => {
@@ -321,18 +350,26 @@ export async function readDisplayWindows(
   content.push({ type: 'text', text: WINDOW_PROMPT });
 
   const started = Date.now();
-  const message = await client.messages.create({
-    model: MODEL,
-    max_tokens: 2048,
-    temperature: 0,
-    tools: [windowReadTool],
-    tool_choice: { type: 'tool', name: WINDOW_TOOL_NAME },
-    messages: [{ role: 'user', content }],
-  }, CROP_REQUEST);
+  let message: Anthropic.Message;
+  try {
+    message = await client.messages.create({
+      model: MODEL,
+      max_tokens: 2048,
+      temperature: 0,
+      tools: [windowReadTool],
+      tool_choice: { type: 'tool', name: WINDOW_TOOL_NAME },
+      messages: [{ role: 'user', content }],
+    }, CROP_REQUEST);
+  } catch (err) {
+    track('display_windows', ctx, started, null, apiErrorLabel(err));
+    throw err;
+  }
   if (message.stop_reason === 'max_tokens') {
+    track('display_windows', ctx, started, message.usage, 'max_tokens');
     console.error(`Crop read hit max_tokens (${crops.length} crops)`);
     throw new ScoreReadTruncatedError(); // the caller keeps the whole-photo read
   }
+  track('display_windows', ctx, started, message.usage, null);
   const toolUse = message.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === WINDOW_TOOL_NAME);
   onRawInput?.(toolUse?.input);
   const list = Array.isArray((toolUse?.input as any)?.displays) ? ((toolUse!.input as any).displays as any[]) : [];

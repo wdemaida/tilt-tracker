@@ -41,15 +41,21 @@ test('the checker flags a naive timestamp column (so the test above cannot pass 
   assert.deepEqual(naiveTimestamps([probe]), ['probe.at']);
 });
 
-test("migrate26's column list is exactly the schema's timestamp columns", async () => {
+// Timestamp columns added after migrate26, created as timestamptz by their own migration (so not in
+// migrate26's historical list, which stays exactly what it converted).
+const BORN_TIMESTAMPTZ = [
+  'ai_usage.created_at', // migrate27
+];
+
+test("migrate26's column list plus later timestamptz columns is exactly the schema's timestamp columns", async () => {
   const { TIMESTAMP_COLUMNS } = await import('./timestamptzMigration.js');
   const fromSchema = tables.flatMap(t => {
     const cfg = getTableConfig(t as any);
     return cfg.columns.filter(c => c.getSQLType().startsWith('timestamp')).map(c => `${cfg.name}.${c.name}`);
   }).sort();
-  const fromMigration = Object.entries(TIMESTAMP_COLUMNS).flatMap(([t, cols]) => cols.map(c => `${t}.${c}`)).sort();
-  assert.deepEqual(fromSchema, fromMigration);
-  assert.equal(fromSchema.length, 48);
+  const fromMigration = Object.entries(TIMESTAMP_COLUMNS).flatMap(([t, cols]) => cols.map(c => `${t}.${c}`));
+  assert.equal(fromMigration.length, 48);
+  assert.deepEqual(fromSchema, [...fromMigration, ...BORN_TIMESTAMPTZ].sort());
 });
 
 test('stat_history.period_date stays a calendar date', () => {

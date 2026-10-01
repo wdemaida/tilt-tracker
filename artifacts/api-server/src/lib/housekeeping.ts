@@ -1,6 +1,7 @@
 import { runActivityRetention, type RetentionRunResult } from './activityRetention.js';
 import { runScheduledOrphanSweep, publicOrphanResult } from './photoOrphans.js';
 import { runBadgeSweep } from './badges.js';
+import { purgeAiUsage } from './aiUsage.js';
 
 // Daily housekeeping, run by POST /api/cron/challenge-sweep right after runChallengeSweep() (whose
 // last step is the 30-day read-notification retention). Kept out of runChallengeSweep itself so
@@ -11,6 +12,7 @@ import { runBadgeSweep } from './badges.js';
 //                               deleting run (photoOrphans.ts), logs system.photo_orphans
 //   3. badge sweep            — every day: re-checks the metric badges of users active in the last
 //                               day, a safety net for a missed trigger (badges.ts)
+//   4. AI usage retention    — every day: deletes ai_usage rows older than a year (aiUsage.ts)
 //
 // Each step is isolated: a failure is reported in the result and never fails the sweep route.
 
@@ -21,6 +23,7 @@ export interface HousekeepingResult {
     | { ran: false; reason: string; detail?: string; lastDeleteRunAt?: string | null }
     | { error: string };
   badges: { users: number; awarded: number } | { error: string };
+  aiUsage: { deleted: number } | { error: string };
 }
 
 export async function runDailyHousekeeping(now = Date.now()): Promise<HousekeepingResult> {
@@ -48,5 +51,12 @@ export async function runDailyHousekeeping(now = Date.now()): Promise<Housekeepi
     console.error('Housekeeping: badge sweep failed:', err);
     badges = { error: err?.message ?? String(err) };
   }
-  return { activityRetention, photoOrphans, badges };
+  let aiUsage: HousekeepingResult['aiUsage'];
+  try {
+    aiUsage = { deleted: await purgeAiUsage() };
+  } catch (err: any) {
+    console.error('Housekeeping: AI usage retention failed:', err);
+    aiUsage = { error: err?.message ?? String(err) };
+  }
+  return { activityRetention, photoOrphans, badges, aiUsage };
 }

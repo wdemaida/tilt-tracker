@@ -27,6 +27,8 @@ export interface AdminOverview {
       mode: string; liveCallsToday: number; breakerOpenUntil: string | null; breakerReason: string | null;
       catalog: { machineCount: number; fetchedAt: string | null; stale: boolean; lastError: string | null } | null;
     };
+    /** AI model calls (ai_usage) over the last 30 days; null = couldn't be read. */
+    ai: AiUsageSummary | null;
     r2: { configured: boolean };
     clerkWebhook: { configured: boolean };
     clerkApi: { reachable: boolean };
@@ -38,7 +40,23 @@ export interface AdminOverview {
   };
 }
 
-export type RetentionTier = 'high_volume' | 'standard' | 'admin';
+/** One provider + model, last 30 days ("today" = the New York day, like the overview's other counts). */
+export interface AiUsageLine {
+  provider: string; model: string;
+  callsToday: number; calls30d: number; errorsToday: number; errors30d: number;
+  inputToday: number; outputToday: number; input30d: number; output30d: number;
+  costToday: number; cost30d: number;
+  /** Calls with no price on file — the cost shown is then a floor. */
+  unpriced30d: number;
+  lastAt: string | null;
+}
+
+export interface AiUsageSummary {
+  totals: Omit<AiUsageLine, 'provider' | 'model'>;
+  byModel: AiUsageLine[];
+}
+
+export type RetentionTier ='high_volume' | 'standard' | 'admin';
 
 /** Per tier: -1 = keep forever, 0 = don't record (existing rows purged next run), 1–36500 = days. */
 export interface RetentionSettings { highVolumeDays: number; standardDays: number; adminDays: number }

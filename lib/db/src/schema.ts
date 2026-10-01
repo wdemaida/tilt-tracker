@@ -543,3 +543,27 @@ export type Stat = typeof stats.$inferSelect;
 export type NewStat = typeof stats.$inferInsert;
 export type StatHistory = typeof statHistory.$inferSelect;
 export type NewStatHistory = typeof statHistory.$inferInsert;
+
+// AI usage (migrate27). One row per model call the app makes — today the two score-photo reads in
+// artifacts/api-server/src/lib/anthropic.ts. Provider-neutral on purpose, so a swapped-in OCR vendor
+// logs to the same table. Written fire-and-forget by lib/aiUsage.ts (a failed insert never touches the
+// upload). est_cost_usd is computed at write time from aiUsage.ts's price table (null for a model it
+// doesn't know), so a later price change never rewrites history.
+export const aiUsage = pgTable('ai_usage', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  provider: text('provider').notNull(),
+  model: text('model').notNull(),
+  operation: text('operation').notNull(),
+  inputTokens: integer('input_tokens').notNull().default(0),
+  outputTokens: integer('output_tokens').notNull().default(0),
+  ms: integer('ms').notNull().default(0),
+  estCostUsd: numeric('est_cost_usd', { precision: 12, scale: 6 }),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'set null' }),
+  ok: boolean('ok').notNull(),
+  error: text('error'),
+}, (table) => ({
+  createdIdx: index('ai_usage_created_at_idx').on(table.createdAt),
+}));
+
+export type AiUsage = typeof aiUsage.$inferSelect;

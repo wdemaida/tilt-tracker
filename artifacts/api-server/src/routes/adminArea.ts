@@ -22,6 +22,7 @@ import { getCatalogStatus } from '../lib/pinballMap.js';
 import { pmClient } from '../lib/pmClient.js';
 import { missingR2Vars, getPhotoStore } from '../lib/photoStore.js';
 import { parseInstant, dbTimestampToIso } from '../lib/instant.js';
+import { foldAiUsage } from '../lib/aiUsage.js';
 
 // The admin area — /api/admin/* (mounted inside routes/admin.ts, so every route here is behind
 // requireAppUser + requireAdmin; the unit test enumerates this router's routes and checks that).
@@ -127,13 +128,14 @@ router.get('/overview', async (_req, res) => {
       .where(inArray(activityEvents.type, ['system.stat_snapshot', 'system.challenge_sweep', 'system.activity_retention']))
       .groupBy(activityEvents.type);
     const [snap] = await db.select({ at: sql<Date | null>`max(${statHistory.createdAt})`.mapWith(statHistory.createdAt) }).from(statHistory);
-    const [lastRetention, orphanState] = await Promise.all([lastRetentionRun(), loadOrphanRunState()]);
+    const [lastRetention, orphanState, ai] = await Promise.all([lastRetentionRun(), loadOrphanRunState(), aiUsageSummary()]);
 
     res.json({
       counts,
       activeUsers: { clerk7d: active7, clerk30d: active30, app7d: counts.active_7d_app, app30d: counts.active_30d_app },
       health: {
         pm: { mode: pm.mode, liveCallsToday: pm.liveCallsToday, breakerOpenUntil: pm.breakerOpenUntil ? new Date(pm.breakerOpenUntil).toISOString() : null, breakerReason: pm.breakerReason, catalog },
+        ai,
         r2: { configured: missingR2Vars().length === 0 },
         clerkWebhook: { configured: !!process.env.CLERK_WEBHOOK_SIGNING_SECRET },
         clerkApi: { reachable: clerk.size > 0 || all.length === 0 },
@@ -334,6 +336,48 @@ router.get('/activity', async (req, res) => {
 router.get('/activity/types', (_req, res) => {
   res.json(ACTIVITY_TYPES);
 });
+
+// ── AI usage (ai_usage, migrate27) ───────────────────────────────────────────
+
+/**
+ * The overview's "AI (photo reads)" row: one SQL pass over the last 30 days, per provider + model,
+ * "today" on the same New York day as the overview's other today counts. null when the table can't
+ * be read (e.g. migrate27 not run yet) — shown as unknown, never a failed overview. Exported for
+ * test-ai-usage.ts.
+ */
+export async function aiUsageSummary() {
+  try {
+    const rows = await db.execute(sql`
+      SELECT provider, model,
+        count(*) FILTER (WHERE created_at >= ${ET_MIDNIGHT})::int AS calls_today,
+        count(*)::int AS calls_30d,
+        count(*) FILTER (WHERE NOT ok AND created_at >= ${ET_MIDNIGHT})::int AS errors_today,
+        count(*) FILTER (WHERE NOT ok)::int AS errors_30d,
+        coalesce(sum(input_tokens) FILTER (WHERE created_at >= ${ET_MIDNIGHT}), 0)::float8 AS input_today,
+        coalesce(sum(output_tokens) FILTER (WHERE created_at >= ${ET_MIDNIGHT}), 0)::float8 AS output_today,
+        coalesce(sum(input_tokens), 0)::float8 AS input_30d,
+        coalesce(sum(output_tokens), 0)::float8 AS output_30d,
+        coalesce(sum(est_cost_usd) FILTER (WHERE created_at >= ${ET_MIDNIGHT}), 0)::float8 AS cost_today,
+        coalesce(sum(est_cost_usd), 0)::float8 AS cost_30d,
+        count(*) FILTER (WHERE est_cost_usd IS NULL)::int AS unpriced_30d,
+        max(created_at) AS last_at -- raw text; normalized below
+      FROM ai_usage
+      WHERE created_at >= ${utcAgo(30)}
+      GROUP BY provider, model
+      ORDER BY calls_30d DESC, provider, model
+    `) as any[];
+    return foldAiUsage(rows.map(r => ({
+      provider: r.provider, model: r.model,
+      callsToday: r.calls_today, calls30d: r.calls_30d, errorsToday: r.errors_today, errors30d: r.errors_30d,
+      inputToday: r.input_today, outputToday: r.output_today, input30d: r.input_30d, output30d: r.output_30d,
+      costToday: r.cost_today, cost30d: r.cost_30d, unpriced30d: r.unpriced_30d,
+      lastAt: dbTimestampToIso(r.last_at),
+    })));
+  } catch (err: any) {
+    console.error('admin ai usage summary error:', err?.message ?? err);
+    return null;
+  }
+}
 
 // ── maintenance: activity-log retention + photo orphan sweep ─────────────────
 

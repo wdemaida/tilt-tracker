@@ -457,8 +457,10 @@ router.post('/', requireAuth, receivePhotos, async (req, res) => {
     // analysis, which then typed `readNotice` in the response as always null.)
     let readNotice: string | null = null;
     let extracted: ExtractedScoreReads;
+    // Attributes each model call's ai_usage row (lib/aiUsage.ts) to the uploader.
+    const aiCtx = { clerkId: getAuth(req).userId ?? null };
     try {
-      extracted = await extractScoreReads(sized);
+      extracted = await extractScoreReads(sized, undefined, aiCtx);
     } catch (err) {
       if (!(err instanceof ScoreReadTruncatedError)) throw err;
       readNotice = "Couldn't read the score from this many photos at once — enter it below, or try fewer photos.";
@@ -470,7 +472,7 @@ router.post('/', requireAuth, receivePhotos, async (req, res) => {
     // Second pass: re-read each score display from a close crop, window by window, when the photo has
     // several displays or a strobed segment read (see displayCrops.ts). Skipped for a lone complete
     // DMD/LCD read. Any failure keeps the whole-photo read — this can never fail the upload.
-    const cropPass = await refineWithCrops(sized, extracted.reads).catch(err => {
+    const cropPass = await refineWithCrops(sized, extracted.reads, undefined, aiCtx).catch(err => {
       console.error('Score crop pass failed:', err?.message ?? err);
       return null;
     });

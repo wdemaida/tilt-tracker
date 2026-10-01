@@ -16,6 +16,7 @@
 
 import sharp from 'sharp';
 import { readDisplayWindows, type CropImage, type ExtractionImage, type TokenUsage } from './anthropic.js';
+import type { AiCallContext } from './aiUsage.js';
 import { isCropCandidate, needsCropPass, reconcileWindowRead, type BBox, type ImageRead } from './scoreRead.js';
 
 /** Most crops sent per upload, across all photos (in photo order, then display order). */
@@ -127,6 +128,7 @@ export async function refineWithCrops(
   images: ExtractionImage[],
   reads: ImageRead[],
   onCrop?: (imageIndex: number, displayIndex: number, jpeg: Buffer) => void,
+  ctx?: AiCallContext,
 ): Promise<CropPassResult> {
   let budget = MAX_CROPS;
   const jobs: Array<{ imageIndex: number; displayIndexes: number[]; crops: CropImage[] }> = [];
@@ -169,7 +171,7 @@ export async function refineWithCrops(
   const report = await Promise.all(jobs.map(async (job): Promise<CropPassImageReport> => {
     try {
       let raw: unknown;
-      const { reads: windowReads, usage } = await readDisplayWindows(job.crops, r => { raw = r; });
+      const { reads: windowReads, usage } = await readDisplayWindows(job.crops, r => { raw = r; }, ctx);
       job.displayIndexes.forEach((k, n) => {
         const w = windowReads[n];
         if (w) out[job.imageIndex].displays[k] = reconcileWindowRead(out[job.imageIndex].displays[k], w);

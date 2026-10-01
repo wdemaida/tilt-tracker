@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'wouter';
 import { CheckCircle2, XCircle, HelpCircle } from 'lucide-react';
-import { useAdminApi } from '../lib/adminApi';
+import { useAdminApi, type AiUsageSummary } from '../lib/adminApi';
 import { AdminShell, SectionTitle, StatTile, Card, When, ActivityList, ErrorNote } from '../components/admin/AdminParts';
 
 // /admin — Overview: headline counts, active users, system health, and the latest activity.
@@ -18,6 +18,32 @@ function HealthRow({ label, ok, note }: { label: string; ok: boolean | null; not
         {note && <p className="text-xs text-muted-foreground mt-0.5 break-words">{note}</p>}
       </div>
     </li>
+  );
+}
+
+// Estimated, from the server's per-model price table — a fraction of a cent per read, so show 3 places.
+const usd = (v: number) => `$${v < 10 ? v.toFixed(3) : v.toFixed(2)}`;
+const tok = (v: number) => (v >= 10_000 ? `${Math.round(v / 1000).toLocaleString()}k` : v.toLocaleString());
+const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
+
+function AiUsageNote({ ai }: { ai: AiUsageSummary }) {
+  const t = ai.totals;
+  if (t.calls30d === 0) return <>no calls in the last 30 days</>;
+  return (
+    <>
+      today {plural(t.callsToday, 'call')} · {tok(t.inputToday)} in / {tok(t.outputToday)} out tokens · ~{usd(t.costToday)}
+      {t.errorsToday ? ` · ${plural(t.errorsToday, 'error')}` : ''}
+      <br />
+      30 days {plural(t.calls30d, 'call')} · {tok(t.input30d)} in / {tok(t.output30d)} out tokens · ~{usd(t.cost30d)}
+      {t.unpriced30d ? ` (+${t.unpriced30d} unpriced)` : ''}
+      {t.errors30d ? ` · ${plural(t.errors30d, 'error')}` : ''}
+      {t.lastAt && <> · last <When at={t.lastAt} /></>}
+      {ai.byModel.map(m => (
+        <span key={`${m.provider}/${m.model}`} className="block">
+          {m.provider} {m.model}: {plural(m.calls30d, 'call')}, ~{usd(m.cost30d)}{m.errors30d ? `, ${plural(m.errors30d, 'error')}` : ''}
+        </span>
+      ))}
+    </>
   );
 }
 
@@ -68,6 +94,11 @@ export default function AdminPage() {
                     : ' · catalog status unknown'}
                   {h.pm.breakerOpenUntil && <> · breaker open until {new Date(h.pm.breakerOpenUntil).toLocaleTimeString()} ({h.pm.breakerReason})</>}
                 </>}
+              />
+              <HealthRow
+                label="AI (photo reads)"
+                ok={h.ai ? h.ai.totals.errorsToday === 0 : null}
+                note={h.ai ? <AiUsageNote ai={h.ai} /> : 'usage unavailable (ai_usage not readable)'}
               />
               <HealthRow label="Full-size photos (R2)" ok={h.r2.configured} note={h.r2.configured ? 'configured' : 'not configured — uploads keep thumbnails only'} />
               <HealthRow label="Clerk sign-in webhook" ok={h.clerkWebhook.configured}
