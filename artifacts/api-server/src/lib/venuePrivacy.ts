@@ -89,6 +89,16 @@ export function isPrivateTier(venue: { isResidence: boolean; privacyTier: 'full'
 }
 
 /**
+ * The tier a venue is stored with. Address privacy is a residence setting: a non-residence is always
+ * 'full', whatever the client sent — Add Score's form used to default to 'hidden' with the residence
+ * box unticked, which made a Portland bar (venue 51, 2026-09-29) private. Unknown values become 'full'.
+ */
+export function storedPrivacyTier(isResidence: boolean, privacyTier: unknown): 'full' | 'city_state' | 'hidden' {
+  if (!isResidence) return 'full';
+  return privacyTier === 'city_state' || privacyTier === 'hidden' ? privacyTier : 'full';
+}
+
+/**
  * Column updates for a venue edit that leaves it private. A HERE place id or Pinball Map id *is* a
  * location, so a venue that becomes (or stays) private drops them in the same UPDATE — owner decision
  * 2026-09-25. They are not restored on switching back to public; the owner relinks from the repair

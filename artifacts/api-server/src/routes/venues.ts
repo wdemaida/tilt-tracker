@@ -10,7 +10,7 @@ import {
   geocodeAddress, autosuggestAddress, findVenueByName, resolveTimezone, lookupHerePlace, type Venue as HereVenue,
 } from '../lib/hereApi.js';
 import {
-  redactVenue, canSeeVenueLinkage, exactVenueNameKey, isPrivateTier, linkageClearedForPrivacy,
+  redactVenue, canSeeVenueLinkage, exactVenueNameKey, isPrivateTier, linkageClearedForPrivacy, storedPrivacyTier,
 } from '../lib/venuePrivacy.js';
 import { createRateLimiter } from '../lib/rateLimit.js';
 import { hasFullPhotoSql, hasThumbnailSql } from '../lib/photoStore.js';
@@ -123,7 +123,7 @@ router.post('/', requireAppUser, async (req, res) => {
   if (!name || !address) {
     return res.status(400).json({ error: 'name and address are required' });
   }
-  const tier = ['full', 'city_state', 'hidden'].includes(privacyTier) ? privacyTier : 'full';
+  const tier = storedPrivacyTier(!!isResidence, privacyTier);
 
   try {
     const geocoded = await geocodeAddress(address);
@@ -665,6 +665,11 @@ router.patch('/:id', requireAppUser, async (req, res) => {
   if (privacyTier !== undefined && ['full', 'city_state', 'hidden'].includes(privacyTier)) {
     updates.privacyTier = privacyTier;
   }
+  // Only a residence can hide its address (storedPrivacyTier) — also heals a venue stored that way.
+  const storedTier = storedPrivacyTier(
+    updates.isResidence ?? existing.isResidence, updates.privacyTier ?? existing.privacyTier,
+  );
+  if (storedTier !== existing.privacyTier || updates.privacyTier !== undefined) updates.privacyTier = storedTier;
   // Stored whatever the tier, but only honoured on a private venue (venueActivity.ts).
   if (typeof showMachinesAndScores === 'boolean') updates.showMachinesAndScores = showMachinesAndScores;
 

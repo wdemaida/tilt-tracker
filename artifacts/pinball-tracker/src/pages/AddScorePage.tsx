@@ -147,7 +147,7 @@ export default function AddScorePage() {
   const [newVenueAddress, setNewVenueAddress] = useState('');
   const [showAddressSuggestions, setShowAddressSuggestions] = useState(false);
   const [newVenueIsResidence, setNewVenueIsResidence] = useState(false);
-  const [newVenuePrivacyTier, setNewVenuePrivacyTier] = useState<'full' | 'city_state' | 'hidden'>('hidden');
+  const [newVenuePrivacyTier, setNewVenuePrivacyTier] = useState<'full' | 'city_state' | 'hidden'>('full');
   // Existing venues the server matched when it rejected a create as a likely duplicate.
   // Someone's private venue arrives as a name-only `isPrivate` candidate (exact name match, never a
   // location match): loggable like any other, but with no address or distance to show.
@@ -776,7 +776,7 @@ export default function AddScorePage() {
       setNewVenueName('');
       setNewVenueAddress('');
       setNewVenueIsResidence(false);
-      setNewVenuePrivacyTier('hidden');
+      setNewVenuePrivacyTier('full');
       setStep(3);
     },
     // A 409 here isn't a failure to explain in red text — it's the server saying "you already have

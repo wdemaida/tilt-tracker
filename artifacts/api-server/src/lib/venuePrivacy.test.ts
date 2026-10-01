@@ -165,7 +165,7 @@ test('matchDuplicates: public venues unchanged — normalized name within 250m, 
 // --- Exact-name discovery (owner decision 2026-09-25) --------------------------------------------
 
 const venuePrivacyMod = await import('./venuePrivacy.js');
-const { exactVenueNameKey, isPrivateTier } = venuePrivacyMod;
+const { exactVenueNameKey, isPrivateTier, storedPrivacyTier } = venuePrivacyMod;
 
 test('exactVenueNameKey: trimmed and case-insensitive, nothing fuzzier', () => {
   assert.equal(exactVenueNameKey("  Will's Basement "), "will's basement");
@@ -202,4 +202,15 @@ test('isPrivateTier', () => {
   assert.equal(isPrivateTier({ isResidence: true, privacyTier: 'full' }), true);
   assert.equal(isPrivateTier({ isResidence: false, privacyTier: 'hidden' }), true);
   assert.equal(isPrivateTier({ isResidence: false, privacyTier: 'full' }), false);
+});
+
+test('storedPrivacyTier: only a residence can hide its address', () => {
+  // Venue 51 (a Portland bar): Add Score sent the form's 'hidden' default with the residence box unticked.
+  assert.equal(storedPrivacyTier(false, 'hidden'), 'full');
+  assert.equal(storedPrivacyTier(false, 'city_state'), 'full');
+  assert.equal(storedPrivacyTier(false, undefined), 'full');
+  assert.equal(storedPrivacyTier(true, 'hidden'), 'hidden');
+  assert.equal(storedPrivacyTier(true, 'city_state'), 'city_state');
+  assert.equal(storedPrivacyTier(true, 'full'), 'full');
+  assert.equal(storedPrivacyTier(true, 'bogus'), 'full');
 });
