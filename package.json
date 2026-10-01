@@ -5,7 +5,6 @@
   "scripts": {
     "dev": "pnpm --parallel --filter \"./artifacts/*\" dev",
     "db:push": "pnpm --filter @workspace/db db:push",
-    "db:studio": "pnpm --filter @workspace/db db:studio",
     "db:generate": "pnpm --filter @workspace/db db:generate"
   },
   "engines": {

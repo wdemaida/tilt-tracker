@@ -33,7 +33,7 @@ Port 5173 is taken by another process on this machine; `vite.config.ts` hardcode
 npx tsx watch src/index.ts
 ```
 Runs on port 3001. Vite proxies `/api/*` to it automatically.
-Port 3000 is intentionally avoided — an unrelated project (`bart-core`, under `_nymbl-work`) frequently occupies it on this machine, so the api-server, `vite.config.ts`'s proxy, and the direct-loopback Drizzle Studio launcher (`src/lib/api.ts`) all standardize on 3001 instead.
+Port 3000 is intentionally avoided — an unrelated project (`bart-core`, under `_nymbl-work`) frequently occupies it on this machine, so the api-server and `vite.config.ts`'s proxy both standardize on 3001 instead.
 
 Both must be running for the app to work.
 

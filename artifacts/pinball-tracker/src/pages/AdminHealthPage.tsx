@@ -1,7 +1,6 @@
-import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import AdminNav from '../components/AdminNav';
-import { ShieldCheck, RefreshCw, CheckCircle2, XCircle, HelpCircle, Database, Server, Cpu, ExternalLink, Wrench, Play, Loader2 } from 'lucide-react';
+import { ShieldCheck, RefreshCw, CheckCircle2, XCircle, HelpCircle, Database, Server, Cpu, ExternalLink } from 'lucide-react';
 
 const DASHBOARD_URLS: Record<string, string> = {
   anthropic: 'https://console.anthropic.com/settings/billing',
@@ -37,6 +36,8 @@ function StatusIcon({ status }: { status: 'ok' | 'error' | 'unchecked' }) {
 }
 
 const NEON_FREE_LIMIT_BYTES = 512 * 1024 * 1024; // 512 MB
+// The production branch (br-damp-hall) — Neon's SQL editor and table view live here.
+const NEON_CONSOLE_URL = 'https://console.neon.tech/app/projects/rapid-shadow-51398238/branches/br-damp-hall-atn692tk';
 
 function formatBytes(bytes: number) {
   if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
@@ -66,22 +67,6 @@ export default function AdminHealthPage() {
     staleTime: 0,
     refetchOnWindowFocus: false,
   });
-
-  const [studioLaunching, setStudioLaunching] = useState(false);
-  const [studioError, setStudioError] = useState<string | null>(null);
-
-  async function launchDrizzleStudio() {
-    setStudioLaunching(true);
-    setStudioError(null);
-    try {
-      await api.admin.startDrizzleStudio();
-      window.open('https://local.drizzle.studio', '_blank', 'noopener,noreferrer');
-    } catch (err: any) {
-      setStudioError(err?.message ?? 'Failed to launch Drizzle Studio');
-    } finally {
-      setStudioLaunching(false);
-    }
-  }
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -122,12 +107,20 @@ export default function AdminHealthPage() {
               <Database className="w-3.5 h-3.5" /> Database
             </h2>
             <div className="rounded-xl border border-white/10 bg-card p-5">
-              <div className="flex items-center justify-between mb-4">
+              <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 mb-4">
                 <div className="flex items-center gap-2.5">
                   <StatusDot status={data.database.status} />
                   <span className="font-black uppercase tracking-wider text-white">Neon PostgreSQL</span>
                 </div>
-                <div className="flex items-center gap-3 text-sm">
+                <a
+                  href={NEON_CONSOLE_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1 text-primary hover:text-white transition-colors text-xs font-medium"
+                >
+                  Open in Neon <ExternalLink className="w-3 h-3" />
+                </a>
+                <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 text-sm">
                   {data.database.status === 'ok' && (
                     <>
                       <span className="text-muted-foreground">{data.database.postgresVersion}</span>
@@ -254,42 +247,6 @@ export default function AdminHealthPage() {
                     </div>
                   ))}
                 </div>
-              </div>
-            </div>
-          </section>
-
-          {/* Dev Tools */}
-          <section>
-            <h2 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-3 flex items-center gap-2">
-              <Wrench className="w-3.5 h-3.5" /> Dev Tools
-            </h2>
-            <div className="rounded-xl border border-white/10 bg-card p-4 flex items-start gap-3">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="font-black uppercase tracking-wider text-white text-sm">Drizzle Studio</p>
-                  <div className="flex items-center gap-3 flex-shrink-0">
-                    <button
-                      onClick={launchDrizzleStudio}
-                      disabled={studioLaunching}
-                      className="flex items-center gap-1 text-primary hover:text-white transition-colors text-xs font-medium disabled:opacity-50"
-                    >
-                      {studioLaunching ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
-                      Launch
-                    </button>
-                    <a
-                      href="https://local.drizzle.studio"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-1 text-muted-foreground hover:text-white transition-colors text-xs font-medium"
-                    >
-                      Open <ExternalLink className="w-3 h-3" />
-                    </a>
-                  </div>
-                </div>
-                <p className="text-xs text-muted-foreground/60 mt-1 italic">
-                  Launch starts <span className="font-mono not-italic">drizzle-kit studio</span> on this machine and opens it in a new tab — local dev server only, disabled on Render. First time, you'll still need to enable Local Network Access in Edge/Chrome site settings.
-                </p>
-                {studioError && <p className="text-xs text-red-400 mt-1">{studioError}</p>}
               </div>
             </div>
           </section>

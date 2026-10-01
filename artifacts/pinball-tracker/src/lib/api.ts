@@ -667,25 +667,6 @@ export function createApi(getToken: () => Promise<string | null>) {
         request(`/admin/stats/${id}`, { method: 'DELETE' }, await tok()),
       runStatSnapshot: async () =>
         request<{ periodDate: string; values: Record<string, number> }>('/admin/stats/snapshot', { method: 'POST' }, await tok()),
-      // Always targets the local loopback API directly (not BASE) — Drizzle Studio can only ever
-      // run on the machine driving this browser, whether the page itself is served from
-      // localhost:5174 or the deployed tilttrack.vercel.app.
-      startDrizzleStudio: async () => {
-        const token = await tok();
-        const headers: Record<string, string> = {};
-        if (token) headers['Authorization'] = `Bearer ${token}`;
-        let res: Response;
-        try {
-          res = await fetch('http://localhost:3001/api/admin/drizzle-studio/start', { method: 'POST', headers });
-        } catch {
-          throw new Error('Could not reach your local API server on port 3001 — start it with "npx tsx watch src/index.ts" from artifacts/api-server first.');
-        }
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({ error: res.statusText }));
-          throw Object.assign(new Error(err.error ?? 'Request failed'), { status: res.status });
-        }
-        return res.json() as Promise<{ status: 'starting' | 'already-running' }>;
-      },
     },
     // One request for every photo of a score (1–3). Each photo's client-extracted GPS/timestamp goes
     // in the JSON `meta` field, index-aligned with `photos` (see prepareUploadImage.ts) — HEIC

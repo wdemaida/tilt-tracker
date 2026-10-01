@@ -445,7 +445,7 @@ reason and is recorded in the activity log.
 | **Crew** | Friendships (remove), challenges (**void** — releases score locks, drops out of records), notifications |
 | **Scores** | Delete a score (refused while challenge-locked), delete full photo / thumbnail; correct a locked played time (reason required) |
 | **Badges** | Editor (kind, metric/rule, window, retroactive, image, series), preview, go live, retire, backfill, grant / revoke, drag-to-reorder |
-| **Health** | Database (Neon storage), API server, external services, environment variables, Drizzle Studio launcher; reads stored Pinball Map state, never calls it |
+| **Health** | Database (Neon storage, with a link to the production branch in the Neon console for SQL), API server, external services, environment variables; reads stored Pinball Map state, never calls it |
 | **Config** | Tabs: **Theme** (brand colors — per browser), **Data retention**, **Photo storage** (orphan sweep, dry run first), **Stats** (stat definitions + recent history) |
 
 **Activity-log retention** has three tiers — high-volume (sign-ins, notifications, cron heartbeats;
