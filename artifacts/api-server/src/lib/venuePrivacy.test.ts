@@ -214,3 +214,31 @@ test('storedPrivacyTier: only a residence can hide its address', () => {
   assert.equal(storedPrivacyTier(true, 'full'), 'full');
   assert.equal(storedPrivacyTier(true, 'bogus'), 'full');
 });
+
+test('venueDetailView: publicView previews what others see — owner and admin only', async () => {
+  const { venueDetailView } = await import('./venueView.js');
+  const detail = (over: Record<string, unknown>, viewer?: { id: number; role: string }) =>
+    venueDetailView({
+      ...venue(over), createdById: OWNER, showMachinesAndScores: true,
+      playedMachineCount: 0, inventoryCount: 0, inventoryManaged: false,
+    } as any, viewer) as Record<string, any>;
+  const owner = { id: OWNER, role: 'user' };
+  const admin = { id: STRANGER, role: 'admin' };
+
+  // city_state: the owner still gets the real row, plus the city centroid others get.
+  const cs = detail({ privacyTier: 'city_state' }, owner);
+  assert.equal(cs.address, '1 Secret Ln, Brewster, MA 02631');
+  assert.equal(cs.latitude, 41.76);
+  assert.deepEqual(cs.publicView, { address: 'Brewster, MA', latitude: 41.75, longitude: -70.08 });
+  // hidden: nothing locational.
+  assert.deepEqual(detail({ privacyTier: 'hidden' }, owner).publicView, { address: null, latitude: null, longitude: null });
+  assert.deepEqual(detail({ privacyTier: 'hidden' }, admin).publicView, { address: null, latitude: null, longitude: null });
+  // Full tier needs no preview; strangers and guests never get the field.
+  assert.equal('publicView' in detail({ privacyTier: 'full' }, owner), false);
+  for (const viewer of [{ id: STRANGER, role: 'user' }, undefined]) {
+    const r = detail({ privacyTier: 'city_state' }, viewer);
+    assert.equal('publicView' in r, false);
+    assert.equal(r.address, 'Brewster, MA');
+    assert.equal(r.latitude, 41.75);
+  }
+});

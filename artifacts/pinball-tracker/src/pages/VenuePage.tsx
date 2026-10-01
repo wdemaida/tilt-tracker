@@ -1,7 +1,7 @@
 ﻿import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'wouter';
-import { ArrowLeft, ChevronUp, ChevronDown, Home, Pencil, EyeOff } from 'lucide-react';
+import { ArrowLeft, ChevronUp, ChevronDown, Home, Pencil, Eye, EyeOff } from 'lucide-react';
 import { formatScoreTime } from '../lib/scoreTime';
 import { useApi } from '../lib/useApi';
 import { useComparisonScope, scopeQuery, scopeKey } from '../lib/comparisonScope';
@@ -15,6 +15,7 @@ import VenueMachinesModal from '../components/VenueMachinesModal';
 import VenueRepairPanel from '../components/VenueRepairPanel';
 import VenueInventoryPanel from '../components/VenueInventoryPanel';
 import EditVenueDialog, { editTargetFromVenue, type EditVenueTarget } from '../components/EditVenueDialog';
+import { missingAddressLabel } from '../lib/venueAddressLabel';
 
 type SortKey = 'playedAt' | 'machineName' | 'type' | 'username' | 'score';
 type SortDir = 'asc' | 'desc';
@@ -106,6 +107,9 @@ export default function VenuePage() {
   if (!data) return <p className="text-muted-foreground">Venue not found.</p>;
 
   const { venue } = data;
+  // Only sent to the owner/admin of a restricted-tier venue: what everyone else gets (venueView.ts).
+  const publicView: { address: string | null; latitude: number | null; longitude: number | null } | undefined =
+    venue.publicView ?? undefined;
   // Venue-wide (every score here you may see), the same in every scope.
   const totalScores: number = data.totals?.scores ?? scores.length;
   const narrowed = scope.kind === 'mine' || ((scope.kind === 'pod' || scope.kind === 'friends') && !scope.others);
@@ -196,9 +200,20 @@ export default function VenuePage() {
           </h1>
           {venue.address ? (
             <p className="text-sm text-muted-foreground mt-1">{venue.address}</p>
-          ) : venue.isResidence || venue.isPrivate ? (
+          ) : missingAddressLabel(venue) === 'hidden' ? (
             <p className="text-sm text-muted-foreground/60 italic mt-1">Address hidden</p>
+          ) : missingAddressLabel(venue) === 'none_on_file' ? (
+            <p className="text-sm text-muted-foreground/60 italic mt-1">No address on file</p>
           ) : null}
+          {/* Owner/admin of a restricted-tier venue: they get the real row, so say what others get. */}
+          {publicView && (
+            <p className="flex items-center gap-1.5 text-xs text-muted-foreground mt-1">
+              <Eye className="w-3.5 h-3.5 flex-shrink-0" />
+              {publicView.address
+                ? `Others see: ${publicView.address}${publicView.latitude != null ? ' (approximate)' : ''}`
+                : 'Others see: no location'}
+            </p>
+          )}
           {venue.activityHidden ? (
             <p className="text-sm text-muted-foreground mt-1">
               {totalScores === 1 ? 'Your score here is shown below. ' : totalScores > 1 ? `Your ${totalScores} scores here are shown below. ` : ''}
@@ -225,7 +240,12 @@ export default function VenuePage() {
             </p>
           )}
         </div>
-        <VenueMapThumbnail venueId={venue.id} latitude={venue.latitude} longitude={venue.longitude} />
+        {/* Drawn the way the public sees it, so the owner can tell what their tier gives away. */}
+        <VenueMapThumbnail
+          venueId={venue.id}
+          latitude={publicView ? publicView.latitude : venue.latitude}
+          longitude={publicView ? publicView.longitude : venue.longitude}
+        />
       </div>
 
       {/* Keyed so a merge that navigates to another venue starts that panel fresh. */}
