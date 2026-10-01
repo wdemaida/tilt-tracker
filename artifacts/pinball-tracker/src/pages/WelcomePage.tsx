@@ -128,7 +128,7 @@ export default function WelcomePage() {
           <div className="flex justify-center">
             <div className="relative w-full max-w-sm rounded-2xl border border-white/10 bg-card p-5 shadow-2xl">
               <span className="absolute -top-3 left-5 text-[0.6rem] font-extrabold uppercase tracking-widest text-background bg-username rounded-full px-2.5 py-1">
-                A captured <span className="normal-case">TiltTrack</span> score
+                How your score gets recorded
               </span>
               <div className="flex items-center justify-between">
                 <span className="text-[0.65rem] font-extrabold uppercase tracking-wider text-muted-foreground border border-white/20 rounded-full px-2.5 py-0.5">
