@@ -528,6 +528,10 @@
   screenshot from `/welcome/<image>`. Unknown paths come back as the SPA's index.html, so only the
   element's own load/error event says whether a file is there — until it loads, the slot shows its
   illustration ("Video coming soon" for the phone), never a broken image.
+- **Screenshot slots are 3:2, the wide (first-of-an-odd-count) one 10:3**, title above the picture.
+  The JPGs are cropped to those shapes around the part the title is about (no dead margins), so the
+  UI text reads at a useful size; crop a replacement the same way, from the already-blurred file —
+  other users' names in them are deliberately blurred.
 - **The timeline** (`components/welcome/WelcomeTimeline.tsx`) sits left of the founder's letter
   (stacked above it on phones). Stops show only `when` + `title`; a mouse hover opens the story, a
   click/tap/Enter toggles it, one open at a time, the first open on load, the last one glows. A click

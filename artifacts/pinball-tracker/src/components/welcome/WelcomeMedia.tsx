@@ -62,9 +62,10 @@ export function PhoneVideo() {
 
 /**
  * A screenshot from public/welcome/, or the illustration for its slot until the file exists. The
- * image is contained, never cropped: the screenshots vary from square to nearly 3:1, and their dark
- * page background matches the slot's, so the letterbox doesn't show. `wide` is the full-width slot
- * an odd count gets (WelcomePage), with a wider frame to suit.
+ * title sits above the picture. The files are pre-cropped to their slot's shape (3:2, or 10:3 for
+ * `wide`, the full-width slot an odd count gets in WelcomePage) so the UI text is as large as the
+ * slot allows. The image is still contained, never cropped by CSS: a replacement of another shape
+ * letterboxes on the dark page background instead of losing its edges.
  */
 export function Screenshot({ title, image, index, wide = false }: { title: string; image: string; index: number; wide?: boolean }) {
   const src = welcomeImageUrl(image);
@@ -73,7 +74,8 @@ export function Screenshot({ title, image, index, wide = false }: { title: strin
   const showImage = src && !failed;
   return (
     <figure className={`m-0 min-w-0 rounded-2xl border border-white/10 bg-card overflow-hidden ${wide ? 'sm:col-span-2' : ''}`}>
-      <div className={`relative ${wide ? 'aspect-[16/10] sm:aspect-[5/2]' : 'aspect-[16/10]'} ${loaded ? 'bg-background' : 'bg-gradient-to-b from-[hsl(240_9%_10%)] to-card'}`}>
+      <figcaption className="px-3.5 py-3 border-b border-white/10 text-sm font-bold">{title}</figcaption>
+      <div className={`relative ${wide ? 'aspect-[10/3]' : 'aspect-[3/2]'} ${loaded ? 'bg-background' : 'bg-gradient-to-b from-[hsl(240_9%_10%)] to-card'}`}>
         {showImage && (
           <img
             src={src}
@@ -86,7 +88,6 @@ export function Screenshot({ title, image, index, wide = false }: { title: strin
         )}
         {!loaded && <Illustration kind={illustrationFor(image, index)} />}
       </div>
-      <figcaption className="px-3.5 py-3 border-t border-white/10 text-sm font-bold">{title}</figcaption>
     </figure>
   );
 }
