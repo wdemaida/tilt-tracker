@@ -22,18 +22,6 @@ import 'dotenv/config';
 import postgres from 'postgres';
 import { TIMESTAMP_COLUMNS, COLUMN_COUNT, alterToTimestamptz, MIGRATION_PRELUDE } from './src/lib/timestamptzMigration.js';
 
-// DEV-BRANCH GUARD — deliberately refuses to run against anything but the Neon dev branch
-// (endpoint ep-late-mouse-at8antth) while this is still on fix/timestamptz. Production is a
-// different endpoint, so running this from the production checkout (whose .env points at prod)
-// aborts here. Remove this block deliberately, in its own commit, at ship time, when the migration
-// is meant to hit production.
-const DEV_ENDPOINT = 'ep-late-mouse-at8antth';
-const host = new URL(process.env.DATABASE_URL!).hostname;
-if (!host.startsWith(DEV_ENDPOINT)) {
-  console.error(`Refusing to run: DATABASE_URL is not the Neon dev branch (${DEV_ENDPOINT}). See the guard comment in migrate26.ts.`);
-  process.exit(1);
-}
-
 const sql = postgres(process.env.DATABASE_URL!, { max: 1, onnotice: () => {} });
 
 const converted: string[] = [];
