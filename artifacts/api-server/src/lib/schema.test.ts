@@ -45,6 +45,7 @@ test('the checker flags a naive timestamp column (so the test above cannot pass 
 // migrate26's historical list, which stays exactly what it converted).
 const BORN_TIMESTAMPTZ = [
   'ai_usage.created_at', // migrate27
+  'site_content.updated_at', // migrate28
 ];
 
 test("migrate26's column list plus later timestamptz columns is exactly the schema's timestamp columns", async () => {

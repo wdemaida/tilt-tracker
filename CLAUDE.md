@@ -178,6 +178,8 @@ Feature-specific gotchas live in `artifacts/pinball-tracker/CLAUDE.md` (frontend
 | `artifacts/api-server/src/lib/badgeRules.ts` | Badge rule vocabulary (pure, venue-local dates, grace window) |
 | `artifacts/api-server/src/lib/badgeSeries.ts` | Badge series (tier ladders): shared shelf/catalog order, reorder validation, shelf collapsing + pips |
 | `artifacts/api-server/src/lib/aiUsage.ts` | AI usage log (`ai_usage`): fire-and-forget recordAiUsage, per-model price table, admin summary fold |
+| `artifacts/api-server/src/lib/siteContent.ts` | Admin-editable page copy (`site_content`): CONTENT_SPEC (shapes the editor's form), validation, cached public read |
+| `artifacts/pinball-tracker/src/lib/welcomeContent.ts` | /welcome copy defaults + override merge; rendered by `components/RichText.tsx`, edited in Admin > Config > Welcome page |
 | `artifacts/pinball-tracker/src/components/BadgeImage.tsx` | Draws every badge — image, or lucide icon + color fallback |
 | `lib/db/src/schema.ts` | Drizzle schema — source of truth for DB types |
 | `artifacts/api-server/src/lib/instant.ts` | `parseInstant` (client instants must carry an offset) and `dbTimestampToIso` (raw-SQL timestamps out) |

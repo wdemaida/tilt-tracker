@@ -485,3 +485,17 @@
   cached prefs, not the render's list, since a place add finishes seconds after the tap.
 - `DuplicateVenuePrompt.tsx` is now the one duplicate-venue prompt — `ScoreVenuePicker`, AddScorePage's
   add-venue form and this card all render it (`duplicateCandidates(e)` reads the 409's candidates).
+
+## Welcome page copy (`lib/welcomeContent.ts`, `lib/useWelcomeContent.ts`, `components/RichText.tsx`, 2026-10-01)
+- /welcome's text is **data, not JSX**: defaults in `welcomeContent.ts`, overridden per section by an
+  admin in **Admin > Config > Welcome page** (`components/admin/WelcomeContentEditor.tsx`, stored in
+  `site_content` — see api-server CLAUDE.md, "Site content"). `useWelcomeContent()` returns the
+  defaults on the first render and swaps in overrides when `GET /api/content/welcome` answers; the page
+  never waits on it. Merge is field by field, so a field added later keeps its default under an old row.
+- Render copy with `<RichText>` (body: paragraphs, **bold**, *italic*, links) or `<InlineText>`
+  (headings: also ==glow== and `
+` line breaks). Never `dangerouslySetInnerHTML` for this text.
+- As of feature/site-content only the hero and How it works read the hook; the other sections have
+  defaults and are editable, waiting for the redesigned layout to render them.
+- Tests: `npx tsx --tsconfig tsconfig.app.json --test src/lib/richText.test.ts src/lib/welcomeContent.test.ts`
+  (the `--tsconfig` gives tsx the automatic JSX runtime).

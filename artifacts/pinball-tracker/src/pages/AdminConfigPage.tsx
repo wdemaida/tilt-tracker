@@ -4,6 +4,7 @@ import { useTheme, hslToHex, DEFAULT_COLORS, type ColorKey } from '../lib/theme'
 import { RetentionSettingsCard, PhotoOrphansCard } from '../components/admin/MaintenanceSettings';
 import { AdminShell, Segmented } from '../components/admin/AdminParts';
 import { AdminStatsPanel } from './AdminStatsPage';
+import { WelcomeContentCard } from '../components/admin/WelcomeContentEditor';
 
 const COLOR_CONFIG: { key: ColorKey; label: string; description: string }[] = [
   { key: 'primary',  label: 'Scores',   description: 'Score numbers, buttons, and primary accents' },
@@ -94,6 +95,7 @@ export const CONFIG_TABS = [
   { key: 'retention', label: 'Data retention', Component: RetentionSettingsCard },
   { key: 'photos',    label: 'Photo storage',  Component: PhotoOrphansCard },
   { key: 'stats',     label: 'Stats',          Component: AdminStatsPanel },
+  { key: 'welcome',   label: 'Welcome page',   Component: WelcomeContentCard },
 ] as const;
 
 export type ConfigTab = typeof CONFIG_TABS[number]['key'];

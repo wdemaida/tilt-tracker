@@ -13,6 +13,7 @@ import { appUserRefusal, requireAppUser, requireAdmin, rejectDisabledUser, setAu
 import adminRouter from '../routes/admin.js';
 import adminAreaRouter from '../routes/adminArea.js';
 import adminBadgesRouter from '../routes/adminBadges.js';
+import adminContentRouter from '../routes/adminContent.js';
 import { getClerkActivity, setClerkBan, setClerkAdminForTests } from './clerkAdmin.js';
 
 const base = { username: 'u', displayName: 'U', pinballMapToken: null, pinballMapUsername: null, disabledReason: null, disabledById: null, createdAt: new Date() };
@@ -100,7 +101,11 @@ test('every admin route refuses guests, users, disabled admins and profile-less 
   for (const p of ['/badges/:id/preview', '/badges/:id/activate', '/badges/:id/backfill', '/badges/:id/retire', '/badges/:id/grants']) {
     assert.ok(badgeRoutes.some(r => r.method === 'POST' && r.path === p), `POST ${p} is an admin badges route`);
   }
-  for (const r of [...areaRoutes, ...badgeRoutes]) {
+  const contentRoutes = routesOf(adminContentRouter);
+  for (const [m, p] of [['GET', '/content'], ['PUT', '/content/:key'], ['DELETE', '/content/:key']]) {
+    assert.ok(contentRoutes.some(r => r.method === m && r.path === p), `${m} ${p} is an admin content route`);
+  }
+  for (const r of [...areaRoutes, ...badgeRoutes, ...contentRoutes]) {
     assert.ok(routes.some(x => x.method === r.method && x.path === r.path), `${r.method} ${r.path} is mounted inside the guarded admin router`);
   }
   for (const r of routes) {

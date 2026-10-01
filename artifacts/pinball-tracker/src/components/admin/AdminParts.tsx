@@ -250,6 +250,8 @@ const TYPE_TEXT: Record<string, string> = {
   'admin.photo_orphans_run': 'ran the photo orphan sweep',
   'admin.badge_updated': 'changed a badge',
   'admin.badge_order_changed': 'reordered the badges',
+  'admin.content_updated': 'edited the welcome page',
+  'admin.content_reset': 'reset a welcome page section',
   'badge.earned': 'earned a badge',
   'badge.granted': 'granted a badge to',
   'badge.revoked': 'revoked a badge from',
@@ -274,6 +276,7 @@ function targetLink(ev: ActivityEvent): ReactNode {
     case 'machine': return <span className="text-muted-foreground">machine #{id}</span>;
     case 'badge': return <Link href="/admin/badges" className="text-primary hover:underline">badge #{id}</Link>;
     case 'badge_series': return <Link href="/admin/badges" className="text-primary hover:underline">badge series #{id}</Link>;
+    case 'site_content': return <Link href="/admin/config?tab=welcome" className="text-primary hover:underline">{id}</Link>;
     default: return null;
   }
 }
@@ -307,6 +310,8 @@ function detail(ev: ActivityEvent): string | null {
       return [p.action, p.name, typeof p.awarded === 'number' && p.awarded > 0 ? `${p.awarded} awarded` : null, p.colorTo ? `color ${p.colorFrom} → ${p.colorTo}` : null].filter(Boolean).join(' · ') || null;
     case 'admin.badge_order_changed':
       return typeof p.changed === 'number' ? `${p.changed} moved` : null;
+    case 'admin.content_updated':
+      return Array.isArray(p.fields) && p.fields.length ? `changed ${p.fields.join(', ')}` : null;
     case 'challenge.resolved':
       return Array.isArray(p.outcomes) ? p.outcomes.map((o: any) => `@${o.username ?? o.userId} ${o.outcome}`).join(', ') + (p.reason ? ` (${p.reason})` : '') : null;
     case 'challenge.declined':

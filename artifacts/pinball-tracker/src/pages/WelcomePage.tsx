@@ -3,6 +3,8 @@ import { Camera, TrendingUp, MapPin, Trophy } from 'lucide-react';
 import { PinballIcon } from '../components/PinballIcon';
 import { enableGuestMode } from '../lib/guestMode';
 import bridgeImage from '../assets/welcome-bridge.jpg';
+import { useWelcomeContent } from '../lib/useWelcomeContent';
+import { InlineText, RichText } from '../components/RichText';
 
 const OTHER_PLAYER_DOTS = [
   { cx: 114.08, cy: 143.2, score: '42,000,000' },
@@ -26,8 +28,19 @@ const YOUR_DOTS = [
   { cx: 435.28, cy: 207.43, score: '18,500,000' },
 ];
 
+// One icon per How-it-works step, in order (cycled if an admin adds more steps).
+const STEP_ICONS = [
+  { Icon: Camera, tone: 'bg-primary/15 border-primary/45', color: 'text-primary' },
+  { Icon: PinballIcon, tone: 'bg-machine/15 border-machine/45', color: 'text-machine' },
+  { Icon: TrendingUp, tone: 'bg-venue/15 border-venue/45', color: 'text-venue' },
+];
+
 export default function WelcomePage() {
   const [, navigate] = useLocation();
+  // Copy comes from lib/welcomeContent.ts defaults, overridden per section in Admin > Config > Welcome page.
+  const content = useWelcomeContent();
+  const hero = content['welcome.hero'];
+  const how = content['welcome.how'];
 
   function handleGuest() {
     enableGuestMode();
@@ -68,15 +81,16 @@ export default function WelcomePage() {
         />
         <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 grid grid-cols-1 md:grid-cols-[1.15fr_1fr] gap-10 md:gap-16 items-center">
           <div>
-            <div className="text-xs font-bold uppercase tracking-[0.22em] text-muted-foreground">Pinball score tracking</div>
+            {hero.eyebrow && (
+              <div className="text-xs font-bold uppercase tracking-[0.22em] text-muted-foreground">{hero.eyebrow}</div>
+            )}
             <h1 className="mt-3 font-display uppercase font-black tracking-tight leading-[1.02] text-5xl sm:text-6xl lg:text-7xl">
-              No machine<br />
-              <span className="text-glow-primary">left behind.</span>
+              <InlineText text={hero.headline} />
             </h1>
-            <p className="mt-6 text-lg leading-relaxed text-muted-foreground max-w-[46ch]">
-              90% of the machines on your route were built before score tracking existed. Snap a photo of the backbox —
-              TiltTrack reads the machine, the score, the date, even the venue, and remembers it for good.
-            </p>
+            <RichText
+              text={hero.subhead}
+              className="mt-6 space-y-3 text-lg leading-relaxed text-muted-foreground max-w-[46ch]"
+            />
             <div className="mt-8 flex items-center gap-4 flex-wrap">
               <Link href="/sign-up" className="px-5 py-3 rounded-lg bg-primary text-white text-sm font-bold uppercase tracking-wider hover:opacity-90 transition-opacity">
                 Start Tracking
@@ -128,37 +142,22 @@ export default function WelcomePage() {
           <div className="max-w-[62ch]">
             <div className="text-xs font-bold uppercase tracking-[0.22em] text-muted-foreground">How it works</div>
             <h2 className="mt-3 font-display uppercase font-black tracking-tight text-3xl sm:text-4xl">
-              Point, shoot, forget about it.
+              <InlineText text={how.title} />
             </h2>
           </div>
           <div className="mt-12 grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="rounded-2xl border border-white/10 bg-card p-6">
-              <div className="w-11 h-11 rounded-xl bg-primary/15 border border-primary/45 flex items-center justify-center mb-5">
-                <Camera className="w-5 h-5 text-primary" />
-              </div>
-              <h3 className="font-bold">Snap it, don't type it</h3>
-              <p className="mt-2.5 text-sm leading-relaxed text-muted-foreground">
-                Snap a pic of the machine and TiltTrack's AI reads the machine name, the score, the timestamp, and your GPS location straight off the backbox. Prefer to type it yourself? Skip the AI anytime.
-              </p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-card p-6">
-              <div className="w-11 h-11 rounded-xl bg-machine/15 border border-machine/45 flex items-center justify-center mb-5">
-                <PinballIcon className="w-5 h-5 text-machine" />
-              </div>
-              <h3 className="font-bold">Works on machines of all ages</h3>
-              <p className="mt-2.5 text-sm leading-relaxed text-muted-foreground">
-                Cross-referenced against a database of over 2,000 machines, from 1970s electromechanical classics to next month's hot Stern release — even the oldest machines can become competitive.
-              </p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-card p-6">
-              <div className="w-11 h-11 rounded-xl bg-venue/15 border border-venue/45 flex items-center justify-center mb-5">
-                <TrendingUp className="w-5 h-5 text-venue" />
-              </div>
-              <h3 className="font-bold">Watch yourself get better</h3>
-              <p className="mt-2.5 text-sm leading-relaxed text-muted-foreground">
-                Personal bests per machine, score trends over time, and a venue difficulty index that adjusts for who else has actually played there — not just a leaderboard, an honest read on your progress.
-              </p>
-            </div>
+            {how.steps.map((step, i) => {
+              const { Icon, tone, color } = STEP_ICONS[i % STEP_ICONS.length];
+              return (
+                <div key={i} className="rounded-2xl border border-white/10 bg-card p-6">
+                  <div className={`w-11 h-11 rounded-xl border flex items-center justify-center mb-5 ${tone}`}>
+                    <Icon className={`w-5 h-5 ${color}`} />
+                  </div>
+                  <h3 className="font-bold">{step.title}</h3>
+                  <RichText text={step.body} className="mt-2.5 space-y-2 text-sm leading-relaxed text-muted-foreground" />
+                </div>
+              );
+            })}
           </div>
         </div>
       </section>

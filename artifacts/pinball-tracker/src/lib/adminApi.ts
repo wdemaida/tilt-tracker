@@ -274,6 +274,22 @@ export type BadgeInput = Partial<{
   newSeries: { name: string; color: string };
 }>;
 
+// Site content (Admin > Config > Welcome page). The spec comes from the server (CONTENT_SPEC in
+// api-server src/lib/siteContent.ts) and the editor builds its form from it.
+export type ContentTextKind = 'plain' | 'inline' | 'markdown' | 'url' | 'email';
+export interface ContentTextSpec { type: 'text'; kind: ContentTextKind; label: string; max: number; required: boolean; help?: string }
+export interface ContentListSpec { type: 'list'; label: string; itemLabel: string; min: number; max: number; fields: Record<string, ContentTextSpec> }
+export type ContentFieldSpec = ContentTextSpec | ContentListSpec;
+export interface ContentSectionSpec { title: string; help?: string; fields: Record<string, ContentFieldSpec> }
+export interface ContentSection {
+  key: string;
+  spec: ContentSectionSpec;
+  /** The stored override; null = the page shows its built-in default. */
+  value: Record<string, unknown> | null;
+  updatedAt: string | null;
+  updatedBy: UserRef | null;
+}
+
 function qs(params: Record<string, string | number | null | undefined | boolean>): string {
   const p = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '' && v !== false) p.set(k, String(v));
@@ -341,6 +357,11 @@ export function createAdminApi(getToken: () => Promise<string | null>) {
     retireBadge: (id: number) => post<ActionResponse>(`/admin/badges/${id}/retire`),
     grantBadge: (id: number, userIds: number[], note: string) => post<{ granted: number; alreadyHad: number }>(`/admin/badges/${id}/grants`, { userIds, note }),
     revokeBadge: (id: number, userId: number, reason: string) => del<ActionResponse>(`/admin/badges/${id}/grants${qs({ userId, reason })}`),
+    siteContent: () => get<{ sections: ContentSection[] }>('/admin/content'),
+    /** 400 `invalid_content` carries per-field `errors` ({"steps.1.body": "…"}) on the thrown error's body. */
+    saveSiteContent: (key: string, value: Record<string, unknown>) =>
+      put<Omit<ContentSection, 'spec'>>(`/admin/content/${encodeURIComponent(key)}`, { value }),
+    resetSiteContent: (key: string) => del<Omit<ContentSection, 'spec'> & { removed: boolean }>(`/admin/content/${encodeURIComponent(key)}`),
   };
 }
 

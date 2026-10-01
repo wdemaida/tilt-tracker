@@ -567,3 +567,15 @@ export const aiUsage = pgTable('ai_usage', {
 }));
 
 export type AiUsage = typeof aiUsage.$inferSelect;
+
+// Site content (migrate28): admin-editable copy for public pages, one JSON value per key (e.g.
+// `welcome.hero`). Defaults live in the frontend (src/lib/welcomeContent.ts); a row overrides its key,
+// and no row means "use the default". Shapes are validated in api-server src/lib/siteContent.ts.
+export const siteContent = pgTable('site_content', {
+  key: text('key').primaryKey(),
+  value: jsonb('value').$type<unknown>().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedById: integer('updated_by_id').references(() => users.id, { onDelete: 'set null' }),
+});
+
+export type SiteContent = typeof siteContent.$inferSelect;

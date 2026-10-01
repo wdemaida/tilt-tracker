@@ -10,6 +10,7 @@ import { captureStatSnapshot } from '../lib/statSnapshot.js';
 import { logActivity, fromReq } from '../lib/activity.js';
 import adminAreaRouter from './adminArea.js';
 import adminBadgesRouter from './adminBadges.js';
+import adminContentRouter from './adminContent.js';
 
 const router = Router();
 router.use(requireAppUser, requireAdmin);
@@ -358,5 +359,7 @@ router.delete('/stats/:id', async (req, res) => {
 router.use(adminAreaRouter);
 // Badges (/api/admin/badges/*) — same guard.
 router.use(adminBadgesRouter);
+// Welcome-page copy editor (/api/admin/content/*) — same guard.
+router.use(adminContentRouter);
 
 export default router;

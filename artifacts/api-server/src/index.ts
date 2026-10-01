@@ -19,6 +19,7 @@ import notificationsRouter from './routes/notifications.js';
 import challengesRouter from './routes/challenges.js';
 import meRouter from './routes/me.js';
 import badgesRouter from './routes/badges.js';
+import contentRouter from './routes/content.js';
 import { requireAppUser, rejectDisabledUser } from './middleware/requireAuth.js';
 import { clerkWebhookHandler, logClerkWebhookStatus } from './routes/clerkWebhook.js';
 import { routeActivity, PM_RULES, VENUE_RULES, MACHINE_RULES } from './lib/activityRoutes.js';
@@ -105,6 +106,8 @@ app.use('/api/challenges', requireAppUser, challengesRouter);
 app.use('/api/me', requireAppUser, meRouter);
 // Public badge catalog + images (optional auth). Admin badge routes are under /api/admin.
 app.use('/api/badges', badgesRouter);
+// Admin-edited page copy (public read; the editor is under /api/admin/content).
+app.use('/api/content', contentRouter);
 
 // Backup in-process trigger for the same snapshot — fires if the dyno happens to already be warm
 // at 1am America/New_York. The GitHub Actions workflow calling /api/cron/stat-snapshot above is the

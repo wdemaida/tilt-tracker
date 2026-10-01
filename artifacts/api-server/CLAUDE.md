@@ -1322,3 +1322,32 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
 - Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/aiUsage.test.ts`;
   `npx tsx test-ai-usage.ts <photo.jpg>` (dev branch only — one real read, ~1-2 cents, plus one
   rejected request; checks both rows and the summary, deletes them).
+
+## Site content (`src/lib/siteContent.ts`, `site_content`, migrate28, feature/site-content, 2026-10-01)
+- **Admin-editable copy for public pages** — today the /welcome page's 8 sections (`welcome.hero`,
+  `.how`, `.social`, `.badges`, `.action`, `.founder`, `.timeline`, `.socials`). One jsonb value per
+  key; **defaults live in the frontend** (`artifacts/pinball-tracker/src/lib/welcomeContent.ts`) and a
+  row overrides its whole key. No row = default, so an empty or missing table changes nothing.
+- **`CONTENT_SPEC` is the one place the shapes live**: field kinds (`plain`, `inline` = headings with
+  ==glow== and line breaks, `markdown` = paragraphs / **bold** / *italic* / [links](https://…), `url`,
+  `email`), length caps, required flags, list min/max. The admin editor builds its form from it (sent
+  with `GET /api/admin/content`). Adding a field: spec here + default in welcomeContent.ts + render it.
+  `siteContent.test.ts` checks every frontend default passes the validator, so the twins can't drift.
+- **No HTML, ever.** The validator rejects link targets other than http(s)/mailto (`isSafeUrl`, twin of
+  the frontend's in `lib/richText.ts`); the page renders through React elements only
+  (`components/RichText.tsx`, no `dangerouslySetInnerHTML`), so a stored `<script>` is just text.
+- **Routes:** public `GET /api/content/welcome` → `{key: value}` of valid stored welcome.* rows
+  (`publicWelcomeContent()`: 60 s in-process cache, cleared on every write; `Cache-Control: public,
+  max-age=60`). **Never 500s** — a DB error or a missing table serves `{}` (cached too, so it costs one
+  query a minute) and a row that no longer validates is skipped. Admin (inside the guarded admin router;
+  adminAuth.test.ts walks it): `GET /api/admin/content` (503 `content_unavailable` if the table is
+  missing), `PUT /api/admin/content/:key {value}` (400 `invalid_content` with per-field `errors` keyed by
+  path, e.g. `steps.1.body`; 404 `unknown_key`), `DELETE /api/admin/content/:key` (reset to default).
+- **Activity:** `admin.content_updated` (payload `contentKey`, `wasDefault`, changed top-level `fields` —
+  not the copy; `contentKey` because sanitizePayload drops a field named `key`) and
+  `admin.content_reset` (only when a row was removed). Both admin tier.
+- **Single instance assumption:** the cache is per process; another instance would serve the old copy
+  for up to 60 s.
+- Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/siteContent.test.ts`;
+  `npx tsx test-site-content.ts` (dev branch only — real admin + public routers in-process, Clerk faked
+  as the dev branch's first admin; restores the rows it touched and deletes its events).
