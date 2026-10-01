@@ -752,8 +752,8 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   the original is re-invited (`reinvitees()`: not `no_thanks` decliners, not ex-friends of the
   challenger; **everyone re-accepts**, including players who had accepted) with `challenge_moved`,
   other open proposals → `rejected` ('superseded'), the proposer gets `challenge_counter_accepted`,
-  then L is checked (a 1:1 goes straight to active). The proposer's best is the race's "beat my
-  score" target (frozen into `target_score`). **`/decline` = keep mine** — the proposal → `rejected`,
+  then L is checked (a 1:1 goes straight to active). The proposer's best is the race's default
+  target (frozen into `target_score`). **`/decline` = keep mine** — the proposal → `rejected`,
   the proposer stays out, the original is re-checked (a 1:1 then ends `declined`). Proposals also
   close when the original starts / is cancelled / expires, or when their own window passes
   (`lapsed`, `challenge_counter_rejected` with `reason`). **Closing a proposal closes the

@@ -18,7 +18,7 @@
 //    ordinary pending challenge everyone is re-invited to; rejecting it drops the counterer.
 //  - Types:
 //      high_score     best counting score wins, at the deadline.
-//      race           "Beat my score / First to X". Target = the number the creator picked, or the
+//      race           "Hit the target" (was "Beat my score"). Target = the number the creator picked, or the
 //                     creator's best on the matching machine at creation. The target must be BEATEN:
 //                     the first participant with a counting score > target (strictly — equalling it is
 //                     not a finish) wins on the spot. Nobody by the deadline → the race is ABANDONED:
@@ -289,7 +289,7 @@ export function baselineFrom(rule: MatchRule, startsAt: Date, scores: CandidateS
   return best;
 }
 
-/** Best score on the matching machine, any time — the race type's default target ("beat my score"). */
+/** Best score on the matching machine, any time — the race type's default target (the creator's own best). */
 export function bestOnMachine(rule: MatchRule, scores: CandidateScore[]): number | null {
   let best: number | null = null;
   for (const s of scores) if (machineMatches(rule, s) && (best === null || s.score > best)) best = s.score;

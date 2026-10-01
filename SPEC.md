@@ -332,7 +332,7 @@ venue.
   | Type | Label | Winner |
   |------|-------|--------|
   | `high_score` | High score | Best counting score at the deadline |
-  | `race` | Beat my score / First to X | First to **strictly beat** the target (the challenger's best, or a picked number) wins on the spot |
+  | `race` | Hit the target (was "Beat my score") | First to **strictly beat** the target (the challenger's best, or a picked number) wins on the spot |
   | `most_improved` | Most improved | Biggest % gain over your own best from before the challenge (baseline frozen at start; no baseline → can't join) |
   | `average` | Best average | Highest average of all counting scores, with at least N plays (N = 3–10) |
 

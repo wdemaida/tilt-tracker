@@ -470,7 +470,7 @@ try {
   check('no opponent_scored for the winning upload (result instead)', !(await kinds(alice, race)).includes('challenge_opponent_scored')
     && (await kinds(alice, race)).includes('challenge_result'), await kinds(alice, race));
 
-  // Race default target = creator's best ("beat my score").
+  // Race default target = creator's best.
   r = await post(alice, { friendId: bob.id, type: 'race' });
   check('race default target = creator best on the machine (60,000 on the Premium, game mode)', r.status === 201 && r.body?.targetScore === 60_000, r.body);
   await call(alice, 'POST', `/challenges/${r.body.id}/cancel`);
