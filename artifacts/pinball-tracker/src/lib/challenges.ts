@@ -23,14 +23,14 @@ export function invalidateChallengeQueries() {
 
 export const TYPE_META: Record<ChallengeType, { label: string; blurb: string }> = {
   high_score: { label: 'High score', blurb: 'Best score in the window wins.' },
-  race: { label: 'Beat my score', blurb: 'First to beat the target wins on the spot. Nobody does → abandoned.' },
+  race: { label: 'Hit the target', blurb: 'First to beat the target wins on the spot. Nobody does → abandoned.' },
   most_improved: { label: 'Most improved', blurb: 'Biggest % gain over your own best from before the challenge.' },
   average: { label: 'Best average', blurb: 'Highest average of all your scores in the window, with enough plays.' },
 };
 
 export const TYPE_ORDER: ChallengeType[] = ['high_score', 'race', 'most_improved', 'average'];
 
-/** The type's label, with the race's two names told apart by whether the target was picked. */
+/** The type's display label (TYPE_META), or "Challenge" for a type this client doesn't know. */
 export function typeLabel(c: Pick<Challenge, 'type'>) {
   return TYPE_META[c.type]?.label ?? 'Challenge';
 }

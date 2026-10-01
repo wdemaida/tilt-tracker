@@ -6,7 +6,8 @@ import { Award, Ban, Bell, Flag, Lightbulb, Loader2, Play, Swords, Timer, Trophy
 import { useApi } from '../lib/useApi';
 import { queryClient } from '../lib/queryClient';
 import { NOTIFICATIONS_KEY, UNREAD_COUNT_KEY } from '../lib/myFriends';
-import type { AppNotification } from '../lib/api';
+import type { AppNotification, ChallengeType } from '../lib/api';
+import { TYPE_META } from '../lib/challenges';
 
 // The inbox (feature/friends, phase 1). A page rather than a header dropdown: on a phone a
 // dropdown is a cramped overlay, and this list will grow challenge notifications later.
@@ -14,13 +15,6 @@ import type { AppNotification } from '../lib/api';
 // Opening the page marks everything read — once, after the first page has loaded, so the items
 // that were new still render highlighted for this visit (the list isn't refetched; only the bell's
 // count is).
-
-const CHALLENGE_TYPE_LABEL: Record<string, string> = {
-  high_score: 'High score',
-  race: 'Beat my score',
-  most_improved: 'Most improved',
-  average: 'Best average',
-};
 
 /** 1st, 2nd, 3rd … (group results). */
 function ordinal(n: number) {
@@ -81,7 +75,7 @@ function describe(n: AppNotification): { text: React.ReactNode; href: string | n
     const href = typeof challengeId === 'number' ? `/challenges/${challengeId}` : null;
     const what = (
       <>
-        {challengeType ? <>{CHALLENGE_TYPE_LABEL[challengeType] ?? 'A'} challenge</> : 'A challenge'}
+        {challengeType ? <>{TYPE_META[challengeType as ChallengeType]?.label ?? 'A'} challenge</> : 'A challenge'}
         {machineName && <> on <span className="text-machine font-semibold">{machineName}</span></>}
       </>
     );

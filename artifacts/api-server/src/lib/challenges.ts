@@ -1259,8 +1259,8 @@ interface PreparedChallenge {
 
 /**
  * Validate a create body (type / window / invitees / machine / venue lock / race target / baseline)
- * for `me` — the challenger, or the proposer of a counter-offer (whose best is the race's "beat my
- * score" and whose baseline is checked). Reads only — nothing is written until insert.
+ * for `me` — the challenger, or the proposer of a counter-offer (whose best is the race's default
+ * target and whose baseline is checked). Reads only — nothing is written until insert.
  */
 async function prepareChallenge(me: AppUser, body: Record<string, unknown>, now: Date): Promise<PreparedChallenge> {
   const input = validateCreate(body, now);
