@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useApi } from './lib/useApi';
 import { ScopeProvider } from './lib/ScopeContext';
 import { isGuestMode } from './lib/guestMode';
+import { MAP_VIEW_ENABLED } from './lib/mapView';
 import Layout from './components/Layout';
 import HomePage from './pages/HomePage';
 import MachinesPage from './pages/MachinesPage';
@@ -36,11 +37,13 @@ import BadgesPage from './pages/BadgesPage';
 
 /**
  * The Map page is now the Venues page's Map view. Old links (bookmarks, shared URLs) keep working,
- * including the `?venueId=` filter the venue page's map thumbnail used to send.
+ * including the `?venueId=` filter the venue page's map thumbnail used to send. While the Map view
+ * is switched off they land on the plain venues list.
  */
 function MapRedirect() {
   const params = new URLSearchParams(useSearch());
   const venueId = params.get('venueId');
+  if (!MAP_VIEW_ENABLED) return <Redirect replace to="/venues" />;
   return <Redirect replace to={`/venues?view=map${venueId ? `&venueId=${encodeURIComponent(venueId)}` : ''}`} />;
 }
 

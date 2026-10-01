@@ -12,6 +12,7 @@ import { useScopeContext } from '../lib/ScopeContext';
 import { ScopeToggle } from '../components/ScopeToggle';
 import { queryClient } from '../lib/queryClient';
 import MapPage from './MapPage';
+import { MAP_VIEW_ENABLED } from '../lib/mapView';
 
 // Someone else's home venue arrives trimmed to what its card needs (name, the address its privacy
 // tier allows, counts) — no ownerId, tier, coordinates or timezone. Hence the optional fields.
@@ -57,7 +58,8 @@ type VenuesView = 'list' | 'map';
 
 /**
  * List / Map switch. The view lives in the URL (`/venues?view=map`) so the map is linkable — the old
- * `/map` route redirects here, carrying any `venueId` filter along.
+ * `/map` route redirects here, carrying any `venueId` filter along. Not rendered while
+ * `MAP_VIEW_ENABLED` is off — List alone isn't a choice.
  */
 function VenuesViewToggle({ view, onChange }: { view: VenuesView; onChange: (v: VenuesView) => void }) {
   const options = [
@@ -86,7 +88,8 @@ function VenuesViewToggle({ view, onChange }: { view: VenuesView; onChange: (v: 
 
 export default function VenuesPage() {
   const [, navigate] = useLocation();
-  const view: VenuesView = new URLSearchParams(useSearch()).get('view') === 'map' ? 'map' : 'list';
+  const viewParam = new URLSearchParams(useSearch()).get('view');
+  const view: VenuesView = MAP_VIEW_ENABLED && viewParam === 'map' ? 'map' : 'list';
   const [search, setSearch] = useState('');
   const [stateFilter, setStateFilter] = useState('');
   const [modalVenueId, setModalVenueId] = useState<number | null>(null);
@@ -134,7 +137,9 @@ export default function VenuesPage() {
         <h1 className="text-4xl font-black uppercase tracking-widest text-white">Venues</h1>
         <ScopeToggle />
       </div>
-      <VenuesViewToggle view={view} onChange={v => navigate(v === 'map' ? '/venues?view=map' : '/venues')} />
+      {MAP_VIEW_ENABLED && (
+        <VenuesViewToggle view={view} onChange={v => navigate(v === 'map' ? '/venues?view=map' : '/venues')} />
+      )}
     </>
   );
 

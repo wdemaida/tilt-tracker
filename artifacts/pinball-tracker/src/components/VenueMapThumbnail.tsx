@@ -2,6 +2,7 @@ import { MapContainer, TileLayer, Marker } from 'react-leaflet';
 import { Link } from 'wouter';
 import { Home } from 'lucide-react';
 import { TILE_BASE_URL } from '../lib/mapTiles';
+import { MAP_VIEW_ENABLED } from '../lib/mapView';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 
@@ -25,6 +26,7 @@ interface VenueMapThumbnailProps {
 // to the Venues page's Map view filtered to this venue. When lat/lng are redacted (hidden-tier venue,
 // viewed by anyone but the owner/admin), there's nothing to show a map of, so a house icon
 // stands in instead — non-clickable, since there's no location to navigate to.
+// While the Map view is switched off (`MAP_VIEW_ENABLED`) the preview is just a picture: no click-through.
 export default function VenueMapThumbnail({ venueId, latitude, longitude }: VenueMapThumbnailProps) {
   if (latitude == null || longitude == null) {
     return (
@@ -37,11 +39,9 @@ export default function VenueMapThumbnail({ venueId, latitude, longitude }: Venu
     );
   }
 
-  return (
-    <Link
-      href={`/venues?view=map&venueId=${venueId}`}
-      className="w-20 h-14 sm:w-32 sm:h-20 flex-shrink-0 rounded-lg overflow-hidden border border-white/10 block relative isolate hover:border-venue/40 transition-colors"
-    >
+  const frame = 'w-20 h-14 sm:w-32 sm:h-20 flex-shrink-0 rounded-lg overflow-hidden border border-white/10 block relative isolate';
+  const map = (
+    <>
       <MapContainer
         center={[latitude, longitude]}
         zoom={14}
@@ -61,6 +61,14 @@ export default function VenueMapThumbnail({ venueId, latitude, longitude }: Venu
           interaction via props above isn't enough to guarantee clicks reach the Link — this
           transparent overlay sits above the map and captures every click itself. */}
       <div className="absolute inset-0 z-[1000]" />
+    </>
+  );
+
+  if (!MAP_VIEW_ENABLED) return <div className={frame}>{map}</div>;
+
+  return (
+    <Link href={`/venues?view=map&venueId=${venueId}`} className={`${frame} hover:border-venue/40 transition-colors`}>
+      {map}
     </Link>
   );
 }
