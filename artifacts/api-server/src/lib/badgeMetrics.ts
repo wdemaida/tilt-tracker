@@ -140,7 +140,7 @@ const BASE_METRICS: readonly MetricDef[] = [
 // PROPOSAL metrics (counters_accepted, counters_rejected) read the proposal rows themselves.
 
 /** The rows computeRecord() sees for each player (getRecord's query), in its order. */
-const RECORD_ROWS = sql`SELECT cp.user_id, c.id AS challenge_id, coalesce(c.resolved_at, 'epoch'::timestamp) AS resolved_at, c.void, cp.outcome
+const RECORD_ROWS = sql`SELECT cp.user_id, c.id AS challenge_id, coalesce(c.resolved_at, 'epoch'::timestamptz) AS resolved_at, c.void, cp.outcome
   FROM challenge_participants cp JOIN challenges c ON c.id = cp.challenge_id
   WHERE c.status = 'resolved' AND cp.response = 'accepted' AND cp.outcome IS NOT NULL`;
 
@@ -358,7 +358,7 @@ export function friendMarks(ev: FriendEvent): MarkRow[] {
 
 /** INSERT … ON CONFLICT DO NOTHING for marks; RETURNING the rows that were new. */
 export function insertMarksSql(rows: MarkRow[], at: Date = new Date()): SQL {
-  const values = sql.join(rows.map(r => sql`(${r.userId}, ${r.metric}, ${r.ref}, ${at.toISOString()}::timestamptz AT TIME ZONE 'UTC')`), sql`, `);
+  const values = sql.join(rows.map(r => sql`(${r.userId}, ${r.metric}, ${r.ref}, ${at.toISOString()}::timestamptz)`), sql`, `);
   return sql`INSERT INTO user_metric_marks (user_id, metric, ref, at) VALUES ${values}
     ON CONFLICT DO NOTHING RETURNING user_id, metric`;
 }

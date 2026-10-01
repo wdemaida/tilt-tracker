@@ -80,7 +80,7 @@ const [alice, bob, carol] = people;
 const ids = people.map(p => p.id);
 const [{ maxNotif }] = await db.select({ maxNotif: sql<number>`coalesce(max(id), 0)::int` }).from(notifications);
 const [{ maxEvent }] = await db.select({ maxEvent: sql<number>`coalesce(max(id), 0)::bigint` }).from(activityEvents);
-const [{ startedAt }] = await db.select({ startedAt: sql<string>`now()::timestamp::text` }).from(users).limit(1);
+const [{ startedAt }] = await db.select({ startedAt: sql<string>`now()::text` }).from(users).limit(1);
 console.log(`borrowing users ${ids.join(', ')}; notifications > ${maxNotif}, events > ${maxEvent}`);
 
 const SECRET = `whsec_${Buffer.from('tilttrack-badge-test-secret-012345').toString('base64')}`;
@@ -145,7 +145,7 @@ const badgeIds: number[] = [];
 const seriesIds: number[] = [];
 const scoreIds: number[] = [];
 // Restored exactly at the end (the reorder test rewrites every top-level sort_order).
-// updated_at goes through ::text both ways — naive timestamps must not pick up this machine's zone.
+// updated_at goes through ::text both ways (timestamptz text carries its offset, so ::timestamptz restores it exactly).
 type OrderRow = { id: number; sort_order: number; updated_at: string };
 const orderSnapshot = {
   badges: await db.execute(sql`SELECT id, sort_order, updated_at::text AS updated_at FROM badges`) as unknown as OrderRow[],
@@ -931,8 +931,8 @@ try {
   }
   if (madeFriendship) await db.delete(friendships).where(eq(friendships.id, madeFriendship));
   // Put every pre-existing badge's and series' sort_order (and updated_at) back exactly.
-  for (const b of orderSnapshot.badges) await db.execute(sql`UPDATE badges SET sort_order = ${b.sort_order}, updated_at = ${b.updated_at}::timestamp WHERE id = ${b.id}`);
-  for (const x of orderSnapshot.series) await db.execute(sql`UPDATE badge_series SET sort_order = ${x.sort_order}, updated_at = ${x.updated_at}::timestamp WHERE id = ${x.id}`);
+  for (const b of orderSnapshot.badges) await db.execute(sql`UPDATE badges SET sort_order = ${b.sort_order}, updated_at = ${b.updated_at}::timestamptz WHERE id = ${b.id}`);
+  for (const x of orderSnapshot.series) await db.execute(sql`UPDATE badge_series SET sort_order = ${x.sort_order}, updated_at = ${x.updated_at}::timestamptz WHERE id = ${x.id}`);
   const zz = await db.select({ id: badges.id }).from(badges).where(like(badges.key, 'zz-badge-test-%'));
   const allBadgeIds = [...new Set([...badgeIds, ...zz.map(b => b.id)])];
   if (allBadgeIds.length) {
@@ -952,7 +952,7 @@ try {
   }
   // Awards of anyone's *other* live badges (an admin's manual testing state, e.g. a live "send a
   // friend request" badge) that this run's friend events / scores triggered for the borrowed users.
-  await db.delete(userBadges).where(and(inArray(userBadges.userId, ids), sql`${userBadges.earnedAt} >= ${startedAt}::timestamp`));
+  await db.delete(userBadges).where(and(inArray(userBadges.userId, ids), sql`${userBadges.earnedAt} >= ${startedAt}::timestamptz`));
   await db.delete(friendships).where(and(inArray(friendships.requesterId, ids), inArray(friendships.addresseeId, ids)));
   await db.delete(notifications).where(and(inArray(notifications.userId, ids), gt(notifications.id, maxNotif)));
   await db.delete(activityEvents).where(and(gt(activityEvents.id, Number(maxEvent)), or(inArray(activityEvents.actorUserId, ids), inArray(activityEvents.subjectUserId, ids))));

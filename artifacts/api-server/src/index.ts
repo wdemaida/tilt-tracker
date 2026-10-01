@@ -27,6 +27,7 @@ import { captureStatSnapshot } from './lib/statSnapshot.js';
 import { runChallengeSweep } from './lib/challenges.js';
 import { runDailyHousekeeping } from './lib/housekeeping.js';
 import { logPhotoStoreStatus } from './lib/photoStore.js';
+import { dbSessionTimeZone } from '@workspace/db';
 
 const app = express();
 const PORT = process.env.PORT ?? 3001;
@@ -118,5 +119,12 @@ cron.schedule('0 1 * * *', () => {
 
 logPhotoStoreStatus();
 logClerkWebhookStatus();
+
+// Timestamps are timestamptz and the process runs in UTC (lib/db pins TZ), but the DB session's own
+// TimeZone was never chosen by the app (Neon defaults to GMT). Say so loudly if that ever changes —
+// raw SQL rendering timestamps as text and any naive ↔ tz cast would follow it. Also on /admin/health.
+dbSessionTimeZone().then(({ timeZone, utc }) => {
+  if (!utc) console.warn(`!!! DATABASE SESSION TimeZone IS "${timeZone}", NOT UTC — raw SQL timestamp text and naive casts will follow it. Expected UTC/GMT (see api-server CLAUDE.md, "Timestamps").`);
+}).catch(err => console.warn('Could not read the database session TimeZone:', err?.message ?? err));
 
 app.listen(PORT, () => console.log(`API server → http://localhost:${PORT}`));

@@ -97,7 +97,7 @@ if (people.length < 4) throw new Error('Need at least 4 users with no friendship
 const [alice, bob, carol, dave] = people;
 const ids = people.map(p => p.id);
 // DB clock at start — cleanup removes badge awards this run's scores triggered (see the end).
-const [{ startedAt }] = await db.select({ startedAt: sql<string>`now()::timestamp::text` }).from(users).limit(1);
+const [{ startedAt }] = await db.select({ startedAt: sql<string>`now()::text` }).from(users).limit(1);
 // How far Neon's clock runs ahead of this machine's (accept stamps "starts when accepted" with the DB
 // clock, uploads here send this machine's played_at). The checks below that depend on it allow for it.
 const skewProbe = Date.now();
@@ -1499,7 +1499,7 @@ try {
     check(`no 'pending' participant on any closed proposal (${closedCount} closed this run)`, closedCount >= 6 && dangling.length === 0, dangling);
     const cidText = runCids.map(String);
     const events = await db.select({ type: activityEvents.type, targetId: activityEvents.targetId, actor: activityEvents.actorUserId }).from(activityEvents)
-      .where(and(sql`${activityEvents.createdAt} >= ${startedAt}::timestamp`, eq(activityEvents.targetType, 'challenge'),
+      .where(and(sql`${activityEvents.createdAt} >= ${startedAt}::timestamptz`, eq(activityEvents.targetType, 'challenge'),
         inArray(activityEvents.targetId, cidText), sql`${activityEvents.type} LIKE 'challenge.%'`));
     const tally = (rows: typeof events, key: (e: typeof events[number]) => string) => {
       const m = new Map<string, number>();
@@ -1592,12 +1592,12 @@ try {
   // Posting scores runs the badge engine, so any live badge on dev (e.g. an admin's manual-testing
   // "first score" badge) gets awarded to the borrowed users. Remove those awards, their
   // notifications and their events — only what this run created.
-  await db.delete(userBadges).where(and(inArray(userBadges.userId, ids), sql`${userBadges.earnedAt} >= ${startedAt}::timestamp`));
+  await db.delete(userBadges).where(and(inArray(userBadges.userId, ids), sql`${userBadges.earnedAt} >= ${startedAt}::timestamptz`));
   await db.delete(notifications).where(and(
-    inArray(notifications.userId, ids), eq(notifications.kind, 'badge_earned'), sql`${notifications.createdAt} >= ${startedAt}::timestamp`,
+    inArray(notifications.userId, ids), eq(notifications.kind, 'badge_earned'), sql`${notifications.createdAt} >= ${startedAt}::timestamptz`,
   ));
   await db.delete(activityEvents).where(and(
-    sql`${activityEvents.createdAt} >= ${startedAt}::timestamp`,
+    sql`${activityEvents.createdAt} >= ${startedAt}::timestamptz`,
     or(
       and(eq(activityEvents.type, 'badge.earned'), inArray(activityEvents.actorUserId, ids)),
       and(eq(activityEvents.type, 'notification.sent'), inArray(activityEvents.subjectUserId, ids), sql`${activityEvents.payload} ->> 'kind' = 'badge_earned'`),
@@ -1607,7 +1607,7 @@ try {
   // notification.sent, …) — the rows are only ever about the borrowed users, so nothing else goes.
   const cidText = cids.map(String);
   await db.delete(activityEvents).where(and(
-    sql`${activityEvents.createdAt} >= ${startedAt}::timestamp`,
+    sql`${activityEvents.createdAt} >= ${startedAt}::timestamptz`,
     or(
       inArray(activityEvents.actorUserId, ids),
       inArray(activityEvents.subjectUserId, ids),

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { spawn } from 'child_process';
-import { db, users, scores, machines, venues, stats, statHistory } from '@workspace/db';
+import { db, users, scores, machines, venues, stats, statHistory, dbSessionTimeZone } from '@workspace/db';
 import { desc, asc, count, sql, eq } from 'drizzle-orm';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { getCatalogStatus } from '../lib/pinballMap.js';
@@ -55,9 +55,10 @@ router.get('/health', async (_req, res) => {
   const dbCheck = await (async () => {
     const start = Date.now();
     try {
-      const [versionResult, sizeResult] = await Promise.all([
+      const [versionResult, sizeResult, tz] = await Promise.all([
         db.execute(sql`SELECT version()`),
         db.execute(sql`SELECT pg_database_size(current_database()) as size_bytes`),
+        dbSessionTimeZone(),
       ]);
       const latencyMs = Date.now() - start;
       const postgresVersion = (versionResult[0] as any)?.version?.split(' ').slice(0, 2).join(' ') ?? 'unknown';
@@ -73,6 +74,10 @@ router.get('/health', async (_req, res) => {
         latencyMs,
         postgresVersion,
         sizeBytes,
+        // The session TimeZone (Neon's default is GMT). Columns are timestamptz, so a non-UTC zone
+        // doesn't change stored instants — it changes raw SQL's text rendering and naive casts.
+        timeZone: tz.timeZone,
+        timeZoneOk: tz.utc,
         counts: { scores: sc[0].total, machines: mc[0].total, venues: vc[0].total, users: uc[0].total },
       };
     } catch (err) {

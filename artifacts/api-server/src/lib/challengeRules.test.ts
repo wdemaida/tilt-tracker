@@ -633,6 +633,14 @@ test('validateCreate: window rules', () => {
   assert.ok(validateCreate({ type: 'high_score', endsAt: iso(MAX_WINDOW_DAYS * 24) }, now).ok);
   assert.equal(code({ startsAt: iso(-2), endsAt: iso(48) }), 'invalid_window', 'start in the past');
   assert.equal(code({ startsAt: iso(31 * 24), endsAt: iso(32 * 24) }), 'invalid_window', 'start too far ahead');
+  // A zone-less instant is refused, not read in the server's zone (lib/instant.ts).
+  assert.equal(code({ endsAt: iso(48).replace(/Z$/, '') }), 'invalid_window', 'zone-less end');
+  assert.equal(code({ startsAt: iso(2).replace(/Z$/, ''), endsAt: iso(48) }), 'invalid_window', 'zone-less start');
+  assert.equal(code({ endsAt: iso(48).slice(0, 10) }), 'invalid_window', 'date-only end');
+  const offset = validateCreate({ type: 'high_score', endsAt: iso(48).replace('Z', '+00:00') }, now);
+  assert.ok(offset.ok && +offset.value.endsAt === +at(48), 'an explicit +00:00 offset is fine');
+  const ms = validateCreate({ type: 'high_score', endsAt: +at(48) }, now);
+  assert.ok(ms.ok && +ms.value.endsAt === +at(48), 'epoch ms still accepted');
   assert.equal(code({ startsAt: iso(24), endsAt: iso(24.5) }), 'invalid_window', 'end must be an hour after a chosen start');
   assert.equal(code({ startsAt: iso(24), endsAt: iso(24 + MAX_WINDOW_DAYS * 24 + 1) }), 'invalid_window', '90 days counts from the start');
   const future = validateCreate({ type: 'high_score', startsAt: iso(24), endsAt: iso(48) }, now);

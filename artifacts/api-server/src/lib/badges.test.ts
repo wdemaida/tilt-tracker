@@ -34,6 +34,11 @@ test('normalizeBadgeInput: errors per field', () => {
   assert.ok('errors' in noRule && noRule.errors.rule);
   const window = normalizeBadgeInput({ availableFrom: '2026-12-28T00:00:00Z', availableTo: '2026-12-24T00:00:00Z' }, true);
   assert.ok('errors' in window && window.errors.availableTo);
+  // Zone-less availability is refused (lib/instant.ts); an explicit offset is fine.
+  const naive = normalizeBadgeInput({ availableFrom: '2026-12-24T00:00', availableTo: '2026-12-28' }, true);
+  assert.ok('errors' in naive && naive.errors.availableFrom && naive.errors.availableTo);
+  const zoned = normalizeBadgeInput({ availableFrom: '2026-12-24T00:00:00-05:00' }, true);
+  assert.ok('values' in zoned && zoned.values.availableFrom?.toISOString() === '2026-12-24T05:00:00.000Z');
   const wins = normalizeBadgeInput({ key: 'wins-9', name: 'W', kind: 'metric', metric: 'challenge_wins', threshold: 9 }, false);
   assert.ok('values' in wins, 'a challenge metric is an ordinary metric since phase 3');
 });

@@ -1,3 +1,9 @@
+// OBSOLETE — historical (the 2026-09-10 EXIF fix, applied then). Kept for the record; do not run.
+// It was written for the naive `timestamp` columns: `fmt()` reads Dates through local getters and the
+// --since/--until bounds are zone-less. Since migrate26 (timestamptz) both are wrong off-UTC — the
+// window would shift by this machine's offset. It refuses to run; a future repair of a skewed row
+// should be a new, reviewed script with explicit ids (see ~/.claude/plans/timezone-fix.md §5.4).
+//
 // Repairs `scores.played_at` rows written before the EXIF timezone fix.
 //
 // The bug: `extractExifDatetime()` handed exifr's Date straight to `toISOString()`. exifr builds that
@@ -19,6 +25,9 @@
 
 import 'dotenv/config';
 import postgres from 'postgres';
+
+console.error('backfill-played-at.ts is obsolete (written for the pre-migrate26 naive timestamp columns) and refuses to run. See its header.');
+process.exit(1);
 
 const args = process.argv.slice(2);
 const flag = (name: string, fallback: string) => {

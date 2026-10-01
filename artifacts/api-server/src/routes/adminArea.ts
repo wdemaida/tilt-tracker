@@ -21,6 +21,7 @@ import {
 import { getCatalogStatus } from '../lib/pinballMap.js';
 import { pmClient } from '../lib/pmClient.js';
 import { missingR2Vars, getPhotoStore } from '../lib/photoStore.js';
+import { parseInstant, dbTimestampToIso } from '../lib/instant.js';
 
 // The admin area — /api/admin/* (mounted inside routes/admin.ts, so every route here is behind
 // requireAppUser + requireAdmin; the unit test enumerates this router's routes and checks that).
@@ -43,10 +44,10 @@ function intParam(v: unknown): number | null {
 function pageSize(v: unknown): number {
   return Math.min(Math.max(Number(v) || PAGE, 1), MAX_PAGE);
 }
-function dateParam(v: unknown): Date | null {
-  if (typeof v !== 'string' || !v) return null;
-  const d = new Date(v);
-  return Number.isNaN(+d) ? null : d;
+/** An optional instant query param: absent → null; present but zone-less or junk → 'invalid' (400). */
+function dateParam(v: unknown): Date | null | 'invalid' {
+  if (v === undefined || v === '') return null;
+  return parseInstant(v);
 }
 function send(res: any, r: ActionResult) {
   res.status(r.status).json(r.body);
@@ -62,10 +63,11 @@ function page<T extends { id: number }>(rows: T[], limit: number) {
 
 const userRef = { id: users.id, username: users.username, displayName: users.displayName };
 
-// "Today" is the America/New_York calendar day (the app's home zone, like the stat snapshot).
-// created_at columns are naive UTC, so the boundary is converted back to naive UTC.
-const ET_MIDNIGHT = sql`((date_trunc('day', now() AT TIME ZONE 'America/New_York') AT TIME ZONE 'America/New_York') AT TIME ZONE 'UTC')`;
-const utcAgo = (days: number) => sql`((now() AT TIME ZONE 'UTC') - make_interval(days => ${days}))`;
+// "Today" is the America/New_York calendar day (the app's home zone, like the stat snapshot): the
+// instant of the latest New York midnight (timestamptz, like the columns it's compared with — no
+// dependence on the session's TimeZone).
+const ET_MIDNIGHT = sql`(date_trunc('day', now() AT TIME ZONE 'America/New_York') AT TIME ZONE 'America/New_York')`;
+const utcAgo = (days: number) => sql`(now() - make_interval(days => ${days}))`;
 
 // ── overview ─────────────────────────────────────────────────────────────────
 
@@ -89,7 +91,7 @@ router.get('/overview', async (_req, res) => {
         (SELECT count(*) FROM notifications WHERE created_at >= ${ET_MIDNIGHT})::int AS notifications_today,
         (SELECT count(*) FROM notifications WHERE read_at IS NULL)::int AS notifications_unread,
         (SELECT count(*) FROM activity_events)::int AS events,
-        (SELECT min(created_at) FROM activity_events) AS events_since,
+        (SELECT min(created_at) FROM activity_events) AS events_since, -- raw text; normalized below
         (SELECT count(DISTINCT uid) FROM (
           SELECT actor_user_id AS uid FROM activity_events WHERE actor_user_id IS NOT NULL AND created_at >= ${utcAgo(7)}
           UNION SELECT user_id FROM scores WHERE created_at >= ${utcAgo(7)}) a)::int AS active_7d_app,
@@ -97,6 +99,7 @@ router.get('/overview', async (_req, res) => {
           SELECT actor_user_id AS uid FROM activity_events WHERE actor_user_id IS NOT NULL AND created_at >= ${utcAgo(30)}
           UNION SELECT user_id FROM scores WHERE created_at >= ${utcAgo(30)}) a)::int AS active_30d_app
     `) as any[];
+    counts.events_since = dbTimestampToIso(counts.events_since);
 
     // Clerk's last_active_at for everyone (batched + cached 60 s in clerkAdmin.ts).
     const all = await db.select({ clerkId: users.clerkId }).from(users);
@@ -118,11 +121,12 @@ router.get('/overview', async (_req, res) => {
       catalog = { machineCount: c.machineCount, fetchedAt: c.fetchedAt ? c.fetchedAt.toISOString() : null, stale: !!c.stale, lastError: c.lastError ?? null };
     } catch { /* shown as unknown */ }
     const lastRuns = await db
-      .select({ type: activityEvents.type, at: sql<string>`max(${activityEvents.createdAt})` })
+      // .mapWith: a Date (→ ISO …Z in the JSON), not Postgres text the browser would misread.
+      .select({ type: activityEvents.type, at: sql<Date>`max(${activityEvents.createdAt})`.mapWith(activityEvents.createdAt) })
       .from(activityEvents)
       .where(inArray(activityEvents.type, ['system.stat_snapshot', 'system.challenge_sweep', 'system.activity_retention']))
       .groupBy(activityEvents.type);
-    const [snap] = await db.select({ at: sql<string | null>`max(${statHistory.createdAt})` }).from(statHistory);
+    const [snap] = await db.select({ at: sql<Date | null>`max(${statHistory.createdAt})`.mapWith(statHistory.createdAt) }).from(statHistory);
     const [lastRetention, orphanState] = await Promise.all([lastRetentionRun(), loadOrphanRunState()]);
 
     res.json({
@@ -151,7 +155,7 @@ router.get('/overview', async (_req, res) => {
 const OUTER_USER_ID = sql.raw('"users"."id"');
 const OUTER_POD_ID = sql.raw('"pods"."id"');
 const scoreCountSql = sql<number>`(SELECT count(*) FROM scores s WHERE s.user_id = ${OUTER_USER_ID})`.mapWith(Number);
-const lastScoreSql = sql<string | null>`(SELECT max(s.created_at) FROM scores s WHERE s.user_id = ${OUTER_USER_ID})`;
+const lastScoreSql = sql<Date | null>`(SELECT max(s.created_at) FROM scores s WHERE s.user_id = ${OUTER_USER_ID})`.mapWith(scores.createdAt);
 const friendCountSql = sql<number>`(SELECT count(*) FROM friendships f WHERE f.status = 'accepted' AND (f.requester_id = ${OUTER_USER_ID} OR f.addressee_id = ${OUTER_USER_ID}))`.mapWith(Number);
 
 // GET /api/admin/users?q=&filter=all|disabled|admins — everyone (TiltTrack is small), newest first.
@@ -308,14 +312,19 @@ async function activityPage(q: ActivityQuery) {
 // GET /api/admin/activity?type=&category=&userId=&targetType=&targetId=&from=&to=&before=&limit=
 router.get('/activity', async (req, res) => {
   try {
+    const from = dateParam(req.query.from);
+    const to = dateParam(req.query.to);
+    if (from === 'invalid' || to === 'invalid') {
+      return void res.status(400).json({ error: 'from and to must be ISO instants with an offset (e.g. 2026-09-30T04:00:00.000Z)', code: 'invalid_date' });
+    }
     res.json(await activityPage({
       type: typeof req.query.type === 'string' ? req.query.type : undefined,
       category: typeof req.query.category === 'string' ? req.query.category : undefined,
       userId: intParam(req.query.userId),
       targetType: typeof req.query.targetType === 'string' ? req.query.targetType : undefined,
       targetId: typeof req.query.targetId === 'string' ? req.query.targetId : undefined,
-      from: dateParam(req.query.from),
-      to: dateParam(req.query.to),
+      from,
+      to,
       before: intParam(req.query.before),
       limit: pageSize(req.query.limit),
     }));

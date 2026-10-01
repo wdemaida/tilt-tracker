@@ -20,11 +20,11 @@ const { PGlite } = await import('@electric-sql/pglite');
 const pg = new PGlite();
 await pg.exec(`
   CREATE TABLE user_metric_marks (user_id integer NOT NULL, metric text NOT NULL, ref text NOT NULL,
-    at timestamp NOT NULL DEFAULT now(), PRIMARY KEY (user_id, metric, ref));
+    at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (user_id, metric, ref));
   CREATE TABLE scores (id serial PRIMARY KEY, user_id integer NOT NULL, machine_id integer NOT NULL, venue_id integer,
-    played_at timestamp NOT NULL DEFAULT now(), created_at timestamp NOT NULL DEFAULT now());
+    played_at timestamptz NOT NULL DEFAULT now(), created_at timestamptz NOT NULL DEFAULT now());
   CREATE TABLE challenges (id integer PRIMARY KEY, creator_id integer NOT NULL, status text NOT NULL, void boolean NOT NULL DEFAULT false,
-    resolved_at timestamp, countered_from_id integer, proposed_by_id integer, proposal_decided_at timestamp);
+    resolved_at timestamptz, countered_from_id integer, proposed_by_id integer, proposal_decided_at timestamptz);
   CREATE TABLE challenge_participants (challenge_id integer NOT NULL, user_id integer NOT NULL, response text NOT NULL,
     decline_reason text, outcome text, rank integer, PRIMARY KEY (challenge_id, user_id));
 `);

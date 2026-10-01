@@ -3,6 +3,7 @@ import { and, asc, desc, eq, gte, inArray, isNull, lte, notExists, or, sql, type
 import sharp from 'sharp';
 import { buildActivityRow, isActivityRecorded, logActivity, type Executor } from './activity.js';
 import { raiseNotificationsBulk } from './notify.js';
+import { parseInstant } from './instant.js';
 import { canSeeScore, type Viewer } from './venueActivity.js';
 import {
   METRICS, PENDING_METRICS, metricByKey, metricCounts, readMetric, describeMetric, recordMarks, friendMarks, playedNotInFutureSql,
@@ -111,8 +112,9 @@ export async function loadRuleScores(ex: Executor, rule: BadgeRule, opts: { user
       : eq(scores.machineId, rule.machine.machineId));
   }
   if (rule.localDate) {
-    // A local date is within a day of the UTC one; the exact check happens per venue zone.
-    conds.push(sql`${scores.playedAt} >= ${rule.localDate.from}::date - 1 AND ${scores.playedAt} < ${rule.localDate.to}::date + 2`);
+    // A local date is within a day of the UTC one; the exact check happens per venue zone. The bounds
+    // are UTC midnights, explicitly — a bare date would be cast at the session zone's midnight.
+    conds.push(sql`${scores.playedAt} >= ((${rule.localDate.from}::date - 1)::timestamp AT TIME ZONE 'UTC') AND ${scores.playedAt} < ((${rule.localDate.to}::date + 2)::timestamp AT TIME ZONE 'UTC')`);
   }
   const rows = await ex
     .select({
@@ -306,8 +308,8 @@ export async function onSignInBadges(userId: number, at: Date = new Date()): Pro
  */
 export async function runBadgeSweep(now = new Date()): Promise<{ users: number; awarded: number }> {
   const since = new Date(+now - 25 * 3_600_000);
-  const s = sql`${since.toISOString()}::timestamptz AT TIME ZONE 'UTC'`;
-  const n = sql`${now.toISOString()}::timestamptz AT TIME ZONE 'UTC'`;
+  const s = sql`${since.toISOString()}::timestamptz`;
+  const n = sql`${now.toISOString()}::timestamptz`;
   const active = await db.execute(sql`
     SELECT user_id FROM scores WHERE created_at >= ${s}
     UNION
@@ -651,11 +653,11 @@ export interface BadgeInput {
   newSeries?: { name: string; color: string };
 }
 
+/** An instant with an explicit offset (the admin form sends toISOString()); zone-less → 'bad' (lib/instant.ts). */
 function dateOrNull(v: unknown): Date | null | 'bad' {
   if (v === null || v === '') return null;
-  if (typeof v !== 'string') return 'bad';
-  const d = new Date(v);
-  return Number.isNaN(+d) ? 'bad' : d;
+  const d = parseInstant(v);
+  return d === 'invalid' ? 'bad' : d;
 }
 
 /**
