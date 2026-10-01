@@ -1,5 +1,27 @@
 # CLAUDE.md — pinball-tracker (frontend)
 
+## Brand (logo concept D, added 2026-10-01)
+- The name is written **"TiltTrack"**, with a capital T in each half. Never "TILTTRACK", "Tilttrack" or
+  "Tilt Track" in visible copy. Inside an `uppercase` label, wrap it in `<span className="normal-case">`.
+  URLs, package names, storage keys and emails stay lowercase.
+- The logo is a pink monoline trophy tilted 9°, with a ball popping out of the cup, motion ticks and a soft
+  glow, plus the wordmark in Inter 900: white "Tilt" and `primary` "Track". The colors are `#DD47EB`
+  (`primary`, `hsl(295 80% 60%)`) on `#09090B` (`--background`).
+- **`components/BrandLogo.tsx` is the only way to draw it in the app**: `variant` `mark` | `full`, `size`
+  `xs` (footer) | `header` | `lg` | `xl`, `layout` `inline` | `stacked`. The trophy is inline SVG in
+  `currentColor`/`text-primary`, so it follows the theme's primary. The wordmark is live text (`Wordmark`).
+  `xs`/`header` use the "small" cut (no ticks, thicker strokes) because the full cut turns to mush below
+  ~40px. It's used in the header, /welcome's nav, hero and footer, and above the sign-in/sign-up headings.
+  index.html loads Inter 800 and 900 for it (before that, `font-black` was faux-bolded from 700).
+- Assets: the sources are `public/brand/D-{logo,icon,icon-small}[-transparent].svg`. Built from those are
+  `public/favicon.svg` (the small cut), `favicon.ico` (16/32/48), `favicon-32.png`, `apple-touch-icon.png`
+  (180, opaque), `icon-192.png`, `icon-512.png`, `icon-maskable-512.png` (trophy inside the 40% safe
+  circle), `og-image.png` (1200×630; index.html's og/twitter tags point at its absolute URL) and
+  `manifest.webmanifest` (`display: browser`, so installing the app doesn't change how it opens).
+- Regenerating: `brand/gen.js` writes the SVGs (geometry, plus the wordmark outlined from Inter 900 with
+  opentype.js). `brand/build-icons.js` rasterises them with Edge and sharp. Both scripts' headers say how to
+  run them from a scratch copy. They aren't part of the app build.
+
 ## Clerk (auth)
 - Use the **custom sign-in form** (`src/pages/SignInPage.tsx`) — not Clerk's pre-built `<SignIn>` component. The pre-built component has a submit button that hides behind the mobile keyboard.
 - Sign-in flow uses Clerk v5 two-step: `signIn.create({ identifier })` then `signIn.attemptFirstFactor({ strategy: 'password', password })`. Handle `needs_client_trust` by sending an email code.

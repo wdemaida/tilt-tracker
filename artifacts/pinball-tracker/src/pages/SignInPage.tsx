@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useSignIn, useAuth } from '@clerk/clerk-react';
 import { Link, useLocation } from 'wouter';
+import BrandLogo from '../components/BrandLogo';
 import { enableGuestMode } from '../lib/guestMode';
 
 type Step = 'credentials' | 'mfa' | 'verify_device';
@@ -102,6 +103,7 @@ export default function SignInPage() {
   return (
     <div className="flex flex-col items-center py-6 sm:py-16 px-4 gap-6">
       <div className="text-center">
+        <BrandLogo variant="mark" size="lg" className="mx-auto mb-4" />
         <h1 className="text-3xl font-black uppercase tracking-widest text-white">Welcome Back</h1>
         <p className="text-sm text-muted-foreground mt-1">Sign in to track your pinball scores</p>
       </div>

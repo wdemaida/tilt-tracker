@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+<title>TiltTrack</title>
+<defs>
+  <filter id="monoGlow" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">
+    <feGaussianBlur in="SourceAlpha" stdDeviation="19.599999999999998" result="a"/>
+    <feFlood flood-color="#DD47EB" flood-opacity="0.6"/>
+    <feComposite in2="a" operator="in" result="g"/>
+    <feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter></defs>
+
+<g transform="rotate(-9 512 512)" filter="url(#monoGlow)"><g transform="translate(116.00 198.50) scale(1.32)">
+  <g fill="none" stroke="#DD47EB" stroke-width="64" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M150,70 H450 V140 C450,258 382,322 300,322 C218,322 150,258 150,140 Z"/>
+    <path d="M150,104 H108 C70,104 58,140 64,170 C74,222 120,248 172,250"/>
+    <path d="M450,104 H492 C530,104 542,140 536,170 C526,222 480,248 428,250"/>
+    <path d="M300,322 V420"/>
+    <path d="M220,470 C220,436 250,420 300,420 C350,420 380,436 380,470"/>
+    <path d="M190,520 H410"/>
+  </g>
+  <circle cx="300" cy="-18" r="54" fill="#DD47EB"/>
+  </g></g>
+</svg>

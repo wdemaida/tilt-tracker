@@ -1,0 +1,16 @@
+{
+  "name": "TiltTrack",
+  "short_name": "TiltTrack",
+  "description": "Pinball high-score tracker: snap your score, see if you're getting better.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "browser",
+  "background_color": "#09090B",
+  "theme_color": "#09090B",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

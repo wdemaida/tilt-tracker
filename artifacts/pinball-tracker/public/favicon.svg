@@ -1,15 +1,22 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="TiltTrack">
-  <!-- Matches the header logo: lucide's Trophy in the app's `primary` colour on the app background.
-       The glyph is scaled to 0.85 about centre so it doesn't touch the tile edge, and the stroke is
-       thickened from lucide's 2 to 2.6 because a 2px stroke turns to mush at 16px favicon size. -->
-  <rect width="24" height="24" rx="5" fill="#09090B"/>
-  <g transform="translate(12 12) scale(0.85) translate(-12 -12)"
-     fill="none" stroke="#DD47EB" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/>
-    <path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/>
-    <path d="M4 22h16"/>
-    <path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/>
-    <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/>
-    <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+<title>TiltTrack</title>
+<defs>
+<filter id="monoGlow" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">
+<feGaussianBlur in="SourceAlpha" stdDeviation="19.599999999999998" result="a"/>
+<feFlood flood-color="#DD47EB" flood-opacity="0.6"/>
+<feComposite in2="a" operator="in" result="g"/>
+<feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge>
+</filter></defs>
+<rect width="1024" height="1024" fill="#09090B"/>
+<g transform="rotate(-9 512 512)" filter="url(#monoGlow)"><g transform="translate(116.00 198.50) scale(1.32)">
+<g fill="none" stroke="#DD47EB" stroke-width="64" stroke-linecap="round" stroke-linejoin="round">
+<path d="M150,70 H450 V140 C450,258 382,322 300,322 C218,322 150,258 150,140 Z"/>
+<path d="M150,104 H108 C70,104 58,140 64,170 C74,222 120,248 172,250"/>
+<path d="M450,104 H492 C530,104 542,140 536,170 C526,222 480,248 428,250"/>
+<path d="M300,322 V420"/>
+<path d="M220,470 C220,436 250,420 300,420 C350,420 380,436 380,470"/>
+<path d="M190,520 H410"/>
+</g>
+<circle cx="300" cy="-18" r="54" fill="#DD47EB"/>
+</g></g>
 </svg>

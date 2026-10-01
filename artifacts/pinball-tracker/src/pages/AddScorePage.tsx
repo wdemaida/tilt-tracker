@@ -1390,7 +1390,7 @@ export default function AddScorePage() {
               <>
                 {ttHits.length > 0 && (
                   <div>
-                    <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">On TiltTrack</p>
+                    <p className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">On <span className="normal-case">TiltTrack</span></p>
                     <div className="flex flex-col gap-1.5">
                       {ttHits.map(h => (
                         <VenueOption

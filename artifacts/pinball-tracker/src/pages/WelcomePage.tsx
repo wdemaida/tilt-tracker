@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { PinballIcon } from '../components/PinballIcon';
 import BadgeImage from '../components/BadgeImage';
+import BrandLogo from '../components/BrandLogo';
 import WelcomeTimeline from '../components/welcome/WelcomeTimeline';
 import { WELCOME_ICONS } from '../components/welcome/welcomeIcons';
 import { PhoneVideo, Screenshot } from '../components/welcome/WelcomeMedia';
@@ -79,14 +80,7 @@ export default function WelcomePage() {
     <div className="min-h-screen w-full bg-background text-foreground overflow-x-clip">
       <nav className="sticky top-0 z-50 w-full border-b border-white/10 bg-background/80 backdrop-blur-xl">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between h-20">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-xl bg-primary/20 flex items-center justify-center border border-primary/50">
-              <Trophy className="w-6 h-6 text-primary" aria-hidden />
-            </div>
-            <span className="font-display text-lg sm:text-2xl tracking-widest text-white">
-              TILT<span className="text-primary">TRACK</span>
-            </span>
-          </div>
+          <BrandLogo size="header" />
           <div className="flex items-center gap-6">
             <Link href="/sign-in" className="hidden sm:block text-sm font-bold uppercase tracking-wider text-muted-foreground hover:text-white transition-colors">
               Sign In
@@ -109,6 +103,7 @@ export default function WelcomePage() {
         />
         <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 grid grid-cols-1 md:grid-cols-[1.15fr_1fr] gap-10 md:gap-16 items-center">
           <div>
+            <BrandLogo variant="mark" size="lg" className="mb-5 sm:mb-6" />
             {hero.eyebrow && <div className={`${eyebrowCls} mb-3`}>{hero.eyebrow}</div>}
             <h1 className="font-display uppercase font-black tracking-tight leading-[1.02] text-5xl sm:text-6xl lg:text-7xl [overflow-wrap:anywhere]">
               <InlineText text={hero.headline} />
@@ -133,7 +128,7 @@ export default function WelcomePage() {
           <div className="flex justify-center">
             <div className="relative w-full max-w-sm rounded-2xl border border-white/10 bg-card p-5 shadow-2xl">
               <span className="absolute -top-3 left-5 text-[0.6rem] font-extrabold uppercase tracking-widest text-background bg-username rounded-full px-2.5 py-1">
-                A captured TiltTrack score
+                A captured <span className="normal-case">TiltTrack</span> score
               </span>
               <div className="flex items-center justify-between">
                 <span className="text-[0.65rem] font-extrabold uppercase tracking-wider text-muted-foreground border border-white/20 rounded-full px-2.5 py-0.5">
@@ -349,7 +344,7 @@ export default function WelcomePage() {
 
       <footer className="border-t border-white/10 py-8">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-3 flex-wrap text-sm text-muted-foreground">
-          <span>TILT<span className="text-primary font-bold">TRACK</span></span>
+          <BrandLogo size="xs" />
           <span>Every score remembered.</span>
         </div>
       </footer>

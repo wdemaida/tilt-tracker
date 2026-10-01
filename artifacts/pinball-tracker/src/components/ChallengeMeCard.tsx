@@ -186,7 +186,7 @@ function VenueSearch({ onPick, onPickPlace, at, busy }: {
           {wantPlaces && placeSearch.pending && <p className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground"><Loader2 className="w-3 h-3 animate-spin" aria-hidden /> Searching places…</p>}
           {wantPlaces && placeSearch.failed && <p className="px-3 py-2 text-xs text-red-400">Place search failed</p>}
           {wantPlaces && placeSearch.result && places.length === 0 && <p className="px-3 py-2 text-xs text-muted-foreground">No places match either.</p>}
-          {places.length > 0 && <p className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wide text-muted-foreground">Places — not on TiltTrack yet; adding one creates it</p>}
+          {places.length > 0 && <p className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wide text-muted-foreground">Places — not on <span className="normal-case">TiltTrack</span> yet; adding one creates it</p>}
           {places.map(p => (
             <PlaceRow key={p.hereId} name={p.name} busy={busy}
               detail={[p.address, p.distance != null ? `${(p.distance / 1609.34).toFixed(1)} mi` : ''].filter(Boolean).join(' · ')}

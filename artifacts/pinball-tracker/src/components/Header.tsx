@@ -1,11 +1,12 @@
 import { Link, useLocation } from 'wouter';
-import { Trophy, PlusCircle, Bell } from 'lucide-react';
+import { PlusCircle, Bell } from 'lucide-react';
 import { SignedIn, SignedOut, useAuth } from '@clerk/clerk-react';
 import { useQuery } from '@tanstack/react-query';
 import { useApi } from '../lib/useApi';
 import { UNREAD_COUNT_KEY } from '../lib/myFriends';
 import { useBadgeToasts } from '../lib/badgeToasts';
 import AvatarMenu from './AvatarMenu';
+import BrandLogo from './BrandLogo';
 import { SCORES, MACHINES, VENUES, STATS, CREW, isActivePath, badgeText, useCrewBadgeCount } from './nav';
 
 const navItems = [SCORES, MACHINES, VENUES, STATS];
@@ -67,13 +68,8 @@ export default function Header() {
     <header className="sticky top-0 z-50 w-full border-b border-white/10 bg-background/80 backdrop-blur-xl">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between items-center h-14 md:h-20">
-          <Link href="/" className="flex items-center space-x-2.5 md:space-x-3 group">
-            <div className="w-8 h-8 md:w-10 md:h-10 rounded-lg md:rounded-xl bg-primary/20 flex items-center justify-center border border-primary/50 group-hover:border-primary transition-colors">
-              <Trophy className="w-5 h-5 md:w-6 md:h-6 text-primary group-hover:text-glow-primary transition-all" aria-hidden />
-            </div>
-            <span className="font-display text-lg sm:text-2xl tracking-widest text-white group-hover:text-glow-primary transition-all">
-              TILT<span className="text-primary">TRACK</span>
-            </span>
+          <Link href="/" aria-label="TiltTrack home" className="flex items-center hover:opacity-90 transition-opacity">
+            <BrandLogo size="header" />
           </Link>
 
           <nav className="hidden md:flex items-center space-x-5 lg:space-x-8">

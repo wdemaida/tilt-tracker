@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { SignUp } from '@clerk/clerk-react';
 import { useLocation } from 'wouter';
+import BrandLogo from '../components/BrandLogo';
 import { enableGuestMode } from '../lib/guestMode';
 
 export default function SignUpPage() {
@@ -34,6 +35,7 @@ export default function SignUpPage() {
   return (
     <div ref={containerRef} className="flex flex-col items-center justify-center py-4 sm:py-16 gap-6">
       <div className="text-center mb-2">
+        <BrandLogo variant="mark" size="lg" className="mx-auto mb-4" />
         <h1 className="text-3xl font-black uppercase tracking-widest text-white">Create Account</h1>
         <p className="text-sm text-muted-foreground mt-1">Start tracking your pinball scores</p>
       </div>

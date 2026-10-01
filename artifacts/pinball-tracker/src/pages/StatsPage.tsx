@@ -389,7 +389,7 @@ export default function StatsPage() {
 
       {/* Facts about TiltTrack itself, not about players — Compare doesn't touch them. */}
       <div className="border-t border-white/10 pt-4">
-        <h2 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-1">Across TiltTrack</h2>
+        <h2 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-1">Across <span className="normal-case">TiltTrack</span></h2>
         <p className="text-xs text-muted-foreground mb-3">Site-wide — the same in every Compare view.</p>
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
           <StatCard icon={Building2} label="Venues" value={(stats.totalVenues ?? 0).toLocaleString()} statKey="total_venues" onShowTrend={showTrend} />
