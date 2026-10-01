@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { Link, useLocation } from 'wouter';
 import {
-  Camera, TrendingUp, MapPin, Trophy, Target, Users, Clock, Instagram, MessageCircle, MessagesSquare, Link2, Mail,
+  MapPin, Trophy, Target, Users, Clock, Instagram, MessageCircle, MessagesSquare, Link2, Mail,
   type LucideIcon,
 } from 'lucide-react';
 import { PinballIcon } from '../components/PinballIcon';
 import BadgeImage from '../components/BadgeImage';
 import WelcomeTimeline from '../components/welcome/WelcomeTimeline';
+import { WELCOME_ICONS } from '../components/welcome/welcomeIcons';
 import { PhoneVideo, Screenshot } from '../components/welcome/WelcomeMedia';
 import { enableGuestMode } from '../lib/guestMode';
 import { useWelcomeContent } from '../lib/useWelcomeContent';
@@ -17,11 +18,12 @@ import { InlineText, RichText } from '../components/RichText';
 // edited in Admin > Config > Welcome page. Only the illustrations are fixed here: the sample score
 // card, the two example challenge cards and the badge ladder's icons.
 
-// One icon per How-it-works step, in order (cycled if an admin adds more steps).
-const STEP_ICONS = [
-  { Icon: Camera, tone: 'bg-primary/15 border-primary/45', color: 'text-primary' },
-  { Icon: PinballIcon, tone: 'bg-machine/15 border-machine/45', color: 'text-machine' },
-  { Icon: TrendingUp, tone: 'bg-venue/15 border-venue/45', color: 'text-venue' },
+// How-it-works tile colors, in order (cycled if an admin adds more steps). The icon is the step's own
+// `icon` (picked in the editor); mergeWelcomeContent has already swapped a missing one for its default.
+const STEP_TONES = [
+  { tone: 'bg-primary/15 border-primary/45', color: 'text-primary' },
+  { tone: 'bg-machine/15 border-machine/45', color: 'text-machine' },
+  { tone: 'bg-venue/15 border-venue/45', color: 'text-venue' },
 ];
 
 // The social section's facts panel, in order (cycled).
@@ -171,7 +173,8 @@ export default function WelcomePage() {
           </div>
           <div className="mt-12 grid grid-cols-1 md:grid-cols-3 gap-5 md:gap-6">
             {how.steps.map((step, i) => {
-              const { Icon, tone, color } = STEP_ICONS[i % STEP_ICONS.length];
+              const { tone, color } = STEP_TONES[i % STEP_TONES.length];
+              const Icon = WELCOME_ICONS[step.icon] ?? WELCOME_ICONS.camera;
               return (
                 <div key={i} className="rounded-2xl border border-white/10 bg-card p-6 min-w-0">
                   <div className="flex items-start justify-between mb-5">

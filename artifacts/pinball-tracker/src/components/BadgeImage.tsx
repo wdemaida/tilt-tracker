@@ -7,13 +7,17 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { badgeImageUrl, type Badge } from '../lib/badges';
+import type { BadgeIconName } from '../lib/iconNames';
 
 // Every place a badge appears draws it through this: the uploaded image when there is one, else the
 // lucide `icon` in the badge's `color` on a tinted disc. Artwork is optional, so a later move to
 // images only is a data change. `locked` is the catalog's not-yet-earned look (grayscale, dimmed) —
 // the same image, no second asset.
 
-/** The icons an admin can pick (kebab-case, as stored on the badge). Unknown names fall back to award. */
+/**
+ * The icons an admin can pick (kebab-case, as stored on the badge). Unknown names fall back to award.
+ * The names are BADGE_ICON_NAMES (lib/iconNames.ts); `satisfies` keeps the two lists identical.
+ */
 export const BADGE_ICONS: Record<string, LucideIcon> = {
   award: Award, trophy: Trophy, medal: Medal, crown: Crown, star: Star, flame: Flame, zap: Zap, target: Target, gift: Gift,
   'calendar-check': CalendarCheck, 'calendar-heart': CalendarHeart, heart: Heart, users: Users, 'user-plus': UserPlus,
@@ -24,7 +28,7 @@ export const BADGE_ICONS: Record<string, LucideIcon> = {
   hourglass: Hourglass, sun: Sun, moon: Moon, coffee: Coffee, beer: Beer, camera: Camera, footprints: Footprints,
   repeat: Repeat, clover: Clover, mountain: Mountain, infinity: InfinityIcon, joystick: Joystick, dices: Dices, music: Music,
   cake: Cake,
-};
+} satisfies Record<BadgeIconName, LucideIcon>;
 
 export function badgeIcon(name: string): LucideIcon {
   return BADGE_ICONS[name] ?? Award;

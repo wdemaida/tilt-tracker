@@ -276,7 +276,7 @@ export type BadgeInput = Partial<{
 
 // Site content (Admin > Config > Welcome page). The spec comes from the server (CONTENT_SPEC in
 // api-server src/lib/siteContent.ts) and the editor builds its form from it.
-export type ContentTextKind = 'plain' | 'inline' | 'markdown' | 'url' | 'email';
+export type ContentTextKind = 'plain' | 'inline' | 'markdown' | 'url' | 'email' | 'icon';
 export interface ContentTextSpec { type: 'text'; kind: ContentTextKind; label: string; max: number; required: boolean; help?: string }
 export interface ContentListSpec { type: 'list'; label: string; itemLabel: string; min: number; max: number; fields: Record<string, ContentTextSpec> }
 export type ContentFieldSpec = ContentTextSpec | ContentListSpec;

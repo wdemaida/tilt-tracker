@@ -1,6 +1,6 @@
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Upload, Trash2, Eye, Rocket, Archive, Loader2, UserPlus, X, ChevronDown, ChevronUp, Search, History, GripVertical, Layers, AlertTriangle } from 'lucide-react';
+import { Plus, Upload, Trash2, Eye, Rocket, Archive, Loader2, UserPlus, X, ChevronDown, ChevronUp, History, GripVertical, Layers, AlertTriangle } from 'lucide-react';
 import {
   useAdminApi, type AdminBadge, type AdminBadgeSeries, type BadgeOrderItem, type BadgeInput, type BadgeKind, type BadgeRule, type BadgePreview,
   type BadgeBackfillResult, type UserRef, type NewTierDraft,
@@ -8,7 +8,8 @@ import {
 import { useApi } from '../lib/useApi';
 import { toLocalInput, localInputToIso } from '../lib/datetime';
 import { AdminShell, Card, Pill, SectionTitle, ErrorNote, ConfirmDialog, When, Who, Segmented } from '../components/admin/AdminParts';
-import BadgeImage, { BADGE_ICONS, badgeIcon } from '../components/BadgeImage';
+import BadgeImage, { BADGE_ICONS } from '../components/BadgeImage';
+import IconPicker from '../components/admin/IconPicker';
 import UsernameLink from '../components/UsernameLink';
 import MachineCombobox, { type MachineOption } from '../components/MachineCombobox';
 import { toast } from '../lib/toast';
@@ -66,127 +67,6 @@ function Field({ label, error, hint, children, group = false }: { label: string;
       {hint && !error && <span className="text-[11px] text-muted-foreground">{hint}</span>}
       {error && <span className="text-[11px] text-red-400">{error}</span>}
     </Wrap>
-  );
-}
-
-const ICON_NAMES = Object.keys(BADGE_ICONS).sort();
-const GRID_COLS = 6;
-
-/** The icon field: a button showing the current icon, opening a searchable grid of every allowed icon in the badge's color. */
-function IconPicker({ value, color, onChange }: { value: string; color: string; onChange: (name: string) => void }) {
-  const [open, setOpen] = useState(false);
-  const [q, setQ] = useState('');
-  const rootRef = useRef<HTMLDivElement>(null);
-  const gridRef = useRef<HTMLDivElement>(null);
-  const searchRef = useRef<HTMLInputElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const popId = useId();
-  const names = useMemo(() => {
-    const needle = q.trim().toLowerCase().replace(/\s+/g, '-');
-    return needle ? ICON_NAMES.filter(n => n.includes(needle)) : ICON_NAMES;
-  }, [q]);
-  const known = !!BADGE_ICONS[value];
-  const Current = badgeIcon(value);
-
-  useEffect(() => {
-    if (!open) return;
-    searchRef.current?.focus();
-    const onDown = (e: MouseEvent) => { if (!rootRef.current?.contains(e.target as Node)) close(false); };
-    document.addEventListener('mousedown', onDown);
-    return () => document.removeEventListener('mousedown', onDown);
-  }, [open]);
-
-  function close(refocus = true) {
-    setOpen(false);
-    setQ('');
-    if (refocus) triggerRef.current?.focus();
-  }
-  function choose(name: string) {
-    onChange(name);
-    close();
-  }
-  function focusCell(i: number) {
-    const cells = gridRef.current?.querySelectorAll<HTMLButtonElement>('button[data-icon]');
-    if (!cells?.length) return;
-    cells[Math.max(0, Math.min(i, cells.length - 1))].focus();
-  }
-  function onGridKey(e: React.KeyboardEvent, i: number) {
-    const moves: Record<string, number> = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: GRID_COLS, ArrowUp: -GRID_COLS };
-    const move = moves[e.key];
-    if (move) {
-      e.preventDefault();
-      if (e.key === 'ArrowUp' && i < GRID_COLS) { searchRef.current?.focus(); return; }
-      focusCell(i + move);
-    }
-  }
-
-  return (
-    <div ref={rootRef} className="relative" onKeyDown={e => { if (e.key === 'Escape' && open) { e.stopPropagation(); close(); } }}>
-      <button
-        ref={triggerRef}
-        type="button"
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        aria-controls={popId}
-        aria-label={`Icon: ${value}${known ? '' : ' (unknown)'}. Change icon`}
-        onClick={() => (open ? close(false) : setOpen(true))}
-        className="flex items-center gap-2 w-full border border-white/20 rounded-lg pl-2 pr-2.5 py-1.5 text-sm text-white bg-white/5 hover:border-white/35 focus:outline-none focus:ring-2 focus:ring-primary"
-      >
-        <span className="inline-flex items-center justify-center w-7 h-7 rounded-full border flex-shrink-0" style={{ color, backgroundColor: `${color}26`, borderColor: `${color}80` }}>
-          <Current className="w-4 h-4" strokeWidth={2.25} aria-hidden />
-        </span>
-        <span className="flex-1 min-w-0 truncate text-left">{value}{known ? '' : ' (unknown)'}</span>
-        <ChevronDown className="w-4 h-4 text-muted-foreground flex-shrink-0" aria-hidden />
-      </button>
-      {open && (
-        <div id={popId} role="dialog" aria-label="Choose an icon"
-          className="absolute left-0 top-full mt-1 z-30 w-[18.5rem] max-w-[calc(100vw-2rem)] rounded-xl border border-white/15 bg-card shadow-2xl p-2.5 flex flex-col gap-2">
-          <div className="relative">
-            <Search className="w-4 h-4 text-muted-foreground absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" aria-hidden />
-            <input
-              ref={searchRef}
-              value={q}
-              onChange={e => setQ(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'ArrowDown') { e.preventDefault(); focusCell(0); }
-                if (e.key === 'Enter' && names.length) { e.preventDefault(); choose(names[0]); }
-              }}
-              placeholder="Search icons…"
-              aria-label="Search icons"
-              className="border border-white/20 rounded-lg pl-8 pr-2 py-1.5 text-sm text-white bg-white/5 focus:outline-none focus:ring-2 focus:ring-primary w-full"
-            />
-          </div>
-          {names.length === 0 ? (
-            <p className="text-xs text-muted-foreground px-1 py-2">No icon matches “{q.trim()}”.</p>
-          ) : (
-            <div ref={gridRef} role="listbox" aria-label="Icons" className="grid grid-cols-6 gap-1 max-h-60 overflow-y-auto">
-              {names.map((name, i) => {
-                const Icon = BADGE_ICONS[name];
-                const on = name === value;
-                return (
-                  <button
-                    key={name}
-                    type="button"
-                    role="option"
-                    aria-selected={on}
-                    data-icon={name}
-                    title={name}
-                    aria-label={name}
-                    onClick={() => choose(name)}
-                    onKeyDown={e => onGridKey(e, i)}
-                    className={`flex items-center justify-center h-10 rounded-lg border transition-colors focus:outline-none focus:ring-2 focus:ring-primary ${on ? 'border-white/60 bg-white/10' : 'border-transparent hover:bg-white/5 hover:border-white/15'}`}
-                    style={{ color }}
-                  >
-                    <Icon className="w-5 h-5" strokeWidth={2.25} aria-hidden />
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          <p className="text-[10px] text-muted-foreground px-1">Shown only when the badge has no uploaded image.</p>
-        </div>
-      )}
-    </div>
   );
 }
 

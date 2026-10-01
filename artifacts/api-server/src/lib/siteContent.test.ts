@@ -9,7 +9,7 @@ process.env.DATABASE_URL ??= 'postgres://unit-test@127.0.0.1:1/never-connected';
 
 const {
   CONTENT_SPEC, CONTENT_KEYS, validateContent, isSafeUrl, changedFields, publicWelcomeContent,
-  setPublicContentLoaderForTests, clearPublicContentCache, PUBLIC_CACHE_TTL_MS,
+  setPublicContentLoaderForTests, clearPublicContentCache, PUBLIC_CACHE_TTL_MS, WELCOME_ICON_NAMES,
 } = await import('./siteContent.js');
 
 const hero = { eyebrow: 'Built by a player', headline: 'Snap your score.\n==See if you are getting better.==', subhead: 'One **photo**.' };
@@ -87,8 +87,8 @@ test('lists: item paths, min and max', () => {
   assert.match((many as any).errors.steps, /at most 6/);
   const notList = validateContent('welcome.how', { title: 'How', steps: 'x' });
   assert.match((notList as any).errors.steps, /must be a list/);
-  const extra = validateContent('welcome.how', { title: 'How', steps: [{ title: 'a', body: 'b', icon: 'x' }] });
-  assert.match((extra as any).errors['steps.0.icon'], /Unknown field/);
+  const extra = validateContent('welcome.how', { title: 'How', steps: [{ title: 'a', body: 'b', emoji: 'x' }] });
+  assert.match((extra as any).errors['steps.0.emoji'], /Unknown field/);
   // Socials may have no links yet.
   assert.ok(validateContent('welcome.socials', { title: 'Follow', email: '', links: [] }).ok);
   // A link with no URL yet is allowed — the page shows it as "Soon".
@@ -177,4 +177,33 @@ test('a failure is cached too (one query a minute, not one per page view)', asyn
     await publicWelcomeContent(5_001);
     assert.equal(calls, 1);
   } finally { console.error = orig; }
+});
+
+// ── How-it-works step icons ─────────────────────────────────────────────────────
+
+const how = {
+  tagline: 'No machine left behind', eyebrow: 'How it works', title: 'Point, shoot',
+  steps: [{ title: 'Snap it', body: 'One photo.' }, { title: 'Matched', body: 'Checked.' }],
+};
+
+test('a How-it-works row saved before step icons existed still validates (no icon = default)', () => {
+  const v = validateContent('welcome.how', how);
+  assert.ok(v.ok, JSON.stringify((v as any).errors));
+  assert.deepEqual((v as any).value.steps.map((s: any) => s.icon), ['', '']);
+});
+
+test('a step icon must be one of the available icons', () => {
+  const ok = validateContent('welcome.how', { ...how, steps: [{ ...how.steps[0], icon: 'trophy' }, { ...how.steps[1], icon: 'pinball' }] });
+  assert.ok(ok.ok, JSON.stringify((ok as any).errors));
+  assert.deepEqual((ok as any).value.steps.map((s: any) => s.icon), ['trophy', 'pinball']);
+  const bad = validateContent('welcome.how', { ...how, steps: [{ ...how.steps[0], icon: 'javascript-alert' }] });
+  assert.equal(bad.ok, false);
+  assert.match((bad as any).errors['steps.0.icon'], /isn't an available icon/);
+});
+
+test("the welcome icon list matches the frontend's (the twins can't drift)", async () => {
+  // A variable specifier, like the defaults check above: outside this package's rootDir.
+  const frontendIcons = '../../../pinball-tracker/src/lib/iconNames.ts';
+  const { WELCOME_ICON_NAMES: fe } = (await import(frontendIcons)) as { WELCOME_ICON_NAMES: readonly string[] };
+  assert.deepEqual([...WELCOME_ICON_NAMES], [...fe]);
 });

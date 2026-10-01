@@ -12,9 +12,11 @@
 // the highlighted chip); `badges.ladder` is up to four comma-separated badge names; an action shot's
 // `image` is a file name in public/welcome/; a socials link with no URL shows as "Soon".
 
+import { isWelcomeIcon } from './iconNames';
+
 export interface WelcomeContent {
   'welcome.hero': { eyebrow: string; headline: string; subhead: string };
-  'welcome.how': { tagline: string; eyebrow: string; title: string; steps: Array<{ title: string; body: string }> };
+  'welcome.how': { tagline: string; eyebrow: string; title: string; steps: Array<{ icon: string; title: string; body: string }> };
   'welcome.social': {
     eyebrow: string;
     title: string;
@@ -47,14 +49,17 @@ export const WELCOME_DEFAULTS: WelcomeContent = {
     title: 'Point, shoot, ==forget about it.==',
     steps: [
       {
+        icon: 'camera',
         title: "Snap it, don't type it",
         body: 'One photo of the backbox. The Engine fills in the machine, the score, the time and the venue. Prefer typing? Skip the Engine anytime.',
       },
       {
+        icon: 'pinball',
         title: 'Matched to the right machine',
         body: "Checked against more than 2,000 machines, from 1970s electromechanicals to next month's Stern release. The oldest games become competitive too.",
       },
       {
+        icon: 'trending-up',
         title: 'Your progress, measured',
         body: "Personal bests per machine, score trends over time, and a venue difficulty index that accounts for who else plays there. An honest read on whether you're improving.",
       },
@@ -158,9 +163,35 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 }
 
 /**
+ * A stored list replaces the default list, but an item saved before a field existed has no value for
+ * it: each such item gets the field from the default item at the same position (cycled past the end).
+ * Only missing fields — an empty string the admin left is kept.
+ */
+function fillListItems(stored: unknown[], defaults: unknown[]): unknown[] {
+  if (!defaults.length || !defaults.every(isPlainObject)) return stored;
+  return stored.map((item, i) => {
+    if (!isPlainObject(item)) return item;
+    const def = defaults[i % defaults.length] as Record<string, unknown>;
+    const out = { ...item };
+    for (const [f, v] of Object.entries(def)) if (typeof out[f] !== typeof v) out[f] = v;
+    return out;
+  });
+}
+
+/** How-it-works step icons: a missing, empty or unknown name means the default icon for that position. */
+function withStepIcons(how: WelcomeContent['welcome.how']): WelcomeContent['welcome.how'] {
+  const defaults = WELCOME_DEFAULTS['welcome.how'].steps;
+  return {
+    ...how,
+    steps: how.steps.map((s, i) => (isWelcomeIcon(s.icon) ? s : { ...s, icon: defaults[i % defaults.length].icon })),
+  };
+}
+
+/**
  * The defaults with each stored override laid over its key. Field by field, so a field added to the
- * defaults after a row was saved still shows its default. Anything that isn't an object for a known
- * key is ignored (the server validates; this only guards against a surprise). Pure — unit-tested.
+ * defaults after a row was saved still shows its default — inside list items too (fillListItems).
+ * Anything that isn't an object for a known key is ignored (the server validates; this only guards
+ * against a surprise). Pure — unit-tested.
  */
 export function mergeWelcomeContent(overrides: unknown): WelcomeContent {
   const out = { ...WELCOME_DEFAULTS } as Record<WelcomeKey, unknown>;
@@ -172,9 +203,11 @@ export function mergeWelcomeContent(overrides: unknown): WelcomeContent {
     const merged: Record<string, unknown> = { ...base };
     for (const [field, def] of Object.entries(base)) {
       const v = o[field];
-      if (Array.isArray(def) ? Array.isArray(v) : typeof v === typeof def) merged[field] = v;
+      if (Array.isArray(def)) { if (Array.isArray(v)) merged[field] = fillListItems(v, def); }
+      else if (typeof v === typeof def) merged[field] = v;
     }
     out[key] = merged;
   }
+  out['welcome.how'] = withStepIcons(out['welcome.how'] as WelcomeContent['welcome.how']);
   return out as WelcomeContent;
 }

@@ -33,6 +33,30 @@ test('wrong types and unknown keys are ignored', () => {
   assert.ok(!('welcome.unknown' in m));
 });
 
+test("a How-it-works row saved before step icons existed gets each step's default icon by position", () => {
+  // The shape of the prod row Will saved on 2026-10-01: steps with no `icon` field.
+  const stored = {
+    tagline: 'No machine left behind', eyebrow: 'How it works', title: 'Mine',
+    steps: [
+      { title: 'One', body: 'a' }, { title: 'Two', body: 'b' }, { title: 'Three', body: 'c' }, { title: 'Four', body: 'd' },
+    ],
+  };
+  const m = mergeWelcomeContent({ 'welcome.how': stored });
+  assert.deepEqual(m['welcome.how'].steps.map(s => s.icon), ['camera', 'pinball', 'trending-up', 'camera'], 'cycled past the defaults');
+  assert.deepEqual(m['welcome.how'].steps.map(s => s.title), ['One', 'Two', 'Three', 'Four'], 'the saved text is untouched');
+  assert.equal(m['welcome.how'].title, 'Mine');
+});
+
+test('a chosen step icon is kept; an empty or unknown one falls back to the default for its position', () => {
+  const steps = [
+    { icon: 'trophy', title: 'A', body: 'a' },
+    { icon: '', title: 'B', body: 'b' },
+    { icon: 'not-an-icon', title: 'C', body: 'c' },
+  ];
+  const m = mergeWelcomeContent({ 'welcome.how': { ...WELCOME_DEFAULTS['welcome.how'], steps } });
+  assert.deepEqual(m['welcome.how'].steps.map(s => s.icon), ['trophy', 'pinball', 'trending-up']);
+});
+
 test('defaults cover the nine sections, with the founder note free of private details', () => {
   assert.equal(WELCOME_KEYS.length, 9);
   const all = JSON.stringify(WELCOME_DEFAULTS).toLowerCase();

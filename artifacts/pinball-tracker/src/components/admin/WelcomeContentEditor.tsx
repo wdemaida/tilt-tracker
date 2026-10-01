@@ -8,6 +8,8 @@ import { WELCOME_DEFAULTS, mergeWelcomeContent, type WelcomeKey } from '../../li
 import { WELCOME_CONTENT_QUERY_KEY } from '../../lib/useWelcomeContent';
 import { InlineText, RichText } from '../RichText';
 import { ConfirmDialog, ErrorNote, Pill, When, Who } from './AdminParts';
+import IconPicker from './IconPicker';
+import { WELCOME_ICONS, WELCOME_ICON_NAMES } from '../welcome/welcomeIcons';
 
 // Admin > Config > Welcome page: edit the /welcome page's copy, one section at a time. The form is
 // built from the server's spec (CONTENT_SPEC in api-server src/lib/siteContent.ts); the defaults are
@@ -53,9 +55,32 @@ function localErrors(fields: Record<string, ContentFieldSpec>, value: Draft, pat
   return out;
 }
 
+function IconField({ spec, value, onChange, error }: {
+  spec: ContentTextSpec; value: string; onChange: (v: string) => void; error?: string;
+}) {
+  // A div, not a label: the picker is a button plus a popover, and a label would forward clicks to it.
+  return (
+    <div>
+      <span className="text-xs font-bold text-white">
+        {spec.label}{spec.required ? '' : <span className="font-normal text-muted-foreground"> (optional)</span>}
+      </span>
+      <div className="mt-1">
+        <IconPicker
+          value={value} onChange={onChange} color="hsl(var(--primary))"
+          icons={WELCOME_ICONS} names={WELCOME_ICON_NAMES} fallback={WELCOME_ICONS['circle-dot']}
+          emptyLabel="Default for this position" footnote="pinball is the app's flipper icon."
+        />
+      </div>
+      {error ? <p className="text-[11px] text-red-400 mt-1">{error}</p>
+        : spec.help ? <p className="text-[11px] text-muted-foreground mt-1">{spec.help}</p> : null}
+    </div>
+  );
+}
+
 function TextField({ spec, value, onChange, error }: {
   spec: ContentTextSpec; value: string; onChange: (v: string) => void; error?: string;
 }) {
+  if (spec.kind === 'icon') return <IconField spec={spec} value={value} onChange={onChange} error={error} />;
   const multiline = spec.kind === 'markdown' || spec.kind === 'inline';
   const rows = spec.kind === 'inline' ? 2 : Math.min(12, Math.max(3, Math.ceil(spec.max / 150)));
   const over = value.length > spec.max;
@@ -160,6 +185,14 @@ function Preview({ fields, value }: { fields: Record<string, ContentFieldSpec>; 
                 {Object.entries(spec.fields).map(([fk, fs]) => {
                   const v = typeof item[fk] === 'string' ? (item[fk] as string) : '';
                   if (!v.trim()) return null;
+                  if (fs.kind === 'icon') {
+                    const Icon = WELCOME_ICONS[v];
+                    return Icon ? (
+                      <span key={fk} className="inline-flex w-9 h-9 rounded-lg border border-primary/45 bg-primary/15 items-center justify-center">
+                        <Icon className="w-4 h-4 text-primary" />
+                      </span>
+                    ) : null;
+                  }
                   if (fs.kind === 'markdown') return <RichText key={fk} text={v} className="space-y-2 text-sm leading-relaxed text-muted-foreground" />;
                   if (fk === 'title' || fk === 'label') return <p key={fk} className="font-bold text-white text-sm">{v}</p>;
                   return <p key={fk} className={`text-xs ${fs.kind === 'url' ? 'text-primary break-all' : 'font-extrabold uppercase tracking-[0.14em] text-machine'}`}>{v}</p>;

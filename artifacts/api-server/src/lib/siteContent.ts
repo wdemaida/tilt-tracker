@@ -13,9 +13,26 @@ import type { Executor } from './activity.js';
 // Text kinds — the page renders every string as React text, never as HTML, so nothing here can inject
 // markup. `markdown` fields allow paragraphs, **bold**, *italic* and [links](https://…); `inline`
 // fields (headings) allow ==glow== and line breaks; `plain` is shown as-is. Links must be http(s) or
-// mailto — checked here so the editor can say so, and again by the renderer.
+// mailto — checked here so the editor can say so, and again by the renderer. `icon` is a name from
+// WELCOME_ICON_NAMES; empty means the page's default icon for that position.
 
-export type TextKind = 'plain' | 'inline' | 'markdown' | 'url' | 'email';
+export type TextKind = 'plain' | 'inline' | 'markdown' | 'url' | 'email' | 'icon';
+
+/**
+ * Icons a welcome-page tile may use. A twin of WELCOME_ICON_NAMES in the frontend's
+ * src/lib/iconNames.ts (the badge icon set, plus 'pinball' for the app's flipper) — the test checks
+ * the two lists match, so add an icon in both.
+ */
+export const WELCOME_ICON_NAMES: readonly string[] = [
+  'pinball',
+  'award', 'beer', 'cake', 'calendar-check', 'calendar-heart', 'camera', 'circle-dot', 'cloud-rain', 'clover',
+  'coffee', 'compass', 'crosshair', 'crown', 'dices', 'flame', 'footprints', 'gamepad-2', 'gem', 'ghost', 'gift',
+  'globe', 'handshake', 'heart', 'hourglass', 'infinity', 'joystick', 'library', 'list-checks', 'map-pin', 'medal',
+  'moon', 'mountain', 'music', 'party-popper', 'repeat', 'rocket', 'scale', 'shield', 'skull', 'snowflake',
+  'sparkles', 'star', 'sun', 'swords', 'target', 'timer', 'tree-pine', 'trending-up', 'trophy', 'user-check',
+  'user-plus', 'users', 'zap',
+];
+const WELCOME_ICON_SET = new Set(WELCOME_ICON_NAMES);
 
 export interface TextSpec { type: 'text'; kind: TextKind; label: string; max: number; required: boolean; help?: string }
 export interface ListSpec { type: 'list'; label: string; itemLabel: string; min: number; max: number; fields: Record<string, TextSpec> }
@@ -49,6 +66,7 @@ export const CONTENT_SPEC: Readonly<Record<string, SectionSpec>> = {
       eyebrow: EYEBROW(),
       title: text('inline', 'Title', 120, true, GLOW_HELP),
       steps: list('Steps', 'Step', 1, 6, {
+        icon: text('icon', 'Icon', 40, false, 'Empty = the default icon for this step’s position.'),
         title: text('plain', 'Title', 80),
         body: text('markdown', 'Text', 600, true, MD_HELP),
       }),
@@ -167,6 +185,7 @@ function checkText(spec: TextSpec, value: unknown, path: string, errors: Record<
   if (v.length > spec.max) { errors[path] = `${spec.label} is too long (${v.length}/${spec.max})`; return undefined; }
   if (trimmed && spec.kind === 'url' && !isSafeUrl(trimmed)) { errors[path] = `${spec.label} must start with https:// or http://`; return undefined; }
   if (trimmed && spec.kind === 'email' && !EMAIL.test(trimmed)) { errors[path] = `${spec.label} isn't an email address`; return undefined; }
+  if (trimmed && spec.kind === 'icon' && !WELCOME_ICON_SET.has(trimmed)) { errors[path] = `${spec.label}: "${trimmed.slice(0, 40)}" isn't an available icon`; return undefined; }
   if (spec.kind === 'markdown') {
     for (const m of v.matchAll(MD_LINK)) {
       if (!isSafeUrl(m[1])) { errors[path] = `${spec.label}: links must start with https://, http:// or mailto: ("${m[1].slice(0, 40)}")`; return undefined; }

@@ -500,6 +500,12 @@
   `chips` is comma-separated with `*` marking the highlighted one; `badges.ladder` is ≤ 4 names; an
   action shot's `image` is a bare file name in `public/welcome/` (anything else is ignored — stored
   text can't point the page at another URL); a socials link with no URL renders as "Soon".
+- **How-it-works step icons** (`welcome.how.steps[].icon`, 2026-10-01): a name from
+  `WELCOME_ICON_NAMES` (`lib/iconNames.ts` — `pinball` = PinballIcon, then the badge icon set),
+  picked with the shared `components/admin/IconPicker.tsx` (also /admin/badges). Empty, unknown or
+  missing (rows saved before the field existed) = the default for that position, resolved in
+  `mergeWelcomeContent`; tile colors stay fixed per position. The server's `WELCOME_ICON_NAMES` is a
+  twin, checked by siteContent.test.ts; `BADGE_ICONS` is typed against `BADGE_ICON_NAMES`.
 - **Media may not exist yet.** `components/welcome/WelcomeMedia.tsx` plays `/welcome/score-submission.mp4`
   (muted, looped, inline; only while on screen; poster `score-submission-poster.jpg`) and shows each
   screenshot from `/welcome/<image>`. Unknown paths come back as the SPA's index.html, so only the
