@@ -280,7 +280,10 @@ export default function WelcomePage() {
             <PhoneVideo />
             {action.shots.length > 0 && (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 min-w-0">
-                {action.shots.map((shot, i) => <Screenshot key={i} index={i} title={shot.title} image={shot.image} />)}
+                {/* An odd count would leave a hole in the 2-column grid, so the first shot spans it. */}
+                {action.shots.map((shot, i) => (
+                  <Screenshot key={i} index={i} title={shot.title} image={shot.image} wide={i === 0 && action.shots.length % 2 === 1} />
+                ))}
               </div>
             )}
           </div>

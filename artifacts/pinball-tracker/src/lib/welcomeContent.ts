@@ -107,10 +107,11 @@ export const WELCOME_DEFAULTS: WelcomeContent = {
     title: 'One photo. ==That’s it.==',
     caption: 'From the glass to your stats in a few seconds.',
     shots: [
-      { title: 'Score trend', image: 'trend.png' },
-      { title: 'Venue page', image: 'venue.png' },
-      { title: 'Badges on your profile', image: 'badges.png' },
-      { title: 'A live challenge', image: 'challenge.png' },
+      { title: 'Score trend', image: 'trend.jpg' },
+      { title: 'Start a challenge', image: 'challenge.jpg' },
+      { title: 'Every machine', image: 'machines.jpg' },
+      { title: 'Site stats', image: 'overall-stats.jpg' },
+      { title: 'Badges on your profile', image: 'badges.jpg' },
     ],
   },
   'welcome.founder': {

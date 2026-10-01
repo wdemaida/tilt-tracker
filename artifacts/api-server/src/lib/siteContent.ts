@@ -91,7 +91,7 @@ export const CONTENT_SPEC: Readonly<Record<string, SectionSpec>> = {
       caption: text('markdown', 'Caption', 300, false, MD_HELP),
       shots: list('Screenshots', 'Screenshot', 0, 6, {
         title: text('plain', 'Caption', 60),
-        image: text('plain', 'Image file', 80, false, 'A file name in public/welcome/ (e.g. trend.png). Until it exists, an illustration shows.'),
+        image: text('plain', 'Image file', 80, false, 'A file name in public/welcome/ (e.g. trend.jpg). Until it exists, an illustration shows.'),
       }),
     },
   },

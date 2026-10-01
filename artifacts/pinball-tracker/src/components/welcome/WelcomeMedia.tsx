@@ -60,15 +60,20 @@ export function PhoneVideo() {
   );
 }
 
-/** A screenshot from public/welcome/, or the illustration for its slot until the file exists. */
-export function Screenshot({ title, image, index }: { title: string; image: string; index: number }) {
+/**
+ * A screenshot from public/welcome/, or the illustration for its slot until the file exists. The
+ * image is contained, never cropped: the screenshots vary from square to nearly 3:1, and their dark
+ * page background matches the slot's, so the letterbox doesn't show. `wide` is the full-width slot
+ * an odd count gets (WelcomePage), with a wider frame to suit.
+ */
+export function Screenshot({ title, image, index, wide = false }: { title: string; image: string; index: number; wide?: boolean }) {
   const src = welcomeImageUrl(image);
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
   const showImage = src && !failed;
   return (
-    <figure className="m-0 min-w-0 rounded-2xl border border-white/10 bg-card overflow-hidden">
-      <div className="relative aspect-[16/10] bg-gradient-to-b from-[hsl(240_9%_10%)] to-card">
+    <figure className={`m-0 min-w-0 rounded-2xl border border-white/10 bg-card overflow-hidden ${wide ? 'sm:col-span-2' : ''}`}>
+      <div className={`relative ${wide ? 'aspect-[16/10] sm:aspect-[5/2]' : 'aspect-[16/10]'} ${loaded ? 'bg-background' : 'bg-gradient-to-b from-[hsl(240_9%_10%)] to-card'}`}>
         {showImage && (
           <img
             src={src}
@@ -76,7 +81,7 @@ export function Screenshot({ title, image, index }: { title: string; image: stri
             loading="lazy"
             onLoad={() => setLoaded(true)}
             onError={() => setFailed(true)}
-            className={`absolute inset-0 w-full h-full object-cover object-top ${loaded ? '' : 'invisible'}`}
+            className={`absolute inset-0 w-full h-full object-contain ${loaded ? '' : 'invisible'}`}
           />
         )}
         {!loaded && <Illustration kind={illustrationFor(image, index)} />}
