@@ -129,7 +129,10 @@ export function venueMachinesView<T extends VenueRow & { createdAt?: unknown }>(
   return rest;
 }
 
-/** The venue object on GET /api/venues/:id/scores (the venue detail page). */
+/**
+ * The venue object on GET /api/venues/:id/scores (the venue detail page). The owner or an admin of
+ * a restricted-tier venue also gets `publicView` — see publicPreview.
+ */
 export function venueDetailView(v: VenueRow & MachineCounts, requester: Viewer | undefined) {
   const flags = venueFlags(v, requester);
   if (isOthersPrivate(v, requester)) {
@@ -149,5 +152,17 @@ export function venueDetailView(v: VenueRow & MachineCounts, requester: Viewer |
     };
   }
   const { playedMachineCount: _p, inventoryCount: _i, inventoryManaged: _m, ...row } = v;
-  return { ...fullView(row, requester), ...flags };
+  return { ...fullView(row, requester), ...flags, ...publicPreview(row, requester) };
+}
+
+/**
+ * The owner's (or an admin's) preview of what everyone else gets for a restricted-tier venue — they
+ * see the real row, so without it the map looks the same at every tier. Computed by redactVenue
+ * itself with no requester, never a copy of its rule. Only ever on the full-view branch: anyone else
+ * already gets the redacted row, and this field never reaches them.
+ */
+function publicPreview(v: VenueRow, requester: Viewer | undefined) {
+  if (v.privacyTier === 'full' || !canSeeFullVenue(v, requester?.id, requester?.role === 'admin')) return {};
+  const pub = redactVenue(v, undefined, false);
+  return { publicView: { address: pub.address, latitude: pub.latitude, longitude: pub.longitude } };
 }

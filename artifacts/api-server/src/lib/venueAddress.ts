@@ -41,6 +41,18 @@ export function venueNeedsAddress(venue: Pick<AddressableVenue, 'address' | 'isR
   return !venue.isResidence && venue.privacyTier === 'full' && !(venue.address && venue.address.trim());
 }
 
+/**
+ * The address an Edit Venue save should store, or undefined to leave the stored one alone. The dialog
+ * sends whatever is in its address box, and a blank box used to null the column — that's how Will's
+ * Basement (venue 44) lost its address. So a blank or whitespace-only value never wipes an address;
+ * a real one is trimmed, and counts as a change only when it differs from what's stored.
+ */
+export function editedAddress(sent: unknown, stored: string | null): string | undefined {
+  if (typeof sent !== 'string') return undefined;
+  const next = sent.trim();
+  return next && next !== stored ? next : undefined;
+}
+
 /** Anything with the fields that decide whether a venue's identity/location may be shown to others. */
 export interface PrivacyFlags {
   isResidence: boolean;

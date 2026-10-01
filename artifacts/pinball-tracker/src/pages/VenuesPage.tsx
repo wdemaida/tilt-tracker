@@ -13,6 +13,7 @@ import { ScopeToggle } from '../components/ScopeToggle';
 import { queryClient } from '../lib/queryClient';
 import MapPage from './MapPage';
 import { MAP_VIEW_ENABLED } from '../lib/mapView';
+import { missingAddressLabel } from '../lib/venueAddressLabel';
 
 // Someone else's home venue arrives trimmed to what its card needs (name, the address its privacy
 // tier allows, counts) — no ownerId, tier, coordinates or timezone. Hence the optional fields.
@@ -220,7 +221,7 @@ export default function VenuesPage() {
                   </div>
                   {venue.address ? (
                     <p className="text-xs text-muted-foreground mt-0.5 truncate">{venue.address}</p>
-                  ) : venue.isResidence || venue.isPrivate ? (
+                  ) : missingAddressLabel(venue) === 'hidden' ? (
                     <p className="text-xs text-muted-foreground/60 italic mt-0.5">Address hidden</p>
                   ) : showNeedsAddress(venue) ? (
                     <Link
@@ -231,6 +232,8 @@ export default function VenuesPage() {
                       <AlertTriangle className="w-3 h-3" />
                       Needs address
                     </Link>
+                  ) : missingAddressLabel(venue) === 'none_on_file' ? (
+                    <p className="text-xs text-muted-foreground/60 italic mt-0.5">No address on file</p>
                   ) : null}
                 </div>
                 {venue.canEdit && (

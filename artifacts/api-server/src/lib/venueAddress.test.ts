@@ -10,7 +10,7 @@ process.env.DATABASE_URL ??= 'postgres://unit-test@127.0.0.1:1/never-connected';
 const {
   addressResolutionBlocker, venueNeedsAddress, pmLocationToPlace, formatPmAddress,
   buildManualAddressQuery, isPreciseGeocode, pickConfidentHereMatch, stripPlaceNamePrefix,
-  describeHolder, isPrivateVenue, linkageBlockedByPrivacy, venueListFlags, isUniqueViolation,
+  describeHolder, isPrivateVenue, linkageBlockedByPrivacy, venueListFlags, isUniqueViolation, editedAddress,
 } = await import('./venueAddress.js');
 const { canRepairVenue } = await import('./venueRepair.js');
 const { pmAutocompleteId } = await import('./pinballmapApi.js');
@@ -262,4 +262,17 @@ test('hereNamesOverlap', () => {
   assert.equal(hereNamesOverlap('Versus', 'The Alley Bar'), false);
   assert.equal(hereNamesOverlap('', 'Anything'), false);
   assert.equal(hereNamesOverlap('Versus', '  '), false);
+});
+
+test('editedAddress: a blank box never wipes a stored address', () => {
+  assert.equal(editedAddress('', '1 Main St, Brewster, MA'), undefined);
+  assert.equal(editedAddress('   ', '1 Main St, Brewster, MA'), undefined);
+  assert.equal(editedAddress('', null), undefined);
+  assert.equal(editedAddress(undefined, '1 Main St'), undefined);
+  assert.equal(editedAddress(42, '1 Main St'), undefined);
+  // Unchanged after trimming isn't a change — no re-geocode.
+  assert.equal(editedAddress(' 1 Main St ', '1 Main St'), undefined);
+  // A real new address is trimmed and stored, including onto a venue that had none.
+  assert.equal(editedAddress(' 2 Oak Rd, Brewster, MA ', '1 Main St'), '2 Oak Rd, Brewster, MA');
+  assert.equal(editedAddress('2 Oak Rd', null), '2 Oak Rd');
 });

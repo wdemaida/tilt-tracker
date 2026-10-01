@@ -18,7 +18,7 @@ import { canRepairVenue, buildResyncPreview, applyResync, reenrichMachines } fro
 import {
   addressResolutionBlocker, pmLocationToPlace, formatPmAddress, buildManualAddressQuery,
   isPreciseGeocode, pickConfidentHereMatch, adoptableHereMatch, stripPlaceNamePrefix, venueListFlags, describeHolder,
-  linkageBlockedByPrivacy, isUniqueViolation, type AddressBlocker, type HolderView, type PrivacyFlags,
+  linkageBlockedByPrivacy, isUniqueViolation, editedAddress, type AddressBlocker, type HolderView, type PrivacyFlags,
 } from '../lib/venueAddress.js';
 import { getVenueRoster, getPmLocationCached, knownBadPmId } from '../lib/pmRosterCache.js';
 import { visibleScoreSql, canSeeVenueActivity, canManageInventory, usesOwnerInventory } from '../lib/venueActivity.js';
@@ -673,8 +673,11 @@ router.patch('/:id', requireAppUser, async (req, res) => {
   // Stored whatever the tier, but only honoured on a private venue (venueActivity.ts).
   if (typeof showMachinesAndScores === 'boolean') updates.showMachinesAndScores = showMachinesAndScores;
 
-  const addressChanged = address !== undefined && address !== existing.address;
-  if (addressChanged) updates.address = address === '' ? null : address;
+  // A blank address box leaves the stored address alone (editedAddress) — it used to null it.
+  const sentAddress = typeof address === 'string' ? address.trim() : '';
+  const nextAddress = editedAddress(address, existing.address);
+  const addressChanged = nextAddress !== undefined;
+  if (addressChanged) updates.address = nextAddress;
 
   const nextTier = updates.privacyTier ?? existing.privacyTier;
   const needsCityCentroid = nextTier === 'city_state' && existing.cityLat == null;
@@ -687,9 +690,9 @@ router.patch('/:id', requireAppUser, async (req, res) => {
   }));
 
   try {
-    if (address && (addressChanged || needsCityCentroid)) {
+    if (sentAddress && (addressChanged || needsCityCentroid)) {
       // Address changed (or we're missing a city centroid this venue never needed before) — re-geocode.
-      const geocoded = await geocodeAddress(address);
+      const geocoded = await geocodeAddress(sentAddress);
       if (geocoded) {
         updates.address = geocoded.label;
         updates.latitude = geocoded.lat;

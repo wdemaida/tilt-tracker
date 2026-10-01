@@ -40,6 +40,10 @@ export function editTargetFromVenue(v: {
 
 const isPrivateEdit = (v: { isResidence: boolean; privacyTier: string }) => v.isResidence || v.privacyTier !== 'full';
 
+// "Full address" on a home with nothing in the box would publish no address at all — and a blank box
+// doesn't clear a stored one on the server — so the choice needs an address typed in.
+const fullNeedsAddress = (v: EditVenueTarget) => v.isResidence && v.privacyTier === 'full' && !v.address.trim();
+
 // The Edit Venue dialog — shared by the Venues page and the venue detail page (same permission:
 // the server's `canEdit`, i.e. the venue's owner or an admin).
 export default function EditVenueDialog({ venue, onClose }: { venue: EditVenueTarget | null; onClose: () => void }) {
@@ -121,6 +125,9 @@ export default function EditVenueDialog({ venue, onClose }: { venue: EditVenueTa
                       {opt.label}
                     </label>
                   ))}
+                  {fullNeedsAddress(edit) && (
+                    <p className="text-xs text-red-400">Enter the address above to show it in full.</p>
+                  )}
                 </div>
               )}
               {/* Only a private venue's owner can hide its machines and scores — a public venue's
@@ -166,7 +173,7 @@ export default function EditVenueDialog({ venue, onClose }: { venue: EditVenueTa
                       showMachinesAndScores: edit.showMachinesAndScores,
                     },
                   })}
-                  disabled={patchMutation.isPending}
+                  disabled={patchMutation.isPending || fullNeedsAddress(edit)}
                   className="flex-1 py-2.5 rounded-lg bg-primary text-white font-bold text-sm hover:opacity-90 transition-opacity disabled:opacity-50"
                 >
                   {patchMutation.isPending ? 'Saving...' : 'Save'}
