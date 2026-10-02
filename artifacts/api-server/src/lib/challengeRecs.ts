@@ -12,6 +12,9 @@
 //  - Within a level: machines the viewer can reach too (any of the viewer's own three levels) first,
 //    then machines the viewer has a score on, then the rest — each group in the level's own order.
 //  - Caps per level: 3 / 8 / 5.
+//  - Then, across levels (Will, 2026-10-02): the machines the viewer can reach too come first, then
+//    the rest, each part by level and in the order above. Only the order changes — the caps pick
+//    the same set — and the create form shows that first part as "You can both reach".
 //  - Exact machine, not the OPDB game group: a Pro and a Premium can play very differently, so the
 //    create form turns a picked recommendation into matchMode 'exact'.
 
@@ -68,9 +71,10 @@ function dedupe(items: ReachItem[]): ReachItem[] {
 }
 
 /**
- * The target's recommendations for this viewer, level by level (1, then 2, then 3), each ranked and
- * capped. `viewerReach` = machine ids the viewer can reach; `viewerBest` = the viewer's best score
- * per machine id.
+ * The target's recommendations for this viewer: picked level by level (1, then 2, then 3), each
+ * ranked and capped, then the ones the viewer can reach too moved to the front (stable — by level,
+ * then each level's own rank). `viewerReach` = machine ids the viewer can reach; `viewerBest` = the
+ * viewer's best score per machine id.
  */
 export function mergeRecommendations(
   target: Reach, viewerReach: Set<number>, viewerBest: Map<number, number>, caps: Record<RecLevel, number> = REC_CAPS,
@@ -94,7 +98,10 @@ export function mergeRecommendations(
       out.push(rec);
     }
   }
-  return out;
+  // `out` is already by level, then rank, so its index is the tiebreak.
+  return out.map((r, i) => ({ r, i }))
+    .sort((a, b) => Number(b.r.viewerCanReach) - Number(a.r.viewerCanReach) || a.i - b.i)
+    .map(x => x.r);
 }
 
 /**

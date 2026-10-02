@@ -20,9 +20,9 @@ import type { ChallengeRecommendation, ChallengeType, ChallengeVenueOption as Ve
 //
 // Up to 7 friends (8 players with you). Once one is picked, "Recommended for @friend" lists machines
 // they can reach (their "Challenge me on" picks, machines at venues they can get to, machines they
-// played lately); with several, "Recommended for the group" ranks machines by how many of them can
-// reach it (GET /challenges/recommendations?users=). Picking one sets the exact model, since a Pro
-// and a Premium can play very differently.
+// played lately), the ones you can both reach first; with several, "Recommended for the group" ranks
+// machines by how many of them can reach it (GET /challenges/recommendations?users=). Picking one sets
+// the exact model, since a Pro and a Premium can play very differently.
 //
 // `?counterOf=<id>` — a counter-offer ("can't get to this one"): it goes to the original's challenger
 // (fixed) as a suggestion; type and duration are prefilled from the original, and sending goes to
@@ -75,8 +75,12 @@ function Segmented<T extends string>({ value, options, onChange, label }: {
 
 const inputClass = pickerInputClass;
 
-/** One recommendation row: pick it to challenge on that exact machine. `who` = group: which friends can reach it. */
-function RecommendationRow({ r, onPick, who, homes }: { r: ChallengeRecommendation; onPick: () => void; who?: string[]; homes?: string[] }) {
+/**
+ * One recommendation row: pick it to challenge on that exact machine. `who` = group: which friends can
+ * reach it. `levelTag` = the "You can both reach" group: which level it came from (the group's heading
+ * already says you can reach it, so the pill is left off).
+ */
+function RecommendationRow({ r, onPick, who, homes, levelTag }: { r: ChallengeRecommendation; onPick: () => void; who?: string[]; homes?: string[]; levelTag?: string }) {
   return (
     <button
       type="button"
@@ -87,6 +91,7 @@ function RecommendationRow({ r, onPick, who, homes }: { r: ChallengeRecommendati
       <span className="min-w-0 flex-1">
         <span className="block text-sm font-semibold text-machine truncate">{r.name}</span>
         <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
+          {levelTag && <span className="rounded border border-white/15 px-1 text-[10px] uppercase tracking-wider">{levelTag}</span>}
           {r.venueLabel && (
             r.venueLabel === 'at home'
               ? <span className="inline-flex items-center gap-1"><Home className="w-3 h-3" aria-hidden /> at home</span>
@@ -97,7 +102,7 @@ function RecommendationRow({ r, onPick, who, homes }: { r: ChallengeRecommendati
           {r.viewerBest != null && <span>Your best <span className="text-primary font-semibold">{formatScore(r.viewerBest)}</span></span>}
         </span>
       </span>
-      {r.viewerCanReach && (
+      {r.viewerCanReach && !levelTag && (
         <span className="flex-shrink-0 rounded-md border border-friend/40 bg-friend/10 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-friend">
           You can reach it too
         </span>
@@ -208,7 +213,9 @@ export default function NewChallengePage() {
   });
   const recsQuery = group ? groupRecs : singleRecs;
   const recs = recsQuery.data?.recommendations ?? [];
-  const recLevels = ([1, 2, 3] as const).map(level => ({ level, items: recs.filter(r => r.level === level) })).filter(g => g.items.length);
+  // One friend: machines you can both reach first (each tagged with its level), then the rest by level.
+  const bothReach = recs.filter(r => r.viewerCanReach);
+  const recLevels = ([1, 2, 3] as const).map(level => ({ level, items: recs.filter(r => r.level === level && !r.viewerCanReach) })).filter(g => g.items.length);
   // Group: by how many of them can reach it, most first.
   const nameOf = (id: number) => picked.find(p => p.id === id)?.username ?? null;
   const coverageGroups = [...new Set(recs.map(r => r.coverage ?? 1))].sort((a, b) => b - a)
@@ -405,6 +412,14 @@ export default function NewChallengePage() {
                   </div>
                 ) : (
                   <div className="flex flex-col gap-3">
+                    {bothReach.length > 0 && (
+                      <div>
+                        <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">You can both reach</p>
+                        <div className="flex flex-col gap-1.5">
+                          {bothReach.map(r => <RecommendationRow key={r.machineId} r={r} onPick={() => pickRecommendation(r)} levelTag={REC_LEVEL_LABEL[r.level]} />)}
+                        </div>
+                      </div>
+                    )}
                     {recLevels.map(g => (
                       <div key={g.level}>
                         <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">{REC_LEVEL_LABEL[g.level]}</p>

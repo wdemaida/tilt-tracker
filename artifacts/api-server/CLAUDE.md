@@ -806,7 +806,9 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   max 3, exact machines), 2 = the machines at their "challenge locations" (`user_challenge_venues`),
   3 = machines they scored on in the last 60 days (visits, then recency). `challengeRecs.ts` (pure,
   unit-tested) keeps each machine at its highest level, ranks "viewer can reach it too" first, then
-  "viewer has a score", caps 3 / 8 / 5. The create form turns a picked recommendation into `matchMode 'exact'`.
+  "viewer has a score", caps 3 / 8 / 5 — then re-sorts the capped list so "viewer can reach it too"
+  comes first across all levels (stable; same set, only the order changes — 2026-10-02). The group
+  path with several targets is unaffected. The create form turns a picked recommendation into `matchMode 'exact'`.
 - **Zero Pinball Map calls**: level 2 reads `pm_location_cache` directly (any age), then
   `venue_machine_history` (not removed), and a private venue's `venue_inventory`. Never
   `getVenueRoster` / pmClient; `challengeReach.ts` doesn't import them (test-challenges.ts checks).

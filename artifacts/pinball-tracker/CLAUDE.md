@@ -489,7 +489,9 @@
 
 ## Group challenges (`ChallengePage.tsx`, `ChallengesPage.tsx`, `NewChallengePage.tsx`, added 2026-09-29)
 - Up to 7 friends per challenge (`MAX_INVITEES` in `lib/challenges.ts`); the create form sends
-  `friendIds`. One friend → "Recommended for @friend" (`/recommendations/:username`); several →
+  `friendIds`. One friend → "Recommended for @friend" (`/recommendations/:username`): a "You can
+  both reach" group first (`viewerCanReach`, each row tagged with its level), then the rest by level,
+  no row twice, and no group when nothing overlaps; several →
   "Recommended for the group" grouped by `coverage` (`/recommendations?users=`), a friend's own home
   shown as "at @name's" (`atHomeOf`).
 - `isGroupChallenge(c)` = more than two participants and not a proposal. Groups get the ranked

@@ -36,8 +36,43 @@ test('caps per level: 3 / 8 / 5, applied after ranking', () => {
 });
 
 test('levels come out in order 1, 2, 3', () => {
-  const recs = mergeRecommendations({ level1: [m(3)], level2: [m(2)], level3: [m(1)] }, new Set([1]), noBest);
+  const recs = mergeRecommendations({ level1: [m(3)], level2: [m(2)], level3: [m(1)] }, none, noBest);
   assert.deepEqual(recs.map(r => r.level), [1, 2, 3]);
+});
+
+test('machines you can both reach come first, across levels, then by level', () => {
+  const recs = mergeRecommendations({ level1: [m(1), m(2)], level2: [m(3), m(4)], level3: [m(5), m(6)] }, new Set([6, 3]), noBest);
+  assert.deepEqual(recs.map(r => [r.machineId, r.level]), [[3, 2], [6, 3], [1, 1], [2, 1], [4, 2], [5, 3]]);
+  assert.deepEqual(recs.map(r => r.viewerCanReach), [true, true, false, false, false, false]);
+});
+
+test('both-reach first: the caps pick the same set as before, only the order changes', () => {
+  const many = (from: number, n: number) => Array.from({ length: n }, (_, i) => m(from + i));
+  const reach: Reach = { level1: many(100, 5), level2: many(200, 12), level3: many(300, 9) };
+  const viewerReach = new Set([104, 211, 203, 308, 301]);
+  const recs = mergeRecommendations(reach, viewerReach, new Map([[102, 50]]));
+  const count = (l: number) => recs.filter(r => r.level === l).length;
+  assert.deepEqual([count(1), count(2), count(3)], [REC_CAPS[1], REC_CAPS[2], REC_CAPS[3]]);
+  // Per level, the same picks in the same order as the per-level rank (reach, then best, then the rest).
+  assert.deepEqual(recs.filter(r => r.level === 1).map(r => r.machineId), [104, 102, 100]);
+  assert.deepEqual(recs.filter(r => r.level === 2).map(r => r.machineId), [203, 211, 200, 201, 202, 204, 205, 206]);
+  assert.deepEqual(recs.filter(r => r.level === 3).map(r => r.machineId), [301, 308, 300, 302, 303]);
+  assert.deepEqual(recs.map(r => r.machineId), [104, 203, 211, 301, 308, 102, 100, 200, 201, 202, 204, 205, 206, 300, 302, 303]);
+});
+
+test('both-reach first is stable: ties keep level order, then each level’s own order', () => {
+  const recs = mergeRecommendations(
+    { level1: [m(1), m(2)], level2: [m(3), m(4), m(5)], level3: [m(6), m(7)] },
+    new Set([7, 5, 2, 4, 6]), new Map([[3, 10], [1, 20]]),
+  );
+  assert.deepEqual(recs.map(r => r.machineId), [2, 4, 5, 6, 7, 1, 3]);
+  assert.equal(recs.at(-1)?.viewerBest, 10);
+});
+
+test('nobody overlaps → plain level order', () => {
+  const recs = mergeRecommendations({ level1: [m(1)], level2: [m(2, 'at home')], level3: [m(3)] }, new Set([99]), noBest);
+  assert.deepEqual(recs.map(r => r.machineId), [1, 2, 3]);
+  assert.equal(recs[1].venueLabel, 'at home');
 });
 
 test('venue labels: level 2 only, a later copy fills a missing label, never an empty one', () => {
@@ -81,6 +116,17 @@ test('group merge with ONE target is exactly the single-friend list', () => {
   const viewerReach = new Set([3]);
   const best = new Map([[4, 1000]]);
   assert.deepEqual(mergeGroupRecommendations([{ userId: 9, reach }], viewerReach, best), mergeRecommendations(reach, viewerReach, best));
+  assert.deepEqual(mergeRecommendations(reach, viewerReach, best).map(r => r.machineId), [3, 1, 2, 4], 'both-reach first applies here too');
+});
+
+test('group merge (several targets) is untouched by both-reach-first: its own order stands', () => {
+  // A viewer-reachable machine at level 3 for one friend only does NOT jump a 2-of-2 machine.
+  const bob: Reach = { level1: [m(1)], level2: [m(2, 'Logan Arcade')], level3: [m(3), m(4)] };
+  const carol: Reach = { level1: [], level2: [m(1)], level3: [m(2), m(5)] };
+  const recs = mergeGroupRecommendations([{ userId: 2, reach: bob }, { userId: 3, reach: carol }], new Set([4, 5]), new Map([[3, 9]])) as GroupRecommendation[];
+  assert.deepEqual(recs.map(r => [r.machineId, r.level, r.coverage, r.viewerCanReach]), [
+    [1, 1, 2, false], [2, 2, 2, false], [4, 3, 1, true], [5, 3, 1, true], [3, 3, 1, false],
+  ]);
 });
 
 test('group merge: coverage first, then viewer can reach it, then lowest level, then viewer best, then first seen', () => {
