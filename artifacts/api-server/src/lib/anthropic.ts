@@ -212,11 +212,18 @@ Rules:
 
 Call ${TOOL_NAME} with one read per image, each listing that image's player displays.`;
 
-/** `onRawInput` is a debugging hook (used by local test scripts) that sees the unsanitized tool input. */
+/**
+ * `onRawInput` is a debugging hook (used by local test scripts) that sees the unsanitized tool input.
+ * `opts` is for the lit-filter re-read (litFilter.ts): its own ai_usage operation, and a note about
+ * the processed photos sent ahead of them. Pass 1 passes neither, so its request is unchanged.
+ */
 export async function extractScoreReads(
   images: ExtractionImage[], onRawInput?: (raw: unknown) => void, ctx?: AiCallContext,
+  opts?: { operation?: AiOperation; preface?: string },
 ): Promise<ExtractedScoreReads> {
+  const operation = opts?.operation ?? 'score_read';
   const content: Anthropic.ContentBlockParam[] = [];
+  if (opts?.preface) content.push({ type: 'text', text: opts.preface });
   images.forEach((img, i) => {
     if (images.length > 1) content.push({ type: 'text', text: `Image ${i}:` });
     content.push({
@@ -241,17 +248,17 @@ export async function extractScoreReads(
       messages: [{ role: 'user', content }],
     }, readRequestOptions(images.length));
   } catch (err) {
-    track('score_read', ctx, started, null, apiErrorLabel(err));
+    track(operation, ctx, started, null, apiErrorLabel(err));
     throw err;
   }
 
   if (message.stop_reason === 'max_tokens') {
-    track('score_read', ctx, started, message.usage, 'max_tokens');
+    track(operation, ctx, started, message.usage, 'max_tokens');
     // A truncated read would silently drop displays (or whole images) off the end — fail instead.
     console.error(`Score read hit max_tokens (${message.usage.output_tokens} output tokens, ${images.length} images)`);
     throw new ScoreReadTruncatedError();
   }
-  track('score_read', ctx, started, message.usage, null);
+  track(operation, ctx, started, message.usage, null);
   const toolUse = message.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === TOOL_NAME);
   onRawInput?.(toolUse?.input);
   const input = (toolUse?.input ?? {}) as {

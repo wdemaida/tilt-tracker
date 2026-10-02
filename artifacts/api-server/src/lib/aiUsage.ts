@@ -8,7 +8,7 @@ import { sql } from 'drizzle-orm';
 // Fire-and-forget. recordAiUsage returns nothing and never throws: a failed insert (DB down, table
 // missing because migrate27 hasn't run) is one console.error, and the upload carries on untouched.
 
-export type AiOperation = 'score_read' | 'display_windows';
+export type AiOperation = 'score_read' | 'display_windows' | 'lit_filter_read';
 
 export interface AiUsageEntry {
   provider: string;
