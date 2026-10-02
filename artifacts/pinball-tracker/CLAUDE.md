@@ -294,6 +294,11 @@
   trailing-zeros chip and plausibility all run on that player only. "Change player" reopens the
   cards; "None of these — type it in" is plain-number entry. One display skips the question. Never
   pre-select from `selectedPlayerIndex` — that's only the old-client fallback.
+- Each player card has a **×** (`dismissPlayerRead`, added 2026-10-02): a bogus read (an unlit display
+  read as "888,888") is dropped from the picker. Users tried to "remove" such reads by picking one and
+  typing 0, which only hit the score's "Must be positive" — only the picked display is ever saved.
+  Down to one display, it's auto-picked. A dismissal doesn't survive "Add another photo" (the re-read
+  brings every display back).
 - After "Add another photo", `matchPlayerRead()` keeps the pick by player number, else by position
   when the display count didn't change. If it can't, the user is asked again and whatever they had
   typed waits in `pendingCarryRef` to be reconciled onto the player they pick — adding a photo

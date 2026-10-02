@@ -676,6 +676,35 @@ export default function AddScorePage() {
     applyChosenRead(read, carry);
   }
 
+  /**
+   * The × on a player card: that display isn't a real score (an unlit or empty display the model
+   * read as one). Drops it from the picker. Only the picked display is ever saved, so this is how a
+   * bogus read goes away — there's no zero to type. Down to one display, that one is theirs.
+   */
+  function dismissPlayerRead(i: number) {
+    const remaining = playerReads.filter((_, k) => k !== i);
+    const kept = typeof selectedPlayer === 'number' && selectedPlayer !== i
+      ? selectedPlayer - (selectedPlayer > i ? 1 : 0)
+      : null;
+    setPlayerReads(remaining);
+    if (remaining.length === 1) {
+      setChoosingPlayer(false);
+      setSelectedPlayer(0);
+      // The survivor was already their pick: keep what they've typed into it.
+      if (kept === 0) return;
+      const carry = pendingCarryRef.current;
+      pendingCarryRef.current = null;
+      applyChosenRead(remaining[0], carry);
+      return;
+    }
+    if (selectedPlayer === i) {
+      setSelectedPlayer(null);
+      clearScoreEntry();
+    } else if (kept != null) {
+      setSelectedPlayer(kept);
+    }
+  }
+
   /** "None of these — type it in": plain-number entry, no photo read to fill. */
   function selectNoPlayer() {
     const carry = pendingCarryRef.current;
@@ -1827,27 +1856,38 @@ export default function AddScorePage() {
               <div className="flex flex-col gap-2">
                 <p className="text-sm font-bold text-white">Which player were you?</p>
                 <p className="text-xs text-muted-foreground -mt-1.5">
-                  The photo shows {playerReads.length} player scores — tap yours.
+                  The photo shows {playerReads.length} player scores — tap yours. Only yours is
+                  saved; tap × on any that aren't real scores.
                 </p>
                 <div className="grid grid-cols-2 gap-2">
                   {playerReads.map((r, i) => {
                     const isSelected = selectedPlayer === i;
                     return (
-                      <button
-                        key={i}
-                        type="button"
-                        onClick={() => selectPlayer(i)}
-                        aria-pressed={isSelected}
-                        aria-label={`${playerLabel(r, i)}: ${formatTemplate(r.template)}`}
-                        className={`flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-lg border text-left transition-colors ${isSelected ? 'border-primary/60 bg-primary/10' : 'border-white/10 hover:border-primary/40 hover:bg-white/5'}`}
-                      >
-                        <span className="text-[0.65rem] font-bold uppercase tracking-wider text-muted-foreground">{playerLabel(r, i)}</span>
-                        <span className="font-mono font-bold text-lg text-white tracking-wide">
-                          {[...formatTemplate(r.template)].map((ch, k) => (
-                            <span key={k} className={ch === 'x' ? 'text-amber-400' : undefined}>{ch}</span>
-                          ))}
-                        </span>
-                      </button>
+                      <div key={i} className="relative">
+                        <button
+                          type="button"
+                          onClick={() => selectPlayer(i)}
+                          aria-pressed={isSelected}
+                          aria-label={`${playerLabel(r, i)}: ${formatTemplate(r.template)}`}
+                          className={`w-full flex flex-col items-start gap-0.5 px-3 py-2.5 rounded-lg border text-left transition-colors ${isSelected ? 'border-primary/60 bg-primary/10' : 'border-white/10 hover:border-primary/40 hover:bg-white/5'}`}
+                        >
+                          <span className="text-[0.65rem] font-bold uppercase tracking-wider text-muted-foreground">{playerLabel(r, i)}</span>
+                          <span className="font-mono font-bold text-lg text-white tracking-wide">
+                            {[...formatTemplate(r.template)].map((ch, k) => (
+                              <span key={k} className={ch === 'x' ? 'text-amber-400' : undefined}>{ch}</span>
+                            ))}
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => dismissPlayerRead(i)}
+                          aria-label={`${playerLabel(r, i)} isn't a real score — remove it`}
+                          title="Not a real score — remove"
+                          className="absolute top-1 right-1 p-1.5 rounded-md text-muted-foreground hover:text-white hover:bg-white/10 transition-colors"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     );
                   })}
                 </div>
