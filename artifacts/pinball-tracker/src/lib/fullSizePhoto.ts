@@ -23,7 +23,8 @@
 
 import type { createApi } from './api';
 import {
-  drawToJpeg, fitWithin, FULL_MAX_EDGE, FULL_JPEG_QUALITY, UPLOAD_MAX_EDGE, type PreparedImage,
+  decodeScaled, drawToJpeg, fitWithin, withDecodeLock, FULL_MAX_EDGE, FULL_JPEG_QUALITY, UPLOAD_MAX_EDGE,
+  type PreparedImage, type ScaledDecode,
 } from './prepareUploadImage';
 
 type Api = ReturnType<typeof createApi>;
@@ -70,24 +71,31 @@ export async function encodeFullSizePhoto(image: PreparedImage | null | undefine
   if (full.ready && full.width && full.height && full.blob.size <= FULL_MAX_BYTES) {
     return { ok: true, photo: { blob: full.blob, width: full.width, height: full.height, variant: 'full' } };
   }
+  // Holds the decode lock: never alongside prepareUploadImage's decode of another photo.
+  return withDecodeLock(() => encodeFromSource(full.blob, signal));
+}
+
+async function encodeFromSource(source: Blob, signal?: AbortSignal): Promise<FullPhotoEncodeResult> {
   if (signal?.aborted) return CANCELLED;
-  let bitmap: ImageBitmap | null = null;
+  let decoded: ScaledDecode;
   try {
-    // Applies EXIF orientation ('from-image' is the default), so portrait photos stay upright once
-    // the re-encode drops the orientation tag.
-    bitmap = await createImageBitmap(full.blob);
+    // One decode, straight to ≤ the largest attempt edge (decodeScaled: no full-resolution bitmap of
+    // a 50–200MP original where the browser can help it), reused for every attempt. EXIF
+    // orientation is applied, so portrait photos stay upright once the re-encode drops the tag.
+    decoded = await decodeScaled(source, ATTEMPTS[0].edge);
   } catch (err) {
     console.warn('Full-size photo decode failed:', err);
     return { ok: false, reason: 'decode', detail: errorDetail(err) };
   }
-  const originalWidth = bitmap.width;
-  const originalHeight = bitmap.height;
+  const { sourceWidth: originalWidth, sourceHeight: originalHeight } = decoded;
   try {
     for (const { edge, quality } of ATTEMPTS) {
       if (signal?.aborted) return CANCELLED;
-      const blob = await drawToJpeg(bitmap, originalWidth, originalHeight, edge, quality);
+      // Sized from the original, as before — the (already reduced) decode is drawn into it.
+      const size = fitWithin(originalWidth, originalHeight, edge);
+      const blob = await drawToJpeg(decoded.source, size.width, size.height, edge, quality);
       if (blob.size <= FULL_MAX_BYTES) {
-        return { ok: true, photo: { blob, ...fitWithin(originalWidth, originalHeight, edge), variant: 'full' } };
+        return { ok: true, photo: { blob, ...size, variant: 'full' } };
       }
     }
     return { ok: false, reason: 'too_large', detail: `over ${FULL_MAX_BYTES} bytes at every size`, originalWidth, originalHeight };
@@ -96,7 +104,7 @@ export async function encodeFullSizePhoto(image: PreparedImage | null | undefine
     console.warn('Full-size photo encode failed:', err);
     return { ok: false, reason: 'decode', detail: errorDetail(err), originalWidth, originalHeight };
   } finally {
-    bitmap.close();
+    decoded.close();
   }
 }
 
@@ -104,16 +112,19 @@ export async function encodeFullSizePhoto(image: PreparedImage | null | undefine
 async function encodeFallbackPhoto(image: PreparedImage): Promise<FullPhotoEncodeResult> {
   // A heicFailed `file` is the HEIC original this browser already couldn't decode.
   if (image.heicFailed) return { ok: false, reason: 'heic' };
-  let bitmap: ImageBitmap | null = null;
-  try {
-    bitmap = await createImageBitmap(image.file);
-    const blob = await drawToJpeg(bitmap, bitmap.width, bitmap.height, UPLOAD_MAX_EDGE, FULL_JPEG_QUALITY);
-    return { ok: true, photo: { blob, ...fitWithin(bitmap.width, bitmap.height, UPLOAD_MAX_EDGE), variant: 'fallback' } };
-  } catch (err) {
-    return { ok: false, reason: 'decode', detail: errorDetail(err) };
-  } finally {
-    bitmap?.close();
-  }
+  return withDecodeLock(async (): Promise<FullPhotoEncodeResult> => {
+    let decoded: ScaledDecode | null = null;
+    try {
+      // `file` is still the original when the downscale failed, so this decodes reduced-size too.
+      decoded = await decodeScaled(image.file, UPLOAD_MAX_EDGE);
+      const blob = await drawToJpeg(decoded.source, decoded.width, decoded.height, UPLOAD_MAX_EDGE, FULL_JPEG_QUALITY);
+      return { ok: true, photo: { blob, ...fitWithin(decoded.width, decoded.height, UPLOAD_MAX_EDGE), variant: 'fallback' } };
+    } catch (err) {
+      return { ok: false, reason: 'decode', detail: errorDetail(err) };
+    } finally {
+      decoded?.close();
+    }
+  });
 }
 
 /**

@@ -327,6 +327,18 @@
   "Saved a smaller copy of the photo"). Always redrawn — `file` is the untouched original when it was
   already a ≤2000px JPEG. **Nothing goes silently idle after a real attempt**: a failed encode or upload
   shows the failed line with a reason and Retry (which re-encodes).
+- **Reduced-size decode, one at a time** (added 2026-10-01 — a Galaxy S23 Ultra tab was killed for low
+  memory). Never decode a photo at full resolution when only ≤2000 / ≤4096px is drawn:
+  `decodeScaled()` (prepareUploadImage.ts) reads the displayed size without decoding (`readJpegSize()`
+  in `src/lib/imageSize.ts` — SOF + EXIF orientation, unit-tested — else an unattached `<img>`'s natural
+  size), then draws an `<img>` into a target-sized `willReadFrequently` canvas. Measured in Edge on a
+  200MP JPEG, renderer peak: ~180MB for the whole prepare + full-size encode, against ~2.3GB before.
+  **`createImageBitmap` with `resizeWidth` is not the fix in Chromium** — the output is small, but it still
+  decodes in full first (~800MB transient). It's only the second route; then the plain full decode. A
+  canvas route whose `<img>` natural size disagrees with the header's oriented size is skipped (a sideways
+  photo is worse than a big decode). The full-size encode decodes once at 4096 and reuses it for every
+  attempt. `withDecodeLock()` serializes prepareUploadImage, the full-size encode and the fallback
+  encode, so the background `FullPhotoEncoder` never decodes alongside the next photo's prepare.
 - **HEIC:** `prepareUploadImage` tries the browser's native decoder (`createImageBitmap`, Safari 17+)
   before heic2any. heic2any paints the whole decoded image into one canvas, so a 24MP+ HEIC on an iPhone
   exceeds the canvas limit and silently becomes `heicFailed` (server decode). Note iOS usually hands
