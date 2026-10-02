@@ -87,7 +87,7 @@ const scoreReadTool: Anthropic.Tool & { strict?: boolean } = {
   input_schema: {
     type: 'object',
     additionalProperties: false,
-    required: ['machineName', 'playedAt', 'bestImageIndex', 'reads'],
+    required: ['machineName', 'playedAt', 'bestImageIndex', 'reads', 'playerCount'],
     properties: {
       machineName: {
         type: ['string', 'null'],
@@ -171,6 +171,15 @@ const scoreReadTool: Anthropic.Tool & { strict?: boolean } = {
           },
         },
       },
+      // Caps the player displays in code (capToPlayerCount in scoreRead.ts): a display numbered above
+      // it was an unlit one misread. Only from lamps — never derived from the displays, which is what
+      // it's there to check. Last in the schema on purpose: as a per-image field ahead of `displays`
+      // it changed how the displays were transcribed (Stars 1UP "892450" became "189245?" in both
+      // runs); written after them it didn't. One per upload — every photo is of the same game.
+      playerCount: {
+        type: ['integer', 'null'],
+        description: 'How many players are in this game, read ONLY from lit player-count lamps on the backglass (e.g. "PLAYERS 1 2 3 4" or "1 PLAYER" … "4 PLAYERS" lights, with only some lit). null if there are no such lamps, they aren\'t clearly visible, or you can\'t tell which are lit. Never work it out from the score displays.',
+      },
     },
   },
 };
@@ -246,7 +255,7 @@ export async function extractScoreReads(
   const toolUse = message.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === TOOL_NAME);
   onRawInput?.(toolUse?.input);
   const input = (toolUse?.input ?? {}) as {
-    machineName?: unknown; playedAt?: unknown; bestImageIndex?: unknown; reads?: unknown;
+    machineName?: unknown; playedAt?: unknown; bestImageIndex?: unknown; reads?: unknown; playerCount?: unknown;
   };
 
   const rawReads = Array.isArray(input.reads) ? (input.reads as any[]) : [];
@@ -255,7 +264,7 @@ export async function extractScoreReads(
   const reads: ImageRead[] = images.map((_, i) => {
     const raw = rawReads.find(r => r?.imageIndex === i) ?? rawReads[i] ?? {};
     const img = images[i];
-    return sanitizeImageDisplays(raw?.displays, img.width && img.height ? { width: img.width, height: img.height } : undefined);
+    return sanitizeImageDisplays(raw?.displays, img.width && img.height ? { width: img.width, height: img.height } : undefined, input.playerCount);
   });
 
   const modelBest = Number(input.bestImageIndex);

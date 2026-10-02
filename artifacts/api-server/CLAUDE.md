@@ -579,6 +579,17 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   in another). The prompt skips ball-in-play/credit/match panels and **mirror-image reflections** in
   the playfield glass; `sanitizeImageDisplays()` also drops blank and all-zero displays ("00"),
   de-duplicates player numbers and sorts numbered players first. Player numbers outside 1–4 → null.
+- **Ghost displays and the lit player count** (2026-10-02, after a Stars upload came back with a
+  P4 "888,888" and a P3 that was really the ball/match display). `isGhostDisplay()` drops a
+  **segment** read whose known digits are all 8s (≥3, or exactly "88") or ghost 8s followed only
+  by zeros ("888800") — an unlit gas-plasma/7-segment display's gray outlines. DMD/LCD reads are
+  never touched. The tool also returns a top-level `playerCount` from lit "PLAYERS 1 2 3 4"-style
+  lamps (null when there are none); `capToPlayerCount()` drops displays numbered above it, and
+  unnumbered ones only when the numbered displays fill every slot; it's ignored if it would leave
+  no display with a digit. `playerCount` is **last in the schema on purpose** — as a per-image
+  field ahead of `displays` it shifted transcription (Stars 1UP "892450" → "189245?" in both test runs).
+  Ghost 8s *in front of* a real score ("882950" for 92,450) are not caught. Tests:
+  `npx tsx --test src/lib/scoreRead.test.ts`.
 - `mergePlayerReads()` merges **per player**, then `mergeReads()` per group as before. Matching, in
   order: player number → position (only when an image has as many displays as the reference image)
   → template agreement for a lone unnumbered close-up (≥2 agreeing digits, no contradiction, unique

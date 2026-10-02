@@ -290,17 +290,70 @@ function leadingAmbiguity(raw: RawDisplay, template: string): boolean {
   return raw.leadingPositionAmbiguous === true || template.includes('?');
 }
 
+/** Fewest known 8s that make a segment read a ghost display (see isGhostDisplay). */
+export const MIN_GHOST_EIGHTS = 3;
+
 /**
- * Sanitizes one image's list of player displays: drops displays that show no score (blank, or only
- * zeros — a "00" is a ball-in-play or unused player, and a zero score can't be saved anyway), drops
- * all-unread displays when the image has a readable one, de-duplicates player numbers (a second
- * display claiming the same number loses it), and sorts numbered displays first, in player order.
+ * Whether a segment read is an unlit display's ghost outlines rather than a score. Gas-plasma and
+ * 7-segment windows show every segment faintly when dark, so an unlit display looks like a row of
+ * gray 8s, and in poor light the model reads them as lit: a fully unlit Stars 4UP came back as
+ * "888888", a real Black Knight 2000 player display never does. A ghost read is:
+ *  - every known digit an 8, at least MIN_GHOST_EIGHTS of them ("888888", "88?888"), or exactly
+ *    "88" — a two-window ghost (no player score is 88);
+ *  - or ghost 8s followed by lit zeros only ("888800") — the Stars 3UP showed four gray 8s and a lit
+ *    "00": the only lit digits make a zero score, which can't be saved anyway.
+ * Only segment displays: a DMD or LCD has no unlit outlines to misread. A real all-8s score
+ * (888,888) is lost to this rule — rare enough, and the user can still type it in. Ghost 8s in front
+ * of a real score ("882950" for 92,450) can't be told apart from real digits here and are left alone.
  */
-export function sanitizeImageDisplays(raw: unknown, size?: ImageSize): ImageRead {
+export function isGhostDisplay(d: Pick<DisplayRead, 'template' | 'displayKind'>): boolean {
+  if (d.displayKind !== 'segment') return false;
+  const m = /^([8?]*)(0*)$/.exec(d.template);
+  if (!m) return false;
+  if (d.template === '88') return true;
+  return (m[1].match(/8/g) ?? []).length >= MIN_GHOST_EIGHTS;
+}
+
+/** A model-reported lit player count: an integer 1..MAX_PLAYER, else null (not shown / unsure). */
+export function sanitizePlayerCount(raw: unknown): number | null {
+  const n = Number(raw);
+  return raw != null && Number.isInteger(n) && n >= 1 && n <= MAX_PLAYER ? n : null;
+}
+
+/**
+ * Drops player displays the game didn't have, given the lit player-count lamps ("PLAYERS 1 2 3 4" on
+ * a Stars backglass, with 1-3 lit): any display numbered above the count, and — only when the
+ * numbered displays already fill every player slot — the unnumbered ones too, since they can't be a
+ * player. While a slot is unfilled an unnumbered display might be that player, so it stays.
+ * Lamps and labels both come from the model, so if they disagree so badly that no display with a
+ * digit would survive, one of them is wrong: the cap is ignored rather than wiping the photo.
+ */
+export function capToPlayerCount(displays: DisplayRead[], count: number | null): DisplayRead[] {
+  if (count == null) return displays;
+  const inGame = displays.filter(d => d.player == null || d.player <= count);
+  const slots = new Set(inGame.filter(d => d.player != null).map(d => d.player)).size;
+  const capped = slots >= count ? inGame.filter(d => d.player != null) : inGame;
+  const hasScore = (ds: DisplayRead[]) => ds.some(d => /[1-9]/.test(d.template));
+  return hasScore(displays) && !hasScore(capped) ? displays : capped;
+}
+
+/**
+ * Sanitizes one image's list of player displays: drops ghost displays (an unlit segment display read
+ * as 8s — isGhostDisplay), then displays the lit player count says the game didn't have
+ * (capToPlayerCount; `playerCount` null = no lamps seen, nothing dropped), then displays that show no
+ * score (blank, or only zeros — a "00" is a ball-in-play or unused player, and a zero score can't be
+ * saved anyway), drops all-unread displays when the image has a readable one, de-duplicates player
+ * numbers (a second display claiming the same number loses it), and sorts numbered displays first,
+ * in player order. The cap runs before the zero filter so a numbered "00" display still fills its
+ * player's slot.
+ */
+export function sanitizeImageDisplays(raw: unknown, size?: ImageSize, playerCount?: unknown): ImageRead {
   const list = Array.isArray(raw) ? raw : [];
   let displays = list
     .filter((d): d is RawDisplay => !!d && typeof d === 'object')
     .map(d => sanitizeDisplayRead(d, size))
+    .filter(d => !isGhostDisplay(d));
+  displays = capToPlayerCount(displays, sanitizePlayerCount(playerCount))
     .filter(d => /[1-9?]/.test(d.template));
   if (displays.some(d => /[0-9]/.test(d.template))) displays = displays.filter(d => /[0-9]/.test(d.template));
   // Remember where each display sat in the model's own (reading-order) list before sorting by player
