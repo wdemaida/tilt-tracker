@@ -216,8 +216,11 @@ export interface Challenge {
   maxPlayers?: number;
   timeLeftMs: number | null;
   startsInMs: number | null;
+  /** Only from GET /api/admin/challenges/:id: an admin who isn't in it, reading it. `me` is then read-only (response null, every can* false). */
+  adminView?: boolean;
   me: {
-    response: ChallengeResponse; outcome: ChallengeOutcome | null; canAccept: boolean; canDecline: boolean; canCounter?: boolean; canCancel: boolean; canForfeit: boolean;
+    /** null only in an admin view. */
+    response: ChallengeResponse | null; outcome: ChallengeOutcome | null; canAccept: boolean; canDecline: boolean; canCounter?: boolean; canCancel: boolean; canForfeit: boolean;
     /** "Start with who's in" — the challenger, once someone accepted. */
     canStart?: boolean;
     /** A proposal waiting on you: accept = take it for everyone, decline = keep yours. */

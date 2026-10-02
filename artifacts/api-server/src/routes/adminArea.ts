@@ -23,6 +23,7 @@ import { pmClient } from '../lib/pmClient.js';
 import { missingR2Vars, getPhotoStore } from '../lib/photoStore.js';
 import { parseInstant, dbTimestampToIso } from '../lib/instant.js';
 import { foldAiUsage } from '../lib/aiUsage.js';
+import { ChallengeError, getChallengeForAdmin } from '../lib/challenges.js';
 
 // The admin area — /api/admin/* (mounted inside routes/admin.ts, so every route here is behind
 // requireAppUser + requireAdmin; the unit test enumerates this router's routes and checks that).
@@ -556,6 +557,20 @@ router.get('/challenges', async (req, res) => {
   try {
     res.json(await challengeList(status ? eq(challenges.status, status as any) : undefined, pageSize(req.query.limit), intParam(req.query.before)));
   } catch (err) { fail500(res, 'load challenges', err); }
+});
+
+// GET /api/admin/challenges/:id — any challenge's full detail (the participants' ChallengeView with
+// `adminView: true` and a read-only `me`), so an admin can open one they aren't in. Read-only: the
+// action routes under /api/challenges still refuse a non-participant. lib/challenges.ts getChallengeForAdmin.
+router.get('/challenges/:id', async (req, res) => {
+  const id = intParam(req.params.id);
+  if (!id) return void res.status(404).json({ error: 'Challenge not found', code: 'challenge_not_found' });
+  try {
+    res.json(await getChallengeForAdmin(id));
+  } catch (err) {
+    if (err instanceof ChallengeError) return void res.status(err.status).json({ error: err.message, code: err.code });
+    fail500(res, 'load challenge', err);
+  }
 });
 
 router.post('/challenges/:id/void', async (req, res) => {

@@ -3,12 +3,14 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'wouter';
 import { useAuth } from '@clerk/clerk-react';
 import { format } from 'date-fns';
-import { ArrowLeft, Check, Clock, CornerDownRight, Crown, Flag, Lightbulb, Loader2, Lock, LogOut, MapPin, MapPinOff, Play, Swords, Target, Timer, Users, X } from 'lucide-react';
+import { ArrowLeft, Check, Clock, CornerDownRight, Crown, Flag, Lightbulb, Loader2, Lock, LogOut, MapPin, MapPinOff, Play, ShieldCheck, Swords, Target, Timer, Users, X } from 'lucide-react';
 import UsernameLink from '../components/UsernameLink';
 import { MachineThumb, OutcomeChip } from '../components/ChallengeParts';
 import { FullPhotoButton } from '../components/PhotoViewer';
+import { Pill } from '../components/admin/AdminParts';
 import { useApi } from '../lib/useApi';
 import { useAppUser } from '../lib/useAppUser';
+import { useAdminApi } from '../lib/adminApi';
 import { formatScoreTime, zoneAbbreviation } from '../lib/scoreTime';
 import {
   TYPE_META, SCORE_RULES, challengeKey, invalidateChallengeQueries, challengeErrorText, meAndThem, formatScore,
@@ -26,6 +28,11 @@ import type { Challenge, ChallengeDeclineChoice, ChallengeParticipant, Challenge
 // challenger: the original lists them (ProposalsPanel — "Take it for everyone" / "Keep mine"), and a
 // proposal's own page says whose suggestion it is. statusLine has a default branch on purpose: an
 // unknown status from a newer server must never crash the page.
+//
+// Admin view (fix/admin-challenge-view): when /api/challenges/:id is a 404 (not one of yours) and you
+// are an admin, the page loads GET /api/admin/challenges/:id instead — the same challenge with
+// `adminView: true` and a read-only `me` (every can* false). It shows an "Admin view" note, no "You",
+// no actions and no "Add a score"; the action routes refuse a non-participant regardless.
 
 function rulesLine(c: Challenge) {
   switch (c.type) {
@@ -582,7 +589,9 @@ export default function ChallengePage() {
   // AuthGate renders its children for a moment before redirecting a signed-out visitor; don't fire a
   // request that can only 401.
   const { isSignedIn } = useAuth();
-  const { data: c, isLoading, error } = useQuery({
+  const adminApi = useAdminApi();
+  const isAdmin = (appUser as any)?.role === 'admin';
+  const mine = useQuery({
     queryKey: challengeKey(cid),
     queryFn: () => api.challenges.get(cid),
     enabled: valid && !!isSignedIn,
@@ -590,14 +599,30 @@ export default function ChallengePage() {
     // Keep live standings fresh while it's running; a finished one never changes.
     refetchInterval: q => (q.state.data?.status === 'active' ? 60_000 : false),
   });
+  const notMine = (mine.error as any)?.status === 404;
+  // Not one of yours: an admin reads it through the admin area instead (read-only).
+  const asAdmin = useQuery({
+    queryKey: ['admin', 'challenge', cid],
+    queryFn: () => adminApi.challenge(cid),
+    enabled: valid && !!isSignedIn && isAdmin && notMine,
+    retry: (n, e: any) => e?.status !== 404 && n < 1,
+    refetchInterval: q => (q.state.data?.status === 'active' ? 60_000 : false),
+  });
+  const viaAdmin = notMine && isAdmin;
+  const { data: c, error } = viaAdmin ? asAdmin : mine;
+  // isPending for the admin read: it's enabled only after the first 404, and isLoading is false for
+  // the render before its fetch starts.
+  const isLoading = viaAdmin ? asAdmin.isPending : mine.isLoading;
 
   if (!isSignedIn) return null;
-  if (!valid || (error as any)?.status === 404) return <NotFound />;
+  if (!valid || (error as any)?.status === 404 || (notMine && !isAdmin)) return <NotFound />;
   if (isLoading) return <p className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</p>;
   if (error || !c) return <p className="text-sm text-red-400">{challengeErrorText(error, 'Could not load this challenge')}</p>;
 
-  const myId: number | null = (appUser as any)?.id ?? null;
-  const { me, them } = meAndThem(c, myId);
+  const adminView = !!c.adminView;
+  // An admin viewer isn't a player: nobody is "you".
+  const myId: number | null = adminView ? null : (appUser as any)?.id ?? null;
+  const { me, them } = adminView ? { me: undefined, them: undefined } : meAndThem(c, myId);
   const group = isGroupChallenge(c);
   const others = othersOf(c, myId);
   const status = statusLine(c, now);
@@ -606,14 +631,21 @@ export default function ChallengePage() {
   const ranked = c.participants.filter(p => (c.status === 'resolved' ? p.outcome === 'win' : p.standing?.liveRank === 1 && valueOf(p) != null));
   const leaderId = ranked.length === 1 ? ranked[0].user.id : null;
   const showStandings = c.status === 'active' || c.status === 'resolved';
-  const mine = me ? [me] : [];
-  const order = [...mine, ...c.participants.filter(p => p !== me)];
+  const order = [...(me ? [me] : []), ...c.participants.filter(p => p !== me)];
 
   return (
     <div className="max-w-3xl">
-      <Link href="/crew?tab=challenges" className="flex items-center gap-2 text-sm text-muted-foreground hover:text-white transition-colors mb-4">
-        <ArrowLeft className="w-4 h-4" /> Challenges
+      <Link href={adminView ? '/admin/crew?tab=challenges' : '/crew?tab=challenges'} className="flex items-center gap-2 text-sm text-muted-foreground hover:text-white transition-colors mb-4">
+        <ArrowLeft className="w-4 h-4" /> {adminView ? 'Admin · Challenges' : 'Challenges'}
       </Link>
+
+      {adminView && (
+        <div className="mb-5 rounded-lg border border-primary/30 bg-primary/5 px-4 py-3 text-sm text-white/85 flex flex-wrap items-center gap-2">
+          <ShieldCheck className="w-4 h-4 text-primary flex-shrink-0" aria-hidden />
+          <Pill tone="primary">Admin view</Pill>
+          <span>You’re not in this challenge — read-only.</span>
+        </div>
+      )}
 
       {/* header */}
       <div className="flex items-start gap-4 mb-5">
@@ -628,6 +660,14 @@ export default function ChallengePage() {
             {c.machine.name}
           </Link>
           <p className="text-sm text-muted-foreground mt-1 flex flex-wrap items-center gap-x-1.5">
+            {adminView ? (
+              // Nobody is "you": a group lists who's still in, a 1:1 both players (a decliner too).
+              (group ? others : c.participants).map((p, i, list) => (
+                <span key={p.user.id}>
+                  <UsernameLink username={p.user.username} className="text-friend hover:text-friend/80" />{i < list.length - 1 ? (group ? ',' : ' vs') : ''}
+                </span>
+              ))
+            ) : <>
             {me && <span className="text-username">You</span>}
             <span>vs</span>
             {group ? (
@@ -638,6 +678,7 @@ export default function ChallengePage() {
               )) : <span>—</span>
             ) : them ? <UsernameLink username={them.user.username} className="text-friend hover:text-friend/80" /> : <span>—</span>}
             {group && others.length > 3 && <span>+{others.length - 3}</span>}
+            </>}
           </p>
           <p className={`text-sm font-bold mt-1 flex items-center gap-1.5 ${status.tone}`}>
             <Timer className="w-4 h-4" aria-hidden /> {status.text}
@@ -647,7 +688,7 @@ export default function ChallengePage() {
 
       <OutcomeBanner c={c} myRank={me?.rank ?? null} meP={me} />
       <CounterLinks c={c} myId={myId} />
-      <Actions c={c} />
+      {!adminView && <Actions c={c} />}
       <ProposalsPanel c={c} />
       {group && <Roster c={c} myId={myId} />}
 
@@ -712,7 +753,7 @@ export default function ChallengePage() {
           <div className={group ? 'flex flex-col gap-4' : 'flex flex-col sm:flex-row gap-4 sm:gap-6'}>
             {(group ? order.filter(p => p.response === 'accepted') : order).map(p => <ScoreList key={p.user.id} c={c} p={p} isMe={p === me} />)}
           </div>
-          {c.status === 'active' && (
+          {c.status === 'active' && !adminView && (
             <p className="text-[11px] text-muted-foreground mt-3">
               Only scores with a photo, played and uploaded in the window{c.venue ? ` at ${c.venue.name}` : ''}, count.{' '}
               <Link href="/add" className="text-primary hover:underline">Add a score</Link>
@@ -721,7 +762,7 @@ export default function ChallengePage() {
         </section>
       )}
 
-      {c.type === 'most_improved' && (c.status === 'pending' || c.status === 'proposed') && (
+      {c.type === 'most_improved' && (c.status === 'pending' || c.status === 'proposed') && !adminView && (
         <p className="text-xs text-muted-foreground">Accepting needs a score of yours on this machine from before the challenge starts.</p>
       )}
     </div>

@@ -398,6 +398,10 @@
   retention, Photo storage, Stats. Stats is `AdminStatsPanel` from `AdminStatsPage.tsx`; `/admin/stats`
   is only a redirect to `?tab=stats` now, and isn't in `AdminNav`. Its Recent History is the last 7
   New York calendar days, fixed server-side in `GET /api/admin/stats/history`.
+- **Admin view of a challenge** (`ChallengePage.tsx`, 2026-10-02): when `/api/challenges/:id` is a 404
+  and the viewer is an admin, the page loads `admin.challenge(id)` (`['admin', 'challenge', id]`)
+  instead. `c.adminView` → "Admin view" note, nobody shown as "You", no `Actions`, no "Add a score";
+  the server's `me` has every `can*` false, so the proposal buttons stay hidden too.
 - `AdminGate` renders nothing until `/api/users/me` says admin, so admin pages never fire requests
   for guests or users (the server refuses them regardless).
 - Admin calls live in `lib/adminApi.ts` (`useAdminApi()`), built on the `request` helper exported from

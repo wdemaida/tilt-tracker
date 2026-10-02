@@ -54,7 +54,9 @@ import type { PmLocationMachineXref } from './pinballmapApi.js';
 // edited, so it can't stop counting.
 //
 // PRIVACY: a challenge, its participants and its standings are only ever returned to its
-// participants; anyone else gets 404 challenge_not_found (the pods pattern). A proposal row's
+// participants; anyone else gets 404 challenge_not_found (the pods pattern). The one exception is
+// the admin area's read-only GET /api/admin/challenges/:id (getChallengeForAdmin, behind
+// requireAdmin), which builds the same view for no viewer. A proposal row's
 // participants are just the proposer and the challenger, so the other invitees can't open it; the
 // original's `proposals` list is shown to the challenger (all) and to each proposer (their own).
 // A score only counts when every other participant may see it (canSeeScore), so standings never
@@ -915,8 +917,14 @@ export interface ChallengeView {
   timeLeftMs: number | null;
   /** ms until starts_at while scheduled; null otherwise. */
   startsInMs: number | null;
+  /**
+   * Present (true) only on GET /api/admin/challenges/:id — an admin who isn't a participant reading
+   * it. `me` is then the read-only OBSERVER: response/outcome null, every can* false.
+   */
+  adminView?: true;
   me: {
-    response: ParticipantRow['response']; outcome: Outcome | null;
+    /** null only for the admin observer (adminView). */
+    response: ParticipantRow['response'] | null; outcome: Outcome | null;
     canAccept: boolean; canDecline: boolean; canCounter: boolean; canCancel: boolean; canForfeit: boolean;
     /** "Start with who's in" (challenger, pending, ≥ 1 accepted). */
     canStart: boolean;
@@ -933,10 +941,20 @@ export interface ChallengeView {
 
 interface ViewExtras { counteredToId: number | null; proposals: ProposalView[] }
 
-function buildView(c: ChallengeRow, participants: ParticipantRow[], candidates: ScoredCandidate[], viewerId: number, now: Date, includeScores: boolean, extras: ViewExtras): ChallengeView {
+/** The admin observer's `me`: no answer, no outcome, nothing it may do. */
+export const OBSERVER_ME: ChallengeView['me'] = {
+  response: null, outcome: null,
+  canAccept: false, canDecline: false, canCounter: false, canCancel: false, canForfeit: false, canStart: false, canDecideProposal: false,
+};
+
+/**
+ * viewerId null = the admin observer (getChallengeForAdmin): read-only, no `me`, no opponent.
+ * Exported for challengeAdminView.test.ts (pure: rows in, view out).
+ */
+export function buildView(c: ChallengeRow, participants: ParticipantRow[], candidates: ScoredCandidate[], viewerId: number | null, now: Date, includeScores: boolean, extras: ViewExtras): ChallengeView {
   const ev = evaluate(c, participants, candidates, now);
   const live = ev.started ? projectedRanks(c.type, ev.states) : new Map<number, number>();
-  const me = participants.find(p => p.userId === viewerId)!;
+  const me = viewerId == null ? undefined : participants.find(p => p.userId === viewerId)!;
   const phase = phaseOf(c, now);
   const proposer = c.proposedById ? participants.find(p => p.userId === c.proposedById) : undefined;
   return {
@@ -952,12 +970,13 @@ function buildView(c: ChallengeRow, participants: ParticipantRow[], candidates: 
     proposals: extras.proposals,
     timeLeftMs: c.status === 'active' ? Math.max(0, +c.endsAt - +now) : null,
     startsInMs: phase === 'scheduled' ? +c.startsAt! - +now : null,
-    me: {
+    ...(viewerId == null ? { adminView: true as const } : {}),
+    me: viewerId == null || !me ? { ...OBSERVER_ME } : {
       response: me.response, outcome: me.outcome,
       canAccept: canAccept(c, me), canDecline: canDecline(c, me), canCounter: canCounter(c, me), canCancel: canCancel(c, viewerId),
       canForfeit: canForfeit(c, me), canStart: canStart(c, participants, viewerId), canDecideProposal: canDecideProposal(c, me),
     },
-    opponent: otherOf(participants, viewerId) ?? null,
+    opponent: viewerId == null ? null : otherOf(participants, viewerId) ?? null,
     playerCount: participants.filter(p => !saidNo(p.response)).length,
     maxPlayers: MAX_PLAYERS,
     participants: participants.map(p => {
@@ -1010,11 +1029,12 @@ async function proposalsFor(c: ChallengeRow, viewerId: number): Promise<Proposal
   }));
 }
 
-async function viewOf(id: number, viewerId: number, now: Date, includeScores: boolean): Promise<ChallengeView | null> {
+/** viewerId null = the admin observer: no participant check, and it sees every proposal (as the challenger does). */
+async function viewOf(id: number, viewerId: number | null, now: Date, includeScores: boolean): Promise<ChallengeView | null> {
   const c = await loadChallenge(db, id);
   if (!c) return null;
   const participants = await loadParticipants(db, id);
-  if (!participants.some(p => p.userId === viewerId)) return null;
+  if (viewerId != null && !participants.some(p => p.userId === viewerId)) return null;
   const accepted = participants.filter(p => p.response === 'accepted').map(p => p.userId);
   const candidates = c.startsAt ? await loadCandidates(db, matchRuleOf(c), accepted, audienceOf(participants)) : [];
   // The counter-offer that replaced this one: a taken proposal, or (legacy) the counter row.
@@ -1023,7 +1043,7 @@ async function viewOf(id: number, viewerId: number, now: Date, includeScores: bo
       .where(and(eq(challenges.counteredFromId, c.id), sql`${challenges.status} NOT IN ('proposed', 'rejected', 'lapsed')`))
       .orderBy(asc(challenges.id)).limit(1)
     : [];
-  const proposals = isProposalStatus(c.status) ? [] : await proposalsFor(c, viewerId);
+  const proposals = isProposalStatus(c.status) ? [] : await proposalsFor(c, viewerId ?? c.creatorId);
   return buildView(c, participants, candidates, viewerId, now, includeScores, { counteredToId: counter?.id ?? null, proposals });
 }
 
@@ -1034,6 +1054,23 @@ export async function getChallenge(id: number, viewer: AppUser, now = new Date()
   if (!member) throw notFound();
   await syncChallenge(id, now);
   const v = await viewOf(id, viewer.id, now, true);
+  if (!v) throw notFound();
+  return v;
+}
+
+/**
+ * GET /api/admin/challenges/:id — any challenge, read-only, for an admin (the route sits behind
+ * requireAdmin; this function doesn't check the role). The same detail participants get (standings,
+ * counting scores, every proposal), built for no viewer: `adminView: true`, `me` = OBSERVER_ME (every
+ * can* false) and `opponent` null. It runs the same lazy syncChallenge() a participant's read does, so
+ * a challenge past its deadline shows its result; it never acts as the admin. The action routes
+ * (/api/challenges/:id/accept … /counter) are unchanged and still 404 a non-participant, admin or not.
+ * Privacy: exactly what the participants see — a score only counts (and is only listed) when every
+ * participant may see it, and a hidden-tier venue's time zone is redacted as for them.
+ */
+export async function getChallengeForAdmin(id: number, now = new Date()): Promise<ChallengeView> {
+  await syncChallenge(id, now);
+  const v = await viewOf(id, null, now, true);
   if (!v) throw notFound();
   return v;
 }

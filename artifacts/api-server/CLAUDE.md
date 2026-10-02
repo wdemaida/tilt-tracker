@@ -1001,6 +1001,13 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   `challenge_voided` notification (pending invitations are removed). Records only count `resolved`,
   so it leaves W/L/T, streaks and head-to-head cleanly; `syncChallenge` ignores cancelled rows, so it
   never re-locks. The pre-void status and outcomes are in the `admin.challenge_voided` event.
+- **Read any challenge** (`GET /api/admin/challenges/:id`, fix/admin-challenge-view, 2026-10-02):
+  `getChallengeForAdmin()` — the participants' ChallengeView built for no viewer (`buildView(…, null)`):
+  `adminView: true`, `me` = `OBSERVER_ME` (response/outcome null, every `can*` false), `opponent`
+  null, every proposal listed (as the challenger sees them). Same standings and counting scores as
+  the players get, so the existing score-visibility rule still applies. It runs the usual lazy
+  `syncChallenge()`. Read-only: `/api/challenges/:id` and every action route still 404 a
+  non-participant, admin or not. Test: `src/lib/challengeAdminView.test.ts`.
 - Other actions: remove a friendship (row deleted, decline history included; a pending request's
   unread notification removed), delete one notification, clear a user's notifications.
 - **Never** return `pinball_map_token`, `photo_key` or Clerk emails from admin routes — every select

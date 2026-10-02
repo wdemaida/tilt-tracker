@@ -1,6 +1,6 @@
 import { useAuth } from '@clerk/clerk-react';
 import { useMemo } from 'react';
-import { request } from './api';
+import { request, type Challenge } from './api';
 
 // The admin area's API (GET/POST/DELETE /api/admin/*). Every call is authenticated; the server
 // refuses anyone who isn't an admin. Kept out of api.ts so the admin area is one self-contained set
@@ -319,6 +319,8 @@ export function createAdminApi(getToken: () => Promise<string | null>) {
       get<Paged<AdminFriendship> & { summary: Array<{ status: string; n: number; declines: number }> }>(`/admin/friendships${qs({ status, before })}`),
     removeFriendship: (id: number) => del<ActionResponse>(`/admin/friendships/${id}`),
     challenges: (status: string | null, before?: number | null) => get<Paged<AdminChallenge>>(`/admin/challenges${qs({ status, before })}`),
+    /** Any challenge's full detail, read-only (`adminView: true`) — for one the admin isn't in. */
+    challenge: (id: number) => get<Challenge>(`/admin/challenges/${id}`),
     voidChallenge: (id: number, reason: string) => post<ActionResponse>(`/admin/challenges/${id}/void`, { reason }),
     notifications: (f: { userId?: number | null; unread?: boolean; before?: number | null }) =>
       get<Paged<AdminNotification> & { summary: { total: number; unread: number; today: number } }>(`/admin/notifications${qs({ userId: f.userId, unread: f.unread ? 1 : null, before: f.before })}`),
