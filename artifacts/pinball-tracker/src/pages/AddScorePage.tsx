@@ -17,6 +17,7 @@ import {
 } from '../lib/fullSizePhoto';
 import { extractVideoFrames, isVideoFile, VideoFrameError, VIDEO_UNSUPPORTED_MESSAGE } from '../lib/videoFrames';
 import { pmLookupFor } from '../lib/pmLookup';
+import { markCameraPending, clearCameraPending, takeFreshCameraPending } from '../lib/cameraReturn';
 import { playedTimeLockFor, isLockedPlayedAt, lockedFromLabel, type PlayedTimeLock, type PlayedAtSource } from '../lib/captureTime';
 import { useAppUser } from '../lib/useAppUser';
 import { ScoreDigitInput } from '../components/ScoreDigitInput';
@@ -204,6 +205,23 @@ export default function AddScorePage() {
   const addPhotoRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
   const addCameraRef = useRef<HTMLInputElement>(null);
+  // The camera came back without a photo — usually Android closing the browser behind it to save
+  // memory, which reloads /add. See lib/cameraReturn.ts.
+  const [cameraEmptyHint, setCameraEmptyHint] = useState(false);
+  useEffect(() => {
+    // Only ever sets true: StrictMode runs this twice and the first run consumes the record.
+    if (takeFreshCameraPending()) setCameraEmptyHint(true);
+  }, []);
+  // When the browser survives, a camera that returns nothing fires the file input's `cancel` event
+  // (Chrome 113+, Firefox 91+, Safari 16.4+). Added by hand: React 18 doesn't wire onCancel on inputs.
+  // Older browsers just never fire it — the stored record above still covers the reload case.
+  useEffect(() => {
+    const input = cameraRef.current;
+    if (!input) return;
+    const onCancel = () => { clearCameraPending(); setCameraEmptyHint(true); };
+    input.addEventListener('cancel', onCancel);
+    return () => input.removeEventListener('cancel', onCancel);
+  }, [step]);
   // A set that went up as a server-decoded HEIC can't grow: the multi-image path refuses HEIC.
   const addBlockedByHeic = uploadItems.some(i => i.images.some(im => im.heicFailed));
   const canAddMore = uploadItems.length > 0 && uploadItems.length < MAX_ITEMS && !addBlockedByHeic;
@@ -809,6 +827,8 @@ export default function AddScorePage() {
     }
     const chosen = picked.slice(0, room);
 
+    clearCameraPending();
+    setCameraEmptyHint(false);
     setAiLoading(true);
     setAiError('');
 
@@ -1172,8 +1192,20 @@ export default function AddScorePage() {
           {/* Two inputs on purpose: Android Chrome skips offering the camera for a `multiple` input and
               opens the photo picker instead, so the big target is a camera-first single-photo input and
               multi-select (photos or videos) is the secondary one. */}
+          {cameraEmptyHint && !aiLoading && (
+            <div className="w-full flex items-start gap-2 text-xs rounded-lg bg-amber-500/10 text-amber-400 px-3 py-2">
+              <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+              <p className="flex-1">
+                The camera didn't send a photo back. This can happen when your phone closes the browser to save memory.
+                Take the photo with your camera app, then use <span className="font-bold">Choose photos or videos</span>.
+              </p>
+              <button type="button" onClick={() => setCameraEmptyHint(false)} aria-label="Dismiss" className="flex-shrink-0 text-amber-400/70 hover:text-amber-400">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
           <button
-            onClick={() => cameraRef.current?.click()}
+            onClick={() => { markCameraPending(); cameraRef.current?.click(); }}
             disabled={aiLoading}
             className="w-full rounded-xl border-2 border-dashed border-primary/50 p-12 flex flex-col items-center gap-3 hover:border-primary transition-colors disabled:opacity-50"
           >
@@ -1951,7 +1983,7 @@ export default function AddScorePage() {
                     <button
                       type="button"
                       disabled={aiLoading}
-                      onClick={() => addCameraRef.current?.click()}
+                      onClick={() => { markCameraPending(); addCameraRef.current?.click(); }}
                       className="flex-1 flex items-center justify-center gap-2 py-2 rounded-lg border border-dashed border-primary/40 text-xs font-bold uppercase tracking-wider text-primary hover:border-primary transition-colors disabled:opacity-50"
                     >
                       {aiLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Camera className="w-3.5 h-3.5" />}
