@@ -257,8 +257,10 @@ export interface ChallengeRecommendation {
   level: 1 | 2 | 3;
   /** Level 2: a public venue's name, or 'at home' (their own private venue). Never a private venue's name. */
   venueLabel?: string;
-  /** You can reach it too. */
+  /** You can reach it too (your "Challenge me on" machines or your challenge locations). */
   viewerCanReach: boolean;
+  /** You only scored on it lately (not somewhere you can reach) — "You played it lately". */
+  viewerPlayedLately?: boolean;
   /** Your best score on this exact machine. */
   viewerBest?: number;
   /** Group recommendations only: which of the friends can reach it, and how many. */

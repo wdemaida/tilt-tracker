@@ -820,6 +820,14 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   "viewer has a score", caps 3 / 8 / 5 — then re-sorts the capped list so "viewer can reach it too"
   comes first across all levels (stable; same set, only the order changes — 2026-10-02). The group
   path with several targets is unaffected. The create form turns a picked recommendation into `matchMode 'exact'`.
+- **"Viewer can reach" = the viewer's levels 1–2 only** (fix/both-reach, migrate29, 2026-10-02). Will
+  played Transformers once in Chicago and it was recommended against collasta (Portland) as "you can
+  both reach". `reachIds(r, levels)` takes the levels; `viewerReachOf(mine)` → `{ reach: levels 1–2,
+  lately: level-3-only }`. A machine only in the viewer's level 3 gets `viewerPlayedLately: true`
+  (create form: "You played it lately"), ranks after "viewer can reach" and before "viewer has a
+  score" within its level, and is never in the "You can both reach" group. The friend's level 3 still
+  counts as their reach. Group recommendations use the same viewer reach. Within level 2, venues the
+  player added by hand (`source 'added'`) come before auto-seeded ones.
 - **Zero Pinball Map calls**: level 2 reads `pm_location_cache` directly (any age), then
   `venue_machine_history` (not removed), and a private venue's `venue_inventory`. Never
   `getVenueRoster` / pmClient; `challengeReach.ts` doesn't import them (test-challenges.ts checks).
@@ -855,9 +863,13 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   (the roster) and no `closest_by_lat_lon` beyond the Near-me tap's; recommendations 0. (Fixed
   2026-09-30: the card treated every Near-me place as already checked, so one Near me couldn't match
   — Land Ho, 4.7 mi out, PM #5388 — would have been added unlinked.)
-- **Seeding** (`ensureSeeded`, once — `users.challenge_venues_seeded_at`): up to 5 venues with ≥ 2 visits
+- **Seeding** (`ensureSeeded` — `users.challenge_venues_seeded_at`): up to 5 venues with ≥ 2 visits
   in 180 days, plus your own residence if it has an inventory. Runs on the first prefs read, yours or a
-  friend's recommendations request. After that removals stick; new candidates are `suggestions`.
+  friend's recommendations request. **Re-runs** (fix/both-reach) while the list is still empty, was
+  never hand-edited (`users.challenge_venues_edited_at` null — stamped by any prefs PUT with
+  `venueIds`) and the last seed is over 7 days old (`RESEED_AFTER_DAYS`): collasta's first seed ran
+  when he had one Wedgehead visit, found nothing, and never ran again. After a hand edit removals
+  stick; new candidates are `suggestions`.
 - **Answers**: decline takes `{ reason: 'cant_reach' | 'no_thanks' }` (`challenge_participants.decline_reason`,
   in the `challenge_declined` payload and the `challenge.declined` event). The stored column also takes
   `'backed_out'` (migrate24), set only by the server when an accepted player backs out of a group. `POST /api/challenges/:id/counter`

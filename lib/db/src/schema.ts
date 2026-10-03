@@ -28,6 +28,9 @@ export const users = pgTable('users', {
   // When "Challenge locations" were first seeded from this user's history (migrate22). Seeding runs
   // once: after that a removed venue stays removed, and new candidates are only suggested.
   challengeVenuesSeededAt: timestamp('challenge_venues_seeded_at', { withTimezone: true }),
+  // Set when the user saves their challenge-locations list by hand (migrate29). Null = never edited,
+  // so an empty list may be re-seeded from their history (ensureSeeded, challengeReach.ts).
+  challengeVenuesEditedAt: timestamp('challenge_venues_edited_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 

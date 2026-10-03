@@ -500,7 +500,9 @@
 - Up to 7 friends per challenge (`MAX_INVITEES` in `lib/challenges.ts`); the create form sends
   `friendIds`. One friend → "Recommended for @friend" (`/recommendations/:username`): a "You can
   both reach" group first (`viewerCanReach`, each row tagged with its level), then the rest by level,
-  no row twice, and no group when nothing overlaps; several →
+  no row twice, and no group when nothing overlaps. `viewerCanReach` is your levels 1–2 only; a
+  machine you merely scored on lately (`viewerPlayedLately`) gets a grey "You played it lately" pill
+  instead (fix/both-reach, 2026-10-02). Several →
   "Recommended for the group" grouped by `coverage` (`/recommendations?users=`), a friend's own home
   shown as "at @name's" (`atHomeOf`).
 - `isGroupChallenge(c)` = more than two participants and not a proposal. Groups get the ranked

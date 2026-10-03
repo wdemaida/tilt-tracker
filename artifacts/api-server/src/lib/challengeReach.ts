@@ -9,7 +9,7 @@ import { matchScore, queryLength, MIN_QUERY_CHARS } from './venueSearch.js';
 import { acceptedPairSql } from './friendships.js';
 import { countVisits } from './statsCalc.js';
 import {
-  mergeRecommendations, mergeGroupRecommendations, rankRecentPlay, reachIds,
+  mergeRecommendations, mergeGroupRecommendations, rankRecentPlay, reachIds, viewerReachOf, REC_CAPS, GROUP_REC_CAP,
   type Reach, type ReachItem, type Recommendation, type GroupRecommendation,
 } from './challengeRecs.js';
 import { MAX_INVITEES } from './challengeRules.js';
@@ -49,6 +49,8 @@ export const RECENT_PLAY_DAYS = 60;
 export const SEED_MIN_VISITS = 2;
 export const SEED_WINDOW_DAYS = 180;
 export const SEED_MAX_VENUES = 5;
+/** An empty, never hand-edited list is re-seeded once its last seed is this old (fix/both-reach). */
+export const RESEED_AFTER_DAYS = 7;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -88,9 +90,14 @@ function locationLabel(v: LocationRow, playerId: number): string | null {
   return v.ownerId === playerId ? 'at home' : null;
 }
 
-/** Level 2: the machines at `playerId`'s challenge locations that `viewer` may know about. */
+/**
+ * Level 2: the machines at `playerId`'s challenge locations that `viewer` may know about. Venues the
+ * player added by hand come first, then auto-seeded ones (each in the order they were added) — a
+ * place someone picked themselves says more than one guessed from their history.
+ */
 async function locationMachines(playerId: number, viewer: Viewer): Promise<ReachItem[]> {
-  const locs = (await challengeLocations(playerId))
+  const all = await challengeLocations(playerId);
+  const locs = [...all.filter(v => v.source !== 'auto'), ...all.filter(v => v.source === 'auto')]
     .filter(v => !isPrivateVenue(v) || v.ownerId === playerId || canSeeVenueActivity(v, viewer));
   if (!locs.length) return [];
   const publicLocs = locs.filter(v => !isPrivateVenue(v));
@@ -188,14 +195,22 @@ export async function venueCandidates(userId: number, now = new Date()): Promise
 }
 
 /**
- * Seed a user's challenge locations from their history, once (users.challenge_venues_seeded_at).
- * Runs when the prefs are first read — by the user, or by a friend's recommendations request. After
- * that a removed venue stays removed; new candidates only appear as suggestions.
+ * Seed a user's challenge locations from their history (users.challenge_venues_seeded_at). Runs when
+ * the prefs are read — by the user, or by a friend's recommendations request:
+ *  - the first time ever; and
+ *  - again (fix/both-reach, 2026-10-02) while the list is still EMPTY, has never been hand-edited
+ *    (users.challenge_venues_edited_at null) and the last seed is over RESEED_AFTER_DAYS old. collasta
+ *    had one Wedgehead visit when his first seed ran, so it found nothing and never ran again.
+ * Once someone edits their list (any PUT with venueIds), removals stick for good; new candidates
+ * only appear as suggestions.
  */
 export async function ensureSeeded(userId: number, now = new Date()): Promise<void> {
   await db.transaction(async tx => {
+    const reseedBefore = new Date(+now - RESEED_AFTER_DAYS * DAY_MS);
     const claimed = await tx.update(users).set({ challengeVenuesSeededAt: now })
-      .where(and(eq(users.id, userId), isNull(users.challengeVenuesSeededAt)))
+      .where(and(eq(users.id, userId), sql`(${users.challengeVenuesSeededAt} IS NULL OR (
+        ${users.challengeVenuesSeededAt} < ${reseedBefore.toISOString()}::timestamptz AND ${users.challengeVenuesEditedAt} IS NULL
+        AND NOT EXISTS (SELECT 1 FROM user_challenge_venues ucv WHERE ucv.user_id = ${users.id})))`))
       .returning({ id: users.id });
     if (!claimed.length) return;
     const ids = await venueCandidates(userId, now);
@@ -293,6 +308,8 @@ export async function updateChallengePrefs(userId: number, body: Record<string, 
 
   await ensureSeeded(userId, now);
   await db.transaction(async tx => {
+    // A hand edit of the locations list stops re-seeding for good (ensureSeeded).
+    if (hasVenues) await tx.update(users).set({ challengeVenuesEditedAt: now }).where(eq(users.id, userId));
     if (hasMachines) {
       await tx.delete(userChallengeMachines).where(eq(userChallengeMachines.userId, userId));
       if (machineIds.length) {
@@ -385,7 +402,7 @@ export async function searchChallengeVenues(userId: number, q: string): Promise<
 
 // ── recommendations ──────────────────────────────────────────────────────────
 
-async function areFriends(a: number, b: number): Promise<boolean> {
+export async function areFriends(a: number, b: number): Promise<boolean> {
   const [pair] = await db.select({ id: friendships.id }).from(friendships).where(acceptedPairSql(a, b)).limit(1);
   return !!pair;
 }
@@ -401,8 +418,15 @@ export interface RecommendationsView {
   recommendations: Recommendation[];
 }
 
+/** Fewer than this many recommendations the viewer can reach (levels 1–2) = a thin list. */
+export const THIN_RECS_BELOW = 2;
+/** A thin list: fewer than THIN_RECS_BELOW recommendations the viewer can reach too. */
+export function isThin(recs: Recommendation[]): boolean {
+  return recs.filter(r => r.viewerCanReach).length < THIN_RECS_BELOW;
+}
+
 /** A friend to recommend for: exists, isn't the viewer, and is an accepted friend (403 not_friends). */
-async function recTarget(viewer: AppUser, username: string): Promise<UserRef> {
+export async function recTarget(viewer: AppUser, username: string): Promise<UserRef> {
   const [target] = await db.select({ id: users.id, username: users.username, displayName: users.displayName })
     .from(users).where(eq(users.username, username)).limit(1);
   if (!target) throw new ChallengeError(404, 'user_not_found', 'User not found');
@@ -412,7 +436,7 @@ async function recTarget(viewer: AppUser, username: string): Promise<UserRef> {
 }
 
 /** The viewer's best score per machine id (whole numbers), for the machines in `ids`. */
-async function viewerBests(viewerId: number, ids: number[]): Promise<Map<number, number>> {
+export async function viewerBests(viewerId: number, ids: number[]): Promise<Map<number, number>> {
   const best = new Map<number, number>();
   if (!ids.length) return best;
   const rows = await db.select({ machineId: scores.machineId, best: sql<number>`max(${scores.score})::float8` }).from(scores)
@@ -429,7 +453,9 @@ export async function recommendationsFor(viewer: AppUser, username: string, now 
   const v: Viewer = { id: viewer.id, role: viewer.role };
   const [theirs, mine] = await Promise.all([reachOf(target.id, v, now), reachOf(viewer.id, v, now)]);
   const best = await viewerBests(viewer.id, [...reachIds(theirs)]);
-  return { user: target, recommendations: mergeRecommendations(theirs, reachIds(mine), best) };
+  // The viewer's reach is their levels 1–2; their recent play only earns "You played it lately".
+  const { reach, lately } = viewerReachOf(mine);
+  return { user: target, recommendations: mergeRecommendations(theirs, reach, best, REC_CAPS, lately) };
 }
 
 export interface GroupRecommendationsView {
@@ -457,8 +483,9 @@ export async function groupRecommendationsFor(viewer: AppUser, usernames: string
   const [mine, ...theirs] = await Promise.all([reachOf(viewer.id, v, now), ...targets.map(t => reachOf(t.id, v, now))]);
   const ids = [...new Set(theirs.flatMap(r => [...reachIds(r)]))];
   const best = await viewerBests(viewer.id, ids);
+  const { reach, lately } = viewerReachOf(mine);
   return {
     users: targets,
-    recommendations: mergeGroupRecommendations(targets.map((t, i) => ({ userId: t.id, reach: theirs[i] })), reachIds(mine), best),
+    recommendations: mergeGroupRecommendations(targets.map((t, i) => ({ userId: t.id, reach: theirs[i] })), reach, best, GROUP_REC_CAP, lately),
   };
 }

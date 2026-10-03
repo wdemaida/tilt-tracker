@@ -107,6 +107,12 @@ function RecommendationRow({ r, onPick, who, homes, levelTag }: { r: ChallengeRe
           You can reach it too
         </span>
       )}
+      {!r.viewerCanReach && r.viewerPlayedLately && (
+        // You scored on it in the last 60 days — maybe on a trip, so it's not "you can reach it".
+        <span className="flex-shrink-0 rounded-md border border-white/15 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+          You played it lately
+        </span>
+      )}
     </button>
   );
 }

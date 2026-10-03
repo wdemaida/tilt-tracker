@@ -118,7 +118,7 @@ const [privateVenue] = await db.select({ id: venues.id }).from(venues)
 
 // Challenge prefs the borrowed users already have (normally none) — restored at the end.
 const prefsBefore = {
-  seeded: await db.select({ id: users.id, at: users.challengeVenuesSeededAt }).from(users).where(inArray(users.id, ids)),
+  seeded: await db.select({ id: users.id, at: users.challengeVenuesSeededAt, editedAt: users.challengeVenuesEditedAt }).from(users).where(inArray(users.id, ids)),
   machines: await db.select().from(userChallengeMachines).where(inArray(userChallengeMachines.userId, ids)),
   venues: await db.select().from(userChallengeVenues).where(inArray(userChallengeVenues.userId, ids)),
 };
@@ -1278,7 +1278,9 @@ try {
     check("someone else's hidden residence never surfaces — not in level 2, and the score there is excluded from level 3", !rec(HIDDEN_M), rec(HIDDEN_M));
   }
   check('level 3: a machine he played lately, no venue label', rec(OTHER)?.level === 3 && !('venueLabel' in (rec(OTHER) ?? {})), rec(OTHER));
-  check('viewerCanReach + viewerBest: alice played the Pro lately', rec(PRO)?.viewerCanReach === true && typeof rec(PRO)?.viewerBest === 'number', rec(PRO));
+  // fix/both-reach: alice only PLAYED the Pro lately (her level 3) — that's not reach any more.
+  check('alice only played the Pro lately: viewerPlayedLately, not viewerCanReach; viewerBest set',
+    rec(PRO)?.viewerCanReach === false && rec(PRO)?.viewerPlayedLately === true && typeof rec(PRO)?.viewerBest === 'number', rec(PRO));
   check('zero Pinball Map calls: live count unchanged, no [PM] log line', pmClient().stats().liveCallsToday === pmBefore && !logged.some(l => l.includes('[PM')), logged);
   const reachSrc = readFileSync(new URL('./src/lib/challengeReach.ts', import.meta.url), 'utf8');
   check('challengeReach.ts never imports the roster fetcher, pmClient or the catalog', !/from '\.\/(pmRosterCache|pmClient|pinballMap|venueInventory)\.js'/.test(reachSrc));
@@ -1323,6 +1325,28 @@ try {
     && r.body?.venues?.length === 1 && r.body?.venues?.[0]?.id === BOB_HOME.id, r.body);
   r = await call(bob, 'GET', '/me/challenge-prefs');
   check('…no re-seeding on the next read', r.body?.venues?.length === 1, r.body?.venues);
+  const [bobEdited] = await db.select({ at: users.challengeVenuesEditedAt }).from(users).where(eq(users.id, bob.id));
+  check('a PUT with venueIds stamps challenge_venues_edited_at', bobEdited?.at != null, bobEdited);
+
+  // fix/both-reach: an EMPTY list that was never hand-edited is re-seeded once its seed is > 7 days old.
+  {
+    const eightDaysAgo = new Date(Date.now() - 8 * 24 * H);
+    const seededAt = async () => (await db.select({ at: users.challengeVenuesSeededAt }).from(users).where(eq(users.id, dave.id)))[0]?.at;
+    await db.delete(userChallengeVenues).where(eq(userChallengeVenues.userId, dave.id));
+    await db.update(users).set({ challengeVenuesSeededAt: eightDaysAgo, challengeVenuesEditedAt: null }).where(eq(users.id, dave.id));
+    await call(dave, 'GET', '/me/challenge-prefs');
+    const reseeded = await seededAt();
+    check('re-seed: empty + never edited + seeded 8 days ago → seeded again on read', reseeded != null && +reseeded > Date.now() - H, reseeded);
+    const fresh = new Date(Date.now() - 2 * 24 * H);
+    await db.delete(userChallengeVenues).where(eq(userChallengeVenues.userId, dave.id));
+    await db.update(users).set({ challengeVenuesSeededAt: fresh }).where(eq(users.id, dave.id));
+    await call(dave, 'GET', '/me/challenge-prefs');
+    check('re-seed: not before 7 days', +(await seededAt())! === +fresh, await seededAt());
+    await db.delete(userChallengeVenues).where(eq(userChallengeVenues.userId, dave.id));
+    await db.update(users).set({ challengeVenuesSeededAt: eightDaysAgo, challengeVenuesEditedAt: new Date() }).where(eq(users.id, dave.id));
+    await call(dave, 'GET', '/me/challenge-prefs');
+    check('re-seed: never once the list was hand-edited', +(await seededAt())! === +eightDaysAgo, await seededAt());
+  }
 
   // ── a Pinball Map-only place as a challenge location (feature/pm-challenge-locations) ──
   // The card's flow, route by route: Near me (POST /upload/nearby-venues) / the search's Places
@@ -1543,7 +1567,7 @@ try {
   await db.delete(userChallengeVenues).where(inArray(userChallengeVenues.userId, ids));
   if (prefsBefore.machines.length) await db.insert(userChallengeMachines).values(prefsBefore.machines).onConflictDoNothing();
   if (prefsBefore.venues.length) await db.insert(userChallengeVenues).values(prefsBefore.venues).onConflictDoNothing();
-  for (const s of prefsBefore.seeded) await db.update(users).set({ challengeVenuesSeededAt: s.at }).where(eq(users.id, s.id));
+  for (const s of prefsBefore.seeded) await db.update(users).set({ challengeVenuesSeededAt: s.at, challengeVenuesEditedAt: s.editedAt }).where(eq(users.id, s.id));
   if (venueIds.length) {
     await db.delete(scores).where(inArray(scores.venueId, venueIds));
     await db.delete(venueMachineHistory).where(inArray(venueMachineHistory.venueId, venueIds));

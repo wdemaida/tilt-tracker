@@ -9,7 +9,11 @@
 //
 // Rules:
 //  - A machine keeps only its highest level (1 beats 2 beats 3).
-//  - Within a level: machines the viewer can reach too (any of the viewer's own three levels) first,
+//  - "The viewer can reach it" = the viewer's own levels 1 and 2 only (fix/both-reach, 2026-10-02).
+//    The viewer's level 3 (recent play) is NOT reach: Will played Transformers once in Chicago in
+//    September and it was recommended against collasta (Portland) as "you can both reach". A machine
+//    only in the viewer's level 3 is `viewerPlayedLately` instead ("You played it lately").
+//  - Within a level: machines the viewer can reach too first, then ones the viewer played lately,
 //    then machines the viewer has a score on, then the rest — each group in the level's own order.
 //  - Caps per level: 3 / 8 / 5.
 //  - Then, across levels (Will, 2026-10-02): the machines the viewer can reach too come first, then
@@ -48,15 +52,28 @@ export interface Recommendation {
   imageUrl: string | null;
   level: RecLevel;
   venueLabel?: string;
-  /** The viewer can reach it too (their own levels 1–3). */
+  /** The viewer can reach it too (their own levels 1–2 — never their recent play alone). */
   viewerCanReach: boolean;
+  /** Only in the viewer's level 3 (they scored on it lately, but it's not at a place they can reach). */
+  viewerPlayedLately?: boolean;
   /** The viewer's best score on this exact machine, when they have one. */
   viewerBest?: number;
 }
 
-/** Every machine id in a reach, whatever its level. */
-export function reachIds(r: Reach): Set<number> {
-  return new Set([...r.level1, ...r.level2, ...r.level3].map(m => m.machineId));
+/** Every machine id in a reach at the given levels (default: all three). */
+export function reachIds(r: Reach, levels: RecLevel[] = [1, 2, 3]): Set<number> {
+  const by: Record<RecLevel, ReachItem[]> = { 1: r.level1, 2: r.level2, 3: r.level3 };
+  return new Set(levels.flatMap(l => by[l]).map(m => m.machineId));
+}
+
+/**
+ * What the viewer can reach, for ranking a friend's machines: `reach` = the viewer's levels 1–2,
+ * `lately` = machines only in the viewer's level 3 (played lately, not somewhere they can reach).
+ */
+export function viewerReachOf(mine: Reach): { reach: Set<number>; lately: Set<number> } {
+  const reach = reachIds(mine, [1, 2]);
+  const lately = new Set([...reachIds(mine, [3])].filter(id => !reach.has(id)));
+  return { reach, lately };
 }
 
 /** Deduplicate one level, keeping first-seen order; a later copy only contributes a missing label. */
@@ -73,11 +90,13 @@ function dedupe(items: ReachItem[]): ReachItem[] {
 /**
  * The target's recommendations for this viewer: picked level by level (1, then 2, then 3), each
  * ranked and capped, then the ones the viewer can reach too moved to the front (stable — by level,
- * then each level's own rank). `viewerReach` = machine ids the viewer can reach; `viewerBest` = the
- * viewer's best score per machine id.
+ * then each level's own rank). `viewerReach` = machine ids the viewer can reach (their levels 1–2);
+ * `viewerBest` = the viewer's best score per machine id; `viewerLately` = machines only in the
+ * viewer's level 3 (see viewerReachOf).
  */
 export function mergeRecommendations(
   target: Reach, viewerReach: Set<number>, viewerBest: Map<number, number>, caps: Record<RecLevel, number> = REC_CAPS,
+  viewerLately: Set<number> = new Set(),
 ): Recommendation[] {
   const taken = new Set<number>();
   const out: Recommendation[] = [];
@@ -85,13 +104,14 @@ export function mergeRecommendations(
   for (const [level, items] of levels) {
     const fresh = dedupe(items).filter(m => !taken.has(m.machineId));
     fresh.forEach(m => taken.add(m.machineId));
-    const group = (m: ReachItem) => (viewerReach.has(m.machineId) ? 0 : viewerBest.has(m.machineId) ? 1 : 2);
+    const group = (m: ReachItem) => (viewerReach.has(m.machineId) ? 0 : viewerLately.has(m.machineId) ? 1 : viewerBest.has(m.machineId) ? 2 : 3);
     const ranked = fresh.map((m, i) => ({ m, i })).sort((a, b) => group(a.m) - group(b.m) || a.i - b.i).map(x => x.m);
     for (const m of ranked.slice(0, caps[level])) {
       const rec: Recommendation = {
         machineId: m.machineId, name: m.name, variant: m.variant, imageUrl: m.imageUrl, level,
         viewerCanReach: viewerReach.has(m.machineId),
       };
+      if (!rec.viewerCanReach && viewerLately.has(m.machineId)) rec.viewerPlayedLately = true;
       if (level === 2 && m.venueLabel) rec.venueLabel = m.venueLabel;
       const best = viewerBest.get(m.machineId);
       if (best != null) rec.viewerBest = best;
@@ -138,9 +158,9 @@ export const GROUP_REC_CAP = REC_CAPS[1] + REC_CAPS[2] + REC_CAPS[3];
  */
 export function mergeGroupRecommendations(
   targets: Array<{ userId: number; reach: Reach }>, viewerReach: Set<number>, viewerBest: Map<number, number>,
-  cap = GROUP_REC_CAP,
+  cap = GROUP_REC_CAP, viewerLately: Set<number> = new Set(),
 ): Recommendation[] | GroupRecommendation[] {
-  if (targets.length === 1) return mergeRecommendations(targets[0].reach, viewerReach, viewerBest);
+  if (targets.length === 1) return mergeRecommendations(targets[0].reach, viewerReach, viewerBest, REC_CAPS, viewerLately);
   interface Acc { item: ReachItem; level: RecLevel; reachedBy: Set<number>; atHomeOf: Set<number>; label?: string; order: number }
   const acc = new Map<number, Acc>();
   let order = 0;
@@ -169,6 +189,7 @@ export function mergeGroupRecommendations(
       viewerCanReach: viewerReach.has(a.item.machineId),
       reachedBy: [...a.reachedBy], coverage: a.reachedBy.size,
     };
+    if (!rec.viewerCanReach && viewerLately.has(a.item.machineId)) rec.viewerPlayedLately = true;
     if (a.label) rec.venueLabel = a.label;
     if (a.atHomeOf.size) rec.atHomeOf = [...a.atHomeOf];
     const best = viewerBest.get(a.item.machineId);
