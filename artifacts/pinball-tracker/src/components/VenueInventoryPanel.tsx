@@ -11,13 +11,17 @@ interface Props {
   venueId: number;
   inventory: VenueInventory | null;
   canManage: boolean;
+  /** Owner/admin only: machines scored at this venue (server's `scoredMachines`). */
+  scoredMachines?: Array<{ id: number; name: string }>;
 }
 
 // A home venue's machines, kept by hand — private venues can't use a Pinball Map roster. Everyone who
 // may see the venue's machines sees the list; its owner and admins can add and remove. Adding picks
 // from the same Pinball Map machine catalog the score wizard searches; the server refuses anything
-// that isn't in it.
-export default function VenueInventoryPanel({ venueId, inventory, canManage }: Props) {
+// that isn't in it. Machines already scored here but not listed are offered as one-click adds —
+// never added automatically: the owner decides what's actually on the floor (a friend's score may be
+// from a machine that's since been sold).
+export default function VenueInventoryPanel({ venueId, inventory, canManage, scoredMachines = [] }: Props) {
   const api = useApi();
   const [query, setQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -38,7 +42,7 @@ export default function VenueInventoryPanel({ venueId, inventory, canManage }: P
   };
 
   const add = useMutation({
-    mutationFn: (name: string) => api.venues.inventory.add(venueId, { name }),
+    mutationFn: (body: { name: string } | { machineId: number }) => api.venues.inventory.add(venueId, body),
     onSuccess: r => { setQuery(''); setError(null); refresh(r.inventory); },
     onError: (e: any) => setError(e?.message ?? 'Could not add that machine'),
   });
@@ -51,13 +55,22 @@ export default function VenueInventoryPanel({ venueId, inventory, canManage }: P
   const machines = inventory?.machines ?? [];
   if (!canManage && machines.length === 0) return null;
   const listed = new Set(machines.map(m => m.name.toLowerCase()));
+  const listedIds = new Set(machines.map(m => m.id));
+  const unlisted = canManage
+    ? scoredMachines.filter(m => !listedIds.has(m.id) && !listed.has(m.name.toLowerCase()))
+    : [];
 
   return (
     <section className="rounded-xl border border-white/10 bg-card p-4 mb-6">
       <div className="flex items-center gap-2 mb-3">
         <PinballIcon className="w-4 h-4" />
         <h2 className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Machines here</h2>
-        <span className="text-xs px-1.5 py-0.5 rounded bg-machine/15 text-machine font-bold">{machines.length}</span>
+        {machines.length > 0 ? (
+          <span className="text-xs px-1.5 py-0.5 rounded bg-machine/15 text-machine font-bold">{machines.length}</span>
+        ) : (
+          // Not "0": an empty list means nobody has set it up yet, not that the place has no machines.
+          <span className="text-xs px-1.5 py-0.5 rounded bg-white/10 text-muted-foreground font-bold uppercase tracking-wider">Not set up</span>
+        )}
       </div>
 
       {machines.length === 0 ? (
@@ -93,6 +106,27 @@ export default function VenueInventoryPanel({ venueId, inventory, canManage }: P
         </ul>
       )}
 
+      {unlisted.length > 0 && (
+        <div className="mb-3">
+          <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">Scored here, not listed</p>
+          <div className="flex flex-wrap gap-2">
+            {unlisted.map(m => (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => add.mutate({ machineId: m.id })}
+                disabled={add.isPending}
+                title={`Add ${m.name} to this venue's machines`}
+                className="inline-flex items-center gap-1 rounded-full border border-machine/30 bg-machine/5 px-2.5 py-1 text-xs font-bold text-machine hover:bg-machine/15 transition-colors disabled:opacity-50"
+              >
+                <Plus className="w-3 h-3 flex-shrink-0" />
+                {m.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {canManage && (
         <div className="relative">
           <input
@@ -119,7 +153,7 @@ export default function VenueInventoryPanel({ venueId, inventory, canManage }: P
                       key={s.id}
                       type="button"
                       disabled={already || add.isPending}
-                      onClick={() => add.mutate(s.name)}
+                      onClick={() => add.mutate({ name: s.name })}
                       className="w-full flex items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-white/5 disabled:opacity-50 disabled:hover:bg-transparent transition-colors"
                     >
                       <span className="min-w-0">
