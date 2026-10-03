@@ -448,7 +448,7 @@ export function ChallengeMeEditor({ where, intro = false }: { where: 'profile' |
   };
 
   return (
-    <section ref={sectionRef} className={`rounded-xl border border-friend/25 bg-friend/5 mb-6 scroll-mt-4 transition-shadow duration-700 ${ring ? 'ring-2 ring-friend/50' : ''}`}>
+    <section ref={sectionRef} className={`rounded-xl border border-friend/25 bg-friend/5 mb-6 scroll-mt-20 sm:scroll-mt-24 transition-shadow duration-700 ${ring ? 'ring-2 ring-friend/50' : ''}`}>
       <button type="button" onClick={toggle} aria-expanded={open} className="group w-full flex items-center gap-3 p-4 text-left">
         <Swords className="w-4 h-4 text-friend flex-shrink-0" aria-hidden />
         <span className="min-w-0 flex-1">
@@ -473,13 +473,14 @@ export function ChallengeMeEditor({ where, intro = false }: { where: 'profile' |
               <ul className="mt-2 space-y-1">
                 <IntroLine done={filled.machines}>Pick up to 3 machines you’d love to be challenged on</IntroLine>
                 <IntroLine done={filled.venues}>Add the venues you play at — search, or tap Near me</IntroLine>
-                <IntroLine done={filled.area}>Optional: set a ZIP and how far you’d drive</IntroLine>
+                <IntroLine done={filled.area}>Optional: set a ZIP and how far you’d go</IntroLine>
               </ul>
             </div>
           )}
-          <p className="text-[11px] uppercase tracking-wider text-friend mb-1.5 flex items-center gap-1.5">
+          <p className="text-[11px] uppercase tracking-wider text-friend mb-0.5 flex items-center gap-1.5">
             <PinballIcon tint className="w-3.5 h-3.5 flex-shrink-0" aria-hidden /> My Preferred Machines <span className="text-white/60">{machines.length}/{limits.machines}</span>
             {filled.machines && <Check className="w-3.5 h-3.5 text-friend flex-shrink-0" aria-label="Set" />}</p>
+          <p className="text-xs text-muted-foreground mb-1.5">These are the easiest for you to get to and that you really enjoy playing.</p>
           <div className="flex flex-wrap items-center gap-2">
             {machines.map(m => (
               <span key={m.id} className={`${chip} border-machine/40 text-machine`}>
@@ -514,7 +515,7 @@ export function ChallengeMeEditor({ where, intro = false }: { where: 'profile' |
           <p className="text-[11px] uppercase tracking-wider text-friend mt-4 mb-0.5 flex items-center gap-1.5">
             <Building2 className="w-3.5 h-3.5 flex-shrink-0" aria-hidden /> My Preferred Venues <span className="text-white/60">{venues.length}/{limits.venues}</span>
             {filled.venues && <Check className="w-3.5 h-3.5 text-friend flex-shrink-0" aria-label="Set" />}</p>
-          <p className="text-xs text-muted-foreground mb-1.5">Places you like to play — friends’ challenges look here first.</p>
+          <p className="text-xs text-muted-foreground mb-1.5">Places you like to play or that are easy for you to get to.</p>
           <div className="flex flex-wrap items-center gap-2">
             {venues.map(v => (
               <VenueChip key={v.id} v={v} busy={busy} onRemove={() => save.mutate({ venueIds: venueIds.filter(id => id !== v.id) })} />

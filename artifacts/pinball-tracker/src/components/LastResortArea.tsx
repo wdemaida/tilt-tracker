@@ -63,7 +63,7 @@ export default function LastResortArea() {
         {current && <Check className="w-3.5 h-3.5 text-friend flex-shrink-0" aria-label="Set" />}
       </p>
       <p className="text-xs text-muted-foreground mb-2">
-        How far you’d still drive for a challenge. Only used when a friend’s recommendations come up short and one of you taps <span className="text-white/80">Expand search</span>.
+        How far you’d still go for a challenge. Only used when a friend’s recommendations come up short and one of you taps <span className="text-white/80">Expand search</span>.
       </p>
 
       {!editing && (

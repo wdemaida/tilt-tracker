@@ -99,7 +99,7 @@ export default function ExpandSearch({ username, hint, thin, onPick }: {
       <p className="mb-4 text-[11px] text-muted-foreground flex items-start gap-1.5">
         <Radar className="w-3 h-3 mt-0.5 flex-shrink-0" aria-hidden />
         <span>
-          Not much in common? <Link href="/crew?tab=challenges" className="text-friend hover:underline">Set your Last Resort area</Link> — a ZIP and how far you’d drive — to search beyond your preferred venues.
+          Not much in common? <Link href="/crew?tab=challenges" className="text-friend hover:underline">Set your Last Resort area</Link> — a ZIP and how far you’d go — to search beyond your preferred venues.
         </span>
       </p>
     );

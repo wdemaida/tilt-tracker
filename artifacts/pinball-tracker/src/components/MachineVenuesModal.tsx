@@ -89,7 +89,7 @@ export default function MachineVenuesModal({ machine, onClose }: MachineVenuesMo
                   value={stateFilter}
                   onChange={e => setStateFilter(e.target.value)}
                   aria-label="Filter by state"
-                  className="self-start rounded-lg border border-white/10 bg-background text-sm text-white focus:outline-none px-3 py-1.5"
+                  className="self-start shrink-0 rounded-lg border border-white/10 bg-background text-sm text-white focus:outline-none px-3 py-1.5"
                 >
                   <option value="" className="bg-card">All states</option>
                   {states.map(s => <option key={s} value={s} className="bg-card">{s}</option>)}
