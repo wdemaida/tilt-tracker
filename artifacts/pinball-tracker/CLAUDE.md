@@ -584,3 +584,18 @@
   fast mouse enters and clicks before React re-renders.
 - Tests: `npx tsx --tsconfig tsconfig.app.json --test src/lib/richText.test.ts src/lib/welcomeContent.test.ts src/lib/welcomeParts.test.ts`
   (the `--tsconfig` gives tsx the automatic JSX runtime).
+
+## Stats tiles and InfoTip (`lib/statTiles.ts`, `components/InfoTip.tsx`, `lib/useAnchoredTip.ts`, 2026-10-02)
+- Each Stats tile's label, full name and description live in `STAT_TILES` (`statTileInfo(id, scope, pod)`
+  fills `{who}` from the Compare scope) — **not** the DB's `stats.description`, which describes the
+  site-wide snapshot and has no row for Venues Played, Plays / Visit or Scores Logged / Day. If the
+  server's math changes (`VISIT_GAP_MS`, `computeCurrentMonthCounts`, `daySpan`), update the copy.
+  Tests: `npx tsx --test src/lib/statTiles.test.ts` (tsx isn't a pinball-tracker dependency;
+  `../api-server/node_modules/.bin/tsx` works).
+- Tile labels **wrap** (`break-words leading-4`, `min-h-8` keeps the numbers level) — never `truncate`
+  them again; that clipped "Overall Scores Submitted / Day" on desktop and four labels on a phone.
+- `InfoTip` is the pattern for "what does this label mean": a button with an always-visible Info icon;
+  mouse hover, focus-visible, **tap toggles on touch**; outside tap / Esc / blur / scroll / resize close
+  it. No tooltip library — Radix Tooltip deliberately never opens on touch. Positioning is
+  `useAnchoredTip` (portal + fixed, above else below, clamped to the viewport), copied from
+  `BadgeShelf`'s `ShelfTile`, which still has its own inline copy and can switch to the hook.

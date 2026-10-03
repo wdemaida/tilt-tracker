@@ -1,15 +1,17 @@
 import { useState, type ReactNode } from 'react';
 import { useQuery, keepPreviousData } from '@tanstack/react-query';
 import {
-  Trophy, Repeat, CalendarDays, CalendarClock, MapPin, MapPinned, UploadCloud, Building2, Boxes, TrendingUp, X,
+  Trophy, Repeat, CalendarDays, CalendarClock, MapPin, MapPinned, UploadCloud, Building2, Boxes, TrendingUp, X, Info,
 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { PinballIcon } from '../components/PinballIcon';
 import ComparisonScopePicker from '../components/ComparisonScopePicker';
+import InfoTip from '../components/InfoTip';
 import { useApi } from '../lib/useApi';
 import { useComparisonScope, scopeQuery, scopeKey, type ComparisonScope } from '../lib/comparisonScope';
 import { podColorTokens, podColorVars } from '../lib/podColor';
 import type { PodRef } from '../lib/myPods';
+import { statTileInfo, whoLabel, type StatTileId, type StatTileInfo } from '../lib/statTiles';
 
 // stat_history's period_date is a plain "YYYY-MM-DD" calendar date (America/New_York), not a UTC
 // instant — parsing it with `new Date(str)` treats it as UTC midnight, which can display as the
@@ -20,14 +22,6 @@ function parseDateOnly(s: string): Date {
 }
 
 type Group = 'self' | 'pod' | 'friend' | 'other';
-
-// Who a scoped number is about, in words — for the subtitle, the trend modal and the play-style note.
-function whoLabel(scope: ComparisonScope, pod: PodRef | null): string {
-  if (scope.kind === 'mine') return 'you';
-  if (scope.kind === 'pod') return `you + ${pod?.name ?? 'your pod'}${scope.others ? ' + everyone else' : ''}`;
-  if (scope.kind === 'friends') return `you + your friends${scope.others ? ' + everyone else' : ''}`;
-  return 'all players';
-}
 
 // Venue and machine-roster counts aren't about players, so Compare never changes them — their
 // trend is always the site-wide daily snapshot.
@@ -132,11 +126,14 @@ function GroupSplit({ parts }: { parts: { group: Group; value: number }[] }) {
   );
 }
 
+// The label wraps rather than truncating (it used to clip "Overall Scores Submitted / Day" on desktop
+// and four labels on a phone); `min-h-8` holds two lines so the numbers stay level across a row.
+// Tapping/hovering the label shows the tile's full name and what it counts (InfoTip, lib/statTiles.ts).
 function StatCard({
-  icon: Icon, label, value, statKey, onShowTrend, children,
+  icon: Icon, tile, value, statKey, onShowTrend, children,
 }: {
   icon: React.ComponentType<{ className?: string }>;
-  label: string;
+  tile: StatTileInfo;
   value: string | number;
   statKey?: string;
   onShowTrend?: (key: string, label: string) => void;
@@ -144,15 +141,19 @@ function StatCard({
 }) {
   return (
     <div className="rounded-xl border border-white/10 bg-card p-5">
-      <div className="flex items-center justify-between gap-2 mb-2">
-        <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-muted-foreground min-w-0">
-          <Icon className="w-4 h-4 flex-shrink-0" /> <span className="truncate">{label}</span>
-        </div>
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <InfoTip name={tile.name} description={tile.description}
+          className="flex items-start gap-2 min-w-0 min-h-8 text-left text-xs font-bold uppercase tracking-wider text-muted-foreground hover:text-white transition-colors">
+          <Icon className="w-4 h-4 flex-shrink-0" />
+          <span className="min-w-0 break-words leading-4">
+            {tile.label}<Info className="inline-block w-3 h-3 ml-1 align-[-1px] opacity-70" aria-hidden />
+          </span>
+        </InfoTip>
         {statKey && onShowTrend && (
           <button
-            onClick={() => onShowTrend(statKey, label)}
+            onClick={() => onShowTrend(statKey, tile.label)}
             className="text-muted-foreground hover:text-primary transition-colors flex-shrink-0"
-            aria-label={`View ${label} trend`}
+            aria-label={`View ${tile.label} trend`}
           >
             <TrendingUp className="w-4 h-4" />
           </button>
@@ -246,6 +247,7 @@ export default function StatsPage() {
   const yTicks = Array.from({ length: Math.floor(yMax / yStep) + 1 }, (_, i) => i * yStep);
 
   const showTrend = (key: string, label: string) => setTrend({ key, label });
+  const tile = (id: StatTileId) => statTileInfo(id, scope, pod);
   const tournamentPct = stats.totalGames ? Math.round((stats.playStyle?.tournament / stats.totalGames) * 100) : 0;
   const playsOf = scope.kind === 'mine' ? 'your recorded plays'
     : scope.kind === 'pod' || scope.kind === 'friends' ? `recorded plays by ${whoLabel(scope, pod)}`
@@ -257,28 +259,28 @@ export default function StatsPage() {
 
       <h2 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-3">Totals</h2>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
-        <StatCard icon={PinballIcon} label="Plays" value={stats.totalGames.toLocaleString()} statKey="total_plays" onShowTrend={showTrend}>
+        <StatCard icon={PinballIcon} tile={tile('plays')} value={stats.totalGames.toLocaleString()} statKey="total_plays" onShowTrend={showTrend}>
           {splitOf('plays')}
         </StatCard>
-        <StatCard icon={MapPin} label="Visits" value={(stats.totalVisits ?? 0).toLocaleString()} statKey="total_visits" onShowTrend={showTrend}>
+        <StatCard icon={MapPin} tile={tile('visits')} value={(stats.totalVisits ?? 0).toLocaleString()} statKey="total_visits" onShowTrend={showTrend}>
           {splitOf('visits')}
         </StatCard>
-        <StatCard icon={Trophy} label="Machines w/ Score" value={(stats.uniqueMachines ?? 0).toLocaleString()} statKey="machines_with_score" onShowTrend={showTrend} />
+        <StatCard icon={Trophy} tile={tile('machinesWithScore')} value={(stats.uniqueMachines ?? 0).toLocaleString()} statKey="machines_with_score" onShowTrend={showTrend} />
         {/* Distinct venues with a score in this scope. No group split (a venue can count for several
             groups) and no trend (there's no venues-played stat in stat_history). */}
-        <StatCard icon={MapPinned} label="Venues Played" value={(stats.venuesPlayed ?? 0).toLocaleString()} />
+        <StatCard icon={MapPinned} tile={tile('venuesPlayed')} value={(stats.venuesPlayed ?? 0).toLocaleString()} />
       </div>
 
       <h2 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-3">Monthly / Rates</h2>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
-        <StatCard icon={Repeat} label="Plays / Visit" value={(stats.playHabits?.avgPlaysPerVisit ?? 0).toFixed(1)} />
-        <StatCard icon={CalendarDays} label="Plays This Month" value={(stats.playHabits?.playsThisMonth ?? 0).toLocaleString()} statKey="plays" onShowTrend={showTrend}>
+        <StatCard icon={Repeat} tile={tile('playsPerVisit')} value={(stats.playHabits?.avgPlaysPerVisit ?? 0).toFixed(1)} />
+        <StatCard icon={CalendarDays} tile={tile('playsThisMonth')} value={(stats.playHabits?.playsThisMonth ?? 0).toLocaleString()} statKey="plays" onShowTrend={showTrend}>
           {splitOf('playsThisMonth')}
         </StatCard>
-        <StatCard icon={CalendarClock} label="Visits This Month" value={(stats.playHabits?.visitsThisMonth ?? 0).toLocaleString()} statKey="visits" onShowTrend={showTrend}>
+        <StatCard icon={CalendarClock} tile={tile('visitsThisMonth')} value={(stats.playHabits?.visitsThisMonth ?? 0).toLocaleString()} statKey="visits" onShowTrend={showTrend}>
           {splitOf('visitsThisMonth')}
         </StatCard>
-        <StatCard icon={UploadCloud} label="Overall Scores Submitted / Day" value={(stats.playHabits?.avgScoresSubmittedPerDay ?? 0).toFixed(1)} />
+        <StatCard icon={UploadCloud} tile={tile('scoresPerDay')} value={(stats.playHabits?.avgScoresSubmittedPerDay ?? 0).toFixed(1)} />
       </div>
 
       <h2 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-3">Charts</h2>
@@ -392,8 +394,8 @@ export default function StatsPage() {
         <h2 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-1">Across <span className="normal-case">TiltTrack</span></h2>
         <p className="text-xs text-muted-foreground mb-3">Site-wide — the same in every Compare view.</p>
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
-          <StatCard icon={Building2} label="Venues" value={(stats.totalVenues ?? 0).toLocaleString()} statKey="total_venues" onShowTrend={showTrend} />
-          <StatCard icon={Boxes} label="Machines in System" value={(stats.totalMachinesInSystem ?? 0).toLocaleString()} statKey="total_machines" onShowTrend={showTrend} />
+          <StatCard icon={Building2} tile={tile('venues')} value={(stats.totalVenues ?? 0).toLocaleString()} statKey="total_venues" onShowTrend={showTrend} />
+          <StatCard icon={Boxes} tile={tile('machinesInSystem')} value={(stats.totalMachinesInSystem ?? 0).toLocaleString()} statKey="total_machines" onShowTrend={showTrend} />
         </div>
       </div>
 
