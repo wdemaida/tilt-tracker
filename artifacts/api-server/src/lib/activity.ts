@@ -52,6 +52,7 @@ export const ACTIVITY_TYPES = {
     'admin.settings_changed', 'admin.photo_orphans_run', 'admin.badge_updated', 'admin.badge_order_changed', 'admin.played_at_corrected',
     'admin.content_updated', 'admin.content_reset',
     'admin.announcement_sent', 'admin.announcement_retracted',
+    'admin.machine_merged',
   ],
   system: ['system.stat_snapshot', 'system.challenge_sweep', 'system.activity_retention', 'system.photo_orphans'],
 } as const;

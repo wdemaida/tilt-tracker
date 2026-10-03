@@ -321,6 +321,51 @@ export interface AnnouncementHistoryItem {
   retractedAt: string | null; retracted: number | null;
 }
 
+// Machine merge — "Fix this machine" on the machine page (/api/admin/machines/:id/*, routes/adminMachines.ts
+// and lib/machineMerge.ts on the api-server). Targets come from the stored Pinball Map catalog or
+// existing machine rows; the server never calls Pinball Map for this.
+export interface MachineBrief {
+  /** null = a catalog title with no TiltTrack row yet — the merge creates it. */
+  id: number | null;
+  name: string; manufacturer: string | null; year: number | null; imageUrl: string | null; opdbId: string | null;
+}
+export interface MergeCandidate {
+  name: string; machineId: number | null; scoreCount: number; inCatalog: boolean;
+  manufacturer: string | null; year: number | null; imageUrl: string | null;
+}
+export interface MergeCandidates {
+  source: MachineBrief & { scoreCount: number };
+  suggestion: (MergeCandidate & { confidence: string }) | null;
+  results: MergeCandidate[];
+  catalogAvailable: boolean;
+}
+export interface MergeTarget { targetId?: number; targetName?: string }
+export interface MachineMergePreview {
+  source: MachineBrief;
+  target: MachineBrief;
+  titlesMatch: boolean;
+  scoreCount: number;
+  players: Array<{ userId: number; username: string; scoreCount: number }>;
+  history: { rows: number; merged: number };
+  inventory: { rows: number; merged: number };
+  picks: { rows: number; dropped: number };
+  challenges: Array<{ id: number; status: string; type: string }>;
+  lockedScores: number;
+  badges: Array<{ id: number; name: string; status: string }>;
+  refs: Record<string, number>;
+  blocker: { code: string; message: string; challengeIds?: number[]; refs?: Record<string, number> } | null;
+}
+export interface MachineMergeResult {
+  merged: true;
+  source: { id: number; name: string };
+  target: { id: number; name: string };
+  targetCreated: boolean;
+  scoresMoved: number;
+  challengesRepointed: number[];
+  badgesRepointed: number[];
+  recount: { challengesSynced: number; scoresChecked: number; errors: number };
+}
+
 function qs(params: Record<string, string | number | null | undefined | boolean>): string {
   const p = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '' && v !== false) p.set(k, String(v));
@@ -403,6 +448,13 @@ export function createAdminApi(getToken: () => Promise<string | null>) {
     announcements: (before?: number | null) => get<Paged<AnnouncementHistoryItem>>(`/admin/announcements${qs({ before })}`),
     retractAnnouncement: (announcementId: string) =>
       del<{ announcementId: string; removed: number }>(`/admin/announcements/${encodeURIComponent(announcementId)}`),
+    mergeCandidates: (machineId: number, q = '') => get<MergeCandidates>(`/admin/machines/${machineId}/merge-candidates${qs({ q })}`),
+    /** Reads only. A refusal is `preview.blocker`; a different title is `titlesMatch: false`. */
+    previewMachineMerge: (machineId: number, target: MergeTarget) =>
+      post<{ preview: MachineMergePreview }>(`/admin/machines/${machineId}/merge`, { ...target, dryRun: true }),
+    /** 409 `titles_differ` (needs confirmDifferentTitle) / `merge_stale` / a blocker code. */
+    mergeMachine: (machineId: number, body: MergeTarget & { expectedScoreCount: number; confirmDifferentTitle?: boolean }) =>
+      post<MachineMergeResult>(`/admin/machines/${machineId}/merge`, body),
     resetSiteContent: (key: string) => del<Omit<ContentSection, 'spec'> & { removed: boolean }>(`/admin/content/${encodeURIComponent(key)}`),
   };
 }

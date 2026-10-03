@@ -256,6 +256,7 @@ const TYPE_TEXT: Record<string, string> = {
   'admin.content_reset': 'reset a welcome page section',
   'admin.announcement_sent': 'sent an announcement',
   'admin.announcement_retracted': 'retracted an announcement',
+  'admin.machine_merged': 'merged a machine',
   'badge.earned': 'earned a badge',
   'badge.granted': 'granted a badge to',
   'badge.revoked': 'revoked a badge from',
@@ -311,6 +312,9 @@ function detail(ev: ActivityEvent): string | null {
     case 'notification.sent': return [p.kind, p.kind === 'announcement' ? p.title : null].filter(Boolean).join(' · ');
     case 'admin.announcement_sent':
       return [`“${p.title ?? ''}”`, p.audience === 'all' ? 'everyone' : 'picked users', typeof p.recipientCount === 'number' ? `${p.recipientCount} recipients` : null, p.skippedCount ? `${p.skippedCount} skipped` : null].filter(Boolean).join(' · ');
+    case 'admin.machine_merged':
+      return [`“${p.fromName ?? p.fromMachineId}” → “${p.toName ?? p.toMachineId}”`, typeof p.scoresMoved === 'number' ? `${p.scoresMoved} scores` : null,
+        Array.isArray(p.challengeIds) && p.challengeIds.length ? `${p.challengeIds.length} challenges` : null, p.targetCreated ? 'new row' : null].filter(Boolean).join(' · ');
     case 'admin.announcement_retracted':
       return [`“${p.title ?? ''}”`, typeof p.removed === 'number' ? `removed from ${p.removed} inboxes` : null].filter(Boolean).join(' · ');
     case 'badge.earned': case 'badge.granted': case 'badge.revoked':

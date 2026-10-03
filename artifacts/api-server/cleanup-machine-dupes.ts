@@ -27,7 +27,10 @@
 
 import 'dotenv/config';
 import postgres from 'postgres';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { resolveCanonicalName } from './src/lib/machineCanonical.js';
+import { machineForeignKeys, machineRefCounts, mergeMachineDependents, type RunSql } from './src/lib/machineMerge.js';
 
 const apply = process.argv.includes('--apply');
 const url = process.env.DATABASE_URL;
@@ -39,6 +42,13 @@ console.log(`Database host: ${new URL(url).hostname}${apply ? '  — APPLYING CH
 
 const sql = postgres(url, { max: 1, onnotice: () => {} });
 type Sql = typeof sql;
+// The FK discovery, reference counts and per-venue merge SQL are shared with the admin machine merge
+// (src/lib/machineMerge.ts). Its statements are drizzle SQL; this renders them for raw postgres.js.
+const dialect = new PgDialect();
+const runner = (db: Sql): RunSql => async (q: SQL) => {
+  const { sql: text, params } = dialect.sqlToQuery(q);
+  return [...(await db.unsafe(text, params as any[]))];
+};
 
 const MERGES = [
   { from: 55, fromName: 'Pokemon (Pro)', to: 219, toName: 'Pokémon (Pro)' },
@@ -53,27 +63,14 @@ const MOVABLE = new Set(['venue_machine_history.machine_id', 'venue_inventory.ma
 const BLOCKING = new Set(['scores.machine_id', 'challenges.machine_id']);
 
 interface Fk { table: string; column: string }
-const fks: Fk[] = (await sql`
-  SELECT cl.relname AS table, att.attname AS column
-    FROM pg_constraint con
-    JOIN pg_class cl ON cl.oid = con.conrelid
-    JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = ANY (con.conkey)
-   WHERE con.contype = 'f' AND con.confrelid = 'public.machines'::regclass
-   ORDER BY 1, 2`).map(r => ({ table: r.table as string, column: r.column as string }));
+const fks: Fk[] = await machineForeignKeys(runner(sql));
 const fkKey = (f: Fk) => `${f.table}.${f.column}`;
 console.log(`\nForeign keys to machines(id): ${fks.map(fkKey).join(', ') || '(none)'}`);
 const unknownFks = fks.filter(f => !MOVABLE.has(fkKey(f)) && !BLOCKING.has(fkKey(f)));
 if (unknownFks.length) console.log(`  !! not handled by this script: ${unknownFks.map(fkKey).join(', ')} — rows referenced there are refused`);
 
 async function refCounts(db: Sql, id: number): Promise<Record<string, number>> {
-  const out: Record<string, number> = {};
-  for (const f of fks) {
-    const [r] = await db`SELECT count(*)::int AS n FROM ${db(f.table)} WHERE ${db(f.column)} = ${id}`;
-    out[fkKey(f)] = r.n;
-  }
-  const [b] = await db`SELECT count(*)::int AS n FROM badges WHERE (rule -> 'machine' ->> 'machineId') = ${String(id)}`;
-  out['badges.rule.machine'] = b.n;
-  return out;
+  return machineRefCounts(runner(db), id, fks);
 }
 const fmtRefs = (refs: Record<string, number>) =>
   Object.entries(refs).map(([k, n]) => `${k}=${n}`).join('  ');
@@ -213,57 +210,9 @@ await sql.begin(async tx => {
     const blockers = Object.entries(refs).filter(([k, n]) => n > 0 && !MOVABLE.has(k));
     if (blockers.length) throw new Error(`merge ${m.from} → ${m.to}: now referenced by ${blockers.map(([k, n]) => `${k}=${n}`).join(', ')}`);
 
-    // venue_machine_history: one row per (venue, machine). Same machine under two names at one venue →
-    // earliest first-seen, latest last-seen, and still there if either row says so.
-    await tx`
-      UPDATE venue_machine_history t
-         SET first_seen_at = LEAST(t.first_seen_at, s.first_seen_at),
-             last_seen_at  = GREATEST(t.last_seen_at, s.last_seen_at),
-             removed_at    = CASE WHEN t.removed_at IS NULL OR s.removed_at IS NULL THEN NULL
-                                  ELSE GREATEST(t.removed_at, s.removed_at) END
-        FROM venue_machine_history s
-       WHERE s.machine_id = ${m.from} AND t.machine_id = ${m.to} AND t.venue_id = s.venue_id`;
-    await tx`
-      DELETE FROM venue_machine_history s
-       WHERE s.machine_id = ${m.from}
-         AND EXISTS (SELECT 1 FROM venue_machine_history t WHERE t.machine_id = ${m.to} AND t.venue_id = s.venue_id)`;
-    await tx`UPDATE venue_machine_history SET machine_id = ${m.to} WHERE machine_id = ${m.from}`;
-
-    // venue_inventory: the current stint wins; both current → the earlier start; both ended → the
-    // later end (the same rule as venueMerge.ts).
-    const invPairs = await tx`
-      SELECT t.id AS target_id,
-             t.added_at AS t_added_at, t.added_by_id AS t_added_by_id, t.removed_at AS t_removed_at, t.removed_by_id AS t_removed_by_id,
-             s.added_at AS s_added_at, s.added_by_id AS s_added_by_id, s.removed_at AS s_removed_at, s.removed_by_id AS s_removed_by_id
-        FROM venue_inventory s
-        JOIN venue_inventory t ON t.venue_id = s.venue_id AND t.machine_id = ${m.to}
-       WHERE s.machine_id = ${m.from}`;
-    for (const p of invPairs) {
-      const t = { addedAt: p.t_added_at as Date, addedById: p.t_added_by_id, removedAt: p.t_removed_at as Date | null, removedById: p.t_removed_by_id };
-      const s = { addedAt: p.s_added_at as Date, addedById: p.s_added_by_id, removedAt: p.s_removed_at as Date | null, removedById: p.s_removed_by_id };
-      const win = t.removedAt == null && s.removedAt == null ? (s.addedAt < t.addedAt ? s : t)
-        : t.removedAt == null ? t
-        : s.removedAt == null ? s
-        : (s.removedAt > t.removedAt ? s : t);
-      if (win === s) {
-        await tx`
-          UPDATE venue_inventory SET added_at = ${s.addedAt}, added_by_id = ${s.addedById},
-                 removed_at = ${s.removedAt}, removed_by_id = ${s.removedById}
-           WHERE id = ${p.target_id}`;
-      }
-    }
-    await tx`
-      DELETE FROM venue_inventory s
-       WHERE s.machine_id = ${m.from}
-         AND EXISTS (SELECT 1 FROM venue_inventory t WHERE t.machine_id = ${m.to} AND t.venue_id = s.venue_id)`;
-    await tx`UPDATE venue_inventory SET machine_id = ${m.to} WHERE machine_id = ${m.from}`;
-
-    // user_challenge_machines: PK (user, machine).
-    await tx`
-      DELETE FROM user_challenge_machines s
-       WHERE s.machine_id = ${m.from}
-         AND EXISTS (SELECT 1 FROM user_challenge_machines t WHERE t.machine_id = ${m.to} AND t.user_id = s.user_id)`;
-    await tx`UPDATE user_challenge_machines SET machine_id = ${m.to} WHERE machine_id = ${m.from}`;
+    // venue_machine_history / venue_inventory merged per (venue, machine), user_challenge_machines per
+    // (user, machine) — the same statements the admin machine merge runs (machineMerge.ts).
+    await mergeMachineDependents(runner(tx as unknown as Sql), m.from, m.to);
 
     const left = await refCounts(tx as unknown as Sql, m.from);
     if (Object.values(left).some(n => n > 0)) throw new Error(`merge ${m.from} → ${m.to}: references remain (${fmtRefs(left)})`);

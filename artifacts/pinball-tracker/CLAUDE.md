@@ -187,6 +187,21 @@
 - Step 4 shows (and posts to Pinball Map with) the machine name the server actually saved
   (`savedMachineName` from `POST /api/machines`), which can be the catalog spelling of what was typed.
 
+## Fix machine — admin merge on the machine page (`components/MachineMergeDialog.tsx`, 2026-10-03)
+- Admins (`me.role === 'admin'`) see a quiet **Fix machine** link under the machine page's title. It
+  opens a dialog: the server's **Suggested** target (the shared canonicalizer against the stored
+  catalog — "Jaws Pro Edition" → "JAWS (Pro)") and a search over existing machines + the stored catalog
+  (`admin.mergeCandidates`, debounced 300 ms). A pick runs a **dry run** (`admin.previewMachineMerge`):
+  "Move N scores (by @a, @b…) from 'X' to 'Y' and retire 'X'", with counts for venue history, home
+  inventories, "Challenge me on" picks, challenges (re-pointed + re-counted), locked scores and badge
+  rules. A server `blocker` shows in red and disables Merge; `titlesMatch: false` needs the "merge
+  anyway" checkbox (sent as `confirmDifferentTitle`). Merge… → the shared `ConfirmDialog` →
+  `admin.mergeMachine` with the previewed `expectedScoreCount` (a 409 `merge_stale` shows inline) →
+  invalidate `['machine']` / `['machines']` → navigate to `/machines/<target name>` and close (the page
+  component stays mounted across that navigation, so it closes explicitly).
+- Server rules (transaction, FK discovery, challenges and badge-rule decisions): api-server CLAUDE.md,
+  "Admin machine merge".
+
 ## Home-venue inventory and the show-publicly switch (added 2026-09-25)
 - The Edit Venue dialog is one component, `EditVenueDialog.tsx`, used by the Venues page card and
   the venue detail page header — same pencil, same permission (the row's server-computed
