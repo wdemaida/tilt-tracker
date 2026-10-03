@@ -8,7 +8,7 @@ import { getCatalogStatus } from '../lib/pinballMap.js';
 import { pmClient } from '../lib/pmClient.js';
 import { captureStatSnapshot } from '../lib/statSnapshot.js';
 import { logActivity, fromReq } from '../lib/activity.js';
-import { normalizeDisplayName } from '../lib/profileFields.js';
+import { normalizeDisplayName, normalizeUsername } from '../lib/profileFields.js';
 import adminAreaRouter from './adminArea.js';
 import adminBadgesRouter from './adminBadges.js';
 import adminContentRouter from './adminContent.js';
@@ -35,7 +35,13 @@ router.patch('/users/:id', async (req, res) => {
     if (!name.ok) return void res.status(400).json({ error: name.error, code: name.code, field: 'displayName' });
     updates.displayName = name.value;
   }
-  if (username !== undefined) updates.username = username.trim();
+  if (username !== undefined) {
+    // Setup's rule (normalizeUsername), strict: refuse rather than silently drop characters. This
+    // used to save whatever was typed, trimmed — a blank username included.
+    const uname = normalizeUsername(username, { strict: true });
+    if (!uname.ok) return void res.status(400).json({ error: uname.error, code: uname.code, field: 'username' });
+    updates.username = uname.value;
+  }
 
   if (Object.keys(updates).length === 0) return void res.status(400).json({ error: 'Nothing to update' });
 
@@ -49,7 +55,7 @@ router.patch('/users/:id', async (req, res) => {
     await logActivity({ type: 'admin.user_updated', ...fromReq(req), subjectUserId: id, targetType: 'user', targetId: id, payload: { changes: updates } });
     res.json(updated);
   } catch (err: any) {
-    if (err?.code === '23505') return void res.status(409).json({ error: 'Username already taken' });
+    if (err?.code === '23505') return void res.status(409).json({ error: 'Username already taken', code: 'username_taken', field: 'username' });
     console.error('admin/users PATCH error:', err);
     res.status(500).json({ error: 'Failed to update user' });
   }

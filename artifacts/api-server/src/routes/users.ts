@@ -10,7 +10,7 @@ import { challengeMeFor } from '../lib/challengeReach.js';
 import { userBadgeShelf } from '../lib/badges.js';
 import { resolveViewer } from './badges.js';
 import { createRateLimiter } from '../lib/rateLimit.js';
-import { normalizeDisplayName } from '../lib/profileFields.js';
+import { normalizeDisplayName, normalizeUsername } from '../lib/profileFields.js';
 import { kickAvatarResyncIfStale, resyncAvatar } from '../lib/profileAvatar.js';
 
 const router = Router();
@@ -101,14 +101,14 @@ router.post('/setup', requireAuth, async (req, res) => {
   const { userId: clerkId } = getAuth(req);
   if (!clerkId) return res.status(401).json({ error: 'Unauthorized' });
 
-  const { username } = req.body;
-  if (!username || typeof username !== 'string') return res.status(400).json({ error: 'username and displayName are required' });
+  // normalizeUsername() is shared with the admin PATCH /api/admin/users/:id.
+  const uname = normalizeUsername(req.body.username);
+  if (!uname.ok) return res.status(400).json({ error: uname.error, code: uname.code, field: 'username' });
   const name = normalizeDisplayName(req.body.displayName);
   if (!name.ok) return res.status(400).json({ error: name.error, code: name.code, field: 'displayName' });
   const displayName = name.value;
 
-  const usernameClean = username.toLowerCase().replace(/[^a-z0-9_]/g, '');
-  if (!usernameClean) return res.status(400).json({ error: 'Invalid username' });
+  const usernameClean = uname.value;
 
   try {
     const [existing] = await db.select().from(users).where(eq(users.clerkId, clerkId)).limit(1);
@@ -128,7 +128,7 @@ router.post('/setup', requireAuth, async (req, res) => {
     const { pinballMapToken: _t, pinballMapEmail: _e, ...user } = created;
     res.status(201).json(user);
   } catch (err: any) {
-    if (err?.code === '23505') return res.status(409).json({ error: 'Username already taken' });
+    if (err?.code === '23505') return res.status(409).json({ error: 'Username already taken', code: 'username_taken', field: 'username' });
     res.status(500).json({ error: 'Failed to create profile' });
   }
 });

@@ -1,9 +1,33 @@
 // Profile field rules — pure, unit-tested (profileFields.test.ts). The ONE normalizer for a display
 // name, shared by POST /api/users/setup, PATCH /api/users/me and the admin PATCH /api/admin/users/:id
-// (which used to save a blank name: it trimmed but never checked). The username is not here: it's
-// chosen once at setup and locked after that (PATCH /me answers 400 username_locked).
+// (which used to save a blank name: it trimmed but never checked). The username is chosen once at
+// setup and locked for the user after that (PATCH /me answers 400 username_locked); only an admin can
+// change it, through the same normalizeUsername() rule as setup.
 
 export const DISPLAY_NAME_MAX = 40;
+
+export type UsernameError =
+  | { code: 'username_required'; error: string }
+  | { code: 'username_invalid'; error: string };
+
+/**
+ * The username rule from POST /api/users/setup: lowercased, everything but a–z, 0–9 and _ dropped,
+ * and something must be left. Not unique here — the users.username UNIQUE index is the authority
+ * (both routes answer its 23505 with 409 "Username already taken").
+ *
+ * `strict` (the admin PATCH): refuse instead of silently dropping characters, so an admin typing
+ * "Will D" is told why rather than saving "willd". Case is still folded.
+ */
+export function normalizeUsername(raw: unknown, { strict = false }: { strict?: boolean } = {}):
+  { ok: true; value: string } | ({ ok: false } & UsernameError) {
+  if (typeof raw !== 'string' || !raw.trim()) return { ok: false, code: 'username_required', error: 'Username is required' };
+  const lower = raw.trim().toLowerCase();
+  const value = lower.replace(/[^a-z0-9_]/g, '');
+  if (!value || (strict && value !== lower)) {
+    return { ok: false, code: 'username_invalid', error: 'Username can only use letters, numbers and underscores' };
+  }
+  return { ok: true, value };
+}
 
 export type ProfileFieldError =
   | { code: 'display_name_required'; error: string }
