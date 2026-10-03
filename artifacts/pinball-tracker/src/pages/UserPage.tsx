@@ -86,9 +86,10 @@ export default function UserPage() {
             <ProfileEditForm displayName={user.displayName} onDone={() => setEditing(false)} />
           </div>
         )}
-        {/* Public — anyone who can see the profile sees the badges. */}
+        {/* Public — anyone who can see the profile sees the badges. Below md it's indented to the name
+            column: the lg avatar's width plus the row's gap-4 (w-16 → pl-20, sm:w-20 → sm:pl-24). */}
         <BadgeShelf username={user.username} variant="header"
-          className="md:col-start-2 md:row-start-1 md:row-span-2 md:justify-self-end md:max-w-[22rem]" />
+          className="pl-20 sm:pl-24 md:pl-0 md:col-start-2 md:row-start-1 md:row-span-2 md:justify-self-end md:max-w-[22rem]" />
         {friendship && friendship.relationship !== 'self' && (
           <div className="md:col-start-1 flex flex-wrap items-center gap-2">
             <FriendButton userId={friendship.user.id} name={friendship.user.displayName} relationship={friendship.relationship} />
@@ -127,9 +128,14 @@ export default function UserPage() {
             {/* Phone: name + badge, score, then meta, stacked. sm+: the score moves to a right-hand
                 column spanning both text rows. Explicit placement puts the meta back in column 1. */}
             <div className="flex-1 min-w-0 grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto] sm:gap-x-4">
-              <div className="flex items-start justify-between sm:justify-start gap-2 min-w-0">
-                <Link href={`/machines/${encodeURIComponent(s.machineName)}`} className="min-w-0 line-clamp-2 break-words text-sm font-bold uppercase tracking-wider text-machine hover:text-machine/80 transition-colors">
-                  {s.machineName}
+              {/* Phone: the name never gets narrower than its longest word (min-width auto = min-content,
+                  capped at the row by max-w-full); when that word plus the photo/type chips won't fit, the
+                  chips wrap under the name. Squeezed below it, break-words split "TRANSFORMERS" from its
+                  ":". The clamp sits on an inner span because overflow:hidden zeroes a flex item's auto
+                  min-width. sm+: unchanged — the name shrinks beside the chips. */}
+              <div className="flex flex-wrap sm:flex-nowrap items-start justify-between sm:justify-start gap-2 min-w-0">
+                <Link href={`/machines/${encodeURIComponent(s.machineName)}`} className="basis-0 grow max-w-full sm:basis-auto sm:grow-0 sm:min-w-0 text-sm font-bold uppercase tracking-wider text-machine hover:text-machine/80 transition-colors">
+                  <span className="line-clamp-2 break-words">{s.machineName}</span>
                 </Link>
                 <span className="flex-shrink-0 inline-flex items-center gap-1">
                   <FullPhotoButton

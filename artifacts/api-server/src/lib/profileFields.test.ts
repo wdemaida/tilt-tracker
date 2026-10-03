@@ -1,7 +1,7 @@
 // Run: npx tsx --test src/lib/profileFields.test.ts   (from artifacts/api-server)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeDisplayName, avatarFromClerk, clerkInstant, DISPLAY_NAME_MAX } from './profileFields.js';
+import { normalizeDisplayName, normalizeUsername, avatarFromClerk, clerkInstant, DISPLAY_NAME_MAX } from './profileFields.js';
 
 const ok = (raw: unknown) => {
   const r = normalizeDisplayName(raw);
@@ -74,4 +74,28 @@ test('avatarFromClerk: null for Clerk’s default avatar (has_image false/missin
 test('clerkInstant: ms → Date, anything else → null', () => {
   assert.equal(clerkInstant(1760000000000)?.toISOString(), new Date(1760000000000).toISOString());
   for (const v of [0, -1, NaN, Infinity, '1760000000000', null, undefined]) assert.equal(clerkInstant(v), null);
+});
+
+test('username: setup rule — trims, lowercases, drops anything but a-z 0-9 _', () => {
+  const v = (raw: unknown) => { const r = normalizeUsername(raw); assert.ok(r.ok, String(raw)); return r.value; };
+  assert.equal(v('  Will_D99 '), 'will_d99');
+  assert.equal(v('Will D!'), 'willd');
+});
+
+test('username: blank, whitespace-only, all-invalid and non-strings are refused', () => {
+  const c = (raw: unknown) => { const r = normalizeUsername(raw); assert.ok(!r.ok, String(raw)); return r.code; };
+  assert.equal(c(''), 'username_required');
+  assert.equal(c('   '), 'username_required');
+  assert.equal(c(undefined), 'username_required');
+  assert.equal(c(42), 'username_required');
+  assert.equal(c('!!! ---'), 'username_invalid');
+});
+
+test('username: strict (admin) refuses what setup would silently drop, still folds case', () => {
+  const strict = (raw: unknown) => normalizeUsername(raw, { strict: true });
+  assert.deepEqual(strict(' Helmhead_2 '), { ok: true, value: 'helmhead_2' });
+  const spaced = strict('will d');
+  assert.ok(!spaced.ok && spaced.code === 'username_invalid');
+  const blank = strict('  ');
+  assert.ok(!blank.ok && blank.code === 'username_required');
 });

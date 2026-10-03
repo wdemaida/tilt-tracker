@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'wouter';
 import { X, Home, Lock, ExternalLink } from 'lucide-react';
@@ -37,6 +37,16 @@ export default function MachineVenuesModal({ machine, onClose }: MachineVenuesMo
   const formerly = (data?.formerly ?? []).filter(v => inState(v.address));
   // Private collections carry no location, so they can't be placed in a state — shown unfiltered only.
   const privateCount = stateFilter ? 0 : (data?.privateCount ?? 0);
+  const titleId = useId();
+
+  // Escape closes, as in BadgeDetail. Only listens while open.
+  const open = machine != null;
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
 
   if (machine == null) return null;
 
@@ -45,11 +55,16 @@ export default function MachineVenuesModal({ machine, onClose }: MachineVenuesMo
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-card shadow-2xl overflow-hidden">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="w-full max-w-lg rounded-2xl border border-white/10 bg-card shadow-2xl overflow-hidden"
+      >
         <div className="flex items-center justify-between gap-3 px-6 py-4 border-b border-white/10">
           <div className="min-w-0">
             <p className="text-xs text-muted-foreground uppercase tracking-wider font-bold">Where to play</p>
-            <h2 className="text-lg font-black uppercase tracking-wider text-machine leading-tight truncate">
+            <h2 id={titleId} className="text-lg font-black uppercase tracking-wider text-machine leading-tight truncate">
               {machine.name}
             </h2>
           </div>
