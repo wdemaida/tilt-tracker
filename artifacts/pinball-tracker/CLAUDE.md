@@ -181,7 +181,8 @@
 - **Venues map + venue thumbnail (back on 2026-10-03, `MAP_VIEW_ENABLED` in `lib/mapView.ts`)**: both
   draw only the server's public `mapPoint` — never score GPS, never `latitude`/`longitude`, and the
   owner/admin get the same point as everyone. `approximate` (city_state home) → a dashed circle at
-  city zoom (thumbnail `Circle` 2.5 km at zoom 11; map `CircleMarker`), never a pin, which would read
+  city zoom (thumbnail `Circle` 2.5 km at zoom 11; map `ApproxArea`: 2.5 km in pixels, recomputed on
+  zoom, floor 16px, under the pins, plus an invisible stroke-only hit ring in a pane above them), never a pin, which would read
   as an exact address; null (hidden tier) → not drawn / placeholder. `MapPage` is built on
   `GET /api/venues` (`['venues', mine]`), pins `scoreCount > 0 && mapPoint`; `?venueId=` centers and
   opens that venue (zoom 15 exact / 11 approximate) or says it isn't on the map. The venue page says

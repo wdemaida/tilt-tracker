@@ -60,12 +60,17 @@ export default function MachineVenuesModal({ machine, onClose }: MachineVenuesMo
         aria-labelledby={titleId}
         className="w-full max-w-lg rounded-2xl border border-white/10 bg-card shadow-2xl overflow-hidden"
       >
-        <div className="flex items-center justify-between gap-3 px-6 py-4 border-b border-white/10">
-          <h2 id={titleId} className="min-w-0">
+        <div className="flex items-start justify-between gap-3 px-6 py-4 border-b border-white/10">
+          <h2 id={titleId} className="min-w-0 flex-1">
             <span className="block text-xs text-muted-foreground uppercase tracking-wider font-bold">
               Where scores have been logged for
             </span>
-            <span className="block text-lg font-black uppercase tracking-wider text-machine leading-tight truncate">
+            {/* Wraps rather than truncates: a long name ("TRANSFORMERS: MO…") was cut off
+                on a phone. line-clamp-3 (it sets its own display, so no `block`); title holds the full name. */}
+            <span
+              title={machine.name}
+              className="text-lg font-black uppercase tracking-wider text-machine leading-tight break-words line-clamp-3"
+            >
               {machine.name}
             </span>
           </h2>

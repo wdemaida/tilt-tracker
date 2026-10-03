@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { MapContainer, TileLayer, Marker, CircleMarker, Popup, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, CircleMarker, Popup, useMap, useMapEvents } from 'react-leaflet';
 import { Link, useSearch } from 'wouter';
 import { formatScoreTime } from '../lib/scoreTime';
 import { Clock, Home, MapPin } from 'lucide-react';
@@ -11,6 +11,7 @@ import { useScopeContext } from '../lib/ScopeContext';
 import { ScopeToggle } from '../components/ScopeToggle';
 import { TILE_BASE_URL, TILE_LABELS_URL, TILE_ATTRIBUTION } from '../lib/mapTiles';
 import type { MapPoint } from '../lib/api';
+import { APPROX_RADIUS_M } from '../components/VenueMapThumbnail';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 
@@ -37,6 +38,18 @@ const PIN_OTHERS = makePinIcon(COLOR_OTHERS);
 const FOCUS_ZOOM_EXACT = 15;
 const FOCUS_ZOOM_APPROX = 11;
 const DEFAULT_CENTER: [number, number] = [42.36, -71.06];
+
+/** Smallest an approximate area is drawn, in px, so it stays visible (and tappable) zoomed out. */
+const APPROX_MIN_RADIUS_PX = 16;
+/** Width of the invisible ring, above the pins, that keeps an area clickable where pins crowd it. */
+const APPROX_HIT_RING_PX = 12;
+/** Pane for those rings: above markerPane (600), below tooltips (650) and popups (700). */
+const APPROX_HIT_PANE = 'approx-area-hit';
+
+/** Web-Mercator metres per screen pixel at a latitude and zoom. */
+function metresPerPixel(lat: number, zoom: number) {
+  return (40075016.686 * Math.cos((lat * Math.PI) / 180)) / 2 ** (zoom + 8);
+}
 
 /** A GET /api/venues row, as far as the map reads it. */
 interface VenueRow {
@@ -178,17 +191,14 @@ export default function MapPage({ embedded = false }: { embedded?: boolean }) {
             const isFocus = focusPin?.id === v.id;
             const popup = <VenuePopup venue={v} />;
             if (v.mapPoint.approximate) {
-              const color = isMine ? COLOR_MINE : COLOR_OTHERS;
               return (
-                <CircleMarker
+                <ApproxArea
                   key={v.id}
                   center={[v.mapPoint.lat, v.mapPoint.lng]}
-                  radius={14}
-                  pathOptions={{ color, weight: 2, opacity: 0.8, dashArray: '4 4', fillColor: color, fillOpacity: 0.2 }}
-                  ref={isFocus ? setAutoPopupLayer : undefined}
-                >
-                  {popup}
-                </CircleMarker>
+                  color={isMine ? COLOR_MINE : COLOR_OTHERS}
+                  popup={popup}
+                  layerRef={isFocus ? setAutoPopupLayer : undefined}
+                />
               );
             }
             return (
@@ -205,6 +215,57 @@ export default function MapPage({ embedded = false }: { embedded?: boolean }) {
         </MapContainer>
       </div>
     </div>
+  );
+}
+
+/**
+ * An approximate (city_state home) venue: a dashed area on the city centroid, never a pin.
+ *
+ * Its size is geographic — APPROX_RADIUS_M, the same 2.5 km the venue thumbnail draws — so it reads as
+ * "somewhere around here" at city zoom and grows as you zoom in, but never shrinks below
+ * APPROX_MIN_RADIUS_PX zoomed out, where 2.5 km would be a dot. A pixel-radius CircleMarker recomputed
+ * on zoom (rather than a Leaflet `Circle`) is what gives that floor.
+ *
+ * Hit-testing: the filled area sits in the overlay pane, *under* the pins, so exact venues inside the
+ * city stay clickable. Pins crowding the area used to swallow its clicks (a 14 px circle was easily
+ * covered by one 24×36 pin), so a second, invisible ring along its edge sits in a pane *above* the
+ * pins and opens the same popup. Only the ring's stroke is hit (`fill: false`), so it never blocks a
+ * pin inside the area.
+ */
+function ApproxArea({ center, color, popup, layerRef }: {
+  center: [number, number];
+  color: string;
+  popup: ReactNode;
+  layerRef?: (layer: L.CircleMarker | null) => void;
+}) {
+  const map = useMap();
+  // Created here, synchronously, so it exists before the ring layer below is added to it.
+  useState(() => {
+    if (!map.getPane(APPROX_HIT_PANE)) map.createPane(APPROX_HIT_PANE).style.zIndex = '610';
+    return null;
+  });
+  const [zoom, setZoom] = useState(() => map.getZoom());
+  useMapEvents({ zoomend: () => setZoom(map.getZoom()) });
+  const radius = Math.max(APPROX_MIN_RADIUS_PX, APPROX_RADIUS_M / metresPerPixel(center[0], zoom));
+  return (
+    <>
+      <CircleMarker
+        center={center}
+        radius={radius}
+        pathOptions={{ color, weight: 2, opacity: 0.9, dashArray: '6 5', fillColor: color, fillOpacity: 0.18 }}
+        ref={layerRef}
+      >
+        {popup}
+      </CircleMarker>
+      <CircleMarker
+        center={center}
+        radius={radius}
+        pane={APPROX_HIT_PANE}
+        pathOptions={{ stroke: true, color, opacity: 0, weight: APPROX_HIT_RING_PX, fill: false }}
+      >
+        {popup}
+      </CircleMarker>
+    </>
   );
 }
 
