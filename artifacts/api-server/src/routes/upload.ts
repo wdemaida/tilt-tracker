@@ -8,7 +8,8 @@ import { getAuth } from '@clerk/express';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { extractScoreReads, ScoreReadTruncatedError, type ExtractedScoreReads } from '../lib/anthropic.js';
 import { refineWithCrops, modelViewSize } from '../lib/displayCrops.js';
-import { mergeReads, mergePlayerReads, defaultPlayerIndex, templateToScore, checkPlausibility } from '../lib/scoreRead.js';
+import { litFilterEnabled, readLitFiltered } from '../lib/litFilter.js';
+import { mergeReads, mergePlayerReads, defaultPlayerIndex, templateToScore, checkPlausibility, reconcileLitRead } from '../lib/scoreRead.js';
 import { getMachineScoreStats } from '../lib/machineScoreStats.js';
 import { fitUnderAnthropicLimit, TARGET_RAW_BYTES } from '../lib/imageCompress.js';
 import { getNearbyVenues, type Venue } from '../lib/hereApi.js';
@@ -472,14 +473,22 @@ router.post('/', requireAuth, receivePhotos, async (req, res) => {
     // Second pass: re-read each score display from a close crop, window by window, when the photo has
     // several displays or a strobed segment read (see displayCrops.ts). Skipped for a lone complete
     // DMD/LCD read. Any failure keeps the whole-photo read — this can never fail the upload.
-    const cropPass = await refineWithCrops(sized, extracted.reads, undefined, aiCtx).catch(err => {
-      console.error('Score crop pass failed:', err?.message ?? err);
-      return null;
-    });
+    // Alongside it, behind SCORE_LIT_FILTER=1: a re-read of photos with segment displays from a copy
+    // where only the lit segments keep their color, so unlit outlines stop reading as 8s (see
+    // litFilter.ts). Both start from pass 1's boxes; the filtered read is folded in last.
+    const [cropPass, litPass] = await Promise.all([
+      refineWithCrops(sized, extracted.reads, undefined, aiCtx).catch(err => {
+        console.error('Score crop pass failed:', err?.message ?? err);
+        return null;
+      }),
+      litFilterEnabled() ? readLitFiltered(sized, extracted.reads, undefined, aiCtx) : Promise.resolve(null),
+    ]);
     for (const r of cropPass?.report ?? []) {
       if (r.error) console.error(`Score crop pass failed for image ${r.imageIndex}:`, r.error);
     }
-    const imageReads = cropPass?.reads ?? extracted.reads;
+    if (litPass?.error) console.error('Score lit-filter pass failed:', litPass.error);
+    const afterCrops = cropPass?.reads ?? extracted.reads;
+    const imageReads = litPass ? afterCrops.map((r, i) => reconcileLitRead(r, litPass.reads[i] ?? null)) : afterCrops;
     // Merged per player: a 4-player backglass is four scores, and only the user knows which was
     // theirs (the wizard asks). Images with no readable display leave an empty list.
     const players = mergePlayerReads(imageReads);

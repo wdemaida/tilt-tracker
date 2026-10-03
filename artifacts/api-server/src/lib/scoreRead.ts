@@ -36,6 +36,8 @@ export interface DisplayRead {
   alignmentWarning?: boolean;
   /** Positions the crop pass couldn't settle: "?" in the template, both readings offered. */
   conflicts?: ScoreConflict[];
+  /** Set when the lit-filter pass (litFilter.ts) re-read this display: it agreed, or it changed it. */
+  litFilter?: 'confirmed' | 'changed';
   /** Index among the image's displays in the model's own order, before player sorting. */
   position?: number;
   // Pass-1 details the crop pass needs; never sent to the client (mergeReads builds fresh objects).
@@ -789,6 +791,134 @@ function extraDigit(shorter: string, longer: string): number | null {
   let n = 0;
   while (n < shorter.length && shorter[n] === longer[n]) n++;
   return shorter.slice(n) === longer.slice(n + 1) ? n : null;
+}
+
+// ---------------------------------------------------------------------------
+// Lit-filter pass — re-read of a copy with only the lit segments in color (see litFilter.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * The filtered read's display that is the same physical display as `base`: the nearest box centre
+ * within the slack the model's boxes need (they're routinely a third of a display-width off sideways
+ * and a display-height off vertically — see displayCrops.ts), else the same player number when
+ * either box is missing. null when nothing qualifies; each filtered display is used once.
+ */
+export function matchLitDisplay(base: DisplayRead, candidates: DisplayRead[], used: Set<DisplayRead>): DisplayRead | null {
+  const free = candidates.filter(c => !used.has(c));
+  if (base.bbox) {
+    const b = base.bbox;
+    let best: DisplayRead | null = null, bestDist = Infinity;
+    for (const c of free) {
+      if (!c.bbox) continue;
+      const dx = Math.abs(b.x + b.w / 2 - (c.bbox.x + c.bbox.w / 2));
+      const dy = Math.abs(b.y + b.h / 2 - (c.bbox.y + c.bbox.h / 2));
+      if (dx > 0.6 * Math.max(b.w, c.bbox.w) || dy > 1.5 * Math.max(b.h, c.bbox.h)) continue;
+      const dist = dx / b.w + dy / b.h;
+      if (dist < bestDist) { best = c; bestDist = dist; }
+    }
+    if (best) return best;
+  }
+  if (base.player != null && (!base.bbox || free.every(c => !c.bbox))) return free.find(c => c.player === base.player) ?? null;
+  return null;
+}
+
+/**
+ * Folds the lit-filter read of one segment display into its read from the unfiltered photo. The
+ * filtered copy has no unlit outlines, so it is the better witness to *which windows are lit* — but
+ * not to every segment: the mask can also dim a lit segment it misjudges (a Cheetah "6" lost its
+ * lower-left segment and read as "5"). So it removes ghost windows and fills x's, and every other
+ * disagreement becomes a choice for the user, never a silent replacement:
+ *  - Only a clean filtered read counts — every position a digit. One with x's of its own has
+ *    misplaced or lost windows ("8807?0" re-read as "??70"; a Pinball Pool "564700" as "?64700",
+ *    the 5 under glare), and lining it up would invent or drop digits.
+ *  - Leading positions only the base read has (the filtered read is shorter) are dropped when
+ *    they're all 8s or x's — unlit windows, the ghost-8 misread itself ("882950" + "92450" → the 8
+ *    goes), on at least 2 agreeing digits. Any other leading digit means the filter may have lost a
+ *    lit one, and the base read stands. (So pass 1's "189245?" for a Stars 92,450 — "1UP" label
+ *    text read into the score — stays as it was.)
+ *  - Per position (right-aligned): agreement → the digit. Base x and a filtered digit → that digit,
+ *    unsure (lowConfidence). Two different digits → x with both offered, Save blocked until the user
+ *    picks (the crop pass's picker): "99330" + "41330" → "xx330", 4 or 9, then 1 or 9.
+ *  - Leading digits only the filtered read has → x with that digit offered: they multiply the
+ *    score, so the user confirms them.
+ * Returned unchanged when the base isn't a segment display, the filtered read isn't clean, or the
+ * two disagree at more positions than they agree — they aren't reading the display the same way.
+ */
+export function reconcileLitDisplay(base: DisplayRead, lit: DisplayRead): DisplayRead {
+  if (base.displayKind !== 'segment' || !/^[0-9]+$/.test(lit.template)) return base;
+  const F = lit.template;
+  let B = base.template;
+  let offset = 0; // base positions dropped from the left
+  if (B.length > F.length) {
+    offset = B.length - F.length;
+    if (!/^[8?]+$/.test(B.slice(0, offset))) return base;
+    B = B.slice(offset);
+  }
+
+  let agree = 0, disagree = 0;
+  for (let k = 1; k <= B.length; k++) {
+    const b = B[B.length - k], f = F[F.length - k];
+    if (b === '?') continue;
+    if (b === f) agree++; else disagree++;
+  }
+  if (disagree > agree) return base;
+  if (offset > 0 && agree < 2) return base;
+
+  const chars: string[] = [];
+  const lowConfidence: number[] = [];
+  const conflicts: ScoreConflict[] = [];
+  for (let index = 0; index < F.length; index++) {
+    const bi = index - (F.length - B.length);
+    const b = bi >= 0 ? B[bi] : null, f = F[index];
+    const baseIndex = bi + offset;
+    if (b == null || (b !== '?' && b !== f)) {
+      // Only the filtered read has this position, or the two read different digits.
+      chars.push('?');
+      conflicts.push({ index, candidates: [...new Set(b == null ? [f] : [b, f])].sort() });
+    } else if (b === '?') {
+      chars.push(f); lowConfidence.push(index);
+    } else {
+      chars.push(f);
+      if (base.lowConfidence.includes(baseIndex) && lit.lowConfidence.includes(index)) lowConfidence.push(index);
+    }
+  }
+  const template = chars.join('');
+  if (!/[0-9]/.test(template)) return base;
+  const changed = template !== base.template || conflicts.length > 0;
+  return {
+    ...base,
+    template,
+    lowConfidence: sanitizeLowConfidence(template, lowConfidence),
+    status: templateStatus(template),
+    possiblyTruncated: base.possiblyTruncated || lit.possiblyTruncated,
+    truncationReason: base.truncationReason ?? lit.truncationReason,
+    // The filtered read judged the leading window afresh; the base read's judgement was about a
+    // window that may not be part of the score any more.
+    leadingPositionAmbiguous: lit.leadingPositionAmbiguous || (offset === 0 && base.leadingPositionAmbiguous),
+    alignmentWarning: base.alignmentWarning || conflicts.length > 0,
+    conflicts,
+    litFilter: changed ? 'changed' : 'confirmed',
+  };
+}
+
+/**
+ * Applies the lit-filter read of one photo to its read: each segment display that a filtered display
+ * matches (matchLitDisplay) goes through reconcileLitDisplay; everything else — DMD/LCD, displays
+ * the filtered read didn't see (a different color, or unlit) — is left as it was. `lit` null = this
+ * photo wasn't filtered.
+ */
+export function reconcileLitRead(base: ImageRead, lit: ImageRead | null): ImageRead {
+  if (!lit || lit.displays.length === 0) return base;
+  const used = new Set<DisplayRead>();
+  return {
+    displays: base.displays.map(d => {
+      if (d.displayKind !== 'segment') return d;
+      const m = matchLitDisplay(d, lit.displays, used);
+      if (!m) return d;
+      used.add(m);
+      return reconcileLitDisplay(d, m);
+    }),
+  };
 }
 
 // ---------------------------------------------------------------------------

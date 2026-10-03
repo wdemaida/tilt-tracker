@@ -762,6 +762,17 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   field ahead of `displays` it shifted transcription (Stars 1UP "892450" → "189245?" in both test runs).
   Ghost 8s *in front of* a real score ("882950" for 92,450) are not caught. Tests:
   `npx tsx --test src/lib/scoreRead.test.ts`.
+- **Lit-filter pass** (`src/lib/litFilter.ts`, 2026-10-02) — **off unless `SCORE_LIT_FILTER=1`**
+  (not set on Render). For photos with segment displays, a copy with only the displays' lit color
+  kept (measured per pass-1 box; the boxes must agree within 40°, else no filter) and everything
+  else dimmed to 15% is read again with the same prompt plus a preface (`lit_filter_read` in
+  `ai_usage`, ~$0.02 a photo), in parallel with the crop pass. `reconcileLitRead()` folds it in
+  last: only a clean filtered read (no x's) counts; it may drop leading 8/x windows the base read
+  has, fill x's (unsure), and otherwise only *offer* its digit as a conflict. Evaluated on 30 photos
+  with known scores: no regressions, one Stars display improved from wrong to a choice — so it stays
+  off. The filtered read alone loses lit digits under glare (Pinball Pool 564,700 → "?64700") and a
+  segment outside the hue (Cheetah 6 → 5); one hue per photo dimmed blue Sinbad digits.
+  Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/litFilter.test.ts`.
 - `mergePlayerReads()` merges **per player**, then `mergeReads()` per group as before. Matching, in
   order: player number → position (only when an image has as many displays as the reference image)
   → template agreement for a lone unnumbered close-up (≥2 agreeing digits, no contradiction, unique
