@@ -952,8 +952,8 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   (fewer than 2 recs the viewer can reach). It says only *whether* each player has an area.
 - **Storage.** `user_challenge_areas` (own table so no `users` select can leak it): ZIP, centroid
   rounded to 2 dp (~1 km), `place_label` ("Dennis, MA"), radius (CHECK), `cell_key`. Never an
-  address. Geocode = HERE `qq=postalCode=…;country=USA&types=postalCode`, only a `postalCodePoint`
-  for that ZIP counts (`geocodePostalCode`, hereApi.ts). The API never returns coordinates, not even
+  address. Geocode = HERE `qq=postalCode=…;country=USA&types=postalCode`, only a ZIP-level result
+  (HERE returns `resultType: 'locality'` for a ZIP, not `postalCodePoint`) whose postalCode equals that ZIP counts (`geocodePostalCode`, hereApi.ts). The API never returns coordinates, not even
   to the owner.
 - **Pinball Map.** One `closest_by_lat_lon?send_all_within_distance&no_details=1` per **0.1° cell**
   (`areaCell()`: the grid point nearest the rounded centroid) out to **55 mi**

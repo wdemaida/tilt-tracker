@@ -34,9 +34,10 @@ test('PUT validation: bad ZIP / bad radius are 400s, before any lookup', async (
   assert.equal(await code({ postalCode: '02639' }), '400 invalid_radius');
 });
 
-test('geocodePostalCode: one qualified HERE request; only a postalCodePoint for that ZIP counts', async () => {
+test('geocodePostalCode: one qualified HERE request; only a ZIP-level result for that ZIP counts', async () => {
   urls.length = 0;
-  answer = { items: [{ resultType: 'postalCodePoint', position: { lat: 41.6721, lng: -70.1302 }, address: { city: 'Dennis', stateCode: 'MA', postalCode: '02639', countryCode: 'USA' } }] };
+  // What HERE really returns for a ZIP (checked live 2026-10-02): resultType 'locality'.
+  answer = { items: [{ resultType: 'locality', position: { lat: 41.6721, lng: -70.1302 }, address: { city: 'Dennis', stateCode: 'MA', postalCode: '02639', countryCode: 'USA' } }] };
   const ok = await geocodePostalCode('02639');
   assert.deepEqual(ok, { status: 'ok', point: { lat: 41.6721, lng: -70.1302, city: 'Dennis', state: 'MA' } });
   assert.equal(urls.length, 1);
@@ -47,6 +48,10 @@ test('geocodePostalCode: one qualified HERE request; only a postalCodePoint for 
   assert.deepEqual(await geocodePostalCode('00000'), { status: 'not_found' });
   answer = { items: [{ resultType: 'postalCodePoint', position: { lat: 1, lng: 1 }, address: { postalCode: '99999', countryCode: 'USA' } }] };
   assert.deepEqual(await geocodePostalCode('02639'), { status: 'not_found' }, 'another ZIP is not this ZIP');
+  answer = { items: [{ resultType: 'postalCodePoint', position: { lat: 41.6721, lng: -70.1302 }, address: { postalCode: '02639', countryCode: 'USA' } }] };
+  assert.equal((await geocodePostalCode('02639')).status, 'ok', 'postalCodePoint still accepted');
+  answer = { items: [{ resultType: 'locality', position: { lat: 41.7, lng: -70.1 }, address: { city: 'Dennis', countryCode: 'USA' } }] };
+  assert.deepEqual(await geocodePostalCode('02639'), { status: 'not_found' }, 'a town with no ZIP is not the ZIP');
   answer = { items: [] };
   assert.deepEqual(await geocodePostalCode('02639'), { status: 'not_found' });
   status = 503;

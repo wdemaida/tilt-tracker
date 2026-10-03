@@ -92,8 +92,11 @@ export interface PostalCodePoint {
 
 /**
  * Geocodes a 5-digit US ZIP to its centroid — one HERE request (`qq=postalCode=…;country=USA`).
- * Only a `postalCodePoint` result counts: a qualified query HERE can't place falls back to coarser
- * results (a state, the country), which must not become someone's Last Resort centre.
+ * Only a ZIP-level result for exactly that ZIP counts. HERE answers a ZIP as `resultType: 'locality'`
+ * (localityType postalCode) - not `postalCodePoint`, which only comes back for some queries - so we
+ * accept either, but require address.postalCode to equal the ZIP: a qualified query HERE can't place
+ * falls back to coarser results (a state, the country) that carry no postalCode, and those must not
+ * become someone's Last Resort centre.
  * 'not_found' = HERE answered but doesn't know the ZIP; 'unavailable' = no key / HTTP / network error.
  */
 export async function geocodePostalCode(postalCode: string): Promise<{ status: 'ok'; point: PostalCodePoint } | { status: 'not_found' | 'unavailable' }> {
@@ -113,8 +116,8 @@ export async function geocodePostalCode(postalCode: string): Promise<{ status: '
         address?: { city?: string; stateCode?: string; state?: string; postalCode?: string; countryCode?: string };
       }>;
     };
-    const item = data.items?.find(i => i.resultType === 'postalCodePoint' && i.position
-      && (!i.address?.postalCode || i.address.postalCode === postalCode)
+    const item = data.items?.find(i => (i.resultType === 'locality' || i.resultType === 'postalCodePoint') && i.position
+      && i.address?.postalCode === postalCode
       && (!i.address?.countryCode || i.address.countryCode === 'USA'));
     if (!item?.position) return { status: 'not_found' };
     return {
