@@ -113,13 +113,22 @@ export function linkageClearedForPrivacy(
 // A score's own latitude/longitude comes from the photo's EXIF GPS, independent of the venue record —
 // redact it the same way whenever its venue restricts visibility, so the exact location can't leak via
 // the score's coordinates even after the venue's own address/coordinates are redacted.
+//
+// A score with NO venue has nothing to redact against, and its raw EXIF fix can be someone's living
+// room (a home game logged before a venue was picked). Only its author and admins get those
+// coordinates; everyone else gets null. `authorUserId` is the score's user_id.
 export function redactScoreLocation<T extends { latitude: number | null; longitude: number | null; venueTimezone?: string | null }>(
   score: T,
   venue: VenuePrivacyFields | undefined,
   requesterUserId: number | undefined,
   isAdmin: boolean,
+  authorUserId: number,
 ): T {
-  if (!venue || venue.privacyTier === 'full' || canSeeFullVenue(venue, requesterUserId, isAdmin)) return score;
+  if (!venue) {
+    if (isAdmin || (requesterUserId != null && requesterUserId === authorUserId)) return score;
+    return { ...score, latitude: null, longitude: null };
+  }
+  if (venue.privacyTier === 'full' || canSeeFullVenue(venue, requesterUserId, isAdmin)) return score;
   if (venue.privacyTier === 'city_state') {
     return { ...score, latitude: venue.cityLat, longitude: venue.cityLng };
   }

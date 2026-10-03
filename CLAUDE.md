@@ -155,6 +155,7 @@ Feature-specific gotchas live in `artifacts/pinball-tracker/CLAUDE.md` (frontend
 | `artifacts/pinball-tracker/src/pages/HomePage.tsx` | Recent Scores list with pagination and trophy detection |
 | `artifacts/pinball-tracker/src/components/ScoreCard.tsx` | Score tile with thumbnail, trophy icon |
 | `artifacts/pinball-tracker/src/pages/VenuesPage.tsx` | Venues grid with X/Y machine count |
+| `artifacts/pinball-tracker/src/pages/MapPage.tsx` | Venues map (Map view) — pins from each venue's public `mapPoint` (`lib/venueView.ts`), never score GPS |
 | `artifacts/pinball-tracker/src/lib/api.ts` | All frontend API calls |
 | `artifacts/api-server/src/routes/scores.ts` | Score CRUD |
 | `artifacts/api-server/src/routes/venues.ts` | Venue list + machine detail (PM lazy cache) |

@@ -176,6 +176,17 @@
   `['venue-machines', id]` payload (`inventory`, `canManageInventory`), shared with
   `VenueMachinesModal`, which shows the inventory as "Machines here" and removed ones under
   "Formerly here". AddScorePage offers a venue's inventory as machine suggestions.
+  An empty list shows a **"Not set up"** badge, not "0"; owner/admin also get **"Scored here, not
+  listed"** chips (server `scoredMachines`) that add by `machineId` in one click — never automatic.
+- **Venues map + venue thumbnail (back on 2026-10-03, `MAP_VIEW_ENABLED` in `lib/mapView.ts`)**: both
+  draw only the server's public `mapPoint` — never score GPS, never `latitude`/`longitude`, and the
+  owner/admin get the same point as everyone. `approximate` (city_state home) → a dashed circle at
+  city zoom (thumbnail `Circle` 2.5 km at zoom 11; map `CircleMarker`), never a pin, which would read
+  as an exact address; null (hidden tier) → not drawn / placeholder. `MapPage` is built on
+  `GET /api/venues` (`['venues', mine]`), pins `scoreCount > 0 && mapPoint`; `?venueId=` centers and
+  opens that venue (zoom 15 exact / 11 approximate) or says it isn't on the map. The venue page says
+  "Approximate location (City, ST)" to others and "Others see only an approximate location (…)" to
+  the owner/admin.
 - `activityHidden` on a venue payload means the owner turned the switch off and you aren't exempt:
   the card shows name + "Address hidden" (+ your own score count), no machine pill; the venue page
   says so and lists only your own scores.

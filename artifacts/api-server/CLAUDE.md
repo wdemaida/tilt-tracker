@@ -203,6 +203,10 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   exact address. `canSeeVenueLinkage()` gates the roster too — `/venues/:id/machines` and
   `/scores/:id/repair` skip the Pinball Map roster (and former machines) for viewers who couldn't see
   the venue in full, since a roster identifies the listing.
+- **A score's own photo GPS** (`scores.latitude/longitude`) goes out only on `GET /api/scores`, via
+  `redactScoreLocation(score, venue, requesterId, isAdmin, authorId)`: at a restricted venue it's
+  redacted like the venue; a **venue-less** score's fix goes only to its **author and admins**
+  (2026-10-03 — it used to go to everyone, unauthenticated, and could be a living room).
 - **Home venues: anyone may log there; nobody finds one by location** (owner's decision,
   2026-09-25). Any signed-in user can file a score under any venue, private ones included. What's
   forbidden is a private venue surfacing because of *where* someone is — every coordinate behind
@@ -261,6 +265,19 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   coordinates, timezone, lastPlayedAt or linkage. `/api/venues/:id/scores`'s venue gets the same
   treatment (plus tier-redacted lat/lng/timezone for the map thumbnail) and now includes `timezone`,
   which the venue page was already reading.
+- **`mapPoint` (added 2026-10-03)** — `{lat, lng, approximate, label} | null` on every `GET /api/venues`
+  row and on `/api/venues/:id/scores`'s venue (`venueMapPoint()` in `venueView.ts`). It is computed
+  from the **public** view (`redactVenue(v, undefined, false)`) for **every** viewer, owner and admins
+  included, so the map shows them what everyone else sees: full tier → exact coords,
+  `approximate: false`; `city_state` → the city centroid, `approximate: true`, `label` "City, ST";
+  `hidden` → null (never pinned, never a coordinate; also null with no coords / no centroid on file).
+  Others' private list rows still carry no `latitude`/`longitude` — the centroid reaches them only
+  via `mapPoint`. The Venues map and the venue page thumbnail read only this, never score GPS.
+  Tests: `src/lib/venueMapPoint.test.ts` (each tier × owner/admin/stranger/signed-out).
+- `/api/venues/:id/machines` also sends **`scoredMachines` `[{id, name}]`** (machines scored there,
+  per `visibleScoreSql`) **only when `canManageInventory`** — the inventory panel offers the unlisted
+  ones as one-click adds (`POST .../inventory {machineId}`: a DB lookup, no Pinball Map call). Never
+  added automatically.
 - `/api/venues/:id/machines` also withholds the Pinball Map roster / former machines /
   `pmLocationUrl` when the switch excludes the viewer, and sends others' private venues a trimmed
   venue object (`venueMachinesView`). Adding to an inventory answers **503 `catalog_unavailable`**

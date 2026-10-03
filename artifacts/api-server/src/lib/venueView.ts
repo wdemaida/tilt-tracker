@@ -54,6 +54,31 @@ export function displayedMachineCount(v: { isResidence: boolean; privacyTier: Ti
   return usesOwnerInventory(v) && v.inventoryManaged ? v.inventoryCount : v.playedMachineCount;
 }
 
+/**
+ * Where a venue goes on a map — the Venues map and the venue page's thumbnail. Computed from the
+ * PUBLIC view (redactVenue with no requester) for every viewer, the owner and admins included, so
+ * what they see on a map is exactly what everyone else sees:
+ *  - full tier → the venue's own coordinates, `approximate: false`
+ *  - city_state → the city centroid, `approximate: true`, `label` "City, ST"
+ *  - hidden → null: never pinned, never given a coordinate
+ * Also null when there's no coordinate to give (no address resolved, or no centroid on file).
+ */
+export interface MapPoint {
+  lat: number;
+  lng: number;
+  approximate: boolean;
+  /** "City, ST" for an approximate point; null for an exact one. */
+  label: string | null;
+}
+
+export function venueMapPoint(v: Pick<VenueRow, 'ownerId' | 'privacyTier' | 'city' | 'state' | 'cityLat' | 'cityLng' | 'address' | 'latitude' | 'longitude'>): MapPoint | null {
+  if (v.privacyTier === 'hidden') return null;
+  const pub = redactVenue({ ...v, timezone: null }, undefined, false);
+  if (pub.latitude == null || pub.longitude == null) return null;
+  const approximate = v.privacyTier !== 'full';
+  return { lat: pub.latitude, lng: pub.longitude, approximate, label: approximate ? pub.address : null };
+}
+
 /** Flags every venue payload carries, computed for this requester. */
 function venueFlags(v: VenueRow & MachineCounts, requester: Viewer | undefined) {
   const activityVisible = canSeeVenueActivity(v, requester);
@@ -102,12 +127,14 @@ export function venueListRow(
       pinballMapId: red.pinballMapId,
       pmMachineCount: null,
       scoreCount,
+      // The city centroid for city_state (flagged approximate), null for hidden — nothing finer.
+      mapPoint: venueMapPoint(r),
       ...flags,
       ...listFlags,
     };
   }
   const { playedMachineCount: _p, inventoryCount: _i, inventoryManaged: _m, scoreCount: _sc, lastPlayedAt, ...row } = r;
-  return { ...fullView(row, requester), scoreCount, lastPlayedAt, ...flags, ...listFlags };
+  return { ...fullView(row, requester), scoreCount, lastPlayedAt, mapPoint: venueMapPoint(r), ...flags, ...listFlags };
 }
 
 /**
@@ -148,11 +175,12 @@ export function venueDetailView(v: VenueRow & MachineCounts, requester: Viewer |
       isResidence: v.isResidence,
       pinballMapId: red.pinballMapId,
       pmMachineCount: null,
+      mapPoint: venueMapPoint(v),
       ...flags,
     };
   }
   const { playedMachineCount: _p, inventoryCount: _i, inventoryManaged: _m, ...row } = v;
-  return { ...fullView(row, requester), ...flags, ...publicPreview(row, requester) };
+  return { ...fullView(row, requester), mapPoint: venueMapPoint(v), ...flags, ...publicPreview(row, requester) };
 }
 
 /**
