@@ -45,6 +45,10 @@ import { buildActivityRow, isActivityRecorded, logActivity } from './activity.js
 //   challenge_voided            → every participant, when an admin voids the challenge (`byAdmin: true`, no user ref)
 //   badge_earned                → the earner (lib/badges.ts): `badgeId`, `badgeName`, `icon`, `color`,
 //                                 `imageVersion` (null = no image), `granted: true` for a manual grant
+//   announcement                → each recipient of an admin announcement (lib/announcements.ts):
+//                                 `announcementId` (uuid), `title`, `body` (plain text), `link` (a
+//                                 validated in-app path, `{username}` already substituted, or null),
+//                                 `from: 'TiltTrack'` — no sender identity
 // Every raised notification is also written to the admin activity log as `notification.sent` — the
 // durable record, since the challenge sweep deletes read notifications after 30 days.
 // `payload` is kind-specific jsonb, and `dedupe` lets a kind say "there should only ever be one
@@ -59,7 +63,8 @@ export type NotificationKind =
   | 'challenge_opponent_scored' | 'challenge_ending_soon' | 'challenge_result' | 'challenge_voided'
   | 'challenge_countered' | 'challenge_counter_accepted' | 'challenge_counter_rejected' | 'challenge_moved'
   | 'challenge_started' | 'challenge_missed'
-  | 'badge_earned';
+  | 'badge_earned'
+  | 'announcement';
 
 /** Who a friend notification is about, as it was at the time — enough to render and link it. */
 export interface UserRefPayload { userId: number; username: string; displayName: string }

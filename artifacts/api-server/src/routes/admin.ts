@@ -12,6 +12,7 @@ import { normalizeDisplayName, normalizeUsername } from '../lib/profileFields.js
 import adminAreaRouter from './adminArea.js';
 import adminBadgesRouter from './adminBadges.js';
 import adminContentRouter from './adminContent.js';
+import adminAnnouncementsRouter from './adminAnnouncements.js';
 
 const router = Router();
 router.use(requireAppUser, requireAdmin);
@@ -373,5 +374,7 @@ router.use(adminAreaRouter);
 router.use(adminBadgesRouter);
 // Welcome-page copy editor (/api/admin/content/*) — same guard.
 router.use(adminContentRouter);
+// Announcements (/api/admin/announcements/*) — same guard.
+router.use(adminAnnouncementsRouter);
 
 export default router;

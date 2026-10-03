@@ -14,6 +14,7 @@ import adminRouter from '../routes/admin.js';
 import adminAreaRouter from '../routes/adminArea.js';
 import adminBadgesRouter from '../routes/adminBadges.js';
 import adminContentRouter from '../routes/adminContent.js';
+import adminAnnouncementsRouter from '../routes/adminAnnouncements.js';
 import { getClerkActivity, setClerkBan, setClerkAdminForTests } from './clerkAdmin.js';
 
 const base = { username: 'u', displayName: 'U', pinballMapToken: null, pinballMapUsername: null, disabledReason: null, disabledById: null, createdAt: new Date() };
@@ -107,7 +108,14 @@ test('every admin route refuses guests, users, disabled admins and profile-less 
   for (const [m, p] of [['GET', '/content'], ['PUT', '/content/:key'], ['DELETE', '/content/:key']]) {
     assert.ok(contentRoutes.some(r => r.method === m && r.path === p), `${m} ${p} is an admin content route`);
   }
-  for (const r of [...areaRoutes, ...badgeRoutes, ...contentRoutes]) {
+  const announcementRoutes = routesOf(adminAnnouncementsRouter);
+  for (const [m, p] of [
+    ['GET', '/announcements/limits'], ['POST', '/announcements/preview'], ['POST', '/announcements'],
+    ['GET', '/announcements'], ['DELETE', '/announcements/:announcementId'],
+  ]) {
+    assert.ok(announcementRoutes.some(r => r.method === m && r.path === p), `${m} ${p} is an admin announcements route`);
+  }
+  for (const r of [...areaRoutes, ...badgeRoutes, ...contentRoutes, ...announcementRoutes]) {
     assert.ok(routes.some(x => x.method === r.method && x.path === r.path), `${r.method} ${r.path} is mounted inside the guarded admin router`);
   }
   for (const r of routes) {
