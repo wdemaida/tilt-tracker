@@ -1086,13 +1086,15 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   with `express.raw()` **before** `express.json()` in index.ts — moving it after breaks every
   signature. `session.created` → `user.signed_in` (ip/browser/city from `latest_activity`),
   `user.created` → `user.signed_up` (no email stored), `user.deleted` → `user.clerk_deleted` (our users
-  row is left alone); other types 200 and ignored. Idempotent: `activity_events.svix_id` is UNIQUE and
+  row is left alone), `user.updated` → the profile photo (`users.image_url`, guarded write, no activity
+  row — see "Self-service profile" below); other types 200 and ignored. Idempotent: `activity_events.svix_id` is UNIQUE and
   a retry answers 200 `{duplicate: true}`. Bad/stale signature → 400; DB failure → 500 (Svix retries);
   no secret → 503 and one startup warning. svix 2.x `verify()` returns nothing — the body is parsed
   after it passes.
-  **Setup (Will, once):** Clerk dashboard (production instance) → *Webhooks* → *Add Endpoint* → URL
+  **Setup (Will, once):** Clerk dashboard → the **development** instance (`quick-piranha-9` — the live app
+  runs on Clerk's development instance; this note used to say "production instance", which was wrong) → *Webhooks* → *Add Endpoint* → URL
   `https://tilt-tracker.onrender.com/api/webhooks/clerk`, subscribe to `session.created`,
-  `user.created`, `user.deleted` → create → copy the endpoint's *Signing Secret* (`whsec_…`) → Render →
+  `user.created`, `user.deleted`, `user.updated` (added 2026-10-02 for profile photos) → create → copy the endpoint's *Signing Secret* (`whsec_…`) → Render →
   tilt-tracker service → Environment → add `CLERK_WEBHOOK_SIGNING_SECRET` (a Render env PUT replaces
   all vars — use the dashboard or send the full set). Clerk's *Testing* tab sends to the registered URL
   (prod) only; testing locally would need a tunnel (ngrok/cloudflared) plus a second endpoint on the
@@ -1477,3 +1479,44 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
 - Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/siteContent.test.ts`;
   `npx tsx test-site-content.ts` (dev branch only — real admin + public routers in-process, Clerk faked
   as the dev branch's first admin; restores the rows it touched and deletes its events).
+
+## Self-service profile (`src/lib/profileFields.ts`, `src/lib/profileAvatar.ts`, migrate30, 2026-10-02)
+- **Display name only; the username is locked.** `PATCH /api/users/me` (`requireAppUser` — 401 signed
+  out, 403 disabled / no profile) takes `{displayName}`; `username` in the body → 400 `username_locked`.
+  **`normalizeDisplayName()` is the one rule**, shared by setup, PATCH /me and the admin PATCH
+  (`/api/admin/users/:id`, which used to save a blank name): NFC, whitespace runs → one space, control
+  and bidi-override characters stripped, trimmed; 1–40 characters (code points); no leading `@`; not
+  unique. Errors are 400 with `code` `display_name_required` / `display_name_too_long` /
+  `display_name_at` and `field: 'displayName'`. Names over 40 that predate the cap stay until edited
+  (migrate30 prints the longest). A changed name logs `profile.updated` (standard tier, payload
+  before/after); saving the same name logs nothing. Pinball initials were considered and dropped —
+  the @username is the identity everywhere.
+- **Photos are Clerk's.** The browser uploads with Clerk's `user.setProfileImage` (no upload route
+  here); `users.image_url` holds Clerk's URL, **null unless `has_image`** (`avatarFromClerk()` — Clerk
+  always sends a URL, a generated default when the user has none; https only).
+  `users.image_synced_at` = the Clerk state instant that URL reflects. Three writers, all through
+  `applyAvatar()`'s guarded `UPDATE … WHERE image_synced_at IS NULL OR image_synced_at < at`:
+  the **`user.updated` webhook** (`at` = Clerk's `updated_at`; out-of-order or retried deliveries are a
+  no-op 200; DB failure → 500 so Svix retries; no activity row), **`POST /api/users/me/avatar/sync`**
+  (the browser calls it after an upload/remove; 10/hour/user; `at` = when the Clerk read *started*;
+  Clerk unreachable → 502 `clerk_unavailable`; a real change logs `profile.updated` `fields:['photo']`),
+  and **GET /me's lazy resync** (fire-and-forget when `image_synced_at` is null or ≥ 24 h old, so at
+  most one Clerk call per user per day; 10-minute back-off after a failure; concurrent calls share one
+  request). Setup also kicks one (an OAuth sign-up arrives with a photo). Clerk calls go through
+  `clerkAdmin.ts` (`getClerkAvatar`, Backend `users.getUser`).
+- **Who sees it:** `GET /api/users/me` returns `imageUrl` (never `imageSyncedAt` or the PM credential);
+  `GET /api/users/:username` adds `user.imageUrl` **only for a signed-in viewer with a profile** — the
+  field is absent for signed-out visitors. Avatars show only in the profile header and AvatarMenu so
+  far (friends/pods/challenges/ScoreCards are a queued follow-up).
+- `GET /:username` resolves its viewer through `callerClerkId(req)` (requireAuth.ts — the same
+  swappable resolver as requireAppUser) instead of `getAuth()`, so test scripts can drive it.
+- **Backfill (once, at deploy, after migrate30):** `npx tsx backfill-avatars.ts --dry-run`, then without
+  the flag. It pages through Clerk's whole user list with **no filters** (Clerk's list filters can
+  return every user on a no-match — the email_address[] gotcha) and matches by clerk_id locally; only
+  users with `has_image` are written, through the same guarded update. Idempotent.
+- **Webhook subscription:** `user.updated` must be ticked on the Clerk endpoint (Admin area section
+  above). Without it photos still update via the sync route and the daily resync.
+- Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/profileFields.test.ts
+  src/lib/profileAvatar.test.ts src/lib/clerkWebhook.test.ts` (the guarded UPDATE runs on PGlite);
+  `npx tsx test-profile.ts` (dev branch only, needs migrate30 there — real users/admin/webhook routers,
+  Clerk faked; throwaway `zz-profile-test-*` users and their events deleted at the end).

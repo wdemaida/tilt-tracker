@@ -494,6 +494,12 @@ export function createApi(getToken: () => Promise<string | null>) {
       setup: async (body: { username: string; displayName: string }) =>
         request('/users/setup', { method: 'POST', body: JSON.stringify(body) }, await tok()),
       get: async (username: string) => request<any>(`/users/${username}`, undefined, await tok()),
+      // Self-service profile: display name only (the username is locked → 400 username_locked).
+      // Field errors come back as `.code` (display_name_required / _too_long / _at) on the thrown error.
+      updateMe: async (body: { displayName: string }) =>
+        request<any>('/users/me', { method: 'PATCH', body: JSON.stringify(body) }, await tok()),
+      // After Clerk's user.setProfileImage: re-read the photo from Clerk now (10/hour). Returns /me.
+      syncAvatar: async () => request<any>('/users/me/avatar/sync', { method: 'POST' }, await tok()),
     },
     // Pods — the caller's own private groupings. Signed-in only; every call is scoped to pods the
     // caller owns, and a pod they don't own is a 404. Always use through useApi() — the static `api`

@@ -22,6 +22,29 @@
   opentype.js). `brand/build-icons.js` rasterises them with Edge and sharp. Both scripts' headers say how to
   run them from a scratch copy. They aren't part of the app build.
 
+## Self-service profile (`components/ProfileEditForm.tsx`, `UserAvatar.tsx`, `lib/avatarImage.ts`, 2026-10-02)
+- **Your own profile** shows a pencil beside the name → `ProfileEditForm` inline under it: display
+  name (max 40, `api.users.updateMe`) and photo. **The username can't be changed** (server 400
+  `username_locked`) and isn't offered. Field errors are the server's messages. After a save:
+  `setQueryData(['me'])` + `queryClient.invalidateQueries()` — rare, and names are embedded in
+  friends/pods/challenges lists. SetupPage and the admin Edit user dialog cap names at 40 too; the
+  server's `normalizeDisplayName` is the authority (api-server CLAUDE.md, "Self-service profile").
+- **Photos are uploaded to Clerk**, from a hidden `<input type="file" accept="image/*">` — never
+  Clerk's UI (see Clerk below). `prepareAvatarFile()` downscales through `decodeScaled(…, 512)` inside
+  `withDecodeLock` and re-encodes JPEG 0.9 (drops EXIF/GPS) → `user.setProfileImage({ file })` →
+  `user.reload()` → `api.users.syncAvatar()` (server re-reads Clerk now; a failure there just shows
+  "may take a minute" — the webhook catches up). Remove = `setProfileImage({ file: null })`.
+- **`UserAvatar` is the one avatar component** (photo, or a person icon when none / load error). Used
+  in the profile header (`lg`) and `AvatarMenu` (`sm`) only — friends, pods, challenges and ScoreCards
+  are a queued follow-up. Your own photo is read live from Clerk (`useUser()`, only when `hasImage`:
+  Clerk's generated default is never shown); anyone else's is the server's `user.imageUrl`, which is
+  sent to signed-in viewers only, so signed-out visitors always see the icon.
+- **Header layout** (`UserPage`): a grid — `grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto]`. Phone:
+  avatar + name → (edit form) → badges → Friend/Challenge buttons. `md`+: the badge shelf
+  (`BadgeShelf variant="header"`: no visible heading, tiles `flex-wrap` right-justified, View all /
+  All badges under them, max 22rem) sits in column 2 spanning both rows; everything else is pinned to
+  column 1. The default `variant="section"` is the old stand-alone section, unchanged.
+
 ## Clerk (auth)
 - Use the **custom sign-in form** (`src/pages/SignInPage.tsx`) — not Clerk's pre-built `<SignIn>` component. The pre-built component has a submit button that hides behind the mobile keyboard.
 - Sign-in flow uses Clerk v5 two-step: `signIn.create({ identifier })` then `signIn.attemptFirstFactor({ strategy: 'password', password })`. Handle `needs_client_trust` by sending an email code.
@@ -444,7 +467,8 @@
   else the lucide `icon` (`BADGE_ICONS`, kebab-case names; unknown → award) in `color` on a tinted
   disc. `locked` = grayscale + dimmed (the catalog's not-yet-earned look — same asset). Image URLs
   carry `?v=<imageVersion>` and are cached immutably, so never build one without the version.
-- Profile (`UserPage` → `BadgeShelf`): public for everyone, 48px grid in the **admin's sort order**
+- Profile (`UserPage` → `BadgeShelf variant="header"`, in the profile header since 2026-10-02 — see
+  "Self-service profile"): public for everyone, 48px tiles in the **admin's sort order**
   (not newest first), "View all" past 12 items, tap → `BadgeDetail` (96px). No badges → hidden,
   except on your own profile (link to `/badges`). **Series** (feature/badge-series): renders the
   server's collapsed `items` (`shelfItems()` falls back to one per badge for an older server) — a

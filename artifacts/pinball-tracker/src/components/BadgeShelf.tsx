@@ -12,7 +12,8 @@ import { useBadgesApi, userBadgesKey, availabilityText, shelfItems, type Badge, 
 // series (a ladder of tiers) shows once, as the highest tier earned with pips under it — filled =
 // tiers earned, hollow = the remaining live tiers — and its detail lists the whole ladder. The
 // collapsing is the server's (`items`, badgeSeries.ts). A profile with no badges hides the section,
-// except your own, which points at the catalog.
+// except your own, which points at the catalog. The profile page renders it in its header
+// (`variant="header"`, 2026-10-02); the stand-alone section layout is the default.
 
 const SHELF_LIMIT = 12;
 
@@ -202,7 +203,17 @@ function EarnedExtra({ b }: { b: ShelfBadge }) {
 
 const itemKey = (it: ShelfItem) => (it.type === 'series' ? `s${it.series.id}` : `b${it.badge.id}`);
 
-export default function BadgeShelf({ username }: { username: string }) {
+/**
+ * `variant="section"` (default): the stand-alone Badges section — heading, links, then a grid.
+ * `variant="header"`: sits inside the profile header (UserPage) — no visible heading (the section
+ * keeps its aria-label), the tiles wrap in a row that's right-justified from `md` up, and the
+ * View all / All badges links go under them. `className` places it in the header's grid.
+ */
+export default function BadgeShelf({ username, variant = 'section', className = '' }: {
+  username: string;
+  variant?: 'section' | 'header';
+  className?: string;
+}) {
   const api = useBadgesApi();
   const { data } = useQuery({
     queryKey: userBadgesKey(username),
@@ -213,10 +224,19 @@ export default function BadgeShelf({ username }: { username: string }) {
   const [open, setOpen] = useState<ShelfItem | null>(null);
 
   if (!data) return null;
+  const header = variant === 'header';
   const { badges, isSelf } = data;
   const items = shelfItems(data);
   if (!badges.length) {
     if (!isSelf) return null;
+    if (header) {
+      return (
+        <section aria-label="Badges" className={`flex items-center gap-2 md:justify-end text-xs text-muted-foreground ${className}`}>
+          <Award className="w-4 h-4 flex-shrink-0" aria-hidden />
+          <p>No badges yet. <Link href="/badges" className="text-primary font-bold hover:underline">See what you can earn</Link></p>
+        </section>
+      );
+    }
     return (
       <section className="mb-8 rounded-xl border border-dashed border-white/15 p-4 flex items-center gap-3">
         <Award className="w-5 h-5 text-muted-foreground flex-shrink-0" aria-hidden />
@@ -227,20 +247,27 @@ export default function BadgeShelf({ username }: { username: string }) {
     );
   }
   const shown = showAll ? items : items.slice(0, SHELF_LIMIT);
+  const links = (
+    <div className={`flex items-center gap-3 text-xs font-bold uppercase tracking-wider ${header ? 'mt-1 md:justify-end' : ''}`}>
+      {items.length > SHELF_LIMIT && (
+        <button type="button" onClick={() => setShowAll(s => !s)} className="text-primary hover:text-primary/80">
+          {showAll ? 'Show fewer' : 'View all'}
+        </button>
+      )}
+      <Link href="/badges" className="text-muted-foreground hover:text-white">
+        {header ? <>All badges <span className="sr-only">({badges.length} earned)</span></> : 'All badges'}
+      </Link>
+    </div>
+  );
   return (
-    <section className="mb-8" aria-label="Badges">
-      <div className="flex items-center justify-between gap-3 mb-3">
-        <h2 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">Badges · {badges.length}</h2>
-        <div className="flex items-center gap-3 text-xs font-bold uppercase tracking-wider">
-          {items.length > SHELF_LIMIT && (
-            <button type="button" onClick={() => setShowAll(s => !s)} className="text-primary hover:text-primary/80">
-              {showAll ? 'Show fewer' : 'View all'}
-            </button>
-          )}
-          <Link href="/badges" className="text-muted-foreground hover:text-white">All badges</Link>
+    <section className={header ? className : 'mb-8'} aria-label={header ? `Badges, ${badges.length} earned` : 'Badges'}>
+      {!header && (
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <h2 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">Badges · {badges.length}</h2>
+          {links}
         </div>
-      </div>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(56px,1fr))] gap-2">
+      )}
+      <div className={header ? 'flex flex-wrap gap-1 md:justify-end' : 'grid grid-cols-[repeat(auto-fill,minmax(56px,1fr))] gap-2'}>
         {shown.map(it => it.type === 'series' ? (
           <ShelfTile key={itemKey(it)} badge={it.top}
             label={`${it.top.name} — ${it.series.name}, tier ${it.tier} of ${it.tierCount}, ${it.earnedCount} earned`}
@@ -251,6 +278,7 @@ export default function BadgeShelf({ username }: { username: string }) {
           <ShelfTile key={itemKey(it)} badge={it.badge} label={it.badge.name} onOpen={() => setOpen(it)} />
         ))}
       </div>
+      {header && links}
       {open && (open.type === 'series' ? (
         <BadgeDetail
           badge={open.top}

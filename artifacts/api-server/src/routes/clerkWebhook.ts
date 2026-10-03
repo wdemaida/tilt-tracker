@@ -4,6 +4,8 @@ import { db, users } from '@workspace/db';
 import { eq } from 'drizzle-orm';
 import { insertActivity, isActivityRecorded, type ActivityInput } from '../lib/activity.js';
 import { onSignInBadges } from '../lib/badges.js';
+import { avatarFromClerk, clerkInstant } from '../lib/profileFields.js';
+import { applyAvatar } from '../lib/profileAvatar.js';
 
 // POST /api/webhooks/clerk — Clerk → Svix → here. Records every sign-in and sign-up in the activity
 // log (Clerk is the only place a sign-in is observable; the app never sees the password step).
@@ -13,6 +15,8 @@ import { onSignInBadges } from '../lib/badges.js';
 //                     retention gate below doesn't record the event, and on a Svix retry (idempotent)
 //   user.created    → user.signed_up
 //   user.deleted    → user.clerk_deleted (our users row is left alone)
+//   user.updated    → users.image_url / image_synced_at (profile photo; guarded against
+//                     out-of-order delivery by updated_at; no activity row)
 //   anything else   → 200, ignored
 //
 // NO app auth: the Svix signature IS the auth (svix-id / svix-timestamp / svix-signature headers
@@ -32,6 +36,9 @@ export interface ClerkWebhookDeps {
   shouldRecord?: (type: string) => Promise<boolean>;
   /** A sign-in by a user with a profile (badges: login_days). Must not throw; failures are logged. */
   onSignedIn?: (userId: number, at: Date) => Promise<void>;
+  /** user.updated: store the profile photo as of `at` (Clerk's updated_at), guarded against an
+   *  out-of-order delivery. Throws on a DB failure (→ 500, Svix retries). Absent = ignored. */
+  onUserUpdated?: (clerkId: string, imageUrl: string | null, at: Date) => Promise<{ applied: boolean }>;
 }
 
 type ClerkEvent = { type: string; data: Record<string, any> };
@@ -133,6 +140,23 @@ export function createClerkWebhookHandler(deps: ClerkWebhookDeps) {
     }
 
     const svixId = String(req.headers['svix-id']);
+
+    // user.updated: keep users.image_url current (profileAvatar.ts). No activity row — Clerk sends
+    // this for any change to the user, and a photo change isn't worth the log. A retried or
+    // out-of-order delivery is harmless: the write only applies when updated_at is newer than what
+    // the row already reflects.
+    if (evt.type === 'user.updated') {
+      const clerkId = typeof evt.data?.id === 'string' ? evt.data.id : null;
+      if (!clerkId || !deps.onUserUpdated) return void res.json({ ok: true, ignored: evt.type });
+      try {
+        const r = await deps.onUserUpdated(clerkId, avatarFromClerk(evt.data), clerkInstant(evt.data?.updated_at) ?? new Date());
+        return void res.json({ ok: true, avatarApplied: r.applied });
+      } catch (err: any) {
+        console.error('[clerk-webhook] failed to apply user.updated:', err?.message ?? err);
+        return void res.status(500).json({ error: 'Failed to apply user.updated' });
+      }
+    }
+
     try {
       const ev = await eventFor(evt, svixId, deps.resolveUserId);
       if (!ev) return void res.json({ ok: true, ignored: evt.type });
@@ -167,6 +191,7 @@ export const clerkWebhookHandler = createClerkWebhookHandler({
   record: ev => insertActivity(ev),
   shouldRecord: isActivityRecorded,
   onSignedIn: onSignInBadges,
+  onUserUpdated: (clerkId, imageUrl, at) => applyAvatar(clerkId, imageUrl, at),
 });
 
 export function logClerkWebhookStatus(): void {

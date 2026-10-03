@@ -188,5 +188,9 @@ Feature-specific gotchas live in `artifacts/pinball-tracker/CLAUDE.md` (frontend
 | `artifacts/pinball-tracker/src/lib/welcomeContent.ts` | /welcome copy defaults + override merge; rendered by `components/RichText.tsx`, edited in Admin > Config > Welcome page |
 | `artifacts/pinball-tracker/src/components/BadgeImage.tsx` | Draws every badge — image, or lucide icon + color fallback |
 | `lib/db/src/schema.ts` | Drizzle schema — source of truth for DB types |
+| `artifacts/api-server/src/lib/profileFields.ts` | Display-name normalizer (setup / PATCH me / admin edit) and `avatarFromClerk` |
+| `artifacts/api-server/src/lib/profileAvatar.ts` | Profile photos: guarded `image_url` write (webhook / sync route / 24 h lazy resync) |
+| `artifacts/pinball-tracker/src/components/ProfileEditForm.tsx` | Inline own-profile edit: display name + Clerk photo upload |
+| `artifacts/pinball-tracker/src/components/UserAvatar.tsx` | The one avatar component (profile header, AvatarMenu) |
 | `artifacts/api-server/src/lib/instant.ts` | `parseInstant` (client instants must carry an offset) and `dbTimestampToIso` (raw-SQL timestamps out) |
 | `artifacts/api-server/migrate*.ts` | Numbered migration scripts (run once, keep for history) |

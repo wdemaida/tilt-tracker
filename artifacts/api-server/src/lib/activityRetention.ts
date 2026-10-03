@@ -85,6 +85,7 @@ export const TIER_BY_TYPE: Readonly<Record<string, RetentionTier>> = {
   'profile.challenge_prefs_updated': 'standard',
   // Last Resort area saved / cleared (radius only — never the ZIP)
   'profile.challenge_area_updated': 'standard',
+  'profile.updated': 'standard',
   // notifications — one row per notification raised; the most numerous type after sign-ins
   'notification.sent': 'high_volume',
   // badges — earning is a user milestone (standard); a grant or revoke is a moderation action, kept

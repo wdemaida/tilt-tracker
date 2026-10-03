@@ -56,7 +56,7 @@ function EditUserModal({ user, onClose }: { user: AdminUserDetail['user']; onClo
           <button type="button" onClick={onClose} className="text-muted-foreground hover:text-white" aria-label="Close"><X className="w-5 h-5" /></button>
         </div>
         <div><label className={label}>Username</label><input value={username} onChange={e => setUsername(e.target.value)} className={input} required /></div>
-        <div><label className={label}>Display name</label><input value={displayName} onChange={e => setDisplayName(e.target.value)} className={input} required /></div>
+        <div><label className={label}>Display name</label><input value={displayName} onChange={e => setDisplayName(e.target.value)} className={input} maxLength={40} required /></div>
         <div>
           <label className={label}>Role</label>
           <select value={role} onChange={e => setRole(e.target.value as 'admin' | 'user')} className={`${input} cursor-pointer`}>
