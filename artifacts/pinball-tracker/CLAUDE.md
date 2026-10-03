@@ -230,7 +230,8 @@
   `<button>`: picker rows that show one are `<div>`s made clickable with `clickableRow()` (role,
   tabIndex, Enter/Space only when the row itself has focus; the handle's click doesn't bubble).
   `lib/venueLabel.ts` is the plain-text form (`venueLabel(name, owner, myUsername)`) for aria-labels,
-  menu items and chart tooltips. Used on: Venues cards (search also matches `@owner`), venue page
+  menu items and chart tooltips. Used on: Venues cards (search also matches `@owner`), Recent Scores search (`lib/scoreSearch.ts` —
+  machine, venue label, @username, display name; tests `src/lib/scoreSearch.test.ts`), venue page
   header, map popup, VenueMachinesModal title, ScoreCard, UserPage rows, MachinePage (score table, Top
   Score, venue filter menu, difficulty cards, chart tooltips), challenge counting scores, challenge
   location chips / search / suggestions, Add Score's "Private venue" and "Your Venues" rows + step-3

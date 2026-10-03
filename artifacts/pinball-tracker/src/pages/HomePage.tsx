@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useDeferredValue } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import * as Dialog from '@radix-ui/react-dialog';
 import { PlusCircle } from 'lucide-react';
@@ -13,6 +13,7 @@ import ScoreCard from '../components/ScoreCard';
 import { usePodMembership } from '../lib/myPods';
 import EditScoreDialog, { type EditScoreTarget } from '../components/EditScoreDialog';
 import ChallengeSetupNudge from '../components/ChallengeSetupNudge';
+import { scoreMatchesSearch } from '../lib/scoreSearch';
 
 type Filter = 'all' | 'casual' | 'tournament';
 
@@ -45,8 +46,12 @@ export default function HomePage() {
     },
   });
 
+  // Filtering runs over every score the server sent (GET /api/scores is unpaginated; "Show more" only
+  // reveals more of the filtered list), so a deferred query keeps typing responsive without a timer.
+  const query = useDeferredValue(search);
+
   // Reset pagination when search or filter changes
-  useEffect(() => { setVisibleCount(10); }, [filter, search]);
+  useEffect(() => { setVisibleCount(10); }, [filter, query]);
 
   // Per-machine best score for trophy icon
   const bestScores = useMemo(() => {
@@ -59,7 +64,8 @@ export default function HomePage() {
 
   const filtered = (scores as any[]).filter((s: any) => {
     if (filter !== 'all' && s.type !== filter) return false;
-    if (search && !s.machineName.toLowerCase().includes(search.toLowerCase())) return false;
+    // Machine, venue (as labelled on the card), @username, display name — lib/scoreSearch.ts.
+    if (!scoreMatchesSearch(s, query, appUser?.username)) return false;
     return true;
   });
   const visible = filtered.slice(0, visibleCount);
@@ -96,7 +102,7 @@ export default function HomePage() {
       <div className="flex flex-col sm:flex-row gap-3 mb-6">
         <input
           type="text"
-          placeholder="Search machines..."
+          placeholder="Search machines, venues, players..."
           value={search}
           onChange={e => setSearch(e.target.value)}
           className="flex-1 rounded-lg border border-white/10 bg-card px-4 py-2 text-sm text-white placeholder:text-muted-foreground focus:outline-none focus:border-primary/50"
@@ -119,7 +125,7 @@ export default function HomePage() {
       {isLoading ? (
         <p className="text-muted-foreground">Loading...</p>
       ) : filtered.length === 0 ? (
-        <p className="text-muted-foreground">No scores yet.</p>
+        <p className="text-muted-foreground">{search.trim() || filter !== 'all' ? 'No matching scores.' : 'No scores yet.'}</p>
       ) : (
         <>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
