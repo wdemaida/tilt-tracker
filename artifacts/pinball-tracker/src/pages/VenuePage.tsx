@@ -1,7 +1,7 @@
 ﻿import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'wouter';
-import { ArrowLeft, ChevronUp, ChevronDown, Home, Pencil, Eye, EyeOff } from 'lucide-react';
+import { ArrowLeft, ChevronUp, ChevronDown, Home, Pencil, Eye, EyeOff, MapPin } from 'lucide-react';
 import { formatScoreTime } from '../lib/scoreTime';
 import { useApi } from '../lib/useApi';
 import { useComparisonScope, scopeQuery, scopeKey } from '../lib/comparisonScope';
@@ -16,6 +16,7 @@ import VenueRepairPanel from '../components/VenueRepairPanel';
 import VenueInventoryPanel from '../components/VenueInventoryPanel';
 import EditVenueDialog, { editTargetFromVenue, type EditVenueTarget } from '../components/EditVenueDialog';
 import { missingAddressLabel } from '../lib/venueAddressLabel';
+import type { MapPoint } from '../lib/api';
 
 type SortKey = 'playedAt' | 'machineName' | 'type' | 'username' | 'score';
 type SortDir = 'asc' | 'desc';
@@ -110,6 +111,11 @@ export default function VenuePage() {
   // Only sent to the owner/admin of a restricted-tier venue: what everyone else gets (venueView.ts).
   const publicView: { address: string | null; latitude: number | null; longitude: number | null } | undefined =
     venue.publicView ?? undefined;
+  // Where the venue goes on a map — the public view for every viewer, owner included (venueView.ts).
+  const mapPoint: MapPoint | null = venue.mapPoint ?? null;
+  // A city_state home venue seen by anyone but its owner/admin: the address *is* the city, and the
+  // map shows only an area — say so, rather than letting "Portland, Oregon" read as an address.
+  const approximateForViewer = !publicView && !!mapPoint?.approximate;
   // Venue-wide (every score here you may see), the same in every scope.
   const totalScores: number = data.totals?.scores ?? scores.length;
   const narrowed = scope.kind === 'mine' || ((scope.kind === 'pod' || scope.kind === 'friends') && !scope.others);
@@ -198,7 +204,12 @@ export default function VenuePage() {
               </button>
             )}
           </h1>
-          {venue.address ? (
+          {approximateForViewer ? (
+            <p className="flex items-center gap-1.5 text-sm text-muted-foreground mt-1">
+              <MapPin className="w-3.5 h-3.5 flex-shrink-0" />
+              Approximate location ({mapPoint?.label ?? venue.address})
+            </p>
+          ) : venue.address ? (
             <p className="text-sm text-muted-foreground mt-1">{venue.address}</p>
           ) : missingAddressLabel(venue) === 'hidden' ? (
             <p className="text-sm text-muted-foreground/60 italic mt-1">Address hidden</p>
@@ -209,9 +220,11 @@ export default function VenuePage() {
           {publicView && (
             <p className="flex items-center gap-1.5 text-xs text-muted-foreground mt-1">
               <Eye className="w-3.5 h-3.5 flex-shrink-0" />
-              {publicView.address
-                ? `Others see: ${publicView.address}${publicView.latitude != null ? ' (approximate)' : ''}`
-                : 'Others see: no location'}
+              {mapPoint?.approximate
+                ? `Others see only an approximate location (${mapPoint.label ?? publicView.address})`
+                : publicView.address
+                  ? `Others see: ${publicView.address}`
+                  : 'Others see: no location'}
             </p>
           )}
           {venue.activityHidden ? (
@@ -240,12 +253,9 @@ export default function VenuePage() {
             </p>
           )}
         </div>
-        {/* Drawn the way the public sees it, so the owner can tell what their tier gives away. */}
-        <VenueMapThumbnail
-          venueId={venue.id}
-          latitude={publicView ? publicView.latitude : venue.latitude}
-          longitude={publicView ? publicView.longitude : venue.longitude}
-        />
+        {/* Drawn the way the public sees it (the server's public mapPoint), so the owner can tell
+            what their tier gives away. */}
+        <VenueMapThumbnail venueId={venue.id} mapPoint={mapPoint} isPrivate={!!venue.isPrivate} />
       </div>
 
       {/* Keyed so a merge that navigates to another venue starts that panel fresh. */}
@@ -256,6 +266,7 @@ export default function VenuePage() {
           venueId={venue.id}
           inventory={machinesData.inventory ?? null}
           canManage={!!machinesData.canManageInventory}
+          scoredMachines={machinesData.scoredMachines ?? []}
         />
       )}
 

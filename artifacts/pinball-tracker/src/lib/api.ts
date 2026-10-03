@@ -21,6 +21,18 @@ export async function request<T>(path: string, init?: RequestInit, token?: strin
   return res.json();
 }
 
+/**
+ * Where a venue goes on a map (`mapPoint` on GET /api/venues rows and the venue detail payload).
+ * Always the PUBLIC view, for every viewer: exact for public venues; the city centroid with
+ * `approximate: true` and a "City, ST" label for city_state home venues; null for hidden ones.
+ */
+export interface MapPoint {
+  lat: number;
+  lng: number;
+  approximate: boolean;
+  label: string | null;
+}
+
 /** A private venue's owner-managed machine list, as the server returns it. */
 export interface VenueInventory {
   /** True once the owner has ever added a machine — from then on the list *is* the machine count. */
