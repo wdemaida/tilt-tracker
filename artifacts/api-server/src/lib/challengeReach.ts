@@ -5,6 +5,7 @@ import {
 import { and, asc, eq, gte, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { canSeeVenueActivity, visibleScoreSql, type Viewer } from './venueActivity.js';
 import { isPrivateVenue, type PrivacyFlags } from './venueAddress.js';
+import { venueOwnerUsername, ownerUsernameOfVenueSql } from './venueOwner.js';
 import { matchScore, queryLength, MIN_QUERY_CHARS } from './venueSearch.js';
 import { acceptedPairSql } from './friendships.js';
 import { countVisits } from './statsCalc.js';
@@ -231,7 +232,13 @@ export async function suggestVenues(userId: number, now = new Date()): Promise<n
 
 export interface PrefMachine { id: number; name: string; variant: string | null; imageUrl: string | null; manufacturer: string | null; year: number | null }
 /** A venue in your own list. Only ever shown to you: you scored there, own it, or it's public. */
-export interface PrefVenue { id: number; name: string; isPrivate: boolean; isHome: boolean; source?: 'auto' | 'added' }
+export interface PrefVenue {
+  id: number; name: string; isPrivate: boolean; isHome: boolean; source?: 'auto' | 'added';
+  /** The owner's @handle beside a private venue's name (venueOwner.ts); null otherwise. */
+  ownerUsername: string | null;
+}
+/** You, as the viewer of your own challenge lists — for venueOwnerUsername (an admin's role isn't needed here). */
+const selfViewer = (userId: number): Viewer => ({ id: userId, role: 'user' });
 export interface ChallengePrefs {
   machines: PrefMachine[];
   venues: PrefVenue[];
@@ -241,11 +248,16 @@ export interface ChallengePrefs {
 
 async function venueChips(userId: number, ids: number[]): Promise<PrefVenue[]> {
   if (!ids.length) return [];
-  const rows = await db.select({ id: venues.id, name: venues.name, ownerId: venues.ownerId, isResidence: venues.isResidence, privacyTier: venues.privacyTier })
-    .from(venues).where(inArray(venues.id, ids));
+  const rows = await db.select({
+    id: venues.id, name: venues.name, ownerId: venues.ownerId, isResidence: venues.isResidence, privacyTier: venues.privacyTier,
+    showMachinesAndScores: venues.showMachinesAndScores, ownerUsername: ownerUsernameOfVenueSql(venues.ownerId),
+  }).from(venues).where(inArray(venues.id, ids));
   const by = new Map(rows.map(r => [r.id, r]));
   return ids.map(id => by.get(id)).filter((r): r is NonNullable<typeof r> => !!r)
-    .map(r => ({ id: r.id, name: r.name, isPrivate: isPrivateVenue(r), isHome: r.ownerId === userId && r.isResidence }));
+    .map(r => ({
+      id: r.id, name: r.name, isPrivate: isPrivateVenue(r), isHome: r.ownerId === userId && r.isResidence,
+      ownerUsername: venueOwnerUsername(r, selfViewer(userId)),
+    }));
 }
 
 export async function getChallengePrefs(userId: number, now = new Date()): Promise<ChallengePrefs> {
@@ -332,19 +344,23 @@ export async function updateChallengePrefs(userId: number, body: Record<string, 
 }
 
 /** A venue search hit for the challenge-locations editor. */
-export interface ChallengeVenueHit { id: number; name: string; city: string | null; state: string | null; isPrivate: boolean; isHome: boolean }
+export interface ChallengeVenueHit { id: number; name: string; city: string | null; state: string | null; isPrivate: boolean; isHome: boolean; ownerUsername: string | null }
 export const CHALLENGE_VENUE_SEARCH_LIMIT = 8;
 /** How many "Recently played" venues an empty search returns. */
 export const CHALLENGE_RECENT_VENUE_LIMIT = 6;
 
 /** Shape a venue row as a hit: city/state only for a public venue or your own. */
-function toChallengeVenueHit(v: PrivacyFlags & { id: number; name: string; city: string | null; state: string | null; ownerId: number | null }, userId: number): ChallengeVenueHit {
+function toChallengeVenueHit(
+  v: PrivacyFlags & { id: number; name: string; city: string | null; state: string | null; ownerId: number | null; showMachinesAndScores: boolean; ownerUsername: string | null },
+  userId: number,
+): ChallengeVenueHit {
   const priv = isPrivateVenue(v);
   const own = v.ownerId === userId;
   return {
     id: v.id, name: v.name,
     city: !priv || own ? v.city : null, state: !priv || own ? v.state : null,
     isPrivate: priv, isHome: own && v.isResidence,
+    ownerUsername: venueOwnerUsername(v, selfViewer(userId)),
   };
 }
 
@@ -359,6 +375,7 @@ export async function recentChallengeVenues(userId: number): Promise<ChallengeVe
   const rows = await db.select({
     id: venues.id, name: venues.name, address: venues.address, city: venues.city, state: venues.state,
     ownerId: venues.ownerId, isResidence: venues.isResidence, privacyTier: venues.privacyTier,
+    showMachinesAndScores: venues.showMachinesAndScores, ownerUsername: ownerUsernameOfVenueSql(venues.ownerId),
     lastPlayed,
   }).from(scores).innerJoin(venues, eq(venues.id, scores.venueId)).where(and(
     eq(scores.userId, userId),
@@ -382,6 +399,7 @@ export async function searchChallengeVenues(userId: number, q: string): Promise<
   const rows = await db.select({
     id: venues.id, name: venues.name, address: venues.address, city: venues.city, state: venues.state,
     ownerId: venues.ownerId, isResidence: venues.isResidence, privacyTier: venues.privacyTier,
+    showMachinesAndScores: venues.showMachinesAndScores, ownerUsername: ownerUsernameOfVenueSql(venues.ownerId),
   }).from(venues).where(and(
     sql`((${venues.isResidence} = false AND ${venues.privacyTier} = 'full') OR ${venues.ownerId} = ${userId}
       OR EXISTS (SELECT 1 FROM scores s WHERE s.venue_id = ${venues.id} AND s.user_id = ${userId}))`,

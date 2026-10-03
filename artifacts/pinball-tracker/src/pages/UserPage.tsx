@@ -17,6 +17,7 @@ import { ChallengeLink } from '../components/ChallengeParts';
 import { FRIEND_WITH_KEY } from '../lib/myFriends';
 import { FullPhotoButton } from '../components/PhotoViewer';
 import BadgeShelf from '../components/BadgeShelf';
+import VenueName from '../components/VenueName';
 
 export default function UserPage() {
   const { username } = useParams<{ username: string }>();
@@ -173,13 +174,12 @@ export default function UserPage() {
                 {s.venueName && (
                   <div className="flex items-center gap-1 text-venue min-w-0">
                     <MapPin className="w-3 h-3 flex-shrink-0" />
-                    {s.venueId != null ? (
-                      <Link href={`/venues/${s.venueId}`} className="truncate hover:text-venue/80 transition-colors">
-                        {s.venueName}
-                      </Link>
-                    ) : (
-                      <span className="truncate">{s.venueName}</span>
-                    )}
+                    <VenueName
+                      name={s.venueName}
+                      ownerUsername={s.venueOwnerUsername}
+                      href={s.venueId != null ? `/venues/${s.venueId}` : undefined}
+                      className="truncate"
+                    />
                     {s.venueIsResidence && <Home className="w-3 h-3 flex-shrink-0" />}
                   </div>
                 )}

@@ -166,6 +166,8 @@ Feature-specific gotchas live in `artifacts/pinball-tracker/CLAUDE.md` (frontend
 | `artifacts/api-server/src/lib/venueHistory.ts` | Diffs live PM machine list vs. last snapshot; records arrivals/departures |
 | `artifacts/api-server/src/lib/venueRepair.ts` | Venue relink + score re-sync: permissions, machine-name matching, merge apply |
 | `artifacts/api-server/src/lib/pmRosterCache.ts` | 6h cache of PM machine rosters — the only sanctioned way to read a roster |
+| `artifacts/api-server/src/lib/venueOwner.ts` | `ownerUsername` rule: a private venue's owner handle ("HOME (@owner)"), only when its activity is visible |
+| `artifacts/pinball-tracker/src/components/VenueName.tsx` | Renders every venue name (+ owner handle link / "(you)"); `clickableRow()` for picker rows |
 | `artifacts/api-server/src/lib/machineVenues.ts` | Machines page "X Venues": venues where visible scores on a machine were logged (score count + last played); others' homes only counted; 0 PM calls |
 | `artifacts/api-server/src/lib/challengeArea.ts` | Last Resort areas (ZIP + radius) + Expand search — owner-only area routes, friend side = count + city |
 | `artifacts/api-server/src/lib/areaMatch.ts` | Last Resort pure rules: ZIP/radius, 0.1° cell + 55 mi fetch radius, exact-model matching |

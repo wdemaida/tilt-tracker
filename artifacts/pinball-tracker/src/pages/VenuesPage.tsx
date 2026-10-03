@@ -15,6 +15,7 @@ import MapPage from './MapPage';
 import { MAP_VIEW_ENABLED } from '../lib/mapView';
 import { missingAddressLabel } from '../lib/venueAddressLabel';
 import { parseState } from '../lib/venueState';
+import VenueName from '../components/VenueName';
 
 // Someone else's home venue arrives trimmed to what its card needs (name, the address its privacy
 // tier allows, counts) — no ownerId, tier, coordinates or timezone. Hence the optional fields.
@@ -42,6 +43,8 @@ interface Venue {
   needsAddress?: boolean;
   /** Whether *this* viewer may repair the venue (admin / owner / creator) — decided server-side. */
   canRepair?: boolean;
+  /** A private venue's owner, when this viewer may see it (server rule) — "HOME (@owner)". */
+  ownerUsername?: string | null;
 }
 
 type VenuesView = 'list' | 'map';
@@ -116,7 +119,8 @@ export default function VenuesPage() {
     .filter(v => !onlyNeedsAddress || showNeedsAddress(v))
     .filter(v => {
       const q = search.toLowerCase();
-      return v.name.toLowerCase().includes(q) || (v.address ?? '').toLowerCase().includes(q);
+      return v.name.toLowerCase().includes(q) || (v.address ?? '').toLowerCase().includes(q)
+        || (!!v.ownerUsername && `@${v.ownerUsername}`.toLowerCase().includes(q));
     })
     .filter(v => !stateFilter || parseState(v.address) === stateFilter)
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -199,9 +203,12 @@ export default function VenuesPage() {
               <div className="flex items-start gap-3">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5">
-                    <Link href={`/venues/${venue.id}`} className="font-black uppercase tracking-wider text-venue text-sm leading-tight hover:text-venue/80 transition-colors">
-                      {venue.name}
-                    </Link>
+                    <VenueName
+                      name={venue.name}
+                      ownerUsername={venue.ownerUsername}
+                      href={`/venues/${venue.id}`}
+                      className="font-black uppercase tracking-wider text-venue text-sm leading-tight min-w-0 [overflow-wrap:anywhere]"
+                    />
                     {venue.isResidence && (
                       <span title="Residence">
                         <Home className="w-3 h-3 text-venue/70 flex-shrink-0" />

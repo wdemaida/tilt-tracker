@@ -209,7 +209,9 @@ test('venueDetailView: others see the tier-redacted location and the inventory c
 test('venueMachinesView: others get name + tier-redacted location only; owner/admin get the row', () => {
   for (const viewer of [other, signedOut]) {
     const v = venueMachinesView({ ...venue('residenceHidden', false), createdAt: new Date() }, viewer) as Record<string, unknown>;
-    assert.deepEqual(Object.keys(v).sort(), ['address', 'id', 'isResidence', 'latitude', 'longitude', 'name', 'timezone']);
+    assert.deepEqual(Object.keys(v).sort(), ['address', 'id', 'isResidence', 'latitude', 'longitude', 'name', 'ownerUsername', 'timezone']);
+    // The switch is off, so not even the owner's handle (venueOwner.ts).
+    assert.equal(v.ownerUsername, null);
     assert.equal(v.address, null);
     assert.equal(v.timezone, null);
   }

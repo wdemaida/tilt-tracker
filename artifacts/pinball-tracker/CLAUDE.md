@@ -199,6 +199,23 @@
   opens that venue (zoom 15 exact / 11 approximate) or says it isn't on the map. The venue page says
   "Approximate location (City, ST)" to others and "Others see only an approximate location (…)" to
   the owner/admin.
+- **Venue names: `components/VenueName.tsx` (added 2026-10-03).** Every venue name goes through it:
+  a private venue whose payload carries `ownerUsername` (venue objects) / `venueOwnerUsername` (score
+  rows) renders "HOME (@collasta)" — the handle is always a `UsernameLink` (yellow, to the profile);
+  **your own** home renders "HOME (you)" (plain "HOME" could be confused with a stranger's home whose
+  switch is off, which arrives with no handle). The server decides when the handle may be shown
+  (api-server CLAUDE.md, `ownerUsername`) — never derive it client-side. `href` makes the name a link
+  too, as a **sibling** of the handle link (never nested). It must never sit inside an `<a>` or a
+  `<button>`: picker rows that show one are `<div>`s made clickable with `clickableRow()` (role,
+  tabIndex, Enter/Space only when the row itself has focus; the handle's click doesn't bubble).
+  `lib/venueLabel.ts` is the plain-text form (`venueLabel(name, owner, myUsername)`) for aria-labels,
+  menu items and chart tooltips. Used on: Venues cards (search also matches `@owner`), venue page
+  header, map popup, VenueMachinesModal title, ScoreCard, UserPage rows, MachinePage (score table, Top
+  Score, venue filter menu, difficulty cards, chart tooltips), challenge counting scores, challenge
+  location chips / search / suggestions, Add Score's "Private venue" and "Your Venues" rows + step-3
+  header, ScoreVenuePicker. Not on surfaces that only ever show public venues or your own homes
+  (challenge venue locks, Near me / nearby, MachineVenuesModal, HomeInventoryPrompt).
+  Tests: `../api-server/node_modules/.bin/tsx --test src/lib/venueLabel.test.ts`.
 - `activityHidden` on a venue payload means the owner turned the switch off and you aren't exempt:
   the card shows name + "Address hidden" (+ your own score count), no machine pill; the venue page
   says so and lists only your own scores.

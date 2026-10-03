@@ -18,6 +18,9 @@ import { useApi } from '../lib/useApi';
 import ComparisonScopePicker from '../components/ComparisonScopePicker';
 import PodMemberIcons from '../components/PodMemberIcons';
 import UsernameLink from '../components/UsernameLink';
+import VenueName from '../components/VenueName';
+import { venueLabel } from '../lib/venueLabel';
+import { useAppUser } from '../lib/useAppUser';
 import { ChallengeLink } from '../components/ChallengeParts';
 import { FullPhotoButton } from '../components/PhotoViewer';
 import { useComparisonScope, scopeQuery, scopeKey } from '../lib/comparisonScope';
@@ -382,20 +385,21 @@ function ScatterTooltip({ active, payload, podName, podText, othersLabel, onClos
 
 /** A score's venue: pin + name, linked to the venue page like ScoreCard's. The server sends the
  *  same venueId/venueName the other score lists do (venue pages apply their own privacy), so it
- *  links whenever there's an id and stays plain text otherwise. */
-function ScoreVenue({ venueId, venueName, isResidence, className = '' }: {
-  venueId?: number | null; venueName: string; isResidence?: boolean; className?: string;
+ *  links whenever there's an id and stays plain text otherwise. A private venue adds its owner's
+ *  handle as a sibling link when the server sends `venueOwnerUsername` ("HOME (@owner)"). */
+function ScoreVenue({ venueId, venueName, ownerUsername, isResidence, className = '' }: {
+  venueId?: number | null; venueName: string; ownerUsername?: string | null; isResidence?: boolean; className?: string;
 }) {
   return (
     <span className={`inline-flex items-center gap-1 text-venue min-w-0 ${className}`}>
       <MapPin className="w-3 h-3 flex-shrink-0" />
-      {venueId != null ? (
-        <Link href={`/venues/${venueId}`} className="truncate hover:text-venue/80 hover:underline transition-colors">
-          {venueName}
-        </Link>
-      ) : (
-        <span className="truncate">{venueName}</span>
-      )}
+      <VenueName
+        name={venueName}
+        ownerUsername={ownerUsername}
+        href={venueId != null ? `/venues/${venueId}` : undefined}
+        nameClassName="hover:text-venue/80 hover:underline transition-colors"
+        className="truncate"
+      />
       {isResidence && <Home className="w-3 h-3 flex-shrink-0" />}
     </span>
   );
@@ -403,7 +407,7 @@ function ScoreVenue({ venueId, venueName, isResidence, className = '' }: {
 
 // ─── venue dropdown ───────────────────────────────────────────────────────────
 
-interface VenueOption { venueId: number; venueName: string }
+interface VenueOption { venueId: number; venueName: string; venueOwnerUsername?: string | null }
 
 function VenueDropdown({ venues, selectedIds, onToggle, onClear }: {
   venues: VenueOption[];
@@ -411,10 +415,14 @@ function VenueDropdown({ venues, selectedIds, onToggle, onClear }: {
   onToggle: (id: number) => void;
   onClear: () => void;
 }) {
+  // Plain text: an option is a menu item, so the owner's handle can't be a link in here.
+  const me = useAppUser();
+  const nameOf = (v: VenueOption) => venueLabel(v.venueName, v.venueOwnerUsername, me?.username);
+  const picked = selectedIds.length === 1 ? venues.find(v => v.venueId === selectedIds[0]) : undefined;
   const label = selectedIds.length === 0
     ? 'All Venues'
     : selectedIds.length === 1
-      ? venues.find(v => v.venueId === selectedIds[0])?.venueName ?? '1 venue'
+      ? (picked ? nameOf(picked) : '1 venue')
       : `${selectedIds.length} venues`;
 
   return (
@@ -438,7 +446,7 @@ function VenueDropdown({ venues, selectedIds, onToggle, onClear }: {
               checked={selectedIds.includes(v.venueId)} onCheckedChange={() => onToggle(v.venueId)}
             >
               <Checkbox checked={selectedIds.includes(v.venueId)} />
-              <span className="truncate">{v.venueName}</span>
+              <span className="truncate">{nameOf(v)}</span>
             </DropdownMenu.CheckboxItem>
           ))}
         </DropdownMenu.Content>
@@ -535,7 +543,7 @@ export default function MachinePage() {
   const uniqueVenues = useMemo<VenueOption[]>(() => {
     return [...new Map<number, VenueOption>(
       scores.filter(s => s.venueId != null && s.venueName)
-            .map(s => [s.venueId, { venueId: s.venueId, venueName: s.venueName }]),
+            .map(s => [s.venueId, { venueId: s.venueId, venueName: s.venueName, venueOwnerUsername: s.venueOwnerUsername ?? null }]),
     ).values()];
   }, [scores]);
 
@@ -547,9 +555,11 @@ export default function MachinePage() {
     () => uniqueVenues.length < 2 ? [] : selectedVenueIds.filter(id => uniqueVenues.some(v => v.venueId === id)),
     [selectedVenueIds, uniqueVenues],
   );
+  // Chart tooltips print the venue as text, so a private venue's name carries its owner there.
   const chartScores = useMemo(
-    () => activeVenueIds.length ? scores.filter(s => activeVenueIds.includes(s.venueId)) : scores,
-    [scores, activeVenueIds],
+    () => (activeVenueIds.length ? scores.filter(s => activeVenueIds.includes(s.venueId)) : scores)
+      .map(s => s.venueOwnerUsername && s.venueName ? { ...s, venueName: venueLabel(s.venueName, s.venueOwnerUsername, myUsername) } : s),
+    [scores, activeVenueIds, myUsername],
   );
 
   const machineAvgScore = useMemo(() => {
@@ -867,7 +877,7 @@ export default function MachinePage() {
             <p className="text-xs text-muted-foreground mt-1">
               <UsernameLink username={best.username} />
               {' · '}{formatScoreTime(best.playedAt, best.venueTimezone, 'MMM d, yyyy')}
-              {best.venueName && <> · <ScoreVenue venueId={best.venueId} venueName={best.venueName} isResidence={best.venueIsResidence} className="align-bottom max-w-full" /></>}
+              {best.venueName && <> · <ScoreVenue venueId={best.venueId} venueName={best.venueName} ownerUsername={best.venueOwnerUsername} isResidence={best.venueIsResidence} className="align-bottom max-w-full" /></>}
             </p>
           </div>
         </div>
@@ -1219,7 +1229,7 @@ export default function MachinePage() {
               return (
                 <div key={v.venueId} className="rounded-lg border border-venue/30 bg-white/3 p-3">
                   <div className="flex items-start justify-between gap-2 mb-1">
-                    <p className="text-sm font-semibold text-venue truncate">{v.venueName}</p>
+                    <VenueName name={v.venueName} ownerUsername={v.venueOwnerUsername} className="block text-sm font-semibold text-venue truncate" />
                     <span className="text-xs font-bold px-2 py-0.5 rounded flex-shrink-0" style={{ color, background: `${color}20` }}>{text}</span>
                   </div>
                   <p className="text-xs text-muted-foreground">
@@ -1268,7 +1278,7 @@ export default function MachinePage() {
                     </p>
                     {s.venueName && (
                       <p className="text-xs mt-0.5 flex min-w-0">
-                        <ScoreVenue venueId={s.venueId} venueName={s.venueName} isResidence={s.venueIsResidence} />
+                        <ScoreVenue venueId={s.venueId} venueName={s.venueName} ownerUsername={s.venueOwnerUsername} isResidence={s.venueIsResidence} />
                       </p>
                     )}
                   </div>

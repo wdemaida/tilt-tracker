@@ -17,6 +17,7 @@ import VenueInventoryPanel from '../components/VenueInventoryPanel';
 import EditVenueDialog, { editTargetFromVenue, type EditVenueTarget } from '../components/EditVenueDialog';
 import { missingAddressLabel } from '../lib/venueAddressLabel';
 import type { MapPoint } from '../lib/api';
+import VenueName from '../components/VenueName';
 
 type SortKey = 'playedAt' | 'machineName' | 'type' | 'username' | 'score';
 type SortDir = 'asc' | 'desc';
@@ -206,7 +207,12 @@ export default function VenuePage() {
         <div className="min-w-0">
           <h1 className="text-2xl sm:text-3xl font-black uppercase tracking-normal sm:tracking-widest text-venue leading-tight sm:leading-tight flex items-center gap-2">
             {/* Own element so a long single word ("ELECTROMAGNETIC") can shrink and wrap on a phone. */}
-            <span className="min-w-0 [overflow-wrap:anywhere]">{venue.name}</span>
+            <VenueName
+              name={venue.name}
+              ownerUsername={venue.ownerUsername}
+              className="min-w-0 [overflow-wrap:anywhere]"
+              ownerClassName="text-base sm:text-lg align-middle"
+            />
             {venue.isResidence && <Home className="w-5 h-5 text-venue/70 flex-shrink-0" />}
             {/* Same pencil, dialog and permission as the Venues page card (server's canEdit). */}
             {venue.canEdit && (

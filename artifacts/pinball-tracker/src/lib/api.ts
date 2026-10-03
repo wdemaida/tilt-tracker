@@ -206,7 +206,7 @@ export interface ChallengeParticipant {
     reachedTargetAt: string | null;
   } | null;
   /** Detail only: the scores that count, newest upload first. */
-  scores?: Array<{ id: number; score: number; playedAt: string; createdAt: string; venueId: number | null; venueName: string | null; venueTimezone: string | null; hasFullPhoto?: boolean; hasThumbnail?: boolean }>;
+  scores?: Array<{ id: number; score: number; playedAt: string; createdAt: string; venueId: number | null; venueName: string | null; venueOwnerUsername?: string | null; venueTimezone: string | null; hasFullPhoto?: boolean; hasThumbnail?: boolean }>;
 }
 
 /** GET /api/challenges/venue-options — a public venue that has the challenge's machine. */
@@ -358,10 +358,10 @@ export interface ChallengeExpandResult {
 export interface ChallengeMeMachine { id: number; name: string; variant: string | null; imageUrl: string | null }
 
 /** A venue in your own challenge-locations list or its suggestions. Only ever your own. */
-export interface ChallengePrefVenue { id: number; name: string; isPrivate: boolean; isHome: boolean; source?: 'auto' | 'added' }
+export interface ChallengePrefVenue { id: number; name: string; isPrivate: boolean; isHome: boolean; source?: 'auto' | 'added'; ownerUsername?: string | null }
 
 /** GET /api/me/challenge-venue-search — TiltTrack venues you could add (public, yours, or scored at). */
-export interface ChallengeVenueHit { id: number; name: string; city: string | null; state: string | null; isPrivate: boolean; isHome: boolean }
+export interface ChallengeVenueHit { id: number; name: string; city: string | null; state: string | null; isPrivate: boolean; isHome: boolean; ownerUsername?: string | null }
 
 /** GET/PUT /api/me/challenge-prefs */
 export interface ChallengePrefs {

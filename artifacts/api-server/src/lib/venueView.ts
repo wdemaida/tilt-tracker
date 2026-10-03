@@ -1,6 +1,7 @@
 import { redactVenue, canSeeFullVenue, isPrivateTier } from './venuePrivacy.js';
 import { venueListFlags } from './venueAddress.js';
 import { canSeeVenueActivity, canEditVenue, usesOwnerInventory, type Viewer } from './venueActivity.js';
+import { venueOwnerUsername } from './venueOwner.js';
 
 // What a venue looks like on the wire, per requester. Two shapes:
 //  - someone else's private (home) venue — the minimum its card needs: name, whatever address the
@@ -30,6 +31,8 @@ interface VenueRow {
   cityLng: number | null;
   timezone: string | null;
   showMachinesAndScores: boolean;
+  /** The owner's username, raw from the join — only ever sent via venueOwnerUsername(). */
+  ownerUsername?: string | null;
 }
 
 export interface MachineCounts {
@@ -89,6 +92,8 @@ function venueFlags(v: VenueRow & MachineCounts, requester: Viewer | undefined) 
     /** The owner switched "Show my machines/scores publicly" off and this requester isn't exempt. */
     activityHidden: !activityVisible,
     machineCount: activityVisible ? displayedMachineCount(v) : null,
+    /** The owner's @handle beside a private venue's name — null unless the activity is visible (venueOwner.ts). */
+    ownerUsername: venueOwnerUsername(v, requester),
   };
 }
 
@@ -98,7 +103,7 @@ function isOthersPrivate(v: VenueRow, requester: Viewer | undefined): boolean {
 
 function fullView(v: VenueRow, requester: Viewer | undefined) {
   const {
-    ownerId: _o, createdById: _c, city: _ci, state: _s, cityLat: _la, cityLng: _ln, showMachinesAndScores, ...rest
+    ownerId: _o, createdById: _c, city: _ci, state: _s, cityLat: _la, cityLng: _ln, ownerUsername: _ou, showMachinesAndScores, ...rest
   } = redactVenue(v, requester?.id, requester?.role === 'admin');
   return {
     ...rest,
@@ -147,13 +152,13 @@ export function venueMachinesView<T extends VenueRow & { createdAt?: unknown }>(
     const red = redactVenue(v, requester?.id, false);
     return {
       id: v.id, name: v.name, address: red.address, latitude: red.latitude, longitude: red.longitude,
-      timezone: red.timezone, isResidence: v.isResidence,
+      timezone: red.timezone, isResidence: v.isResidence, ownerUsername: venueOwnerUsername(v, requester),
     };
   }
   const {
-    ownerId: _o, createdById: _c, city: _ci, state: _s, cityLat: _la, cityLng: _ln, ...rest
+    ownerId: _o, createdById: _c, city: _ci, state: _s, cityLat: _la, cityLng: _ln, ownerUsername: _ou, ...rest
   } = redactVenue(v, requester?.id, requester?.role === 'admin');
-  return rest;
+  return { ...rest, ownerUsername: venueOwnerUsername(v, requester) };
 }
 
 /**

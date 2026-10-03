@@ -17,6 +17,7 @@ import {
   formatResult, formatDuration, useNow, isAbandoned, historyOutcome, outcomeMeta, isGroupChallenge, isOut, othersOf, ordinal, typeLabel,
 } from '../lib/challenges';
 import type { Challenge, ChallengeDeclineChoice, ChallengeParticipant, ChallengeProposal } from '../lib/api';
+import VenueName from '../components/VenueName';
 
 // /challenges/:id — one challenge, for its participants. Machine + rules up top, a live countdown,
 // the standings (you in username yellow, them in friend aqua), each side's counting scores, and the
@@ -298,9 +299,13 @@ function ScoreList({ c, p, isMe }: { c: Challenge; p: ChallengeParticipant; isMe
                 {s.venueName && (
                   <p className="text-[11px] text-venue flex items-center gap-1 min-w-0">
                     <MapPin className="w-3 h-3 flex-shrink-0" aria-hidden />
-                    {s.venueId != null
-                      ? <Link href={`/venues/${s.venueId}`} className="truncate hover:text-venue/80">{s.venueName}</Link>
-                      : <span className="truncate">{s.venueName}</span>}
+                    <VenueName
+                      name={s.venueName}
+                      ownerUsername={s.venueOwnerUsername}
+                      href={s.venueId != null ? `/venues/${s.venueId}` : undefined}
+                      nameClassName="hover:text-venue/80"
+                      className="truncate"
+                    />
                   </p>
                 )}
               </div>

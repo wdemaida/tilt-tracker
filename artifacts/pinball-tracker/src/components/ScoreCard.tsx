@@ -5,6 +5,7 @@ import PhotoViewer from './PhotoViewer';
 import { formatScoreTime, zoneAbbreviation } from '../lib/scoreTime';
 import PodMemberIcons from './PodMemberIcons';
 import UsernameLink from './UsernameLink';
+import VenueName from './VenueName';
 import type { PodRef } from '../lib/myPods';
 
 interface ScoreCardProps {
@@ -19,6 +20,8 @@ interface ScoreCardProps {
   /** IANA zone of the venue. Null falls back to the viewer's clock — see lib/scoreTime.ts. */
   venueTimezone?: string | null;
   venueIsResidence?: boolean;
+  /** A private venue's owner, when the server lets this viewer see it — rendered "HOME (@owner)". */
+  venueOwnerUsername?: string | null;
   photoUrl?: string | null;
   photoThumbnail?: string | null;
   /** A full-size photo exists on R2: the thumbnail shows an expand badge. Either way a tap on the
@@ -35,7 +38,7 @@ interface ScoreCardProps {
   onDelete?: () => void;
 }
 
-export default function ScoreCard({ id, machineName, score, playedAt, createdAt, type, venueId, venueName, venueTimezone, venueIsResidence, photoThumbnail, hasFullPhoto, username, isHighScore, isCurrentUser, pods, onEdit, onDelete }: ScoreCardProps) {
+export default function ScoreCard({ id, machineName, score, playedAt, createdAt, type, venueId, venueName, venueTimezone, venueIsResidence, venueOwnerUsername, photoThumbnail, hasFullPhoto, username, isHighScore, isCurrentUser, pods, onEdit, onDelete }: ScoreCardProps) {
   // Only shown when the venue's clock differs from the reader's, so the usual case stays quiet.
   const zone = zoneAbbreviation(playedAt, venueTimezone);
   const [viewing, setViewing] = useState(false);
@@ -85,13 +88,12 @@ export default function ScoreCard({ id, machineName, score, playedAt, createdAt,
             {venueName && (
               <div className="flex items-center gap-1 text-venue">
                 <MapPin className="w-3 h-3 flex-shrink-0" />
-                {venueId != null ? (
-                  <Link href={`/venues/${venueId}`} className="truncate hover:text-venue/80 transition-colors">
-                    {venueName}
-                  </Link>
-                ) : (
-                  <span className="truncate">{venueName}</span>
-                )}
+                <VenueName
+                  name={venueName}
+                  ownerUsername={venueOwnerUsername}
+                  href={venueId != null ? `/venues/${venueId}` : undefined}
+                  className="truncate"
+                />
                 {venueIsResidence && <Home className="w-3 h-3 flex-shrink-0" />}
               </div>
             )}

@@ -13,6 +13,7 @@ import { redactScoreLocation, redactVenue, canSeeVenueLinkage } from '../lib/ven
 import { getAuth } from '@clerk/express';
 import { parseScore } from '../lib/scoreRead.js';
 import { visibleScoreSql } from '../lib/venueActivity.js';
+import { venueOwnerUsernameSql } from '../lib/venueOwner.js';
 import { onScoreCreated, scoreChallengeSummary, scoreLockedByChallenge, SCORE_LOCKED } from '../lib/challenges.js';
 import { hasFullPhotoSql, publicScoreRow, deletePhotoBestEffort } from '../lib/photoStore.js';
 import { logActivity } from '../lib/activity.js';
@@ -72,6 +73,8 @@ router.get('/', async (req, res) => {
         venueCityLat: venues.cityLat,
         venueCityLng: venues.cityLng,
         venueIsResidence: venues.isResidence,
+        // The owner's @handle beside a private venue's name, when this viewer may see its activity (venueOwner.ts).
+        venueOwnerUsername: venueOwnerUsernameSql(requester, scores.venueId),
       })
       .from(scores)
       .innerJoin(machines, eq(scores.machineId, machines.id))

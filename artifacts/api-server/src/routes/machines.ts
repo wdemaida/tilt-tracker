@@ -7,6 +7,7 @@ import { getMachineScoreStats } from '../lib/machineScoreStats.js';
 import { requireAppUser, requireAdmin } from '../middleware/requireAuth.js';
 import { getAuth } from '@clerk/express';
 import { visibleScoreSql } from '../lib/venueActivity.js';
+import { venueOwnerUsernameSql } from '../lib/venueOwner.js';
 import { hasFullPhotoSql, hasThumbnailSql } from '../lib/photoStore.js';
 import { machineInInventory } from '../lib/venueInventory.js';
 import { machineVenueCounts, venuesForMachine } from '../lib/machineVenues.js';
@@ -153,6 +154,8 @@ router.get('/:name', async (req, res) => {
         venueName: scores.venueName,
         venueTimezone: sql<string | null>`CASE WHEN ${venues.privacyTier} = 'hidden' THEN NULL ELSE ${venues.timezone} END`,
         venueIsResidence: venues.isResidence,
+        // The owner's @handle beside a private venue's name, when this viewer may see its activity (venueOwner.ts).
+        venueOwnerUsername: venueOwnerUsernameSql(requester, scores.venueId),
         photoUrl: scores.photoUrl,
         hasFullPhoto: hasFullPhotoSql,
         hasThumbnail: hasThumbnailSql,

@@ -3,13 +3,17 @@ import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '@clerk/clerk-react';
 import { useApi } from './useApi';
 
-export interface ExactPrivateVenue { id: number; name: string; isPrivate: true }
+export interface ExactPrivateVenue {
+  id: number; name: string; isPrivate: true;
+  /** Its owner's handle, unless they keep the venue's activity private (server rule) — "HOME (@owner)". */
+  ownerUsername?: string | null;
+}
 
 /**
  * Private venues (someone's home) whose name exactly matches what the user typed. This is the only
  * way a private venue that isn't yours turns up in a venue search — nearby suggestions never include
  * it, because a location-based reveal would be a way to scan for where people live. The server
- * answers with names only.
+ * answers with names only (plus the owner's handle, so several people's "HOME" can be told apart).
  *
  * Debounced (so typing "Will's Basement" is one lookup, not fifteen — the endpoint is rate-limited)
  * and only while signed in.

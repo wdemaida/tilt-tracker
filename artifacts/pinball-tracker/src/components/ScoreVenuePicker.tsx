@@ -4,6 +4,7 @@ import { MapPin, Plus, AlertTriangle } from 'lucide-react';
 import { useApi } from '../lib/useApi';
 import { useExactPrivateVenues, isOthersPrivateVenue } from '../lib/useExactPrivateVenues';
 import DuplicateVenuePrompt, { duplicateCandidates, type DuplicateCandidate } from './DuplicateVenuePrompt';
+import VenueName, { clickableRow } from './VenueName';
 
 interface Props {
   scoreId: number;
@@ -114,7 +115,7 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
   const browsable = byRecency.filter(v => !isOthersPrivateVenue(v));
   const exactPrivate = useExactPrivateVenues(search)
     .filter(p => !browsable.some(v => v.id === p.id))
-    .map(p => ({ id: p.id, name: p.name, address: null, timezone: null, isPrivateMatch: true }));
+    .map(p => ({ id: p.id, name: p.name, address: null, timezone: null, isPrivateMatch: true, ownerUsername: p.ownerUsername ?? null }));
   const matches = [
     ...exactPrivate,
     ...(q ? browsable.filter(v => v.name.toLowerCase().includes(q) || (v.address ?? '').toLowerCase().includes(q)) : browsable),
@@ -153,22 +154,21 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
             <ul className="flex flex-col gap-1.5 max-h-52 overflow-y-auto">
               {matches.slice(0, 30).map(v => (
                 <li key={v.id}>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => { setError(null); attach.mutate({ id: v.id, name: v.name, timezone: v.timezone }); }}
-                    className="w-full flex items-center gap-2 text-left rounded border border-white/10 bg-card px-2.5 py-1.5 hover:bg-white/10 disabled:opacity-40 transition-colors"
+                  {/* A div acting as a button (clickableRow): the owner's @handle link can't sit inside a <button>. */}
+                  <div
+                    {...clickableRow(() => { setError(null); attach.mutate({ id: v.id, name: v.name, timezone: v.timezone }); }, { disabled: busy })}
+                    className={`w-full flex items-center gap-2 text-left cursor-pointer rounded border border-white/10 bg-card px-2.5 py-1.5 hover:bg-white/10 transition-colors ${busy ? 'opacity-40 pointer-events-none' : ''}`}
                   >
                     <MapPin className="w-3.5 h-3.5 text-venue flex-shrink-0" />
                     <span className="min-w-0">
-                      <span className="block text-sm font-bold text-venue truncate">{v.name}</span>
+                      <VenueName name={v.name} ownerUsername={v.ownerUsername} className="block text-sm font-bold text-venue truncate" />
                       {v.isPrivateMatch ? (
                         <span className="block text-[0.65rem] text-muted-foreground truncate">Private venue</span>
                       ) : v.address && (
                         <span className="block text-[0.65rem] text-muted-foreground truncate">{v.address}</span>
                       )}
                     </span>
-                  </button>
+                  </div>
                 </li>
               ))}
             </ul>

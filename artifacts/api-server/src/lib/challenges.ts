@@ -11,7 +11,8 @@ import {
   type CandidateScore, type MatchMode, type CountRule, type MatchRule, type ParticipantState, type ResolutionReason, type Outcome,
   type ChallengeRecord, type ChallengeFit, type ChosenDeclineReason, type CreateInput, type DeclineReason, type ParticipantResponse, type ProposalCloseReason,
 } from './challengeRules.js';
-import { canSeeScore, type ActivityVenue } from './venueActivity.js';
+import { canSeeScore, type ActivityVenue, type Viewer } from './venueActivity.js';
+import { venueOwnerUsername, ownerUsernameOfVenueSql } from './venueOwner.js';
 import { isPrivateVenue } from './venueAddress.js';
 import { acceptedPairSql } from './friendships.js';
 import { raiseNotification, settleNotifications, type Executor } from './notify.js';
@@ -86,7 +87,11 @@ export type ChallengeRow = Challenge & {
   venue: { id: number; name: string } | null;
 };
 
-type ScoredCandidate = CandidateScore & { venueName: string | null; venueTimezone: string | null; hasFullPhoto: boolean; hasThumbnail: boolean };
+type ScoredCandidate = CandidateScore & {
+  venueName: string | null; venueTimezone: string | null; hasFullPhoto: boolean; hasThumbnail: boolean;
+  /** The score's venue + its owner's raw username — buildView turns it into a per-viewer `venueOwnerUsername`. */
+  venueOwner?: (ActivityVenue & { ownerUsername: string | null }) | null;
+};
 
 export class ChallengeError extends Error {
   constructor(public status: number, public code: string, message: string) { super(message); }
@@ -172,6 +177,7 @@ async function loadCandidates(ex: Executor, rule: MatchRule, userIds: number[], 
       hasThumbnail: sql<boolean>`(${scores.photoThumbnail} IS NOT NULL)`,
       vOwnerId: venues.ownerId, vIsResidence: venues.isResidence, vTier: venues.privacyTier,
       vShow: venues.showMachinesAndScores,
+      vOwnerUsername: ownerUsernameOfVenueSql(venues.ownerId),
       // Shown in the venue's zone, like ScoreCard — except a hidden-tier venue's zone, which would
       // narrow down where it is (the same CASE as GET /api/machines/:name).
       venueTimezone: sql<string | null>`CASE WHEN ${venues.privacyTier} = 'hidden' THEN NULL ELSE ${venues.timezone} END`,
@@ -188,6 +194,7 @@ async function loadCandidates(ex: Executor, rule: MatchRule, userIds: number[], 
     return {
       id: r.id, userId: r.userId, machineId: r.machineId, opdbId: r.opdbId, venueId: r.venueId, venueName: r.venueName, venueTimezone: r.venueTimezone ?? null,
       score: r.score, playedAt: r.playedAt, createdAt: r.createdAt, hasPhoto: !!r.hasPhoto, hasFullPhoto: !!r.hasFullPhoto, hasThumbnail: !!r.hasThumbnail, visibleToOthers,
+      venueOwner: venue ? { ...venue, ownerUsername: r.vOwnerUsername ?? null } : null,
     };
   });
 }
@@ -855,7 +862,7 @@ export interface ParticipantView {
     liveRank: number | null;
     reachedTargetAt: Date | null;
   } | null;
-  scores?: Array<{ id: number; score: number; playedAt: Date; createdAt: Date; venueId: number | null; venueName: string | null; venueTimezone: string | null; hasFullPhoto: boolean; hasThumbnail: boolean }>;
+  scores?: Array<{ id: number; score: number; playedAt: Date; createdAt: Date; venueId: number | null; venueName: string | null; venueOwnerUsername: string | null; venueTimezone: string | null; hasFullPhoto: boolean; hasThumbnail: boolean }>;
 }
 
 /** A counter-offer on this challenge, as the challenger (all) or its proposer (their own) sees it. */
@@ -955,6 +962,8 @@ export function buildView(c: ChallengeRow, participants: ParticipantRow[], candi
   const ev = evaluate(c, participants, candidates, now);
   const live = ev.started ? projectedRanks(c.type, ev.states) : new Map<number, number>();
   const me = viewerId == null ? undefined : participants.find(p => p.userId === viewerId)!;
+  // Who's looking, for the residence owner's @handle on score rows (venueOwner.ts); null = admin observer.
+  const viewer: Viewer | undefined = viewerId == null ? { id: 0, role: 'admin' } : me ? { id: me.userId, role: me.user.role } : undefined;
   const phase = phaseOf(c, now);
   const proposer = c.proposedById ? participants.find(p => p.userId === c.proposedById) : undefined;
   return {
@@ -995,7 +1004,11 @@ export function buildView(c: ChallengeRow, participants: ParticipantRow[], candi
       if (includeScores) {
         view.scores = (ev.counting.get(p.userId) ?? [])
           .sort((a, b) => +b.createdAt - +a.createdAt)
-          .map(s => ({ id: s.id, score: s.score, playedAt: s.playedAt, createdAt: s.createdAt, venueId: s.venueId, venueName: s.venueName, venueTimezone: s.venueTimezone, hasFullPhoto: s.hasFullPhoto, hasThumbnail: s.hasThumbnail }));
+          .map(s => ({
+            id: s.id, score: s.score, playedAt: s.playedAt, createdAt: s.createdAt, venueId: s.venueId, venueName: s.venueName,
+            venueOwnerUsername: s.venueOwner ? venueOwnerUsername(s.venueOwner, viewer) : null,
+            venueTimezone: s.venueTimezone, hasFullPhoto: s.hasFullPhoto, hasThumbnail: s.hasThumbnail,
+          }));
       }
       return view;
     }),

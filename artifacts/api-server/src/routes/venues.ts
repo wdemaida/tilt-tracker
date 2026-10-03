@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db, scores, venues, machines, users, challenges } from '@workspace/db';
-import { eq, asc, desc, count, sql, and, max, inArray } from 'drizzle-orm';
+import { eq, asc, desc, count, sql, and, max, inArray, getTableColumns } from 'drizzle-orm';
 import {
   searchPmLocationsByName, searchPmLocationsWithAddress,
   pmLocationUrl, isPmConfigured, PmApiError, type PmLocation,
@@ -27,6 +27,7 @@ import {
   inventoryCountSql, inventoryManagedSql, CatalogUnavailableError,
 } from '../lib/venueInventory.js';
 import { venueListRow, venueDetailView, venueMachinesView } from '../lib/venueView.js';
+import { venueOwnerUsername, ownerUsernameOfVenueSql } from '../lib/venueOwner.js';
 import { findDuplicateVenues } from '../lib/venueDedup.js';
 import {
   buildMergePreview, applyVenueMerge, MERGE_BLOCKER_MESSAGES, MergeRefusedError, MergeStaleError, MergeVenueGoneError,
@@ -91,6 +92,8 @@ router.get('/', async (req, res) => {
         cityLng: venues.cityLng,
         timezone: venues.timezone,
         showMachinesAndScores: venues.showMachinesAndScores,
+        // Raw; venueListRow sends it only per venueOwnerUsername's rule.
+        ownerUsername: ownerUsernameOfVenueSql(venues.ownerId),
         // Counts only scores this requester may see (visibleScoreSql, in the join) — a home venue
         // whose owner turned "Show my machines/scores publicly" off counts only your own there.
         scoreCount: count(scores.id),
@@ -245,11 +248,19 @@ router.get('/exact', requireAppUser, async (req, res) => {
 
   try {
     const rows = await db
-      .select({ id: venues.id, name: venues.name, isResidence: venues.isResidence, privacyTier: venues.privacyTier })
+      .select({
+        id: venues.id, name: venues.name, isResidence: venues.isResidence, privacyTier: venues.privacyTier,
+        ownerId: venues.ownerId, showMachinesAndScores: venues.showMachinesAndScores,
+        ownerUsername: ownerUsernameOfVenueSql(venues.ownerId),
+      })
       .from(venues)
       .where(sql`lower(btrim(${venues.name})) = ${key}`)
       .limit(10);
-    res.json(rows.filter(isPrivateTier).map(r => ({ id: r.id, name: r.name, isPrivate: true as const })));
+    // ownerUsername tells several people's "HOME" apart — under the same rule as everywhere else
+    // (venueOwner.ts), so a home whose owner hid its activity is still just a name here.
+    res.json(rows.filter(isPrivateTier).map(r => ({
+      id: r.id, name: r.name, isPrivate: true as const, ownerUsername: venueOwnerUsername(r, appUser),
+    })));
   } catch (err) {
     console.error('Exact venue lookup error:', err);
     res.status(500).json({ error: 'Failed to look up that venue' });
@@ -448,7 +459,8 @@ router.get('/:id/machines', async (req, res) => {
   const id = Number(req.params.id);
   const { userId: clerkId } = getAuth(req);
   try {
-    const [venue] = await db.select().from(venues).where(eq(venues.id, id)).limit(1);
+    const [venue] = await db.select({ ...getTableColumns(venues), ownerUsername: ownerUsernameOfVenueSql(venues.ownerId) })
+      .from(venues).where(eq(venues.id, id)).limit(1);
     if (!venue) return res.status(404).json({ error: 'Venue not found' });
 
     // Resolve current user (optional — for per-user play counts and privacy redaction)
@@ -589,6 +601,7 @@ router.get('/:id/scores', async (req, res) => {
       createdById: venues.createdById,
       timezone: venues.timezone,
       showMachinesAndScores: venues.showMachinesAndScores,
+      ownerUsername: ownerUsernameOfVenueSql(venues.ownerId),
       inventoryCount: inventoryCountSql.mapWith(Number),
       inventoryManaged: inventoryManagedSql.mapWith(Boolean),
     }).from(venues).where(eq(venues.id, id)).limit(1);

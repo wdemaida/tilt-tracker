@@ -274,6 +274,31 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   Others' private list rows still carry no `latitude`/`longitude` — the centroid reaches them only
   via `mapPoint`. The Venues map and the venue page thumbnail read only this, never score GPS.
   Tests: `src/lib/venueMapPoint.test.ts` (each tier × owner/admin/stranger/signed-out).
+- **`ownerUsername` (added 2026-10-03, `src/lib/venueOwner.ts`)** — several people name their home
+  "HOME", so a private venue carries its owner's username and the client shows "HOME (@collasta)".
+  Sent (string) **only** for a private venue (`isPrivateTier`: residence or restricted tier — never a
+  public one, whose `ownerId` is just whoever typed it in) **and** only when the viewer may see that
+  venue's activity (`canSeeVenueActivity`: switch on, or owner/admin). Switch off → others get null:
+  tying the home to a person would say more than the owner chose to show. A **disabled owner keeps
+  the handle** (users are never deleted, their scores keep their @handle, the profile still
+  resolves). Everything else → null. Where it goes:
+  - venue objects as `ownerUsername`: every `GET /api/venues` row (trimmed others'-private rows
+    included — they're on the Venues page and map), `/api/venues/:id/scores`'s venue,
+    `/api/venues/:id/machines`'s venue, `GET /api/venues/exact` hits, and the challenge-location
+    chips / search hits (`challengeReach.ts`: `PrefVenue`, `ChallengeVenueHit`).
+  - score rows as `venueOwnerUsername`: `GET /api/scores`, `/api/users/:username`,
+    `/api/machines/:name`, and a challenge's counting scores (`buildView`, per viewer; the admin
+    observer counts as admin).
+  - Not needed (and not added): challenge venue locks / venue options (public venues only),
+    recommendation labels (never name a private venue), machine-venues modal (only your own homes
+    are named), upload nearby / venue search (only your own private venues are revealed there).
+  - The raw username is read with `ownerUsernameOfVenueSql(venues.ownerId)` (a scalar subquery — no
+    join, safe under `GROUP BY venues.id`) and filtered by `venueOwnerUsername()` in JS; score rows
+    use the SQL twin `venueOwnerUsernameSql(viewer, scores.venueId)`, built on
+    `visibleVenueActivitySql`. venueView strips the raw value from every payload.
+  - Tests: `src/lib/venueOwner.test.ts` — owner/friend/stranger/admin/guest × every venue kind ×
+    the switch, for the JS rule, all three venue payloads, and the SQL twin run in PGlite (incl. a
+    disabled owner and an ownerless venue).
 - `/api/venues/:id/machines` also sends **`scoredMachines` `[{id, name}]`** (machines scored there,
   per `visibleScoreSql`) **only when `canManageInventory`** — the inventory panel offers the unlisted
   ones as one-click adds (`POST .../inventory {machineId}`: a DB lookup, no Pinball Map call). Never

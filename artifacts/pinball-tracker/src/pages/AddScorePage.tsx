@@ -33,6 +33,7 @@ import type { ChallengeFit } from '../lib/api';
 import { invalidateChallengeQueries } from '../lib/challenges';
 import { BADGES_KEY, type Badge } from '../lib/badges';
 import { markBadgesShown } from '../lib/badgeToasts';
+import VenueName, { clickableRow } from '../components/VenueName';
 import {
   describePhotoLocation, detectPlatform, queryGeoPermission, getCurrentPosition, geoFailureMessage, CurrentPositionError,
   type PhotoLocationInfo, type PhotoSource, type GeoPermission,
@@ -90,6 +91,8 @@ interface SelectedVenue {
   isPrivate?: boolean;
   /** IANA zone. The photo's EXIF wall clock is read in *this*, not the browser's — see below. */
   timezone?: string | null;
+  /** Someone's private venue: its owner's handle, when the server sends it ("HOME (@owner)"). */
+  ownerUsername?: string | null;
 }
 
 interface SavedScore {
@@ -1133,7 +1136,7 @@ export default function AddScorePage() {
    */
   function selectVenueCard(v: {
     id?: number; name: string; address?: string | null; hereId?: string | null; venueLat?: number; venueLng?: number;
-    pinballMapId?: number | null; timezone?: string | null; isPrivate?: boolean;
+    pinballMapId?: number | null; timezone?: string | null; isPrivate?: boolean; ownerUsername?: string | null;
   }) {
     setValue('venueName', v.name);
     setVenueSearch(v.name);
@@ -1147,6 +1150,7 @@ export default function AddScorePage() {
       venueLng: v.venueLng,
       pinballMapId: v.pinballMapId ?? undefined,
       timezone: v.timezone,
+      ownerUsername: v.ownerUsername ?? null,
     });
     setStep(3);
   }
@@ -1386,18 +1390,18 @@ export default function AddScorePage() {
                   {privateMatches.map(p => {
                     const isSelected = selectedVenue?.venueId === p.id;
                     return (
-                      <button
+                      // A div acting as a button (clickableRow): the owner's @handle link can't sit inside a <button>.
+                      <div
                         key={p.id}
-                        type="button"
-                        onClick={() => selectVenueCard({ id: p.id, name: p.name, isPrivate: true })}
-                        className={`text-left px-3 py-2.5 rounded-lg border transition-colors ${isSelected ? 'border-venue/60 bg-venue/10' : 'border-white/10 hover:border-venue/40 hover:bg-white/5'}`}
+                        {...clickableRow(() => selectVenueCard({ id: p.id, name: p.name, isPrivate: true, ownerUsername: p.ownerUsername }))}
+                        className={`text-left cursor-pointer px-3 py-2.5 rounded-lg border transition-colors ${isSelected ? 'border-venue/60 bg-venue/10' : 'border-white/10 hover:border-venue/40 hover:bg-white/5'}`}
                       >
                         <div className="flex items-center gap-2">
                           <Home className={`w-3.5 h-3.5 flex-shrink-0 ${isSelected ? 'text-venue' : 'text-muted-foreground'}`} />
-                          <span className={`text-sm font-bold ${isSelected ? 'text-white' : 'text-white/80'}`}>{p.name}</span>
+                          <VenueName name={p.name} ownerUsername={p.ownerUsername} className={`text-sm font-bold ${isSelected ? 'text-white' : 'text-white/80'}`} />
                           <span className="text-xs text-muted-foreground ml-auto">Private</span>
                         </div>
-                      </button>
+                      </div>
                     );
                   })}
                 </div>
@@ -1419,21 +1423,21 @@ export default function AddScorePage() {
                   {historyToShow.map((v: any) => {
                     const isSelected = selectedVenue?.venueId === v.id;
                     return (
-                      <button
+                      // A div acting as a button (clickableRow): the owner's @handle link can't sit inside a <button>.
+                      <div
                         key={v.id}
-                        type="button"
-                        onClick={() => selectVenueCard(v)}
-                        className={`text-left px-3 py-2.5 rounded-lg border transition-colors ${isSelected ? 'border-venue/60 bg-venue/10' : 'border-white/10 hover:border-venue/40 hover:bg-white/5'}`}
+                        {...clickableRow(() => selectVenueCard(v))}
+                        className={`text-left cursor-pointer px-3 py-2.5 rounded-lg border transition-colors ${isSelected ? 'border-venue/60 bg-venue/10' : 'border-white/10 hover:border-venue/40 hover:bg-white/5'}`}
                       >
                         <div className="flex items-center gap-2">
                           <MapPin className={`w-3.5 h-3.5 flex-shrink-0 ${isSelected ? 'text-venue' : 'text-muted-foreground'}`} />
-                          <span className={`text-sm font-bold ${isSelected ? 'text-white' : 'text-white/80'}`}>{v.name}</span>
+                          <VenueName name={v.name} ownerUsername={v.ownerUsername} className={`text-sm font-bold ${isSelected ? 'text-white' : 'text-white/80'}`} />
                           <TagV />
                           {v.pinballMapId && <TagPM />}
                           <span className="text-xs text-muted-foreground ml-auto">{v.scoreCount} {v.scoreCount === 1 ? 'score' : 'scores'}</span>
                         </div>
                         {v.address && <p className="text-xs text-muted-foreground truncate mt-0.5 pl-5">{v.address}</p>}
-                      </button>
+                      </div>
                     );
                   })}
                 </div>
@@ -1712,7 +1716,9 @@ export default function AddScorePage() {
             {venueName && (
               <div className="flex items-center gap-1.5 mt-1">
                 <MapPin className="w-3 h-3 text-venue flex-shrink-0" />
-                <p className="text-sm text-venue font-medium truncate">{venueName}</p>
+                <p className="text-sm text-venue font-medium truncate">
+                  <VenueName name={venueName} ownerUsername={selectedVenue?.name === venueName ? selectedVenue?.ownerUsername : null} />
+                </p>
               </div>
             )}
           </div>

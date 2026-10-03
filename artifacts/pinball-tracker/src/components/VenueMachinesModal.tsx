@@ -3,9 +3,10 @@ import { X, AlertTriangle, ExternalLink, EyeOff } from 'lucide-react';
 import { format } from 'date-fns';
 import { useApi } from '../lib/useApi';
 import type { VenueInventory } from '../lib/api';
+import VenueName from './VenueName';
 
 interface VenueMachinesData {
-  venue: { id: number; name: string };
+  venue: { id: number; name: string; ownerUsername?: string | null };
   ownMachines: Array<{ id: number; name: string; manufacturer?: string; year?: number; bestScore: number; playCount: number }>;
   pmMachines: Array<{ xrefId: number; id: number; name: string; manufacturer?: string; year?: number }>;
   formerMachines: Array<{ id: number; name: string; manufacturer?: string; year?: number; firstSeenAt: string; removedAt: string }>;
@@ -57,7 +58,7 @@ export default function VenueMachinesModal({ venueId, onClose }: VenueMachinesMo
           <div>
             <p className="text-xs text-muted-foreground uppercase tracking-wider font-bold">Machines at</p>
             <h2 className="text-lg font-black uppercase tracking-wider text-venue leading-tight">
-              {machinesData?.venue.name ?? '...'}
+              {machinesData ? <VenueName name={machinesData.venue.name} ownerUsername={machinesData.venue.ownerUsername} ownerClassName="text-sm" /> : '...'}
             </h2>
           </div>
           <button

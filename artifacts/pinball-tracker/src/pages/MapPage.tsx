@@ -12,6 +12,7 @@ import { ScopeToggle } from '../components/ScopeToggle';
 import { TILE_BASE_URL, TILE_LABELS_URL, TILE_ATTRIBUTION } from '../lib/mapTiles';
 import type { MapPoint } from '../lib/api';
 import { APPROX_RADIUS_M } from '../components/VenueMapThumbnail';
+import VenueName from '../components/VenueName';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 
@@ -63,6 +64,8 @@ interface VenueRow {
   lastPlayedAt?: string | null;
   timezone?: string | null;
   mapPoint: MapPoint | null;
+  /** A private venue's owner, when this viewer may see it — "HOME (@owner)". */
+  ownerUsername?: string | null;
 }
 
 type MapView =
@@ -279,9 +282,14 @@ function VenuePopup({ venue: v }: { venue: VenueRow & { mapPoint: MapPoint } }) 
     <Popup minWidth={220}>
       <div className="px-4 pt-3 pb-3">
         <div className="flex items-center justify-center gap-1.5 mb-1">
-          <Link href={`/venues/${v.id}`} className="font-black uppercase tracking-wider text-venue text-sm hover:text-venue/80 transition-colors leading-tight text-center">
-            {v.name}
-          </Link>
+          {/* text-venue on the link itself: leaflet.css's link color beats an inherited one (index.css). */}
+          <VenueName
+            name={v.name}
+            ownerUsername={v.ownerUsername}
+            href={`/venues/${v.id}`}
+            className="font-black uppercase tracking-wider text-venue text-sm leading-tight text-center"
+            nameClassName="text-venue hover:text-venue/80 transition-colors"
+          />
           {v.isResidence && <Home className="w-3 h-3 text-venue/70 flex-shrink-0" />}
         </div>
         {where && (

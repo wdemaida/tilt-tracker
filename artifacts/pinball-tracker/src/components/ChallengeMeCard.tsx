@@ -13,6 +13,9 @@ import { MachineThumb } from './ChallengeParts';
 import { PinballIcon } from './PinballIcon';
 import DuplicateVenuePrompt, { duplicateCandidates, type DuplicateCandidate } from './DuplicateVenuePrompt';
 import LastResortArea from './LastResortArea';
+import VenueName, { clickableRow } from './VenueName';
+import { useAppUser } from '../lib/useAppUser';
+import { venueLabel } from '../lib/venueLabel';
 import type { ChallengeMeMachine, ChallengePrefs, ChallengePrefVenue, ChallengeVenueHit } from '../lib/api';
 
 // "Challenge me" (feature/challenge-recs).
@@ -30,11 +33,12 @@ import type { ChallengeMeMachine, ChallengePrefs, ChallengePrefVenue, ChallengeV
 const chip = 'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors';
 
 function VenueChip({ v, onRemove, busy }: { v: ChallengePrefVenue; onRemove: () => void; busy: boolean }) {
+  const me = useAppUser();
   return (
     <span className={`${chip} border-venue/40 text-venue`}>
       {v.isHome ? <Home className="w-3 h-3" aria-hidden /> : <MapPin className="w-3 h-3" aria-hidden />}
-      <span className="truncate max-w-[12rem]">{v.name}</span>
-      <button type="button" disabled={busy} onClick={onRemove} aria-label={`Remove ${v.name}`} className="text-muted-foreground hover:text-white disabled:opacity-50">
+      <VenueName name={v.name} ownerUsername={v.ownerUsername} className="truncate max-w-[12rem]" />
+      <button type="button" disabled={busy} onClick={onRemove} aria-label={`Remove ${venueLabel(v.name, v.ownerUsername, me?.username)}`} className="text-muted-foreground hover:text-white disabled:opacity-50">
         <X className="w-3 h-3" />
       </button>
     </span>
@@ -145,15 +149,16 @@ function VenueSearch({ onPick, onPickPlace, at, busy }: {
   const showRecent = open && recentMode && recent.isSuccess;
   const showSearch = open && active;
   const venueRow = (v: ChallengeVenueHit) => (
-    <button key={v.id} type="button" disabled={busy} onClick={() => pick(v.id)}
-      className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/5 disabled:opacity-50">
+    // A div acting as a button (clickableRow): the owner's @handle link can't sit inside a <button>.
+    <div key={v.id} {...clickableRow(() => pick(v.id), { disabled: busy })}
+      className={`w-full flex items-center gap-2 px-3 py-2 text-left cursor-pointer hover:bg-white/5 ${busy ? 'opacity-50 pointer-events-none' : ''}`}>
       {v.isHome ? <Home className="w-3.5 h-3.5 text-venue flex-shrink-0" aria-hidden /> : <MapPin className="w-3.5 h-3.5 text-venue flex-shrink-0" aria-hidden />}
       <span className="min-w-0 flex-1">
-        <span className="block text-sm text-venue truncate">{v.name}</span>
+        <VenueName name={v.name} ownerUsername={v.ownerUsername} className="block text-sm text-venue truncate" />
         {(v.city || v.state) && <span className="block text-[11px] text-muted-foreground truncate">{[v.city, v.state].filter(Boolean).join(', ')}</span>}
       </span>
       <Plus className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" aria-hidden />
-    </button>
+    </div>
   );
   return (
     <div>
@@ -526,12 +531,12 @@ export function ChallengeMeEditor({ where, intro = false }: { where: 'profile' |
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <span className="text-[11px] text-muted-foreground">Suggested:</span>
               {suggestions.map(v => (
-                <button key={v.id} type="button" disabled={busy} onClick={() => addVenue(v.id)}
-                  className={`${chip} border-dashed border-white/20 text-white/75 hover:border-venue/50 disabled:opacity-50`}>
+                <div key={v.id} {...clickableRow(() => addVenue(v.id), { disabled: busy })}
+                  className={`${chip} cursor-pointer border-dashed border-white/20 text-white/75 hover:border-venue/50 ${busy ? 'opacity-50 pointer-events-none' : ''}`}>
                   <Plus className="w-3 h-3" aria-hidden />
                   {v.isHome && <Home className="w-3 h-3" aria-hidden />}
-                  <span className="truncate max-w-[12rem]">{v.name}</span>
-                </button>
+                  <VenueName name={v.name} ownerUsername={v.ownerUsername} className="truncate max-w-[12rem]" />
+                </div>
               ))}
             </div>
           )}
