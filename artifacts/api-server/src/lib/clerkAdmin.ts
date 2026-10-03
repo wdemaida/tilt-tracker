@@ -1,4 +1,5 @@
 import { createClerkClient } from '@clerk/express';
+import { avatarFromClerk } from './profileFields.js';
 
 // Admin-only Clerk Backend API calls: sign-in/activity timestamps for the admin users view, and
 // ban/unban for "disable account". Uses CLERK_SECRET_KEY (already required by clerkMiddleware).
@@ -17,6 +18,9 @@ export interface ClerkAdminBackend {
   listUsers(clerkIds: string[]): Promise<Array<{ id: string; lastSignInAt: number | null; lastActiveAt: number | null; banned: boolean }>>;
   ban(clerkId: string): Promise<void>;
   unban(clerkId: string): Promise<void>;
+  /** One user's profile-photo fields (profileAvatar.ts); null = Clerk has no such user. Optional so
+   *  older test fakes still type-check — absent means "Clerk can't be asked". */
+  getUser?(clerkId: string): Promise<{ id: string; imageUrl: string; hasImage: boolean; updatedAt: number } | null>;
 }
 
 function realBackend(): ClerkAdminBackend | null {
@@ -27,6 +31,15 @@ function realBackend(): ClerkAdminBackend | null {
     async listUsers(ids) {
       const res = await client.users.getUserList({ userId: ids, limit: Math.min(ids.length, 100) });
       return res.data.map(u => ({ id: u.id, lastSignInAt: u.lastSignInAt, lastActiveAt: u.lastActiveAt, banned: u.banned }));
+    },
+    async getUser(id) {
+      try {
+        const u = await client.users.getUser(id);
+        return { id: u.id, imageUrl: u.imageUrl, hasImage: u.hasImage, updatedAt: u.updatedAt };
+      } catch (err: any) {
+        if (err?.status === 404) return null;
+        throw err;
+      }
     },
     async ban(id) { await client.users.banUser(id); },
     async unban(id) { await client.users.unbanUser(id); },
@@ -95,6 +108,25 @@ export async function setClerkBan(clerkId: string, banned: boolean): Promise<{ o
   } catch (err: any) {
     const msg = err?.errors?.[0]?.message ?? err?.message ?? String(err);
     console.error(`[clerk-admin] ${banned ? 'ban' : 'unban'} failed:`, err?.status ?? '', msg);
+    return { ok: false, error: msg };
+  }
+}
+
+/**
+ * The user's own profile photo as Clerk has it now (avatarFromClerk: null when they have none).
+ * `{ ok: false }` when Clerk can't be asked (no key, network/API error) or has no such user — the
+ * caller keeps what it has. Never throws. Used by profileAvatar.ts.
+ */
+export async function getClerkAvatar(clerkId: string): Promise<{ ok: true; imageUrl: string | null } | { ok: false; error: string }> {
+  const b = backend();
+  if (!b?.getUser) return { ok: false, error: 'CLERK_SECRET_KEY is not set' };
+  try {
+    const u = await b.getUser(clerkId);
+    if (!u) return { ok: false, error: 'No such Clerk user' };
+    return { ok: true, imageUrl: avatarFromClerk(u) };
+  } catch (err: any) {
+    const msg = err?.errors?.[0]?.message ?? err?.message ?? String(err);
+    console.error('[clerk-admin] avatar lookup failed:', err?.status ?? '', msg);
     return { ok: false, error: msg };
   }
 }

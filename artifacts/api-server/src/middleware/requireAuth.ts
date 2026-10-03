@@ -21,6 +21,12 @@ export function setAuthForTests(hooks: {
   if (hooks.loadUser) loadUserByClerkId = hooks.loadUser;
 }
 
+/** The caller's Clerk user id (null when signed out), through the same swappable resolver — for
+ *  routes that only vary by viewer, so test scripts can exercise them without Clerk. */
+export function callerClerkId(req: Request): string | null {
+  return resolveClerkId(req) ?? null;
+}
+
 export const ACCOUNT_DISABLED = {
   error: 'This account has been disabled. Contact the TiltTrack admin if you think this is a mistake.',
   code: 'account_disabled',

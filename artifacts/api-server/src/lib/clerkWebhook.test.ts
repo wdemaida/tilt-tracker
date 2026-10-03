@@ -190,3 +190,77 @@ test('an event whose retention tier is set to 0 is acknowledged (200) but not re
   assert.deepEqual(events.map(e => e.type), ['user.signed_up']);
   assert.deepEqual(asked, ['user.signed_in', 'user.signed_up']);
 });
+
+// ── user.updated → profile photo (profileAvatar.ts) ──────────────────────────────────────────────
+
+const userUpdated = (data: Record<string, unknown>) => ({ type: 'user.updated', data: { id: 'user_known', updated_at: 1760000000000, ...data } });
+
+test('user.updated → onUserUpdated with the photo and Clerk’s updated_at; no activity row', async () => {
+  const seen: Array<{ clerkId: string; imageUrl: string | null; at: string }> = [];
+  const { deps, events } = memoryDeps({
+    onUserUpdated: async (clerkId, imageUrl, at) => { seen.push({ clerkId, imageUrl, at: at.toISOString() }); return { applied: true }; },
+  });
+  const h = createClerkWebhookHandler(deps);
+  const s = signed(userUpdated({ has_image: true, image_url: 'https://img.clerk.com/me' }));
+  const r = await call(h, s.raw, s.headers);
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body, { ok: true, avatarApplied: true });
+  assert.deepEqual(seen, [{ clerkId: 'user_known', imageUrl: 'https://img.clerk.com/me', at: new Date(1760000000000).toISOString() }]);
+  assert.equal(events.length, 0);
+});
+
+test('user.updated with Clerk’s default avatar (has_image false) stores null', async () => {
+  const seen: Array<string | null> = [];
+  const { deps } = memoryDeps({ onUserUpdated: async (_c, imageUrl) => { seen.push(imageUrl); return { applied: true }; } });
+  const h = createClerkWebhookHandler(deps);
+  const s = signed(userUpdated({ has_image: false, image_url: 'https://img.clerk.com/default' }));
+  assert.equal((await call(h, s.raw, s.headers)).status, 200);
+  assert.deepEqual(seen, [null]);
+});
+
+test('user.updated that the guard refuses (out of order) is still a 200, so Svix stops retrying', async () => {
+  const { deps } = memoryDeps({ onUserUpdated: async () => ({ applied: false }) });
+  const h = createClerkWebhookHandler(deps);
+  const s = signed(userUpdated({ has_image: true, image_url: 'https://img.clerk.com/old' }));
+  const r = await call(h, s.raw, s.headers);
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body, { ok: true, avatarApplied: false });
+});
+
+test('user.updated: a DB failure answers 500 so Svix retries', async () => {
+  const { deps } = memoryDeps({ onUserUpdated: async () => { throw new Error('db down'); } });
+  const h = createClerkWebhookHandler(deps);
+  const s = signed(userUpdated({ has_image: true, image_url: 'https://img.clerk.com/me' }));
+  const orig = console.error;
+  console.error = () => {};
+  try {
+    assert.equal((await call(h, s.raw, s.headers)).status, 500);
+  } finally {
+    console.error = orig;
+  }
+});
+
+test('user.updated without a handler or a user id is acknowledged and ignored; a bad signature is still 400', async () => {
+  const { deps } = memoryDeps();
+  const h = createClerkWebhookHandler(deps);
+  const s = signed(userUpdated({ has_image: true, image_url: 'https://img.clerk.com/me' }));
+  assert.deepEqual((await call(h, s.raw, s.headers)).body, { ok: true, ignored: 'user.updated' });
+
+  let called = 0;
+  const h2 = createClerkWebhookHandler(memoryDeps({ onUserUpdated: async () => { called++; return { applied: true }; } }).deps);
+  const noId = signed({ type: 'user.updated', data: { has_image: true, image_url: 'https://img.clerk.com/me' } });
+  assert.deepEqual((await call(h2, noId.raw, noId.headers)).body, { ok: true, ignored: 'user.updated' });
+  const bad = signed(userUpdated({ has_image: true, image_url: 'https://img.clerk.com/me' }), { secret: `whsec_${Buffer.from('another-secret-0123456789abcdef').toString('base64')}` });
+  assert.equal((await call(h2, bad.raw, bad.headers)).status, 400);
+  assert.equal(called, 0);
+});
+
+test('user.updated without updated_at falls back to now', async () => {
+  let at: Date | null = null;
+  const { deps } = memoryDeps({ onUserUpdated: async (_c, _u, a) => { at = a; return { applied: true }; } });
+  const h = createClerkWebhookHandler(deps);
+  const before = Date.now();
+  const s = signed({ type: 'user.updated', data: { id: 'user_known', has_image: false } });
+  await call(h, s.raw, s.headers);
+  assert.ok(at && (at as Date).getTime() >= before);
+});

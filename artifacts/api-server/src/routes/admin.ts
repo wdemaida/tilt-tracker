@@ -8,6 +8,7 @@ import { getCatalogStatus } from '../lib/pinballMap.js';
 import { pmClient } from '../lib/pmClient.js';
 import { captureStatSnapshot } from '../lib/statSnapshot.js';
 import { logActivity, fromReq } from '../lib/activity.js';
+import { normalizeDisplayName } from '../lib/profileFields.js';
 import adminAreaRouter from './adminArea.js';
 import adminBadgesRouter from './adminBadges.js';
 import adminContentRouter from './adminContent.js';
@@ -28,7 +29,12 @@ router.patch('/users/:id', async (req, res) => {
 
   const updates: Record<string, any> = {};
   if (role) updates.role = role;
-  if (displayName !== undefined) updates.displayName = displayName.trim();
+  if (displayName !== undefined) {
+    // The same rules as setup and PATCH /api/users/me — this used to save a blank name.
+    const name = normalizeDisplayName(displayName);
+    if (!name.ok) return void res.status(400).json({ error: name.error, code: name.code, field: 'displayName' });
+    updates.displayName = name.value;
+  }
   if (username !== undefined) updates.username = username.trim();
 
   if (Object.keys(updates).length === 0) return void res.status(400).json({ error: 'Nothing to update' });

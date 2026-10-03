@@ -9,7 +9,7 @@ import { useApi } from '../lib/useApi';
 import { queryClient } from '../lib/queryClient';
 
 const schema = z.object({
-  displayName: z.string().min(1, 'Required'),
+  displayName: z.string().trim().min(1, 'Required').max(40, '40 characters max').refine(s => !s.startsWith('@'), "Can't start with @ — that's for usernames"),
   username: z.string().min(2).regex(/^[a-zA-Z0-9_]+$/, 'Letters, numbers, and underscores only'),
 });
 

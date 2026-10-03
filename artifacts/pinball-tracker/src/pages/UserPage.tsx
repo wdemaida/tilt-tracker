@@ -1,7 +1,11 @@
+import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useAuth } from '@clerk/clerk-react';
+import { useAuth, useUser } from '@clerk/clerk-react';
 import { useParams, Link } from 'wouter';
-import { User, MapPin, Clock, Home } from 'lucide-react';
+import { MapPin, Clock, Home, Pencil } from 'lucide-react';
+import { useAppUser } from '../lib/useAppUser';
+import UserAvatar from '../components/UserAvatar';
+import ProfileEditForm from '../components/ProfileEditForm';
 import { formatScoreTime, zoneAbbreviation } from '../lib/scoreTime';
 import { useApi } from '../lib/useApi';
 import { usePodMembership } from '../lib/myPods';
@@ -36,32 +40,62 @@ export default function UserPage() {
     retry: false,
   });
 
+  const me = useAppUser();
+  const { user: clerkUser } = useUser();
+  const [editing, setEditing] = useState(false);
+  // Navigating from your profile to someone else's must not carry the open form along.
+  useEffect(() => setEditing(false), [username]);
+
   if (isLoading) return <p className="text-muted-foreground">Loading...</p>;
   if (!data) return <p className="text-muted-foreground">User not found.</p>;
 
   const { user, scores } = data;
 
+  // Your own profile: the photo comes live from Clerk (an upload shows at once; Clerk's generated
+  // default — hasImage false — is never shown). Anyone else's: the server's imageUrl, which it only
+  // sends to signed-in viewers.
+  const isSelf = !!me && me.username === user.username;
+  const imageUrl = isSelf && clerkUser ? (clerkUser.hasImage ? clerkUser.imageUrl : null) : (user.imageUrl ?? null);
+
   return (
     <div>
-      <div className="flex flex-wrap items-center gap-4 mb-8">
-        <div className="w-14 h-14 rounded-full bg-card border border-white/10 flex items-center justify-center">
-          <User className="w-7 h-7 text-muted-foreground" />
+      {/* Phone: identity → (edit form) → badges → actions, stacked. md+: badges right-justified in a
+          second column beside the name, spanning the identity and actions rows. */}
+      <header className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto] gap-x-6 gap-y-3 mb-8">
+        <div className="flex items-center gap-4 min-w-0 md:col-start-1">
+          <UserAvatar imageUrl={imageUrl} size="lg" />
+          <div className="min-w-0">
+            <div className="flex items-start gap-2">
+              <h1 className="text-2xl sm:text-3xl font-black uppercase tracking-wide sm:tracking-widest text-white [overflow-wrap:anywhere]">{user.displayName}</h1>
+              {isSelf && !editing && (
+                <button type="button" onClick={() => setEditing(true)} aria-label="Edit your profile" title="Edit your name and photo"
+                  className="mt-1 p-1.5 rounded text-muted-foreground hover:text-white hover:bg-white/5 transition-colors flex-shrink-0">
+                  <Pencil className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+            <p className="text-sm text-muted-foreground flex items-center gap-1.5 flex-wrap">
+              <span className="text-username">@{user.username}</span>
+              <PodMemberIcons pods={podMembership.get(user.username)} />
+              <span>· {scores.length} scores</span>
+            </p>
+          </div>
         </div>
-        <div className="min-w-0">
-          <h1 className="text-2xl sm:text-3xl font-black uppercase tracking-wide sm:tracking-widest text-white [overflow-wrap:anywhere]">{user.displayName}</h1>
-          <p className="text-sm text-muted-foreground flex items-center gap-1.5 flex-wrap">
-            <span className="text-username">@{user.username}</span>
-            <PodMemberIcons pods={podMembership.get(user.username)} />
-            <span>· {scores.length} scores</span>
-          </p>
-        </div>
+        {isSelf && editing && (
+          <div className="md:col-start-1">
+            <ProfileEditForm displayName={user.displayName} onDone={() => setEditing(false)} />
+          </div>
+        )}
+        {/* Public — anyone who can see the profile sees the badges. */}
+        <BadgeShelf username={user.username} variant="header"
+          className="md:col-start-2 md:row-start-1 md:row-span-2 md:justify-self-end md:max-w-[22rem]" />
         {friendship && friendship.relationship !== 'self' && (
-          <div className="sm:ml-auto flex flex-wrap items-center gap-2">
+          <div className="md:col-start-1 flex flex-wrap items-center gap-2">
             <FriendButton userId={friendship.user.id} name={friendship.user.displayName} relationship={friendship.relationship} />
             {friendship.relationship === 'friends' && <ChallengeLink friend={friendship.user.username} />}
           </div>
         )}
-      </div>
+      </header>
 
       {/* Signed-in only; hidden until they've finished a challenge. */}
       {isSignedIn && friendship && (
@@ -74,9 +108,6 @@ export default function UserPage() {
       {isSignedIn && friendship?.relationship === 'friends' && data.challengeMe && (
         <ChallengeMeChips username={user.username} machines={data.challengeMe} />
       )}
-
-      {/* Public — anyone who can see the profile sees the badges. */}
-      <BadgeShelf username={user.username} />
 
       <div className="flex flex-col gap-3">
         {scores.map((s: any) => {

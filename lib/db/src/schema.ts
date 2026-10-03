@@ -28,6 +28,12 @@ export const users = pgTable('users', {
   // When "Challenge locations" were first seeded from this user's history (migrate22). Seeding runs
   // once: after that a removed venue stays removed, and new candidates are only suggested.
   challengeVenuesSeededAt: timestamp('challenge_venues_seeded_at', { withTimezone: true }),
+  // Profile photo (migrate30). Uploaded to and hosted by Clerk; this is Clerk's URL, null when the
+  // user has no photo of their own (Clerk's default avatar is never stored). image_synced_at = the
+  // Clerk state instant image_url reflects (a webhook's updated_at, or when we last read Clerk) —
+  // the out-of-order guard and the 24 h lazy resync both key on it. See src/lib/profileAvatar.ts.
+  imageUrl: text('image_url'),
+  imageSyncedAt: timestamp('image_synced_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 });
 

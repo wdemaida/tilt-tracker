@@ -3,6 +3,7 @@ import { Link } from 'wouter';
 import { useClerk, useUser } from '@clerk/clerk-react';
 import { LogOut, Settings, ShieldCheck, UserRound } from 'lucide-react';
 import { useAppUser } from '../lib/useAppUser';
+import UserAvatar from './UserAvatar';
 import { CREW, STATS, badgeText, useCrewBadgeCount, type NavIcon } from './nav';
 
 // The avatar opens the personal menu: your profile, Crew, Admin, and account/sign-out. Replaces
@@ -34,6 +35,10 @@ export default function AvatarMenu() {
   const crewBadge = useCrewBadgeCount();
   const isAdmin = appUser?.role === 'admin';
   const name = appUser?.displayName ?? user?.fullName ?? user?.username ?? 'Account';
+  // Your own photo, live from Clerk (so an upload shows at once) — but only one you uploaded:
+  // `hasImage` false means Clerk's generated default, which TiltTrack doesn't show (the profile's
+  // stored imageUrl follows the same rule). Before Clerk has loaded, the stored one.
+  const imageUrl = user ? (user.hasImage ? user.imageUrl : null) : (appUser?.imageUrl ?? null);
 
   return (
     <DropdownMenu.Root modal={false}>
@@ -41,13 +46,8 @@ export default function AvatarMenu() {
         aria-label={crewBadge ? `Account menu, ${crewBadge} waiting on you in Crew` : 'Account menu'}
         className="relative flex items-center justify-center w-10 h-10 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-primary"
       >
-        {user?.imageUrl ? (
-          <img src={user.imageUrl} alt="" className="w-8 h-8 rounded-full object-cover border border-white/15" />
-        ) : (
-          <span className="w-8 h-8 rounded-full bg-white/10 border border-white/15 flex items-center justify-center">
-            <UserRound className="w-4 h-4 text-white" aria-hidden />
-          </span>
-        )}
+        <UserAvatar imageUrl={imageUrl} size="sm" />
+
         {crewBadge > 0 && (
           <span className="absolute top-0.5 right-0.5 w-2.5 h-2.5 rounded-full bg-friend ring-2 ring-background" aria-hidden />
         )}

@@ -228,6 +228,7 @@ const TYPE_TEXT: Record<string, string> = {
   'challenge.counter_accepted': 'took a suggested machine from',
   'challenge.counter_rejected': 'turned down a suggested machine from',
   'profile.challenge_prefs_updated': 'changed their challenge preferences',
+  'profile.updated': 'edited their profile',
   'notification.sent': 'Notification sent to',
   'pm.connected': 'connected their Pinball Map account',
   'pm.score_posted': 'posted a score to Pinball Map',
@@ -326,6 +327,10 @@ function detail(ev: ActivityEvent): string | null {
       return [p.challengeType, p.machineName, p.counteredFromId ? `counter to #${p.counteredFromId}` : null].filter(Boolean).join(' · ') || null;
     case 'profile.challenge_prefs_updated':
       return [typeof p.machineCount === 'number' ? `${p.machineCount} machines` : null, typeof p.venueCount === 'number' ? `${p.venueCount} locations` : null].filter(Boolean).join(' · ') || null;
+    case 'profile.updated':
+      if (p.before?.displayName && p.after?.displayName) return `“${p.before.displayName}” → “${p.after.displayName}”`;
+      if (Array.isArray(p.fields) && p.fields.includes('photo')) return p.hasPhoto ? 'new photo' : 'removed photo';
+      return null;
     case 'pod.created': case 'pod.deleted': case 'pod.member_added': case 'pod.member_removed':
       return p.name ?? null;
     case 'pod.updated': return p.renamedFrom ? `“${p.renamedFrom}” → “${p.name}”` : p.color ? `color ${p.color}` : null;
