@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'wouter';
-import { ArrowLeft, Pencil, UserX, UserCheck, BellOff, X } from 'lucide-react';
+import { ArrowLeft, Pencil, UserX, UserCheck, BellOff, Megaphone, X } from 'lucide-react';
 import { useAdminApi, type AdminUserDetail } from '../lib/adminApi';
 import { useAppUser } from '../lib/useAppUser';
 import UsernameLink from '../components/UsernameLink';
@@ -139,6 +139,12 @@ export default function AdminUserPage() {
                   <button type="button" onClick={() => setDialog('disable')} disabled={isSelf || u.role === 'admin'}
                     title={isSelf ? 'You can’t disable yourself' : u.role === 'admin' ? 'Admins can’t be disabled — remove the role first' : undefined}
                     className={`${btn} border-red-500/30 text-red-400 hover:bg-red-500/10 disabled:opacity-40 disabled:hover:bg-transparent`}><UserX className="w-3.5 h-3.5" /> Disable</button>
+                )}
+                {u.disabledAt ? (
+                  <button type="button" disabled title="Disabled accounts don’t receive notifications"
+                    className={`${btn} border-white/15 text-muted-foreground disabled:opacity-40`}><Megaphone className="w-3.5 h-3.5" /> Send notification</button>
+                ) : (
+                  <Link href={`/admin/announcements?to=${u.id}`} className={`${btn} border-primary/30 text-primary hover:bg-primary/10`}><Megaphone className="w-3.5 h-3.5" /> Send notification</Link>
                 )}
                 <button type="button" onClick={() => setDialog('clear')} disabled={!data.counts.notifications}
                   className={`${btn} border-white/15 text-muted-foreground hover:text-white disabled:opacity-40`}><BellOff className="w-3.5 h-3.5" /> Clear notifications</button>

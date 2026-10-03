@@ -692,3 +692,22 @@
   it. No tooltip library — Radix Tooltip deliberately never opens on touch. Positioning is
   `useAnchoredTip` (portal + fixed, above else below, clamped to the viewport), copied from
   `BadgeShelf`'s `ShelfTile`, which still has its own inline copy and can switch to the hook.
+
+## Admin announcements (`pages/AdminAnnouncementsPage.tsx`, `components/NotificationRow.tsx`, `lib/internalPath.ts`, 2026-10-03)
+- `/admin/announcements` ("Announce" tab): title/message with counters, an optional link (quick picks
+  `/crew?tab=challenges`, `/users/{username}`, …), audience *All active users* / *Pick users* (searches
+  `admin.users(q)`; disabled users can't be picked), a live preview, then **Review & send** →
+  `previewAnnouncement` → `ConfirmDialog` "Send to N users?" (sample, skipped, duplicate warning) →
+  `sendAnnouncement` with `confirmCount` and a `requestId` that stays the same until a send succeeds
+  (so a retried submit is refused as a duplicate, not sent twice). Below: sent history with live
+  in-inbox/unread counts and **Retract**. `?to=<userId>` pre-picks a user — the "Send notification"
+  button on `/admin/users/:id` (disabled for disabled accounts). Server rules: api-server CLAUDE.md,
+  "Admin announcements".
+- The inbox row is `components/NotificationRow.tsx` now (`describe()` + the row, moved out of
+  `NotificationsPage.tsx`), with a `preview` prop (no link) for the composer. An `announcement` renders
+  with a Megaphone, "TiltTrack", bold title and the body as plain text (`whitespace-pre-line`) — never
+  HTML — and links only when `isInternalPath(link)` passes (`lib/internalPath.ts`, the twin of the
+  server's validator; `internalPath.test.ts` cross-checks the two: run it with the api-server's tsx,
+  `../api-server/node_modules/.bin/tsx --test src/lib/internalPath.test.ts`).
+- Toasts: `lib/badgeToasts.tsx` toasts `announcement` too ("New from TiltTrack" + the title, linking to
+  `/notifications`; more than 3 at once → one summary toast).

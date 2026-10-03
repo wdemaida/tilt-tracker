@@ -27,6 +27,7 @@ import NotFoundPage from './pages/NotFoundPage';
 import AdminPage from './pages/AdminPage';
 import AdminHealthPage from './pages/AdminHealthPage';
 import AdminConfigPage from './pages/AdminConfigPage';
+import AdminAnnouncementsPage from './pages/AdminAnnouncementsPage';
 import AdminUsersPage from './pages/AdminUsersPage';
 import AdminUserPage from './pages/AdminUserPage';
 import AdminActivityPage from './pages/AdminActivityPage';
@@ -200,6 +201,9 @@ export default function App() {
         </Route>
         <Route path="/admin/badges">
           <AdminGate><AdminBadgesPage /></AdminGate>
+        </Route>
+        <Route path="/admin/announcements">
+          <AdminGate><AdminAnnouncementsPage /></AdminGate>
         </Route>
         <Route path="/admin/health">
           <AdminGate><AdminHealthPage /></AdminGate>

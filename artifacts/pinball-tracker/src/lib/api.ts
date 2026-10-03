@@ -84,8 +84,13 @@ export interface AppNotification {
     | 'challenge_opponent_scored' | 'challenge_ending_soon' | 'challenge_result' | 'challenge_voided'
     | 'challenge_countered' | 'challenge_counter_accepted' | 'challenge_counter_rejected' | 'challenge_moved'
     | 'challenge_started' | 'challenge_missed'
+    | 'badge_earned' | 'announcement'
     | (string & {});
-  /** Challenge kinds add challengeId, challengeType, machineName (+ score / outcome / void per kind). */
+  /**
+   * Challenge kinds add challengeId, challengeType, machineName (+ score / outcome / void per kind).
+   * 'announcement' (from an admin, signed TiltTrack): announcementId, title, body (plain text), link
+   * (an in-app path or null — check it with isInternalPath before linking), from.
+   */
   payload: {
     userId?: number; username?: string; displayName?: string;
     challengeId?: number; challengeType?: string; machineName?: string;

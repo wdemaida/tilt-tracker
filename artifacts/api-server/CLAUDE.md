@@ -1520,3 +1520,48 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   src/lib/profileAvatar.test.ts src/lib/clerkWebhook.test.ts` (the guarded UPDATE runs on PGlite);
   `npx tsx test-profile.ts` (dev branch only, needs migrate30 there — real users/admin/webhook routers,
   Clerk faked; throwaway `zz-profile-test-*` users and their events deleted at the end).
+
+## Admin announcements (`src/lib/announcements.ts`, `routes/adminAnnouncements.ts`, 2026-10-03)
+- **What:** an admin sends a short plain-text notice, signed "TiltTrack" (no sender identity), to every
+  active user or to picked users (≤ 200). In-app only — no email or push. **No migration:** each
+  recipient gets one `notifications` row of kind `announcement` (payload `{announcementId (uuid), title,
+  body, link, from: 'TiltTrack'}`) via `raiseNotificationsBulk(tx, 'announcement', items,
+  'announcementId')`, which also writes the usual `notification.sent` per recipient. The durable record
+  is **`admin.announcement_sent`** (admin tier — forever by default): `targetType 'announcement'`,
+  `targetId` = announcementId, payload title/body/link/audience/`audienceKey`/recipientCount/first 50
+  `userIds`/skippedCount/`requestId`. Retract = **`admin.announcement_retracted`** (`removed`).
+- **Routes** (inside the guarded admin router; `adminAuth.test.ts` walks it):
+  `GET /announcements/limits` (no DB); `POST /announcements/preview {title, body, link, audience,
+  userIds?}` → `{normalized, audience, recipientCount, sample (10 user refs), skipped, duplicateOf}`, no
+  writes; `POST /announcements {…, confirmCount, requestId, allowDuplicate?}` → 201 `{announcementId,
+  sent, skipped}`; `GET /announcements?before=` (keyset on the event id) with **live** `delivered` /
+  `unread` (notifications grouped by `payload->>'announcementId'` — approximate: read rows are pruned
+  after 30 days and players can Clear all; no payload index, a scan of `notifications` filtered by kind,
+  fine at today's size) and `retractedAt`; `DELETE /announcements/:announcementId` deletes every
+  remaining row (read or not), 404 for an id never sent.
+- **Send rules** (`sendAnnouncement`, one transaction): `pg_advisory_xact_lock` per admin (a double
+  submit can't slip between the checks and the insert) → recipients re-resolved → **409
+  `recipient_count_changed`** if not `confirmCount` (the count the admin confirmed in the preview) →
+  **409 `duplicate_send`** for the same `requestId` (always) or the same title + body + audience within
+  10 min (unless `allowDuplicate: true`) → bulk insert + event. 400 `invalid_announcement` (per-field
+  `errors`), `invalid_audience`, `too_many_recipients`, `no_recipients`, `confirm_required`; **429
+  `rate_limited`** after 10 sends/hour/admin (in-process `createRateLimiter`, counted on every send
+  attempt past validation). Edit-after-send doesn't exist; retract does.
+- **Security:** text is normalised (NFC, CRLF → LF, control and bidi/zero-width characters stripped,
+  title one line ≤ 80, body ≤ 500 with 3+ newlines → 2) and only ever rendered as React text.
+  **The link is an in-app path** (`validateInternalPath`): exactly one leading `/`, no `//`, no `\`,
+  no whitespace or control characters (browsers drop tabs/newlines, turning `/<tab>/evil` into
+  `//evil`), no `%2f` / `%5c` / `%2e` / encoded controls, no `.`/`..` segments, not `/api`, first segment in
+  `LINK_ROOTS` (`/`, users, venues, machines, crew, challenges, badges, stats, add, welcome,
+  notifications — every one a route in App.tsx; admin/setup/sign-in deliberately absent), and it must
+  resolve to the same origin. `{username}` is the only placeholder, substituted per recipient
+  (URL-encoded). The frontend re-checks with its twin `lib/internalPath.ts` before linking.
+  **Disabled users never receive one:** 'all' = `disabled_at IS NULL`; picked disabled/unknown ids are
+  returned in `skipped`; both go through the pure `selectRecipients()`. The sender is included in 'all'.
+- If the admin activity tier is set to 0 (off), sends still deliver but leave no history and the
+  duplicate check can't see them.
+- Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/announcements.test.ts
+  src/lib/adminAuth.test.ts` (normalisation, the link validator's open-redirect / `javascript:` /
+  protocol-relative / encoded / whitespace cases, audience parsing, recipient selection, payloads).
+  No dev-DB script yet — the transaction (lock, count check, duplicate check, bulk insert) is
+  unverified against a real database.
