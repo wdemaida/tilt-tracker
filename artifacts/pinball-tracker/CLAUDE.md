@@ -156,6 +156,24 @@
 - **Every read in `api.ts` now sends the token when signed in** (not just the `mine` variants),
   and UserPage/MachinePage use `useApi()` — what a score listing contains depends on who's asking.
 
+## Machines page "X Venues" pill (`components/MachineVenuesModal.tsx`, added 2026-10-02)
+- Each machine row shows a `bg-venue/10 border-venue/30` pill when `venueCount > 0` (from
+  `GET /api/machines`). It ignores the Mine toggle. Its `onClick` calls `stopPropagation` so the
+  row's navigation doesn't fire. It opens `MachineVenuesModal` (`api.machines.venues(id)`, query
+  `['machine-venues', id]`).
+- The modal has two sections:
+  - **On the floor**: rows link to `/venues/:id`, with a "Home" chip on your own private venues and a
+    "+N private collections" line. Others' homes are never named; the server only sends a count.
+  - **Formerly here**: public venues, with "left MMM yyyy".
+- It also has a state select, which shows when there are 2+ states, and Pinball Map attribution.
+  Per-venue CC BY-SA links stay on each venue's own page.
+- The state filter is `parseState()`, moved to `src/lib/venueState.ts` and shared with VenuesPage.
+  It always runs on the address the server sent (already redacted), so a hidden-tier home can never
+  match a state. The private count has no location, so it shows only under "All states".
+- No "see every location on Pinball Map" link: its URL form couldn't be confirmed (see api-server
+  CLAUDE.md, "Machine venues").
+- Tests: `npx tsx --test src/lib/venueState.test.ts`.
+
 ## Duplicate venues
 - `POST /api/venues` answers **409 `duplicate_venue`** with `candidates` when a venue of the same
   normalized name already exists within 250m (`src/lib/venueDedup.ts` on the api-server). Both

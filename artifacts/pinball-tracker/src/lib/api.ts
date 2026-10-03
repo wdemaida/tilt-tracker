@@ -29,6 +29,19 @@ export interface VenueInventory {
   former: Array<{ id: number; name: string; manufacturer: string | null; year: number | null; addedAt: string; removedAt: string }>;
 }
 
+/**
+ * `GET /api/machines/:id/venues` — where a machine is on the floor now, and where it used to be.
+ * Others' private venues are never named: they only add to `privateCount`. `home` = your own.
+ */
+export interface MachineVenues {
+  machine: { id: number; name: string };
+  onFloor: Array<{ id: number; name: string; address: string | null; home: boolean }>;
+  privateCount: number;
+  formerly: Array<{ id: number; name: string; address: string | null; removedAt: string }>;
+  /** onFloor.length + privateCount — the Machines page pill's number. */
+  venueCount: number;
+}
+
 /** A user as the pod member picker / member list shows them — public profile fields only. */
 export interface PodUser {
   id: number;
@@ -405,6 +418,9 @@ export function createApi(getToken: () => Promise<string | null>) {
       // '?friends=1[&others=1]'). A pod scope 404s `pod_not_found` unless the pod is the caller's own.
       get: async (name: string, scopeQuery = '') =>
         request<any>(`/machines/${encodeURIComponent(name)}${scopeQuery}`, undefined, await tok()),
+      // Venues holding the machine (cached rosters + inventories only — no Pinball Map call).
+      venues: async (id: number) =>
+        request<MachineVenues>(`/machines/${id}/venues`, undefined, await tok()),
       search: (q: string) => request<any[]>(`/machines/search?q=${encodeURIComponent(q)}`),
       // Count + median of recorded scores — drives the "may be missing digits" check on AddScorePage.
       scoreStats: (name: string) =>
