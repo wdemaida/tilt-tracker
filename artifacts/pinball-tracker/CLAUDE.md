@@ -178,6 +178,17 @@
   "Formerly here". AddScorePage offers a venue's inventory as machine suggestions.
   An empty list shows a **"Not set up"** badge, not "0"; owner/admin also get **"Scored here, not
   listed"** chips (server `scoredMachines`) that add by `machineId` in one click — never automatic.
+- **Listing machines after creating a home** (2026-10-03): homes are only created mid-score (Add Score
+  step 2's add-a-venue form, `ScoreVenuePicker` in the edit dialog), so the optional step lives on
+  the venue page, not in those flows. `HomeInventoryPrompt` ("List the machines at <home>") shows on
+  step 4 when the score landed on the home just created, and in the edit dialog after the picker
+  created + attached one (`onAttached`'s `createdHome`; the link closes the dialog). It links to
+  `/venues/:id?setup-inventory=1`: VenuePage holds the flag for that venue, strips the param
+  (`replace`, like UserPage's `?setup=1`) and passes `setup` to `VenueInventoryPanel` — heading "What
+  machines do you have here?", copy that follows the show-publicly switch, scroll + focus on the
+  search, and one button, **Skip for now** (nothing listed) / **Done**. Owner/admin only (`canManage`).
+  It reuses the panel's own picker and its one-at-a-time `POST .../inventory`; the score just logged
+  appears as a "Scored here, not listed" chip, still not added automatically.
 - **Venues map + venue thumbnail (back on 2026-10-03, `MAP_VIEW_ENABLED` in `lib/mapView.ts`)**: both
   draw only the server's public `mapPoint` — never score GPS, never `latitude`/`longitude`, and the
   owner/admin get the same point as everyone. `approximate` (city_state home) → a dashed circle at

@@ -9,8 +9,12 @@ interface Props {
   scoreId: number;
   /** The name the score was logged under, if any — worth showing as a hint for what to search. */
   venueNameSnapshot: string | null;
-  /** Fired once the score has a venue, so the caller can swap in the linkage/repair UI. */
-  onAttached: (venue: { id: number; name: string; timezone?: string | null }) => void;
+  /**
+   * Fired once the score has a venue, so the caller can swap in the linkage/repair UI. `createdHome`
+   * is true when the venue is a home venue the user just created here (the caller can then offer
+   * HomeInventoryPrompt).
+   */
+  onAttached: (venue: { id: number; name: string; timezone?: string | null; createdHome?: boolean }) => void;
 }
 
 // Attaches a venue to a score that never got one — either because the upload flow's "Skip — no
@@ -50,7 +54,7 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
   });
 
   const attach = useMutation({
-    mutationFn: (venue: { id: number; name: string; timezone?: string | null }) =>
+    mutationFn: (venue: { id: number; name: string; timezone?: string | null; createdHome?: boolean }) =>
       api.scores.patch(scoreId, { venueId: venue.id }).then(() => venue),
     onSuccess: venue => {
       queryClient.invalidateQueries({ queryKey: ['scores'] });
@@ -72,7 +76,10 @@ export default function ScoreVenuePicker({ scoreId, venueNameSnapshot, onAttache
       }),
     // Creating and attaching are two requests; only the second one decides whether the score is
     // fixed, so chain rather than reporting success off the create.
-    onSuccess: (venue: any) => { setDuplicates(null); attach.mutate({ id: venue.id, name: venue.name, timezone: venue.timezone }); },
+    onSuccess: (venue: any) => {
+      setDuplicates(null);
+      attach.mutate({ id: venue.id, name: venue.name, timezone: venue.timezone, createdHome: !!venue.isResidence });
+    },
     onError: (e: any) => {
       const candidates = duplicateCandidates(e);
       if (candidates) {

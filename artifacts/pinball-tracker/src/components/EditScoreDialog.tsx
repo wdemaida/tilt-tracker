@@ -8,6 +8,7 @@ import { invalidateChallengeQueries } from '../lib/challenges';
 import type { ChallengeFit } from '../lib/api';
 import ScoreRepairSection from './ScoreRepairSection';
 import ScoreVenuePicker from './ScoreVenuePicker';
+import HomeInventoryPrompt from './HomeInventoryPrompt';
 import { FullPhotoUploadButton } from './FullPhotoUpload';
 import ChallengeFitSummary from './ChallengeFitSummary';
 import { toLocalInput, localInputToIso, formatWallClock } from '../lib/datetime';
@@ -72,6 +73,8 @@ export default function EditScoreDialog({ score, onClose, onSaved }: {
   const [editMachineSearch, setEditMachineSearch] = useState('');
   /** Set after a save that reported challenges: the dialog shows the summary instead of the form. */
   const [saved, setSaved] = useState<EditScoreSaved | null>(null);
+  /** A home venue just created (and attached) through ScoreVenuePicker — offer to list its machines. */
+  const [newHome, setNewHome] = useState<{ id: number; name: string } | null>(null);
 
   function load(s: EditScoreTarget) {
     setEditScore(s);
@@ -136,6 +139,7 @@ export default function EditScoreDialog({ score, onClose, onSaved }: {
 
   useEffect(() => {
     setSaved(null);
+    setNewHome(null);
     patchMutation.reset();
     if (score) load(score);
     else setEditScore(null);
@@ -182,6 +186,9 @@ export default function EditScoreDialog({ score, onClose, onSaved }: {
                 playedAtSource={saved.playedAtSource}
                 onEditPlayedTime={editScore && !playedAtReadOnly ? () => { load(editScore); setSaved(null); } : undefined}
               />
+              {newHome && saved.venueId === newHome.id && (
+                <HomeInventoryPrompt venueId={newHome.id} venueName={newHome.name} onNavigate={onClose} />
+              )}
               <Dialog.Close className="w-full py-2.5 rounded-lg bg-primary text-white font-bold text-sm hover:opacity-90 transition-opacity">
                 Done
               </Dialog.Close>
@@ -289,15 +296,23 @@ export default function EditScoreDialog({ score, onClose, onSaved }: {
               <div className="flex flex-col gap-1.5">
                 <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Venue</span>
                 {editScore.venueId != null ? (
-                  <ScoreRepairSection
-                    scoreId={editScore.id}
-                    onMachineRepaired={name => setEditMachineSearch(name)}
-                  />
+                  <>
+                    <ScoreRepairSection
+                      scoreId={editScore.id}
+                      onMachineRepaired={name => setEditMachineSearch(name)}
+                    />
+                    {/* The venue is already attached (the picker applies straight away), so leaving
+                        for the venue page loses only this dialog's unsaved fields. */}
+                    {newHome && editScore.venueId === newHome.id && (
+                      <HomeInventoryPrompt venueId={newHome.id} venueName={newHome.name} onNavigate={onClose} />
+                    )}
+                  </>
                 ) : (
                   <ScoreVenuePicker
                     scoreId={editScore.id}
                     venueNameSnapshot={editScore.venueName}
                     onAttached={venue => {
+                      if (venue.createdHome) setNewHome({ id: venue.id, name: venue.name });
                       setEditScore(prev => (prev
                         ? { ...prev, venueId: venue.id, venueName: venue.name, venueTimezone: venue.timezone ?? null }
                         : prev));

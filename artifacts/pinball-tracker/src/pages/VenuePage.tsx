@@ -1,6 +1,6 @@
-﻿import { useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Link, useParams } from 'wouter';
+import { Link, useLocation, useParams, useSearch } from 'wouter';
 import { ArrowLeft, ChevronUp, ChevronDown, Home, Pencil, Eye, EyeOff, MapPin } from 'lucide-react';
 import { formatScoreTime } from '../lib/scoreTime';
 import { useApi } from '../lib/useApi';
@@ -38,6 +38,22 @@ export default function VenuePage() {
   const [view, setView] = useState<View>('scores');
   const [showMachinesModal, setShowMachinesModal] = useState(false);
   const [editVenue, setEditVenue] = useState<EditVenueTarget | null>(null);
+
+  // `?setup-inventory=1` (HomeInventoryPrompt, after creating a home venue mid-score): the inventory
+  // panel opens in its setup mode. Held for the venue it arrived on, then stripped from the URL so a
+  // reload or a shared link doesn't repeat it — same contract as UserPage's `?setup=1`. Honoured only
+  // for someone who can manage the inventory (the panel checks `canManage`).
+  const search = useSearch();
+  const [location, navigate] = useLocation();
+  const [inventorySetupFor, setInventorySetupFor] = useState(() =>
+    new URLSearchParams(search).get('setup-inventory') === '1' ? id : null);
+  useEffect(() => {
+    const params = new URLSearchParams(search);
+    if (!params.has('setup-inventory')) return;
+    params.delete('setup-inventory');
+    const rest = params.toString();
+    navigate(rest ? `${location}?${rest}` : location, { replace: true });
+  }, [search, location]);
 
   // Compare scope (All / Mine / Friends / one pod) — URL-backed, falls back to the ScopeContext toggle, same
   // as the Machine page. It decides WHO is in the score list below the picker; the header, map,
@@ -267,6 +283,10 @@ export default function VenuePage() {
           inventory={machinesData.inventory ?? null}
           canManage={!!machinesData.canManageInventory}
           scoredMachines={machinesData.scoredMachines ?? []}
+          setup={inventorySetupFor === id ? {
+            showsPublicly: venue.showMachinesAndScores !== false,
+            onFinish: () => setInventorySetupFor(null),
+          } : undefined}
         />
       )}
 

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Link } from 'wouter';
 import { Plus, X, Loader2 } from 'lucide-react';
@@ -13,6 +13,16 @@ interface Props {
   canManage: boolean;
   /** Owner/admin only: machines scored at this venue (server's `scoredMachines`). */
   scoredMachines?: Array<{ id: number; name: string }>;
+  /**
+   * First-time setup, right after the owner created this home venue (the venue page's
+   * `?setup-inventory=1`): asks "What machines do you have here?", focuses the search, and ends with
+   * Skip for now / Done, which call `onFinish`. Only honoured when `canManage`.
+   */
+  setup?: {
+    /** The venue's "Show my machines/scores publicly" switch — decides who the copy says will see the list. */
+    showsPublicly: boolean;
+    onFinish: () => void;
+  };
 }
 
 // A home venue's machines, kept by hand — private venues can't use a Pinball Map roster. Everyone who
@@ -21,7 +31,16 @@ interface Props {
 // that isn't in it. Machines already scored here but not listed are offered as one-click adds —
 // never added automatically: the owner decides what's actually on the floor (a friend's score may be
 // from a machine that's since been sold).
-export default function VenueInventoryPanel({ venueId, inventory, canManage, scoredMachines = [] }: Props) {
+export default function VenueInventoryPanel({ venueId, inventory, canManage, scoredMachines = [], setup: setupProp }: Props) {
+  const setup = canManage ? setupProp : undefined;
+  const sectionRef = useRef<HTMLElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const inSetup = !!setup;
+  useEffect(() => {
+    if (!inSetup) return;
+    sectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    inputRef.current?.focus({ preventScroll: true });
+  }, [inSetup]);
   const api = useApi();
   const [query, setQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -61,7 +80,18 @@ export default function VenueInventoryPanel({ venueId, inventory, canManage, sco
     : [];
 
   return (
-    <section className="rounded-xl border border-white/10 bg-card p-4 mb-6">
+    <section ref={sectionRef} className={`rounded-xl border bg-card p-4 mb-6 scroll-mt-4 ${setup ? 'border-machine/40' : 'border-white/10'}`}>
+      {setup && (
+        <div className="mb-4">
+          <h2 className="text-lg font-black uppercase tracking-wider text-white">What machines do you have here?</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            {setup.showsPublicly
+              ? 'Anyone who can see this venue will see these, '
+              : 'Only you and admins will see these while “Show my machines/scores publicly” is off, '}
+            and challenge recommendations use them. Optional — you can add or remove machines here any time.
+          </p>
+        </div>
+      )}
       <div className="flex items-center gap-2 mb-3">
         <PinballIcon className="w-4 h-4" />
         <h2 className="text-xs font-bold uppercase tracking-widest text-muted-foreground">Machines here</h2>
@@ -74,7 +104,7 @@ export default function VenueInventoryPanel({ venueId, inventory, canManage, sco
       </div>
 
       {machines.length === 0 ? (
-        <p className="text-sm text-muted-foreground mb-3">
+        !setup && <p className="text-sm text-muted-foreground mb-3">
           No machines listed yet. Add the ones you have so they show up here and on the Venues page.
         </p>
       ) : (
@@ -130,6 +160,7 @@ export default function VenueInventoryPanel({ venueId, inventory, canManage, sco
       {canManage && (
         <div className="relative">
           <input
+            ref={inputRef}
             type="text"
             value={query}
             onChange={e => { setQuery(e.target.value); setError(null); }}
@@ -172,6 +203,20 @@ export default function VenueInventoryPanel({ venueId, inventory, canManage, sco
         </div>
       )}
       {error && <p className="text-xs text-red-400 mt-2">{error}</p>}
+      {setup && (
+        <div className="flex justify-end mt-4">
+          {/* One button: nothing listed yet reads as skipping, anything listed as finishing. */}
+          <button
+            type="button"
+            onClick={setup.onFinish}
+            className={machines.length > 0
+              ? 'px-4 py-2 rounded-lg bg-primary text-white text-sm font-bold uppercase tracking-wider hover:opacity-90 transition-opacity'
+              : 'px-4 py-2 rounded-lg border border-white/10 text-sm text-muted-foreground hover:text-white transition-colors'}
+          >
+            {machines.length > 0 ? 'Done' : 'Skip for now'}
+          </button>
+        </div>
+      )}
     </section>
   );
 }

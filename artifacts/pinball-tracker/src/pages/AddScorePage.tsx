@@ -28,6 +28,7 @@ import { isPhotoViewerPop } from '../lib/photoViewerHistory';
 import ChallengeFitSummary from '../components/ChallengeFitSummary';
 import EditScoreDialog, { type EditScoreTarget } from '../components/EditScoreDialog';
 import DuplicateVenuePrompt, { duplicateCandidates, type DuplicateCandidate } from '../components/DuplicateVenuePrompt';
+import HomeInventoryPrompt from '../components/HomeInventoryPrompt';
 import type { ChallengeFit } from '../lib/api';
 import { invalidateChallengeQueries } from '../lib/challenges';
 import { BADGES_KEY, type Badge } from '../lib/badges';
@@ -226,6 +227,8 @@ export default function AddScorePage() {
   const addBlockedByHeic = uploadItems.some(i => i.images.some(im => im.heicFailed));
   const canAddMore = uploadItems.length > 0 && uploadItems.length < MAX_ITEMS && !addBlockedByHeic;
   const [savedScore, setSavedScore] = useState<SavedScore | null>(null);
+  /** A home venue created in step 2's add-a-venue form; step 4 offers its inventory setup if the score landed there. */
+  const [createdHome, setCreatedHome] = useState<{ id: number; name: string } | null>(null);
   /** Step 4's "Edit played time": the saved score, open in the shared edit dialog. */
   const [editSaved, setEditSaved] = useState<EditScoreTarget | null>(null);
   const [pmLogin, setPmLogin] = useState('');
@@ -821,6 +824,9 @@ export default function AddScorePage() {
       api.venues.create(body),
     onSuccess: (venue: any) => {
       setVenueDuplicates(null);
+      // A new home venue: step 4 offers to list its machines (HomeInventoryPrompt) once the score is
+      // saved — never here, mid-score. A score alone never fills the inventory.
+      setCreatedHome(venue.isResidence ? { id: venue.id, name: venue.name } : null);
       queryClient.invalidateQueries({ queryKey: ['venues'] });
       setValue('venueName', venue.name);
       setVenueSearch(venue.name);
@@ -2284,6 +2290,10 @@ export default function AddScorePage() {
                 </>
               )}
             </div>
+          )}
+
+          {createdHome && savedScore.venueId === createdHome.id && (
+            <HomeInventoryPrompt venueId={createdHome.id} venueName={createdHome.name} />
           )}
 
           <button onClick={() => navigate('/')}
