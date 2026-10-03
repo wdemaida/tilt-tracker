@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { db, scores, venues, machines, users, challenges } from '@workspace/db';
-import { eq, desc, count, sql, and, max, inArray } from 'drizzle-orm';
+import { eq, asc, desc, count, sql, and, max, inArray } from 'drizzle-orm';
 import {
   searchPmLocationsByName, searchPmLocationsWithAddress,
   pmLocationUrl, isPmConfigured, PmApiError, type PmLocation,
@@ -481,14 +481,15 @@ router.get('/:id/machines', async (req, res) => {
       .groupBy(machines.id, machines.name, machines.manufacturer, machines.year)
       .orderBy(desc(sql<number>`max(${scores.score})`));
 
-    // All machine names played at this venue by anyone this viewer may see (for TT tag)
+    // All machines played at this venue by anyone this viewer may see (for TT tag)
     const ttRows = await db
-      .select({ name: machines.name })
+      .select({ id: machines.id, name: machines.name })
       .from(scores)
       .innerJoin(machines, eq(scores.machineId, machines.id))
       .where(and(eq(scores.venueId, id), visibleScoreSql(viewer)))
-      .groupBy(machines.name);
-    const ttMachineNames = ttRows.map(r => r.name);
+      .groupBy(machines.id, machines.name)
+      .orderBy(asc(machines.name));
+    const ttMachineNames = [...new Set(ttRows.map(r => r.name))];
 
     // A private venue's roster is its owner-managed inventory. Withheld entirely from viewers the
     // owner's "Show my machines/scores publicly" switch excludes.
@@ -545,6 +546,9 @@ router.get('/:id/machines', async (req, res) => {
       inventory,
       activityHidden: !activityVisible,
       canManageInventory: canManageInventory(venue, viewer),
+      // Owner/admin of a private venue only: machines scored here, so the inventory panel can offer
+      // the ones not listed yet as one-click adds. Never added automatically.
+      ...(canManageInventory(venue, viewer) ? { scoredMachines: ttRows.map(r => ({ id: r.id, name: r.name })) } : {}),
     });
   } catch (err) {
     console.error('Venue machines error:', err);
