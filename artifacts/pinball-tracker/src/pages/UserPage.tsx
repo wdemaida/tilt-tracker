@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth, useUser } from '@clerk/clerk-react';
-import { useParams, Link } from 'wouter';
+import { useParams, Link, useLocation, useSearch } from 'wouter';
 import { MapPin, Clock, Home, Pencil } from 'lucide-react';
 import { useAppUser } from '../lib/useAppUser';
 import UserAvatar from '../components/UserAvatar';
@@ -45,6 +45,18 @@ export default function UserPage() {
   const [editing, setEditing] = useState(false);
   // Navigating from your profile to someone else's must not carry the open form along.
   useEffect(() => setEditing(false), [username]);
+  // `?setup=1` (from /setup and the Home nudge): open "Machines you can get to" with its intro. Held
+  // for the profile it arrived on, then stripped from the URL so a reload or share doesn't repeat it.
+  const search = useSearch();
+  const [location, navigate] = useLocation();
+  const [introFor] = useState(() => new URLSearchParams(search).get('setup') === '1' ? username : null);
+  useEffect(() => {
+    const params = new URLSearchParams(search);
+    if (!params.has('setup')) return;
+    params.delete('setup');
+    const rest = params.toString();
+    navigate(rest ? `${location}?${rest}` : location, { replace: true });
+  }, [search, location]);
 
   if (isLoading) return <p className="text-muted-foreground">Loading...</p>;
   if (!data) return <p className="text-muted-foreground">User not found.</p>;
@@ -105,7 +117,7 @@ export default function UserPage() {
 
       {/* Yours: edit what friends get recommended. A friend's: their "Challenge me on" machines (the
           server only sends challengeMe to accepted friends). */}
-      {isSignedIn && friendship?.relationship === 'self' && <ChallengeMeEditor where="profile" />}
+      {isSignedIn && friendship?.relationship === 'self' && <ChallengeMeEditor where="profile" intro={isSelf && introFor === username} />}
       {isSignedIn && friendship?.relationship === 'friends' && data.challengeMe && (
         <ChallengeMeChips username={user.username} machines={data.challengeMe} />
       )}

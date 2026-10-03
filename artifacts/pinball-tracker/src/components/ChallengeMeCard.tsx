@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Link } from 'wouter';
-import { Building2, ChevronDown, Home, Loader2, LocateFixed, Lock, MapPin, Plus, Search, Swords, X } from 'lucide-react';
+import { Building2, Check, ChevronDown, Home, Loader2, LocateFixed, Lock, MapPin, Plus, Search, Swords, X } from 'lucide-react';
 import { useApi } from '../lib/useApi';
 import { queryClient } from '../lib/queryClient';
-import { CHALLENGE_PREFS_KEY, challengeErrorText } from '../lib/challenges';
+import { CHALLENGE_AREA_KEY, CHALLENGE_PREFS_KEY, challengeErrorText } from '../lib/challenges';
+import { challengeSetupState } from '../lib/challengeSetup';
 import { useVenueSearch, MIN_PLACE_SEARCH_CHARS } from '../lib/venueSearch';
 import { getCurrentPosition, geoFailureMessage, CurrentPositionError } from '../lib/photoLocation';
 import MachinePicker, { type MachineOption } from './MachinePicker';
@@ -176,7 +177,7 @@ function VenueSearch({ onPick, onPickPlace, at, busy }: {
         // mousedown would blur the input (closing the list) before the click lands on a row.
         <div onMouseDown={e => e.preventDefault()} className="mt-1.5 rounded-lg border border-white/10 bg-card divide-y divide-white/5">
           {showRecent && (results.length === 0
-            ? <p className="px-3 py-2 text-xs text-muted-foreground">No recent venues</p>
+            ? <p className="px-3 py-2 text-xs text-muted-foreground">Nothing played yet — type a venue’s name, or tap Near me.</p>
             : <p className="px-3 pt-2 pb-1 text-[10px] uppercase tracking-wide text-muted-foreground">Recently played</p>)}
           {showSearch && hits.isLoading && <p className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground"><Loader2 className="w-3 h-3 animate-spin" aria-hidden /> Searching…</p>}
           {showSearch && hits.isError && <p className="px-3 py-2 text-xs text-red-400">{challengeErrorText(hits.error, 'Search failed')}</p>}
@@ -358,17 +359,52 @@ function AddLocation({ listedIds, onAddId, busy }: { listedIds: number[]; onAddI
   );
 }
 
+/** A step of the setup intro: ticked once that part is filled, an empty circle until then. */
+function IntroLine({ done, children }: { done: boolean; children: React.ReactNode }) {
+  return (
+    <li className="flex items-start gap-2">
+      {done
+        ? <Check className="w-3.5 h-3.5 mt-0.5 text-friend flex-shrink-0" aria-label="Done" />
+        : <span className="w-3.5 h-3.5 mt-0.5 rounded-full border border-white/25 flex-shrink-0" aria-hidden />}
+      <span className={done ? 'text-white/60' : 'text-white/85'}>{children}</span>
+    </li>
+  );
+}
+
 /**
  * Your own "Challenge me" settings, as a collapsible card. Shown on your profile (`where="profile"`)
  * and on the Challenges page (`where="challenges"`); each remembers open/closed on its own. Default:
- * collapsed once anything is set up, open while it's empty.
+ * collapsed once anything is set up (a machine, a venue or a Last Resort area), open while it's empty.
+ * `intro` (your profile with `?setup=1` — after /setup, or from the Home nudge): held open without
+ * touching the remembered open state, scrolled into view once with a brief ring, and a welcome block
+ * listing the three parts, ticked as each is filled. A tick also shows beside each filled heading.
  */
-export function ChallengeMeEditor({ where }: { where: 'profile' | 'challenges' }) {
+export function ChallengeMeEditor({ where, intro = false }: { where: 'profile' | 'challenges'; intro?: boolean }) {
   const api = useApi();
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [openPref, setOpenPref] = useState<boolean | null>(() => readOpen(where));
+  // The intro holds the card open until you collapse it yourself.
+  const [forcedOpen, setForcedOpen] = useState(intro);
+  useEffect(() => { if (intro) setForcedOpen(true); }, [intro]);
+  const [ring, setRing] = useState(false);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const scrolled = useRef(false);
   const prefs = useQuery({ queryKey: CHALLENGE_PREFS_KEY, queryFn: () => api.challenges.prefs(), staleTime: 60_000 });
+  // Same key and fetch as LastResortArea's, so the card and the section share one request.
+  const area = useQuery({ queryKey: CHALLENGE_AREA_KEY, queryFn: () => api.challenges.area(), staleTime: 60_000 });
+  const loaded = prefs.isSuccess && !!prefs.data && !area.isLoading;
+  useEffect(() => {
+    if (!intro || !loaded || scrolled.current || !sectionRef.current) return;
+    scrolled.current = true;
+    sectionRef.current.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    setRing(true);
+  }, [intro, loaded]);
+  useEffect(() => {
+    if (!ring) return;
+    const t = setTimeout(() => setRing(false), 3000);
+    return () => clearTimeout(t);
+  }, [ring]);
   const { data: allMachines = [], isLoading: machinesLoading } = useQuery({
     queryKey: ['machines', 'all-for-challenge'],
     queryFn: () => api.machines.list(false) as Promise<MachineOption[]>,
@@ -391,7 +427,7 @@ export function ChallengeMeEditor({ where }: { where: 'profile' | 'challenges' }
     onError: e => setError(challengeErrorText(e, 'Could not save')),
   });
 
-  if (prefs.isLoading) return null;
+  if (prefs.isLoading || area.isLoading) return null;
   if (prefs.isError || !prefs.data) return null;
   const { machines, venues, suggestions, limits } = prefs.data;
   const machineIds = machines.map(m => m.id);
@@ -399,9 +435,11 @@ export function ChallengeMeEditor({ where }: { where: 'profile' | 'challenges' }
   const busy = save.isPending;
   const full = machines.length >= limits.machines;
   const venuesFull = venues.length >= limits.venues;
-  const setUp = machines.length > 0 || venues.length > 0;
-  const open = openPref ?? !setUp;
-  const toggle = () => { setOpenPref(!open); writeOpen(where, !open); };
+  // An area that failed to load counts as none.
+  const filled = challengeSetupState(prefs.data, area.data);
+  const setUp = filled.any;
+  const open = forcedOpen || (openPref ?? !setUp);
+  const toggle = () => { setForcedOpen(false); setOpenPref(!open); writeOpen(where, !open); };
   const summary = setUp ? `${plural(machines.length, 'machine')} · ${plural(venues.length, 'location')}` : 'Not set up yet';
   // Reads the cached prefs, not this render's list: a place add finishes seconds after its tap.
   const addVenue = (id: number) => {
@@ -410,7 +448,7 @@ export function ChallengeMeEditor({ where }: { where: 'profile' | 'challenges' }
   };
 
   return (
-    <section className="rounded-xl border border-friend/25 bg-friend/5 mb-6">
+    <section ref={sectionRef} className={`rounded-xl border border-friend/25 bg-friend/5 mb-6 scroll-mt-4 transition-shadow duration-700 ${ring ? 'ring-2 ring-friend/50' : ''}`}>
       <button type="button" onClick={toggle} aria-expanded={open} className="group w-full flex items-center gap-3 p-4 text-left">
         <Swords className="w-4 h-4 text-friend flex-shrink-0" aria-hidden />
         <span className="min-w-0 flex-1">
@@ -427,8 +465,21 @@ export function ChallengeMeEditor({ where }: { where: 'profile' | 'challenges' }
 
       {open && (
         <div className="px-4 pb-4 -mt-1">
+          {intro && (
+            <div className="mb-4 rounded-lg border border-friend/20 bg-background/40 p-3 text-xs">
+              <p className="text-white/90">
+                Welcome to TiltTrack! Tell friends what you can actually play, so their challenges land on machines near you. Takes a minute — each part saves as you go.
+              </p>
+              <ul className="mt-2 space-y-1">
+                <IntroLine done={filled.machines}>Pick up to 3 machines you’d love to be challenged on</IntroLine>
+                <IntroLine done={filled.venues}>Add the venues you play at — search, or tap Near me</IntroLine>
+                <IntroLine done={filled.area}>Optional: set a ZIP and how far you’d drive</IntroLine>
+              </ul>
+            </div>
+          )}
           <p className="text-[11px] uppercase tracking-wider text-friend mb-1.5 flex items-center gap-1.5">
-            <PinballIcon tint className="w-3.5 h-3.5 flex-shrink-0" aria-hidden /> My Preferred Machines <span className="text-white/60">{machines.length}/{limits.machines}</span></p>
+            <PinballIcon tint className="w-3.5 h-3.5 flex-shrink-0" aria-hidden /> My Preferred Machines <span className="text-white/60">{machines.length}/{limits.machines}</span>
+            {filled.machines && <Check className="w-3.5 h-3.5 text-friend flex-shrink-0" aria-label="Set" />}</p>
           <div className="flex flex-wrap items-center gap-2">
             {machines.map(m => (
               <span key={m.id} className={`${chip} border-machine/40 text-machine`}>
@@ -461,7 +512,8 @@ export function ChallengeMeEditor({ where }: { where: 'profile' | 'challenges' }
           )}
 
           <p className="text-[11px] uppercase tracking-wider text-friend mt-4 mb-0.5 flex items-center gap-1.5">
-            <Building2 className="w-3.5 h-3.5 flex-shrink-0" aria-hidden /> My Preferred Venues <span className="text-white/60">{venues.length}/{limits.venues}</span></p>
+            <Building2 className="w-3.5 h-3.5 flex-shrink-0" aria-hidden /> My Preferred Venues <span className="text-white/60">{venues.length}/{limits.venues}</span>
+            {filled.venues && <Check className="w-3.5 h-3.5 text-friend flex-shrink-0" aria-label="Set" />}</p>
           <p className="text-xs text-muted-foreground mb-1.5">Places you like to play — friends’ challenges look here first.</p>
           <div className="flex flex-wrap items-center gap-2">
             {venues.map(v => (

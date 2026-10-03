@@ -47,7 +47,11 @@ function MapRedirect() {
   return <Redirect replace to={`/venues?view=map${venueId ? `&venueId=${encodeURIComponent(venueId)}` : ''}`} />;
 }
 
-function AuthGate({ children }: { children: React.ReactNode }) {
+/**
+ * Signed in with Clerk but no TiltTrack profile yet (`/api/users/me` answered null — /setup was never
+ * finished) → /setup. Signed-out visitors and guests are left alone. Shared by AuthGate and SetupGate.
+ */
+function useSetupRedirect() {
   const { isSignedIn, isLoaded } = useAuth();
   const api = useApi();
   const [, navigate] = useLocation();
@@ -58,14 +62,35 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     enabled: isLoaded && !!isSignedIn,
     retry: false,
   });
+  const needsSetup = isLoaded && !!isSignedIn && !isLoading && appUser === null;
 
   useEffect(() => {
-    if (!isLoaded || isLoading) return;
-    if (!isSignedIn) { navigate('/sign-in'); return; }
-    if (appUser === null) navigate('/setup');
-  }, [isLoaded, isSignedIn, appUser, isLoading]);
+    if (needsSetup) navigate('/setup');
+  }, [needsSetup]);
+
+  return { isLoaded, isSignedIn, isLoading, needsSetup };
+}
+
+function AuthGate({ children }: { children: React.ReactNode }) {
+  const { isLoaded, isSignedIn, isLoading } = useSetupRedirect();
+  const [, navigate] = useLocation();
+
+  useEffect(() => {
+    if (isLoaded && !isSignedIn) navigate('/sign-in');
+  }, [isLoaded, isSignedIn]);
 
   if (!isLoaded || isLoading) return null;
+  return <>{children}</>;
+}
+
+/**
+ * For pages open to guests and signed-out visitors (Home): renders straight away, except that a
+ * signed-in user without a profile is sent to /setup (AuthGate's rule, without its sign-in demand).
+ * Never mounted on /setup, /welcome or the sign-in pages, so it can't loop.
+ */
+function SetupGate({ children }: { children: React.ReactNode }) {
+  const { needsSetup } = useSetupRedirect();
+  if (needsSetup) return null;
   return <>{children}</>;
 }
 
@@ -116,7 +141,9 @@ export default function App() {
     <Layout>
       <AccessGate>
       <Switch>
-        <Route path="/" component={HomePage} />
+        <Route path="/">
+          <SetupGate><HomePage /></SetupGate>
+        </Route>
         <Route path="/machines" component={MachinesPage} />
         <Route path="/machines/:name" component={MachinePage} />
         <Route path="/venues/:id" component={VenuePage} />

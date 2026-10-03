@@ -618,6 +618,29 @@
   calls `expandMachine` first (server creates the row from its stored catalog). The picked machine is
   kept in `expandPick` so step 2 can show it even if the machine lists don't have it yet.
 
+## Challenge setup nudge (`lib/challengeSetup.ts`, `components/ChallengeSetupNudge.tsx`, 2026-10-03)
+- **After /setup**, SetupPage seeds `['me']` with the setup response (and still invalidates it), then goes
+  to `/users/<username>?setup=1` with the **server's** (lowercased) username.
+- **`?setup=1` contract** (UserPage): on your own profile it opens "Machines you can get to" with
+  `intro` — held open without writing the remembered `tilttrack.challengeMe.open.<where>` state, scrolled
+  into view once (`block: 'start'`, smooth) with a ~3 s `ring-friend/50`, and a welcome block listing the
+  three parts, ticked as each is filled. UserPage holds the flag in state for the profile it arrived on and
+  strips the param (`replace`), so a reload or a shared link doesn't repeat it. On anyone else's profile it
+  does nothing. Each filled heading (machines, venues, Last Resort) also gets a `Check` permanently.
+- **Home strip** (`ChallengeSetupNudge`, mounted under Home's heading only — not Crew > Challenges):
+  `shouldNudge` = signed in, not disabled, **nothing** set up (no preferred machine, no preferred venue, no
+  Last Resort area — any one hides it) and not dismissed. It reads prefs + area through
+  `CHALLENGE_PREFS_KEY` / `CHALLENGE_AREA_KEY` (enabled only when it could show) and renders nothing while
+  they load. "Set it up" → `/users/<username>?setup=1`; × ("Not now") writes
+  `tilttrack.challengeSetupNudge.dismissed.<userId>` = `1`.
+- **Why no DB column:** it's a hint. Losing a dismissal on another device or a cleared browser just shows
+  the strip once more, and the strip disappears by itself once anything is set up — not worth a migration
+  and an API field. Storage that throws counts as not dismissed.
+- **Signed in without a profile:** Home is wrapped in `SetupGate` (App.tsx), which shares AuthGate's
+  `useSetupRedirect` (me === null → /setup) without AuthGate's sign-in demand, so guests and signed-out
+  visitors are unaffected. It isn't on /setup, /welcome or the sign-in pages, so it can't loop.
+- Tests: `../api-server/node_modules/.bin/tsx --test src/lib/challengeSetup.test.ts`.
+
 ## Welcome page copy (`lib/welcomeContent.ts`, `lib/useWelcomeContent.ts`, `components/RichText.tsx`, 2026-10-01)
 - /welcome's text is **data, not JSX**: defaults in `welcomeContent.ts`, overridden per section by an
   admin in **Admin > Config > Welcome page** (`components/admin/WelcomeContentEditor.tsx`, stored in

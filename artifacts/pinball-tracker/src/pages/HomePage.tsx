@@ -12,6 +12,7 @@ import { queryClient } from '../lib/queryClient';
 import ScoreCard from '../components/ScoreCard';
 import { usePodMembership } from '../lib/myPods';
 import EditScoreDialog, { type EditScoreTarget } from '../components/EditScoreDialog';
+import ChallengeSetupNudge from '../components/ChallengeSetupNudge';
 
 type Filter = 'all' | 'casual' | 'tournament';
 
@@ -80,6 +81,7 @@ export default function HomePage() {
         <ScopeToggle />
       </div>
       <p className="text-sm text-muted-foreground mb-4">{mine ? 'Your plays only.' : 'All plays across the site.'}</p>
+      <ChallengeSetupNudge />
 
       <SignedIn>
         <Link

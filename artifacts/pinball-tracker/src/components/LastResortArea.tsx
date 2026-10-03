@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { Footprints, Loader2, Lock } from 'lucide-react';
+import { Check, Footprints, Loader2, Lock } from 'lucide-react';
 import { useApi } from '../lib/useApi';
 import { queryClient } from '../lib/queryClient';
 import { CHALLENGE_AREA_KEY, challengeErrorText } from '../lib/challenges';
@@ -60,6 +60,7 @@ export default function LastResortArea() {
     <div className="mt-5">
       <p className="text-[11px] uppercase tracking-wider text-friend mb-1.5 flex items-center gap-1.5">
         <Footprints className="w-3.5 h-3.5 flex-shrink-0" aria-hidden /> My Last Resort
+        {current && <Check className="w-3.5 h-3.5 text-friend flex-shrink-0" aria-label="Set" />}
       </p>
       <p className="text-xs text-muted-foreground mb-2">
         How far you’d still drive for a challenge. Only used when a friend’s recommendations come up short and one of you taps <span className="text-white/80">Expand search</span>.

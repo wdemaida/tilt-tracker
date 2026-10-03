@@ -28,9 +28,13 @@ export default function SetupPage() {
   const onSubmit = async (data: FormData) => {
     setError('');
     try {
-      await api.users.setup({ username: data.username, displayName: data.displayName });
+      // The server's row: its username is the lowercased one the profile route uses (an existing
+      // profile comes back as-is). Seed ['me'] so the profile knows it's yours on first paint.
+      const user = await api.users.setup({ username: data.username, displayName: data.displayName }) as { username: string };
+      queryClient.setQueryData(['me'], user);
       await queryClient.invalidateQueries({ queryKey: ['me'] });
-      navigate('/');
+      // Straight to your profile with the "Machines you can get to" intro open (UserPage, ?setup=1).
+      navigate(`/users/${encodeURIComponent(user.username)}?setup=1`);
     } catch (err: any) {
       setError(err.message ?? 'Something went wrong');
     }
