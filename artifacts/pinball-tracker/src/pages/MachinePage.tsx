@@ -378,6 +378,29 @@ function ScatterTooltip({ active, payload, podName, podText, othersLabel, onClos
   );
 }
 
+// ─── venue label ──────────────────────────────────────────────────────────────
+
+/** A score's venue: pin + name, linked to the venue page like ScoreCard's. The server sends the
+ *  same venueId/venueName the other score lists do (venue pages apply their own privacy), so it
+ *  links whenever there's an id and stays plain text otherwise. */
+function ScoreVenue({ venueId, venueName, isResidence, className = '' }: {
+  venueId?: number | null; venueName: string; isResidence?: boolean; className?: string;
+}) {
+  return (
+    <span className={`inline-flex items-center gap-1 text-venue min-w-0 ${className}`}>
+      <MapPin className="w-3 h-3 flex-shrink-0" />
+      {venueId != null ? (
+        <Link href={`/venues/${venueId}`} className="truncate hover:text-venue/80 hover:underline transition-colors">
+          {venueName}
+        </Link>
+      ) : (
+        <span className="truncate">{venueName}</span>
+      )}
+      {isResidence && <Home className="w-3 h-3 flex-shrink-0" />}
+    </span>
+  );
+}
+
 // ─── venue dropdown ───────────────────────────────────────────────────────────
 
 interface VenueOption { venueId: number; venueName: string }
@@ -844,7 +867,7 @@ export default function MachinePage() {
             <p className="text-xs text-muted-foreground mt-1">
               <UsernameLink username={best.username} />
               {' · '}{formatScoreTime(best.playedAt, best.venueTimezone, 'MMM d, yyyy')}
-              {best.venueName && <> · <span className="text-venue">{best.venueName}</span></>}
+              {best.venueName && <> · <ScoreVenue venueId={best.venueId} venueName={best.venueName} isResidence={best.venueIsResidence} className="align-bottom max-w-full" /></>}
             </p>
           </div>
         </div>
@@ -1244,9 +1267,8 @@ export default function MachinePage() {
                       {s.id === best?.id && <span className="ml-2 text-xs font-bold bg-primary text-white px-1.5 py-0.5 rounded">BEST</span>}
                     </p>
                     {s.venueName && (
-                      <p className="text-xs text-venue flex items-center gap-1 mt-0.5">
-                        <MapPin className="w-3 h-3" />{s.venueName}
-                        {s.venueIsResidence && <Home className="w-3 h-3 flex-shrink-0" />}
+                      <p className="text-xs mt-0.5 flex min-w-0">
+                        <ScoreVenue venueId={s.venueId} venueName={s.venueName} isResidence={s.venueIsResidence} />
                       </p>
                     )}
                   </div>
