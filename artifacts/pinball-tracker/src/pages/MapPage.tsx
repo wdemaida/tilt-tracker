@@ -1,15 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, CircleMarker, Popup, useMap } from 'react-leaflet';
 import { Link, useSearch } from 'wouter';
 import { formatScoreTime } from '../lib/scoreTime';
-import { Clock, User, Home } from 'lucide-react';
+import { Clock, Home, MapPin } from 'lucide-react';
 import { PinballIcon } from '../components/PinballIcon';
 import { useApi } from '../lib/useApi';
 import { useAppUser } from '../lib/useAppUser';
 import { useScopeContext } from '../lib/ScopeContext';
 import { ScopeToggle } from '../components/ScopeToggle';
 import { TILE_BASE_URL, TILE_LABELS_URL, TILE_ATTRIBUTION } from '../lib/mapTiles';
+import type { MapPoint } from '../lib/api';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 
@@ -27,23 +28,48 @@ function makePinIcon(color: string) {
   });
 }
 
-const PIN_MINE = makePinIcon('#facc15');
-const PIN_OTHERS = makePinIcon('#d946ef');
+const COLOR_MINE = '#facc15';
+const COLOR_OTHERS = '#d946ef';
+const PIN_MINE = makePinIcon(COLOR_MINE);
+const PIN_OTHERS = makePinIcon(COLOR_OTHERS);
 
-// MapContainer's center/zoom props only set the initial view on mount (react-leaflet
-// doesn't re-apply them on prop changes) — this keeps the view in sync once async
-// score data (and therefore the real center) arrives after first paint.
-function MapViewSync({ center, zoom }: { center: [number, number]; zoom: number }) {
+/** Zoom when focusing one venue (`?venueId=`): street level for an exact pin, city level for an area. */
+const FOCUS_ZOOM_EXACT = 15;
+const FOCUS_ZOOM_APPROX = 11;
+const DEFAULT_CENTER: [number, number] = [42.36, -71.06];
+
+/** A GET /api/venues row, as far as the map reads it. */
+interface VenueRow {
+  id: number;
+  name: string;
+  address: string | null;
+  isResidence: boolean;
+  scoreCount: number;
+  machineCount: number | null;
+  pmMachineCount?: number | null;
+  lastPlayedAt?: string | null;
+  timezone?: string | null;
+  mapPoint: MapPoint | null;
+}
+
+type MapView =
+  | { kind: 'center'; center: [number, number]; zoom: number }
+  | { kind: 'bounds'; bounds: L.LatLngBoundsExpression };
+
+// MapContainer's center/zoom props only set the initial view on mount (react-leaflet doesn't re-apply
+// them on prop changes) — this keeps the view in sync once the venue list (and therefore the real
+// view) arrives after first paint.
+function MapViewSync({ view, viewKey }: { view: MapView; viewKey: string }) {
   const map = useMap();
   useEffect(() => {
-    // animate:false matters. The first render has no scores yet, so the map mounts at zoom 4 and
-    // this effect then jumps it to 8 once the query resolves. Leaflet's *animated* zoom keeps the
-    // old zoom-4 tiles around and scales them up, and on a jump that large they never get pruned —
-    // leaving a full-viewport blurry ghost of the previous zoom sitting over the real tiles. It was
-    // always there, just easy to miss when the basemap was near-black and unlabelled; a label layer
-    // turns it into a giant smeared city name. A non-animated setView hard-resets the tile grid.
-    map.setView(center, zoom, { animate: false });
-  }, [center[0], center[1], zoom]);
+    // animate:false matters. The first render has no venues yet, so the map mounts at zoom 4 and this
+    // effect then jumps it once the query resolves. Leaflet's *animated* zoom keeps the old tiles
+    // around and scales them up, and on a jump that large they never get pruned — leaving a
+    // full-viewport blurry ghost of the previous zoom over the real tiles (a label layer turns it into
+    // a giant smeared city name). A non-animated view change hard-resets the tile grid.
+    if (view.kind === 'center') map.setView(view.center, view.zoom, { animate: false });
+    else map.fitBounds(view.bounds, { animate: false, padding: [32, 32], maxZoom: 12 });
+  }, [viewKey]);
   return null;
 }
 
@@ -51,61 +77,69 @@ function MapViewSync({ center, zoom }: { center: [number, number]; zoom: number 
  * The venues map. Rendered only as the Map view of the Venues page (`/venues?view=map`) — the old
  * `/map` route redirects there. `embedded` drops this page's own title row, since the Venues page
  * supplies the heading and the All/Mine toggle.
+ *
+ * Built on GET /api/venues, never on score GPS: a pin is a venue with scores (scoreCount > 0, already
+ * counted per viewer by visibleScoreSql) and a server-computed public `mapPoint`. Hidden-tier home
+ * venues have no map point and are never drawn; city_state ones get a circle on the city centroid,
+ * not a pin. Owners and admins get the same public point as everyone else.
  */
 export default function MapPage({ embedded = false }: { embedded?: boolean }) {
   const authApi = useApi();
   const appUser = useAppUser();
   const { mine } = useScopeContext();
   const search = useSearch();
-  const filterVenueId = new URLSearchParams(search).get('venueId');
-  const { data: scores = [] } = useQuery({
-    queryKey: ['scores', mine],
-    queryFn: () => authApi.scores.list(mine),
+  const focusVenueId = new URLSearchParams(search).get('venueId');
+
+  const { data: venues = [], isLoading } = useQuery({
+    queryKey: ['venues', mine],
+    queryFn: () => authApi.venues.list(mine) as Promise<VenueRow[]>,
   });
-
-  const withGps = scores.filter((s: any) => s.latitude && s.longitude);
-  // Group by venue, NOT by raw coordinates. Every score carries the GPS off its own photo, so two
-  // plays on the same machine sit a few metres apart and used to become two separate pins — one
-  // venue with 25 scores rendered as 23 stacked markers, and the "N locations" count counted each
-  // one. Only a venue-less score has nothing to group on and still falls back to its coordinate.
-  const venueGroups = withGps.reduce((acc: Record<string, any[]>, s: any) => {
-    const key = s.venueId != null ? `v${s.venueId}` : `c${s.latitude},${s.longitude}`;
-    if (!acc[key]) acc[key] = [];
-    acc[key].push(s);
-    return acc;
-  }, {});
-
-  const allLocations = Object.entries(venueGroups).map(([key, items]) => {
-    const list = items as any[];
-    // Sit the pin at the centroid of the group's photo fixes rather than on whichever score
-    // happened to be first, so it lands on the building instead of at one corner of it.
-    const lat = list.reduce((sum, s: any) => sum + Number(s.latitude), 0) / list.length;
-    const lng = list.reduce((sum, s: any) => sum + Number(s.longitude), 0) / list.length;
-    const hasMyScore = !!appUser && list.some((s: any) => s.username === appUser.username);
-    const recent = mine && appUser
-      ? list.find((s: any) => s.username === appUser.username) ?? list[0]
-      : list[0];
-    const machineCount = new Set(list.map((s: any) => s.machineId)).size;
-    const visits = new Set(list.map((s: any) => new Date(s.playedAt).toDateString())).size;
-    return { key, lat, lng, venueName: list[0].venueName, venueId: list[0].venueId, isResidence: !!list[0].venueIsResidence, recent, hasMyScore, machineCount, visits };
+  // Which venues have your scores, to colour those pins — the same list the Venues page's Mine view
+  // reads, so it's usually cached already. Not needed when the map is already scoped to you.
+  const { data: myVenues = [] } = useQuery({
+    queryKey: ['venues', true],
+    queryFn: () => authApi.venues.list(true) as Promise<VenueRow[]>,
+    enabled: !!appUser && !mine,
   });
+  const myVenueIds = useMemo(
+    () => new Set((mine ? venues : myVenues).filter(v => Number(v.scoreCount) > 0).map(v => v.id)),
+    [mine, venues, myVenues],
+  );
 
-  const locations = filterVenueId
-    ? allLocations.filter(loc => String(loc.venueId) === filterVenueId)
-    : allLocations;
+  const pins = useMemo(
+    () => venues.filter((v): v is VenueRow & { mapPoint: MapPoint } => Number(v.scoreCount) > 0 && v.mapPoint != null),
+    [venues],
+  );
+  const focusRow = focusVenueId ? venues.find(v => String(v.id) === focusVenueId) : undefined;
+  const focusPin = focusVenueId ? pins.find(p => String(p.id) === focusVenueId) : undefined;
 
-  const mapCenter: [number, number] = locations[0] ? [locations[0].lat, locations[0].lng] : [42.36, -71.06];
-  const mapZoom = filterVenueId ? 15 : (locations.length ? 8 : 4);
+  const { view, viewKey } = useMemo((): { view: MapView; viewKey: string } => {
+    if (focusPin) {
+      const { lat, lng, approximate } = focusPin.mapPoint;
+      const zoom = approximate ? FOCUS_ZOOM_APPROX : FOCUS_ZOOM_EXACT;
+      return { view: { kind: 'center', center: [lat, lng], zoom }, viewKey: `focus:${focusPin.id}:${lat},${lng},${zoom}` };
+    }
+    if (pins.length === 1) {
+      const { lat, lng } = pins[0].mapPoint;
+      return { view: { kind: 'center', center: [lat, lng], zoom: 10 }, viewKey: `one:${lat},${lng}` };
+    }
+    if (pins.length > 1) {
+      const bounds = L.latLngBounds(pins.map(p => [p.mapPoint.lat, p.mapPoint.lng] as [number, number]));
+      return { view: { kind: 'bounds', bounds }, viewKey: `bounds:${bounds.toBBoxString()}` };
+    }
+    return { view: { kind: 'center', center: DEFAULT_CENTER, zoom: 4 }, viewKey: 'default' };
+  }, [focusPin, pins]);
 
-  // react-leaflet's Popup binds itself to the marker inside a useEffect, which runs
-  // after ref callbacks fire — calling openPopup() straight from the Marker ref (as
-  // this used to) fires before that bind exists, so it silently no-ops. Routing the
-  // instance through state defers the openPopup() call to our own effect, which runs
-  // after the Popup's bind effect has already committed.
-  const [autoPopupMarker, setAutoPopupMarker] = useState<L.Marker | null>(null);
+  // react-leaflet's Popup binds itself to the layer inside a useEffect, which runs after ref callbacks
+  // fire — calling openPopup() straight from the ref fires before that bind exists, so it silently
+  // no-ops. Routing the instance through state defers the openPopup() call to our own effect, which
+  // runs after the Popup's bind effect has already committed.
+  const [autoPopupLayer, setAutoPopupLayer] = useState<L.Marker | L.CircleMarker | null>(null);
   useEffect(() => {
-    autoPopupMarker?.openPopup();
-  }, [autoPopupMarker]);
+    autoPopupLayer?.openPopup();
+  }, [autoPopupLayer]);
+
+  const subtitle = mine ? 'Venues where you’ve logged scores' : 'Venues where TiltTrack players have logged scores';
 
   return (
     <div>
@@ -116,86 +150,105 @@ export default function MapPage({ embedded = false }: { embedded?: boolean }) {
         </div>
       )}
       <p className="text-sm text-muted-foreground mb-1">
-        {filterVenueId ? (
-          <>Showing <span className="text-venue font-bold">{locations[0]?.venueName ?? 'this venue'}</span> only · <Link href="/venues?view=map" className="text-primary hover:text-primary/80 transition-colors">clear filter</Link></>
-        ) : (
-          <>{locations.length} {locations.length === 1 ? 'location' : 'locations'} · {withGps.length} {mine ? 'your ' : ''}scores with GPS</>
-        )}
+        {subtitle}
+        {!isLoading && <> · {pins.length} {pins.length === 1 ? 'venue' : 'venues'}</>}
       </p>
+      {focusVenueId && !isLoading && (
+        <p className="text-sm text-muted-foreground mb-1">
+          {focusPin ? (
+            <>Showing <span className="text-venue font-bold">{focusPin.name}</span>{focusPin.mapPoint.approximate ? ' (approximate location)' : ''}</>
+          ) : (
+            <><span className="text-venue font-bold">{focusRow?.name ?? 'This venue'}</span> isn’t on the map</>
+          )}
+          {' · '}
+          <Link href="/venues?view=map" className="text-primary hover:text-primary/80 transition-colors">show all</Link>
+        </p>
+      )}
       <p className="text-xs text-muted-foreground/60 mb-6">
-        Some venues (e.g. personal residences) are hidden or shown only by city/state at the owner's choice.
+        Home venues appear only as an approximate area, or not at all, at the owner’s choice.
       </p>
 
       <div className="rounded-xl overflow-hidden border border-white/10" style={{ height: 480 }}>
-        <MapContainer
-          center={mapCenter}
-          zoom={mapZoom}
-          style={{ height: '100%', width: '100%' }}
-        >
-          <MapViewSync center={mapCenter} zoom={mapZoom} />
+        <MapContainer center={DEFAULT_CENTER} zoom={4} style={{ height: '100%', width: '100%' }}>
+          <MapViewSync view={view} viewKey={viewKey} />
           <TileLayer url={TILE_BASE_URL} attribution={TILE_ATTRIBUTION} />
           <TileLayer url={TILE_LABELS_URL} />
-          {locations.map(({ key, lat, lng, venueName, venueId, isResidence, recent, hasMyScore, machineCount, visits }) => (
-            <Marker
-              key={key}
-              position={[lat, lng]}
-              icon={hasMyScore ? PIN_MINE : PIN_OTHERS}
-              ref={filterVenueId ? setAutoPopupMarker : undefined}
-            >
-              <Popup minWidth={220}>
-                {/* Location section */}
-                <div className="px-4 pt-3 pb-3">
-                  <div className="flex items-center justify-center gap-1.5 mb-3">
-                    {venueId ? (
-                      <Link href={`/venues/${venueId}`} className="font-black uppercase tracking-wider text-venue text-sm hover:text-venue/80 transition-colors leading-tight">
-                        {venueName ?? 'Unknown venue'}
-                      </Link>
-                    ) : (
-                      <p className="font-black uppercase tracking-wider text-white text-sm leading-tight">{venueName ?? 'Unknown venue'}</p>
-                    )}
-                    {isResidence && <Home className="w-3 h-3 text-venue/70 flex-shrink-0" />}
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1">
-                      <PinballIcon className="w-3 h-3 text-machine" />
-                      <span className="text-xs text-machine font-bold">
-                        {machineCount} {machineCount === 1 ? 'machine' : 'machines'}
-                      </span>
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      <span className="font-bold text-white">{visits}</span> {visits === 1 ? 'visit' : 'visits'}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Play info section */}
-                {recent && (
-                  <div className="border-t border-white/10 px-4 pt-3 pb-3 text-center">
-                    <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground mb-2">Most Recent Play</p>
-                    <Link
-                      href={`/machines/${encodeURIComponent(recent.machineName)}`}
-                      className="block text-sm font-black uppercase tracking-wider text-machine hover:text-machine/80 transition-colors leading-tight mb-2"
-                    >
-                      {recent.machineName}
-                    </Link>
-                    <p className="text-2xl font-bold text-primary mb-3">{Number(recent.score).toLocaleString()}</p>
-                    <div className="flex flex-col items-center gap-0.5">
-                      <Link href={`/users/${recent.username}`} className="flex items-center gap-1 text-xs text-username hover:text-username/80 transition-colors">
-                        <User className="w-3 h-3 flex-shrink-0" />
-                        <span>@{recent.username}</span>
-                      </Link>
-                      <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                        <Clock className="w-3 h-3 flex-shrink-0" />
-                        <span>{formatScoreTime(recent.playedAt, recent.venueTimezone, 'M/d/yy · h:mm a')}</span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </Popup>
-            </Marker>
-          ))}
+          {pins.map(v => {
+            const isMine = myVenueIds.has(v.id);
+            const isFocus = focusPin?.id === v.id;
+            const popup = <VenuePopup venue={v} />;
+            if (v.mapPoint.approximate) {
+              const color = isMine ? COLOR_MINE : COLOR_OTHERS;
+              return (
+                <CircleMarker
+                  key={v.id}
+                  center={[v.mapPoint.lat, v.mapPoint.lng]}
+                  radius={14}
+                  pathOptions={{ color, weight: 2, opacity: 0.8, dashArray: '4 4', fillColor: color, fillOpacity: 0.2 }}
+                  ref={isFocus ? setAutoPopupLayer : undefined}
+                >
+                  {popup}
+                </CircleMarker>
+              );
+            }
+            return (
+              <Marker
+                key={v.id}
+                position={[v.mapPoint.lat, v.mapPoint.lng]}
+                icon={isMine ? PIN_MINE : PIN_OTHERS}
+                ref={isFocus ? setAutoPopupLayer : undefined}
+              >
+                {popup}
+              </Marker>
+            );
+          })}
         </MapContainer>
       </div>
     </div>
+  );
+}
+
+function VenuePopup({ venue: v }: { venue: VenueRow & { mapPoint: MapPoint } }) {
+  const scores = Number(v.scoreCount);
+  const machines = v.machineCount;
+  const where = v.mapPoint.approximate
+    ? `${v.mapPoint.label ?? v.address ?? 'Location'} (approximate)`
+    : v.address;
+  return (
+    <Popup minWidth={220}>
+      <div className="px-4 pt-3 pb-3">
+        <div className="flex items-center justify-center gap-1.5 mb-1">
+          <Link href={`/venues/${v.id}`} className="font-black uppercase tracking-wider text-venue text-sm hover:text-venue/80 transition-colors leading-tight text-center">
+            {v.name}
+          </Link>
+          {v.isResidence && <Home className="w-3 h-3 text-venue/70 flex-shrink-0" />}
+        </div>
+        {where && (
+          <p className="flex items-center justify-center gap-1 text-xs text-muted-foreground mb-3 text-center">
+            <MapPin className="w-3 h-3 flex-shrink-0" />
+            <span>{where}</span>
+          </p>
+        )}
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-xs text-muted-foreground">
+            <span className="font-bold text-white">{scores}</span> {scores === 1 ? 'score' : 'scores'}
+          </div>
+          {machines != null && (
+            <div className="flex items-center gap-1">
+              <PinballIcon className="w-3 h-3 text-machine" />
+              <span className="text-xs text-machine font-bold">
+                {machines} {machines === 1 ? 'machine' : 'machines'}
+              </span>
+            </div>
+          )}
+        </div>
+        {v.lastPlayedAt && (
+          <div className="flex items-center justify-center gap-1 text-xs text-muted-foreground mt-2">
+            <Clock className="w-3 h-3 flex-shrink-0" />
+            <span>Last played {formatScoreTime(v.lastPlayedAt, v.timezone, 'M/d/yy')}</span>
+          </div>
+        )}
+      </div>
+    </Popup>
   );
 }
