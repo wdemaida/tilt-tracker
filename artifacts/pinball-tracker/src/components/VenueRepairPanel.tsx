@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useLocation } from 'wouter';
+import { useAuth } from '@clerk/clerk-react';
 import { Wrench, RefreshCw, ChevronDown } from 'lucide-react';
 import { useApi } from '../lib/useApi';
 import ScoreResyncModal from './ScoreResyncModal';
@@ -33,6 +34,7 @@ interface RepairStatus {
 // actually allowed to act — /repair 403s otherwise and this collapses to nothing.
 export default function VenueRepairPanel({ venueId }: { venueId: number }) {
   const api = useApi();
+  const { isSignedIn, isLoaded } = useAuth();
   const [open, setOpen] = useState(false);
   const [showResync, setShowResync] = useState(false);
   /** The venue this one is being merged into (the merge preview modal is open while set). */
@@ -42,6 +44,8 @@ export default function VenueRepairPanel({ venueId }: { venueId: number }) {
   const { data: status, isError } = useQuery<RepairStatus>({
     queryKey: ['venue-repair', venueId],
     queryFn: () => api.venues.repair.status(venueId),
+    // Signed-in only: the route 401s a guest, which would just log a console error.
+    enabled: isLoaded && !!isSignedIn,
     retry: false,
   });
 
