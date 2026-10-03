@@ -63,6 +63,8 @@ router.get('/', async (req, res) => {
         username: users.username,
         displayName: users.displayName,
         createdAt: scores.createdAt,
+        // Read only to decide who may see a venue-less score's GPS — stripped before the row goes out.
+        authorId: scores.userId,
         venueOwnerId: venues.ownerId,
         venuePrivacyTier: venues.privacyTier,
         venueCity: venues.city,
@@ -83,13 +85,15 @@ router.get('/', async (req, res) => {
     // A score's own lat/lng comes from the photo's EXIF GPS, independent of the venue record — redact
     // it the same way the venue's own address/coordinates are redacted, so a residence's exact location
     // can't leak via the score's coordinates (e.g. on the Map page) even when the venue itself is hidden.
-    const redacted = rows.map(({ venueOwnerId, venuePrivacyTier, venueCity, venueState, venueCityLat, venueCityLng, ...row }) => redactScoreLocation(
+    // A venue-less score's GPS goes only to its author and admins (redactScoreLocation).
+    const redacted = rows.map(({ authorId, venueOwnerId, venuePrivacyTier, venueCity, venueState, venueCityLat, venueCityLng, ...row }) => redactScoreLocation(
       row,
       row.venueId != null
         ? { ownerId: venueOwnerId, privacyTier: venuePrivacyTier ?? 'full', city: venueCity, state: venueState, cityLat: venueCityLat, cityLng: venueCityLng }
         : undefined,
       requester?.id,
       isAdmin,
+      authorId,
     ));
 
     res.json(redacted);
