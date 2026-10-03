@@ -8,6 +8,9 @@
 //   --catalog          machines.json?no_details=1 (the typeahead / enrichment catalog)
 //   --roster <pmId>    /locations/<pmId>.json (a venue's machine roster)
 //   --near <lat,lng>   closest_by_lat_lon as pm-match / nearby suggestions / pm-candidates ask it
+//   --area <lat,lng,miles>  closest_by_lat_lon over a Last Resort cell (pmAreaCache.ts): lat/lng are
+//                      the cell's grid point (areaCell()), miles = AREA_FETCH_RADIUS_MILES. Prints
+//                      payload size, time, location count and the farthest `distance`.
 //
 // Never run from production (pmClient ignores PM_MODE there anyway). Doesn't touch the database.
 import 'dotenv/config';
@@ -37,12 +40,24 @@ for (let i = 0; i < args.length; i++) {
     const [lat, lng] = String(args[++i]).split(',').map(Number);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) throw new Error(`--near needs lat,lng, got ${args[i]}`);
     jobs.push({ label: `near ${lat},${lng}`, run: async () => `${(await findNearestPmLocations(lat, lng)).length} locations` });
+  } else if (a === '--area') {
+    const [lat, lng, miles] = String(args[++i]).split(',').map(Number);
+    if (![lat, lng, miles].every(Number.isFinite) || miles <= 0) throw new Error(`--area needs lat,lng,miles, got ${args[i]}`);
+    jobs.push({ label: `area ${lat},${lng} within ${miles} mi`, run: async () => {
+      const started = Date.now();
+      const locs = await findNearestPmLocations(lat, lng, miles);
+      const ms = Date.now() - started;
+      const bytes = Buffer.byteLength(JSON.stringify({ locations: locs }));
+      const maxDist = Math.max(0, ...locs.map(l => Number(l.distance) || 0));
+      const machines = locs.reduce((n, l) => n + (Array.isArray((l as any).machine_ids) ? (l as any).machine_ids.length : 0), 0);
+      return `${locs.length} locations, ${machines} machine entries, ${bytes} bytes, ${ms} ms, max distance ${maxDist.toFixed(2)} mi`;
+    } });
   } else {
     throw new Error(`Unknown argument ${a}`);
   }
 }
 if (jobs.length === 0) {
-  console.error('Nothing to record — pass --catalog, --roster <pmId> and/or --near <lat,lng>.');
+  console.error('Nothing to record — pass --catalog, --roster <pmId>, --near <lat,lng> and/or --area <lat,lng,miles>.');
   process.exit(1);
 }
 

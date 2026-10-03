@@ -4,6 +4,7 @@ import { getChallengePrefs, updateChallengePrefs, searchChallengeVenues } from '
 import { SlidingRateLimiter } from '../lib/nearbyLookup.js';
 import { SEARCH_RATE_WINDOWS } from '../lib/venueSearch.js';
 import { logActivity, actorOf } from '../lib/activity.js';
+import { getChallengeArea, setChallengeArea, clearChallengeArea } from '../lib/challengeArea.js';
 
 // The caller's own settings that aren't the profile itself (feature/challenge-recs). Mounted behind
 // requireAppUser in index.ts (`app.use('/api/me', requireAppUser, …)`), so req.appUser is set; kept
@@ -55,6 +56,45 @@ router.get('/challenge-venue-search', async (req, res) => {
   try {
     res.json(await searchChallengeVenues(userId, q));
   } catch (err) { fail(res, err, 'Search venues'); }
+});
+
+// ── Last Resort area (feature/last-resort) ──────────────────────────────────────
+// GET / PUT {postalCode, radiusMiles} / DELETE /api/me/challenge-area — your own ZIP + radius, used
+// only when you tap Expand search on the create form. Owner-only: nobody else's area is ever served,
+// and even yours comes back as ZIP + city label, never coordinates. A new ZIP costs one HERE geocode
+// (10 a day per user — a radius-only change costs nothing); never a Pinball Map call. The activity
+// log gets the radius and whether the ZIP changed — never the ZIP itself.
+const areaGeocodeLimiter = new SlidingRateLimiter([{ ms: 24 * 60 * 60_000, max: 10 }]);
+setInterval(() => areaGeocodeLimiter.sweep(), 10 * 60_000).unref();
+
+router.get('/challenge-area', async (req, res) => {
+  try {
+    res.json(await getChallengeArea((req as any).appUser.id));
+  } catch (err) { fail(res, err, 'Load Last Resort area'); }
+});
+
+router.put('/challenge-area', async (req, res) => {
+  const userId = (req as any).appUser.id as number;
+  try {
+    const { response, geocoded } = await setChallengeArea(userId, req.body ?? {}, {
+      allowGeocode: () => areaGeocodeLimiter.take(String(userId)).ok,
+    });
+    await logActivity({
+      type: 'profile.challenge_area_updated', ...actorOf(req), targetType: 'user', targetId: userId,
+      payload: { radiusMiles: response.area?.radiusMiles ?? null, newPostalCode: geocoded },
+    });
+    res.json(response);
+  } catch (err) { fail(res, err, 'Save Last Resort area'); }
+});
+
+router.delete('/challenge-area', async (req, res) => {
+  const userId = (req as any).appUser.id as number;
+  try {
+    if (await clearChallengeArea(userId)) {
+      await logActivity({ type: 'profile.challenge_area_updated', ...actorOf(req), targetType: 'user', targetId: userId, payload: { cleared: true } });
+    }
+    res.json(await getChallengeArea(userId));
+  } catch (err) { fail(res, err, 'Clear Last Resort area'); }
 });
 
 export default router;

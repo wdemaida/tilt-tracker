@@ -26,6 +26,10 @@
 // re-invite, lapse on start / fixed start / cancel / own window, the proposal reminder, group records,
 // group recommendations and the durable badge facts. Everything it creates is removed at the end,
 // including the activity events about these users and challenges.
+// Last Resort (feature/last-resort): /api/me/challenge-area (validation, HERE double for the ZIP,
+// owner-only, no coordinates out), the recommendations' `expand` hint, and POST …/expand — one
+// Pinball Map request for the Portland cell from the offline fixture, then zero; the friend's side a
+// count + city only; expand/machine. Restores pm_area_cache and removes the areas at the end.
 //
 //   cd artifacts/api-server && npx tsx test-challenges.ts
 
@@ -47,6 +51,11 @@ process.env.HERE_API_KEY ||= 'zz-test-stub';
 const realFetch = globalThis.fetch;
 const hereHits: string[] = [];
 let herePlace: null | { id: string; title: string; lat: number; lng: number; label: string } = null;
+// ZIP → centroid for the Last Resort section's qualified geocode (`qq=postalCode=…`). Unknown = no match.
+const hereZips: Record<string, { lat: number; lng: number; city: string; stateCode: string }> = {
+  '97205': { lat: 45.5205, lng: -122.6888, city: 'Portland', stateCode: 'OR' }, // → cell 45.5,-122.7 (the fixture)
+  '97209': { lat: 45.5311, lng: -122.6843, city: 'Portland', stateCode: 'OR' }, // same cell
+};
 globalThis.fetch = (async (input: any, init?: any) => {
   const url = new URL(typeof input === 'string' ? input : input?.url ?? String(input));
   if (url.hostname.endsWith('pinballmap.com')) throw new Error(`test: refusing a live Pinball Map request (${url.pathname})`);
@@ -54,6 +63,12 @@ globalThis.fetch = (async (input: any, init?: any) => {
   const api = url.hostname.split('.')[0];
   hereHits.push(api);
   const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+  const qq = url.searchParams.get('qq') ?? '';
+  if (api === 'geocode' && qq.startsWith('postalCode=')) {
+    const zip = /^postalCode=(\d{5})/.exec(qq)?.[1] ?? '';
+    const z = hereZips[zip];
+    return json({ items: z ? [{ resultType: 'postalCodePoint', position: { lat: z.lat, lng: z.lng }, address: { city: z.city, stateCode: z.stateCode, postalCode: zip, countryCode: 'USA' } }] : [] });
+  }
   const p = herePlace;
   if (!p) return json({ items: [] });
   const position = { lat: p.lat, lng: p.lng };
@@ -83,6 +98,7 @@ const { readMetric } = await import('./src/lib/badgeMetrics.js');
 const {
   db, users, friendships, notifications, challenges, challengeParticipants, challengeScores, scores, machines, venues, venueMachineHistory,
   pmLocationCache, pmCatalogCache, venueInventory, userChallengeMachines, userChallengeVenues, activityEvents, userBadges,
+  userChallengeAreas, pmAreaCache,
 } = await import('@workspace/db');
 const { and, desc, eq, inArray, or, sql } = await import('drizzle-orm');
 
@@ -118,7 +134,7 @@ const [privateVenue] = await db.select({ id: venues.id }).from(venues)
 
 // Challenge prefs the borrowed users already have (normally none) — restored at the end.
 const prefsBefore = {
-  seeded: await db.select({ id: users.id, at: users.challengeVenuesSeededAt }).from(users).where(inArray(users.id, ids)),
+  seeded: await db.select({ id: users.id, at: users.challengeVenuesSeededAt, editedAt: users.challengeVenuesEditedAt }).from(users).where(inArray(users.id, ids)),
   machines: await db.select().from(userChallengeMachines).where(inArray(userChallengeMachines.userId, ids)),
   venues: await db.select().from(userChallengeVenues).where(inArray(userChallengeVenues.userId, ids)),
 };
@@ -182,6 +198,13 @@ function countPmRequests() {
   client.get = (...args: unknown[]) => { counter.count++; counter.paths.push(String(args[0])); return original(...args); };
   return counter;
 }
+// Last Resort: the Portland cell's pm_area_cache row and the borrowed users' areas, put back in `finally`.
+const AREA_CELL_KEY = '45.5,-122.7';
+const areaRestore: {
+  cell?: Array<typeof pmAreaCache.$inferSelect>;
+  areas?: Array<typeof userChallengeAreas.$inferSelect>;
+  maxMachineId?: number;
+} = {};
 // What the Pinball Map-only place section's pm-link may touch on dev, put back in `finally`.
 const pmRestore: {
   location?: typeof pmLocationCache.$inferSelect | null;
@@ -1278,10 +1301,13 @@ try {
     check("someone else's hidden residence never surfaces — not in level 2, and the score there is excluded from level 3", !rec(HIDDEN_M), rec(HIDDEN_M));
   }
   check('level 3: a machine he played lately, no venue label', rec(OTHER)?.level === 3 && !('venueLabel' in (rec(OTHER) ?? {})), rec(OTHER));
-  check('viewerCanReach + viewerBest: alice played the Pro lately', rec(PRO)?.viewerCanReach === true && typeof rec(PRO)?.viewerBest === 'number', rec(PRO));
+  // fix/both-reach: alice only PLAYED the Pro lately (her level 3) — that's not reach any more.
+  check('alice only played the Pro lately: viewerPlayedLately, not viewerCanReach; viewerBest set',
+    rec(PRO)?.viewerCanReach === false && rec(PRO)?.viewerPlayedLately === true && typeof rec(PRO)?.viewerBest === 'number', rec(PRO));
   check('zero Pinball Map calls: live count unchanged, no [PM] log line', pmClient().stats().liveCallsToday === pmBefore && !logged.some(l => l.includes('[PM')), logged);
   const reachSrc = readFileSync(new URL('./src/lib/challengeReach.ts', import.meta.url), 'utf8');
-  check('challengeReach.ts never imports the roster fetcher, pmClient or the catalog', !/from '\.\/(pmRosterCache|pmClient|pinballMap|venueInventory)\.js'/.test(reachSrc));
+  check('challengeReach.ts never imports the roster fetcher, pmClient, the catalog or the Last Resort area cache',
+    !/from '\.\/(pmRosterCache|pmClient|pinballMap|pinballmapApi|venueInventory|pmAreaCache|challengeArea)\.js'/.test(reachSrc));
   const [rosterRow] = await db.select({ fetchedAt: pmLocationCache.fetchedAt }).from(pmLocationCache).where(eq(pmLocationCache.pmLocationId, FAKE_PM_ID));
   check('the stale cached roster was not refreshed', +rosterRow.fetchedAt < Date.now() - 29 * 24 * H, rosterRow);
 
@@ -1323,6 +1349,28 @@ try {
     && r.body?.venues?.length === 1 && r.body?.venues?.[0]?.id === BOB_HOME.id, r.body);
   r = await call(bob, 'GET', '/me/challenge-prefs');
   check('…no re-seeding on the next read', r.body?.venues?.length === 1, r.body?.venues);
+  const [bobEdited] = await db.select({ at: users.challengeVenuesEditedAt }).from(users).where(eq(users.id, bob.id));
+  check('a PUT with venueIds stamps challenge_venues_edited_at', bobEdited?.at != null, bobEdited);
+
+  // fix/both-reach: an EMPTY list that was never hand-edited is re-seeded once its seed is > 7 days old.
+  {
+    const eightDaysAgo = new Date(Date.now() - 8 * 24 * H);
+    const seededAt = async () => (await db.select({ at: users.challengeVenuesSeededAt }).from(users).where(eq(users.id, dave.id)))[0]?.at;
+    await db.delete(userChallengeVenues).where(eq(userChallengeVenues.userId, dave.id));
+    await db.update(users).set({ challengeVenuesSeededAt: eightDaysAgo, challengeVenuesEditedAt: null }).where(eq(users.id, dave.id));
+    await call(dave, 'GET', '/me/challenge-prefs');
+    const reseeded = await seededAt();
+    check('re-seed: empty + never edited + seeded 8 days ago → seeded again on read', reseeded != null && +reseeded > Date.now() - H, reseeded);
+    const fresh = new Date(Date.now() - 2 * 24 * H);
+    await db.delete(userChallengeVenues).where(eq(userChallengeVenues.userId, dave.id));
+    await db.update(users).set({ challengeVenuesSeededAt: fresh }).where(eq(users.id, dave.id));
+    await call(dave, 'GET', '/me/challenge-prefs');
+    check('re-seed: not before 7 days', +(await seededAt())! === +fresh, await seededAt());
+    await db.delete(userChallengeVenues).where(eq(userChallengeVenues.userId, dave.id));
+    await db.update(users).set({ challengeVenuesSeededAt: eightDaysAgo, challengeVenuesEditedAt: new Date() }).where(eq(users.id, dave.id));
+    await call(dave, 'GET', '/me/challenge-prefs');
+    check('re-seed: never once the list was hand-edited', +(await seededAt())! === +eightDaysAgo, await seededAt());
+  }
 
   // ── a Pinball Map-only place as a challenge location (feature/pm-challenge-locations) ──
   // The card's flow, route by route: Near me (POST /upload/nearby-venues) / the search's Places
@@ -1436,6 +1484,91 @@ try {
     herePlace = null;
   }
 
+  // ── Last Resort area + Expand search (feature/last-resort) ──────────────────
+  // alice (97205) and bob (97209) are both in the Portland cell 45.5,-122.7, whose closest_by_lat_lon
+  // at 55 mi is the one recorded fixture. HERE is the double (hereZips); PM answers from fixtures.
+  {
+    areaRestore.cell = await db.select().from(pmAreaCache).where(eq(pmAreaCache.cellKey, AREA_CELL_KEY));
+    areaRestore.areas = await db.select().from(userChallengeAreas).where(inArray(userChallengeAreas.userId, ids));
+    areaRestore.maxMachineId = (await db.select({ m: sql<number>`coalesce(max(id), 0)::int` }).from(machines))[0].m;
+    await db.delete(userChallengeAreas).where(inArray(userChallengeAreas.userId, ids));
+    await db.delete(pmAreaCache).where(eq(pmAreaCache.cellKey, AREA_CELL_KEY));
+    const areaPm = countPmRequests();
+    try {
+      r = await call(alice, 'GET', '/me/challenge-area');
+      check('GET area → none yet, with the radius choices', r.status === 200 && r.body?.area === null
+        && JSON.stringify(r.body?.radiusChoices) === JSON.stringify([5, 10, 15, 20, 30, 50]), r.body);
+      r = await call(alice, 'PUT', '/me/challenge-area', { postalCode: '9720', radiusMiles: 10 });
+      check('PUT a 4-digit ZIP → 400 invalid_postal_code', r.status === 400 && r.body?.code === 'invalid_postal_code', r);
+      r = await call(alice, 'PUT', '/me/challenge-area', { postalCode: '97205', radiusMiles: 35 });
+      check('PUT radius 35 → 400 invalid_radius', r.status === 400 && r.body?.code === 'invalid_radius', r);
+      r = await call(alice, 'PUT', '/me/challenge-area', { postalCode: '00000', radiusMiles: 10 });
+      check('PUT a ZIP HERE can’t place → 422 postal_code_not_found', r.status === 422 && r.body?.code === 'postal_code_not_found', r);
+      r = await call(alice, 'PUT', '/me/challenge-area', { postalCode: '97205', radiusMiles: 10 });
+      check('PUT area → 200: ZIP, radius, "Portland, OR" — and no coordinates', r.status === 200 && r.body?.area?.postalCode === '97205'
+        && r.body?.area?.radiusMiles === 10 && r.body?.area?.label === 'Portland, OR' && !/"(lat|lng|cellKey)"/.test(JSON.stringify(r.body)), r.body);
+      const [stored] = await db.select().from(userChallengeAreas).where(eq(userChallengeAreas.userId, alice.id));
+      check('stored: centroid at 2 decimals, the shared cell key', stored?.lat === 45.52 && stored?.lng === -122.69 && stored?.cellKey === AREA_CELL_KEY, stored);
+      check('saving an area made zero Pinball Map requests', areaPm.count === 0, areaPm.paths);
+
+      r = await call(alice, 'GET', `/challenges/recommendations/${encodeURIComponent(bob.username)}`);
+      check('recommendations carry the expand hint (alice has an area, bob not)', r.status === 200 && r.body?.expand?.available === true
+        && r.body?.expand?.mine === true && r.body?.expand?.theirs === false && typeof r.body?.expand?.suggested === 'boolean', r.body?.expand);
+      check('recommendations: still zero Pinball Map requests', areaPm.count === 0, areaPm.paths);
+      r = await call(bob, 'GET', `/challenges/recommendations/${encodeURIComponent(alice.username)}`);
+      check('bob’s view of alice: says she has an area, nothing about it', r.body?.expand?.theirs === true && r.body?.expand?.mine === false
+        && !JSON.stringify(r.body).includes('97205') && !/"(lat|lng|postalCode)"/.test(JSON.stringify(r.body)), r.body?.expand);
+
+      // alice's area vs bob's reach: one closest_by_lat_lon for the cell (from the fixture).
+      r = await call(alice, 'POST', `/challenges/recommendations/${encodeURIComponent(bob.username)}/expand`);
+      check('expand (my area vs their reach) → 200, areas mine ok / theirs none', r.status === 200 && r.body?.areas?.mine === 'ok' && r.body?.areas?.theirs === 'none', r.body);
+      check('expand: exactly one Pinball Map request, closest_by_lat_lon', areaPm.count === 1 && areaPm.since(0, 'closest_by_lat_lon') === 1, areaPm.paths);
+      const [cellRow] = await db.select().from(pmAreaCache).where(eq(pmAreaCache.cellKey, AREA_CELL_KEY));
+      check('the cell is cached: 55 mi, 342 locations', cellRow?.fetchRadiusMiles === 55 && cellRow?.locationCount === 342, { r: cellRow?.fetchRadiusMiles, n: cellRow?.locationCount });
+
+      r = await call(bob, 'PUT', '/me/challenge-area', { postalCode: '97209', radiusMiles: 5 });
+      check('bob saves 97209 / 5 mi', r.status === 200 && r.body?.area?.radiusMiles === 5, r.body);
+      const before = areaPm.count;
+      const ex = await call(alice, 'POST', `/challenges/recommendations/${encodeURIComponent(bob.username)}/expand`);
+      const exJson = JSON.stringify(ex.body);
+      check('expand (both areas, same cell) → 200 with matches, zero more Pinball Map requests', ex.status === 200
+        && ex.body?.areas?.mine === 'ok' && ex.body?.areas?.theirs === 'ok' && Array.isArray(ex.body?.matches)
+        && ex.body.matches.length > 0 && ex.body.matches.length <= 10 && areaPm.count === before, { body: ex.body, paths: areaPm.paths });
+      check('expand: the friend’s side is a count + city only', ex.body?.theirPlace === 'Portland, OR'
+        && (ex.body?.matches ?? []).every((m: any) => m.theirs?.kind === 'area' && JSON.stringify(Object.keys(m.theirs).sort()) === '["kind","spotCount"]' && m.theirs.spotCount > 0), ex.body?.matches);
+      check('expand: never bob’s ZIP or anyone’s coordinates', !exJson.includes('97209') && !exJson.includes('97205') && !/"(lat|lng|lon)"/.test(exJson), exJson.slice(0, 400));
+      check('expand: my own side lists my spots with distances and Pinball Map links', (ex.body?.matches ?? []).every((m: any) => m.mine?.kind === 'area'
+        && m.mine.spots.length >= 1 && m.mine.spots.length <= 3 && m.mine.spots.every((s: any) => typeof s.miles === 'number' && s.miles <= 10 && /^https:\/\/pinballmap\.com\/map\?by_location_id=\d+$/.test(s.url))), ex.body?.matches?.[0]);
+      check('expand: an asOf time', typeof ex.body?.asOf === 'string' && ex.body?.stale === false, ex.body);
+
+      r = await call(carol, 'POST', `/challenges/recommendations/${encodeURIComponent(bob.username)}/expand`);
+      check('expand for a non-friend → 403 not_friends', r.status === 403 && r.body?.code === 'not_friends', r);
+      r = await call(dave, 'POST', `/challenges/recommendations/${encodeURIComponent(dave.username)}/expand`);
+      check('expand for yourself → 400', r.status === 400, r);
+
+      // Picking a match: a machine row from the stored catalog (zero Pinball Map requests).
+      const pick = (ex.body?.matches ?? []).find((m: any) => m.machineId == null) ?? ex.body?.matches?.[0];
+      const beforePick = areaPm.count;
+      r = await call(alice, 'POST', `/challenges/recommendations/${encodeURIComponent(bob.username)}/expand/machine`, { pmMachineId: pick?.pmMachineId });
+      check('expand/machine → 200 with a TiltTrack machine id, zero Pinball Map requests', r.status === 200 && Number.isInteger(r.body?.id)
+        && (pick?.machineId == null || r.body.id === pick.machineId) && areaPm.count === beforePick, { pick, r: r.body });
+      r = await call(alice, 'POST', `/challenges/recommendations/${encodeURIComponent(bob.username)}/expand/machine`, { pmMachineId: 1 });
+      check('expand/machine for an id not offered → 404 not_offered', r.status === 404 && r.body?.code === 'not_offered', r);
+      r = await call(bob, 'POST', `/challenges/recommendations/${encodeURIComponent(alice.username)}/expand/machine`, { pmMachineId: pick?.pmMachineId });
+      check('expand/machine: offers are per user', r.status === 404, r);
+
+      r = await call(alice, 'PUT', '/me/challenge-area', { postalCode: '97205', radiusMiles: 50 });
+      check('changing only the radius → 200', r.status === 200 && r.body?.area?.radiusMiles === 50, r.body);
+      r = await call(alice, 'DELETE', '/me/challenge-area');
+      check('DELETE area → 200, gone', r.status === 200 && r.body?.area === null, r.body);
+      r = await call(alice, 'POST', `/challenges/recommendations/${encodeURIComponent(bob.username)}/expand`);
+      check('expand with only bob’s area → mine none, theirs ok', r.status === 200 && r.body?.areas?.mine === 'none' && r.body?.areas?.theirs === 'ok', r.body?.areas);
+      check('Last Resort section: one Pinball Map request in all', areaPm.count === 1, areaPm.paths);
+    } finally {
+      areaPm.stop();
+    }
+  }
+
   // ── how a score fared: POST / PATCH /api/scores `challenges` (2026-09-30) ──
   // Will's #1276: an old photo's EXIF played_at fell before his challenges started, so it (rightly)
   // didn't count — and nothing said so. Every upload / edit now reports it per matching challenge.
@@ -1543,7 +1676,7 @@ try {
   await db.delete(userChallengeVenues).where(inArray(userChallengeVenues.userId, ids));
   if (prefsBefore.machines.length) await db.insert(userChallengeMachines).values(prefsBefore.machines).onConflictDoNothing();
   if (prefsBefore.venues.length) await db.insert(userChallengeVenues).values(prefsBefore.venues).onConflictDoNothing();
-  for (const s of prefsBefore.seeded) await db.update(users).set({ challengeVenuesSeededAt: s.at }).where(eq(users.id, s.id));
+  for (const s of prefsBefore.seeded) await db.update(users).set({ challengeVenuesSeededAt: s.at, challengeVenuesEditedAt: s.editedAt }).where(eq(users.id, s.id));
   if (venueIds.length) {
     await db.delete(scores).where(inArray(scores.venueId, venueIds));
     await db.delete(venueMachineHistory).where(inArray(venueMachineHistory.venueId, venueIds));
@@ -1551,6 +1684,26 @@ try {
     await db.delete(venues).where(inArray(venues.id, venueIds));
   }
   await db.delete(pmLocationCache).where(eq(pmLocationCache.pmLocationId, FAKE_PM_ID));
+  // Last Resort: areas back to what they were (normally none), the Portland cell row back as it was,
+  // and any machine row expand/machine minted (only if nothing references it).
+  if (areaRestore.areas) {
+    await db.delete(userChallengeAreas).where(inArray(userChallengeAreas.userId, ids));
+    if (areaRestore.areas.length) await db.insert(userChallengeAreas).values(areaRestore.areas).onConflictDoNothing();
+  }
+  if (areaRestore.cell) {
+    await db.delete(pmAreaCache).where(eq(pmAreaCache.cellKey, AREA_CELL_KEY));
+    if (areaRestore.cell.length) await db.insert(pmAreaCache).values(areaRestore.cell);
+  }
+  if (areaRestore.maxMachineId != null) {
+    await db.delete(machines).where(and(
+      sql`${machines.id} > ${areaRestore.maxMachineId}`,
+      sql`NOT EXISTS (SELECT 1 FROM scores s WHERE s.machine_id = ${machines.id})`,
+      sql`NOT EXISTS (SELECT 1 FROM venue_machine_history h WHERE h.machine_id = ${machines.id})`,
+      sql`NOT EXISTS (SELECT 1 FROM venue_inventory vi WHERE vi.machine_id = ${machines.id})`,
+      sql`NOT EXISTS (SELECT 1 FROM challenges c WHERE c.machine_id = ${machines.id})`,
+      sql`${machines.name} NOT LIKE 'zz-challenge-test%'`,
+    ));
+  }
   // The Pinball Map-only place section: its pm-link wrote the fixture's roster row, may have
   // refreshed the catalog row from the fixture, and upserted the roster's machines. Put all back.
   // Rows are only rewritten when they actually changed (a Date round trip drops microseconds).

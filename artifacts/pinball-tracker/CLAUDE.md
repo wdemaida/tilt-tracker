@@ -518,7 +518,9 @@
 - Up to 7 friends per challenge (`MAX_INVITEES` in `lib/challenges.ts`); the create form sends
   `friendIds`. One friend → "Recommended for @friend" (`/recommendations/:username`): a "You can
   both reach" group first (`viewerCanReach`, each row tagged with its level), then the rest by level,
-  no row twice, and no group when nothing overlaps; several →
+  no row twice, and no group when nothing overlaps. `viewerCanReach` is your levels 1–2 only; a
+  machine you merely scored on lately (`viewerPlayedLately`) gets a grey "You played it lately" pill
+  instead (fix/both-reach, 2026-10-02). Several →
   "Recommended for the group" grouped by `coverage` (`/recommendations?users=`), a friend's own home
   shown as "at @name's" (`atHomeOf`).
 - `isGroupChallenge(c)` = more than two participants and not a proposal. Groups get the ranked
@@ -565,6 +567,24 @@
   cached prefs, not the render's list, since a place add finishes seconds after the tap.
 - `DuplicateVenuePrompt.tsx` is now the one duplicate-venue prompt — `ScoreVenuePicker`, AddScorePage's
   add-venue form and this card all render it (`duplicateCandidates(e)` reads the 409's candidates).
+
+## Favorite Challenge Locations + Last Resort (`LastResortArea.tsx`, `ExpandSearch.tsx`, feature/last-resort, 2026-10-02)
+- The "Machines you can get to" card (`ChallengeMeCard.tsx`) now says **Favorite Challenge
+  Locations** ("Places you like to play — friends' challenges look here first"); level 2 on the create
+  form is "At a favorite spot" (`REC_LEVEL_LABEL`). Under it, **Last Resort** (`LastResortArea.tsx`,
+  rendered from inside the card — not from UserPage): ZIP (`inputMode=numeric`) + radius select
+  (5/10/15/20/30/50, from the server's `radiusChoices`), Save / Change / Clear, "Within 15 mi of 02639
+  (Dennis, MA)" and a privacy note. Saving invalidates `['challenges','recommendations']` (their
+  `expand` hint depends on it).
+- **Expand search** (`components/ExpandSearch.tsx`, single friend only, under the recommendations on
+  `NewChallengePage`): a tap only (`useMutation` POST — it can reach Pinball Map). Prominent button when
+  `expand.suggested` (fewer than 2 recs you can reach), a quiet link when only `available`, and a "Set
+  your Last Resort area" pointer (to `/crew?tab=challenges`) when neither of you has one and the list
+  is thin. Rows: "Near you: Poit's (Eastham) 12 mi · +N more" with Pinball Map links (attribution),
+  then "2 spots near @collasta, Portland, OR" — the friend's side is only ever a count + town.
+  Picking sets the machine, `matchMode 'exact'` and **no venue lock**; a match with `machineId: null`
+  calls `expandMachine` first (server creates the row from its stored catalog). The picked machine is
+  kept in `expandPick` so step 2 can show it even if the machine lists don't have it yet.
 
 ## Welcome page copy (`lib/welcomeContent.ts`, `lib/useWelcomeContent.ts`, `components/RichText.tsx`, 2026-10-01)
 - /welcome's text is **data, not JSX**: defaults in `welcomeContent.ts`, overridden per section by an

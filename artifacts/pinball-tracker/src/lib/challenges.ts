@@ -198,12 +198,18 @@ const ERROR_COPY: Record<string, string> = {
   too_many_players: 'A challenge can have at most 8 players — you and 7 friends.',
   duplicate_invitee: 'Each friend can only be invited once.',
   cannot_start: 'It can’t be started now — someone has to accept first, and it has to still be waiting.',
+  invalid_postal_code: 'Enter a 5-digit US ZIP code.',
+  invalid_radius: 'Pick one of the distances.',
+  postal_code_not_found: 'That ZIP code wasn’t found.',
+  geocode_unavailable: 'Couldn’t look up that ZIP code just now — try again in a minute.',
+  catalog_unavailable: 'The machine list isn’t loaded yet — try again in a few minutes.',
+  not_offered: 'That search has expired — search again.',
 };
 
 /** Recommendation groups on the create form, most reliable first. */
 export const REC_LEVEL_LABEL: Record<1 | 2 | 3, string> = {
   1: 'Wants to be challenged on',
-  2: 'Can reach',
+  2: 'At a favorite spot',
   3: 'Played lately',
 };
 
@@ -211,6 +217,7 @@ export const REC_LEVEL_LABEL: Record<1 | 2 | 3, string> = {
 export const recommendationsKey = (username: string) => ['challenges', 'recommendations', username.toLowerCase()];
 export const groupRecommendationsKey = (usernames: string[]) => ['challenges', 'recommendations', 'group', ...usernames.map(u => u.toLowerCase()).sort()];
 export const CHALLENGE_PREFS_KEY = ['challenges', 'prefs'];
+export const CHALLENGE_AREA_KEY = ['challenges', 'area'];
 
 export function challengeErrorText(e: unknown, fallback = 'Something went wrong'): string {
   const code = (e as any)?.code as string | undefined;

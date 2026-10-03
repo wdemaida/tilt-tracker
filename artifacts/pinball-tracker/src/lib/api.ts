@@ -270,8 +270,10 @@ export interface ChallengeRecommendation {
   level: 1 | 2 | 3;
   /** Level 2: a public venue's name, or 'at home' (their own private venue). Never a private venue's name. */
   venueLabel?: string;
-  /** You can reach it too. */
+  /** You can reach it too (your "Challenge me on" machines or your challenge locations). */
   viewerCanReach: boolean;
+  /** You only scored on it lately (not somewhere you can reach) — "You played it lately". */
+  viewerPlayedLately?: boolean;
   /** Your best score on this exact machine. */
   viewerBest?: number;
   /** Group recommendations only: which of the friends can reach it, and how many. */
@@ -279,6 +281,60 @@ export interface ChallengeRecommendation {
   coverage?: number;
   /** Group recommendations only: it's at these friends' own homes ("at @name's"). */
   atHomeOf?: number[];
+}
+
+// ── Last Resort area + Expand search (feature/last-resort) ──────────────────────────────────────
+/** GET /api/challenges/recommendations/:username's `expand`: whether Expand search can find anything. */
+export interface ChallengeExpandHint {
+  /** Either of you has a Last Resort area. */
+  available: boolean;
+  /** …and you can reach fewer than 2 of the recommendations — show the prominent button. */
+  suggested: boolean;
+  /** You have an area. */
+  mine: boolean;
+  /** They have one. */
+  theirs: boolean;
+}
+
+/** Your own Last Resort area (GET/PUT/DELETE /api/me/challenge-area). Never coordinates. */
+export interface ChallengeArea {
+  postalCode: string;
+  radiusMiles: number;
+  /** "Dennis, MA" */
+  label: string | null;
+  updatedAt: string;
+}
+export interface ChallengeAreaResponse { area: ChallengeArea | null; radiusChoices: number[] }
+
+/** One of your spots in an Expand match: a Pinball Map location near you (link = attribution). */
+export interface ChallengeAreaSpot { pmLocationId: number; name: string; city: string | null; miles: number; url: string }
+
+/** One Expand search match: a machine (exact model) you and the friend can both get to. */
+export interface ChallengeAreaMatch {
+  /** Null when TiltTrack has no row for it yet — `expandMachine` creates it when picked. */
+  machineId: number | null;
+  pmMachineId: number;
+  name: string;
+  manufacturer: string | null;
+  year: number | null;
+  imageUrl: string | null;
+  viewerBest?: number;
+  /** Your side: your spots (nearest 3, with the total), or a recommendation level when you have no area. */
+  mine: { kind: 'area'; spotCount: number; spots: ChallengeAreaSpot[] } | { kind: 'reach'; level: 1 | 2 | 3 };
+  /** Their side: a count only (plus `theirPlace`), or a level — never where. */
+  theirs: { kind: 'area'; spotCount: number } | { kind: 'reach'; level: 1 | 2 | 3 };
+}
+
+/** POST /api/challenges/recommendations/:username/expand */
+export interface ChallengeExpandResult {
+  user: PodUser;
+  matches: ChallengeAreaMatch[];
+  areas: { mine: 'ok' | 'none' | 'unavailable'; theirs: 'ok' | 'none' | 'unavailable' };
+  /** Their area's city ("Portland, OR"), when their area was used. */
+  theirPlace: string | null;
+  /** When the Pinball Map data was fetched (ISO). */
+  asOf: string | null;
+  stale: boolean;
 }
 
 /** A machine on someone's "Challenge me on" list (profile + prefs). */
@@ -518,8 +574,21 @@ export function createApi(getToken: () => Promise<string | null>) {
       // Machines to challenge this friend on, levels 1–3, each flagged when you can reach it too.
       // Friends only (403 not_friends). Never calls Pinball Map.
       recommendations: async (username: string) =>
-        request<{ user: PodUser; recommendations: ChallengeRecommendation[] }>(
+        request<{ user: PodUser; recommendations: ChallengeRecommendation[]; expand?: ChallengeExpandHint }>(
           `/challenges/recommendations/${encodeURIComponent(username)}`, undefined, await tok()),
+      // Last Resort "Expand search" — POST because it may ask Pinball Map (cached 7 days per area,
+      // rate limited). Only ever on a tap. Friends only.
+      expand: async (username: string) =>
+        request<ChallengeExpandResult>(`/challenges/recommendations/${encodeURIComponent(username)}/expand`, { method: 'POST' }, await tok()),
+      // Picking a match TiltTrack has no machine row for yet: the server makes it from its stored catalog.
+      expandMachine: async (username: string, pmMachineId: number) =>
+        request<{ id: number; name: string; imageUrl: string | null; manufacturer: string | null; year: number | null }>(
+          `/challenges/recommendations/${encodeURIComponent(username)}/expand/machine`, { method: 'POST', body: JSON.stringify({ pmMachineId }) }, await tok()),
+      // Your own Last Resort area: a US ZIP + radius. Owner-only.
+      area: async () => request<ChallengeAreaResponse>('/me/challenge-area', undefined, await tok()),
+      saveArea: async (body: { postalCode: string; radiusMiles: number }) =>
+        request<ChallengeAreaResponse>('/me/challenge-area', { method: 'PUT', body: JSON.stringify(body) }, await tok()),
+      clearArea: async () => request<ChallengeAreaResponse>('/me/challenge-area', { method: 'DELETE' }, await tok()),
       // Machines to challenge several friends on at once, ranked by how many of them can reach it.
       groupRecommendations: async (usernames: string[]) =>
         request<{ users: PodUser[]; recommendations: ChallengeRecommendation[] }>(

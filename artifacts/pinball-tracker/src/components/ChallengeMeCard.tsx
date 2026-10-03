@@ -10,6 +10,7 @@ import { getCurrentPosition, geoFailureMessage, CurrentPositionError } from '../
 import MachinePicker, { type MachineOption } from './MachinePicker';
 import { MachineThumb } from './ChallengeParts';
 import DuplicateVenuePrompt, { duplicateCandidates, type DuplicateCandidate } from './DuplicateVenuePrompt';
+import LastResortArea from './LastResortArea';
 import type { ChallengeMeMachine, ChallengePrefs, ChallengePrefVenue, ChallengeVenueHit } from '../lib/api';
 
 // "Challenge me" (feature/challenge-recs).
@@ -19,7 +20,8 @@ import type { ChallengeMeMachine, ChallengePrefs, ChallengePrefVenue, ChallengeV
 //    A place that isn't on TiltTrack yet (a friend's regular bar nobody has logged at) can be added
 //    too, from "Near me" or the search's Places fallback — the Add Score venue step's own endpoints
 //    (feature/pm-challenge-locations, see AddLocation). Friends' create forms recommend from these.
-//    Saved on every change.
+//    Saved on every change. Under the locations, the "Last Resort" area (LastResortArea.tsx,
+//    feature/last-resort): a ZIP + radius used only when someone taps Expand search.
 //  - A friend's profile: their "Challenge me on" machines as chips that open the create form on
 //    that exact model. (Challenge locations never show on a profile — only in the create flow.)
 
@@ -458,7 +460,8 @@ export function ChallengeMeEditor({ where }: { where: 'profile' | 'challenges' }
             </div>
           )}
 
-          <p className="text-[11px] uppercase tracking-wider text-muted-foreground mt-4 mb-1.5">Challenge locations <span className="text-white/60">{venues.length}/{limits.venues}</span></p>
+          <p className="text-[11px] uppercase tracking-wider text-muted-foreground mt-4 mb-0.5">Favorite Challenge Locations <span className="text-white/60">{venues.length}/{limits.venues}</span></p>
+          <p className="text-xs text-muted-foreground mb-1.5">Places you like to play — friends’ challenges look here first.</p>
           <div className="flex flex-wrap items-center gap-2">
             {venues.map(v => (
               <VenueChip key={v.id} v={v} busy={busy} onRemove={() => save.mutate({ venueIds: venueIds.filter(id => id !== v.id) })} />
@@ -483,6 +486,7 @@ export function ChallengeMeEditor({ where }: { where: 'profile' | 'challenges' }
             : <AddLocation listedIds={venueIds} onAddId={addVenue} busy={busy} />}
           <p className="text-[11px] text-muted-foreground mt-3">Friends never see a home venue’s name — its machines just show as “at home”.</p>
           {error && <p className="text-xs text-red-400 mt-2" role="alert">{error}</p>}
+          <LastResortArea />
         </div>
       )}
     </section>

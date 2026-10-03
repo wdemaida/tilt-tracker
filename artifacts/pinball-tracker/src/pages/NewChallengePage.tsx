@@ -7,6 +7,7 @@ import { useMyFriends } from '../lib/myFriends';
 import { toLocalInput, localInputToIso } from '../lib/datetime';
 import { MachineThumb } from '../components/ChallengeParts';
 import MachinePicker, { nameMatches, pickerInputClass, type MachineOption } from '../components/MachinePicker';
+import ExpandSearch from '../components/ExpandSearch';
 import {
   TYPE_META, TYPE_ORDER, SCORE_RULES, REC_LEVEL_LABEL, challengeErrorText, challengeKey, recommendationsKey, groupRecommendationsKey,
   invalidateChallengeQueries, formatScore, formatDuration, MAX_INVITEES,
@@ -23,6 +24,8 @@ import type { ChallengeRecommendation, ChallengeType, ChallengeVenueOption as Ve
 // played lately), the ones you can both reach first; with several, "Recommended for the group" ranks
 // machines by how many of them can reach it (GET /challenges/recommendations?users=). Picking one sets
 // the exact model, since a Pro and a Premium can play very differently.
+// With one friend, Last Resort "Expand search" (components/ExpandSearch.tsx) sits under the
+// recommendations: prominent when you can reach fewer than 2 of them, a quiet link otherwise.
 //
 // `?counterOf=<id>` — a counter-offer ("can't get to this one"): it goes to the original's challenger
 // (fixed) as a suggestion; type and duration are prefilled from the original, and sending goes to
@@ -107,6 +110,12 @@ function RecommendationRow({ r, onPick, who, homes, levelTag }: { r: ChallengeRe
           You can reach it too
         </span>
       )}
+      {!r.viewerCanReach && r.viewerPlayedLately && (
+        // You scored on it in the last 60 days — maybe on a trip, so it's not "you can reach it".
+        <span className="flex-shrink-0 rounded-md border border-white/15 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+          You played it lately
+        </span>
+      )}
     </button>
   );
 }
@@ -147,6 +156,8 @@ export default function NewChallengePage() {
     : list.length >= MAX_INVITEES ? list : [...list, u]));
   const group = picked.length > 1;
   const [machineId, setMachineId] = useState<number | null>(prefillMachine);
+  // A machine picked from Expand search that the machine lists don't carry (e.g. just created).
+  const [expandPick, setExpandPick] = useState<MachineOption | null>(null);
   const [matchMode, setMatchMode] = useState<'game' | 'exact'>(prefillExact ? 'exact' : 'game');
   const [type, setType] = useState<ChallengeType | null>(null);
   const [raceTarget, setRaceTarget] = useState<'mine' | 'number'>('mine');
@@ -223,9 +234,12 @@ export default function NewChallengePage() {
 
   const recPick = recs.find(r => r.machineId === machineId);
   const machine: MachineOption | null = allMachines.find(m => m.id === machineId)
-    ?? (recPick ? { id: recPick.machineId, name: recPick.name, imageUrl: recPick.imageUrl } : null);
+    ?? (recPick ? { id: recPick.machineId, name: recPick.name, imageUrl: recPick.imageUrl } : null)
+    ?? (expandPick && expandPick.id === machineId ? expandPick : null);
   const myBest = machineId != null ? myMachines.find(m => m.id === machineId)?.bestScore ?? recPick?.viewerBest ?? null : null;
   const pickRecommendation = (r: ChallengeRecommendation) => { setMachineId(r.machineId); setMatchMode('exact'); };
+  // Expand search: that exact model, no venue lock.
+  const pickExpanded = (m: MachineOption) => { setExpandPick(m); setMachineId(m.id); setMatchMode('exact'); setVenueLocked(false); };
 
   // Only public venues that have the machine (in the chosen match mode) — the server re-checks on
   // send and answers machine_not_at_venue if Pinball Map has since moved it.
@@ -432,6 +446,10 @@ export default function NewChallengePage() {
                   </div>
                 )}
               </div>
+            )}
+            {friend && !group && singleRecs.isSuccess && (
+              <ExpandSearch key={friend.username} username={friend.username} hint={singleRecs.data?.expand}
+                thin={bothReach.length < 2} onPick={pickExpanded} />
             )}
             <MachinePicker
               allMachines={allMachines}

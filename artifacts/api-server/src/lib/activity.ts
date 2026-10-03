@@ -40,7 +40,7 @@ export const ACTIVITY_TYPES = {
     'challenge.forfeited', 'challenge.resolved', 'challenge.expired', 'challenge.countered',
     'challenge.started', 'challenge.counter_accepted', 'challenge.counter_rejected',
   ],
-  profile: ['profile.challenge_prefs_updated'],
+  profile: ['profile.challenge_prefs_updated', 'profile.challenge_area_updated'],
   notification: ['notification.sent'],
   badge: ['badge.earned', 'badge.granted', 'badge.revoked'],
   pm: ['pm.connected', 'pm.score_posted', 'pm.score_post_failed'],

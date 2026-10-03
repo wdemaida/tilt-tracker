@@ -166,6 +166,11 @@ Feature-specific gotchas live in `artifacts/pinball-tracker/CLAUDE.md` (frontend
 | `artifacts/api-server/src/lib/venueRepair.ts` | Venue relink + score re-sync: permissions, machine-name matching, merge apply |
 | `artifacts/api-server/src/lib/pmRosterCache.ts` | 6h cache of PM machine rosters — the only sanctioned way to read a roster |
 | `artifacts/api-server/src/lib/machineVenues.ts` | Machines page "X Venues": on-the-floor / formerly-here venues per machine from cached rosters + inventories; others' homes only counted; 0 PM calls |
+| `artifacts/api-server/src/lib/challengeArea.ts` | Last Resort areas (ZIP + radius) + Expand search — owner-only area routes, friend side = count + city |
+| `artifacts/api-server/src/lib/areaMatch.ts` | Last Resort pure rules: ZIP/radius, 0.1° cell + 55 mi fetch radius, exact-model matching |
+| `artifacts/api-server/src/lib/pmAreaCache.ts` | 7-day `pm_area_cache` of PM locations per cell — one closest_by_lat_lon per cell |
+| `artifacts/pinball-tracker/src/components/LastResortArea.tsx` | Last Resort ZIP + radius editor (inside ChallengeMeCard) |
+| `artifacts/pinball-tracker/src/components/ExpandSearch.tsx` | Create form's Expand search over both players' Last Resort areas |
 | `artifacts/pinball-tracker/src/components/VenueRepairPanel.tsx` | 3-step repair UI on the venue page (HERE → Pinball Map → re-sync) |
 | `artifacts/pinball-tracker/src/components/ScoreResyncModal.tsx` | Preview-and-confirm modal for re-syncing a venue's scores |
 | `artifacts/api-server/src/lib/photoStore.ts` | Full-size score photos on Cloudflare R2 — presign, HEAD checks, delete, orphans |

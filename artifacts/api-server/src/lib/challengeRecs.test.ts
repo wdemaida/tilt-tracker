@@ -1,7 +1,7 @@
 // Run: npx tsx --test src/lib/challengeRecs.test.ts   (from artifacts/api-server)
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeRecommendations, mergeGroupRecommendations, rankRecentPlay, reachIds, REC_CAPS, GROUP_REC_CAP, type ReachItem, type Reach, type GroupRecommendation } from './challengeRecs.js';
+import { mergeRecommendations, mergeGroupRecommendations, rankRecentPlay, reachIds, viewerReachOf, REC_CAPS, GROUP_REC_CAP, type ReachItem, type Reach, type GroupRecommendation } from './challengeRecs.js';
 
 const m = (machineId: number, venueLabel?: string | null): ReachItem => ({
   machineId, name: `M${machineId}`, variant: null, imageUrl: null, ...(venueLabel !== undefined ? { venueLabel } : {}),
@@ -96,6 +96,60 @@ test('empty reach → nothing', () => {
 
 test('reachIds: every level', () => {
   assert.deepEqual([...reachIds({ level1: [m(1)], level2: [m(2), m(1)], level3: [m(3)] })].sort(), [1, 2, 3]);
+});
+
+test('reachIds: only the levels asked for', () => {
+  const r: Reach = { level1: [m(1)], level2: [m(2)], level3: [m(3), m(2)] };
+  assert.deepEqual([...reachIds(r, [1, 2])].sort(), [1, 2]);
+  assert.deepEqual([...reachIds(r, [3])].sort(), [2, 3]);
+  assert.deepEqual([...reachIds(r, [])], []);
+});
+
+// ── fix/both-reach (2026-10-02) ──────────────────────────────────────────────
+
+test('viewerReachOf: reach = levels 1–2; lately = level 3 only, minus anything reachable', () => {
+  const { reach, lately } = viewerReachOf({ level1: [m(1)], level2: [m(2)], level3: [m(2), m(3)] });
+  assert.deepEqual([...reach].sort(), [1, 2]);
+  assert.deepEqual([...lately], [3]);
+});
+
+test('Transformers regression: a machine the viewer only played lately (Chicago) is NOT "you can both reach"', () => {
+  // collasta (Portland) can reach Transformers at Wedgehead (level 2); Will only scored on it in
+  // Chicago in September (his level 3). Before the fix that made it "You can both reach".
+  const TRANSFORMERS = 1147, SOLAR_CITY = 757;
+  const collasta: Reach = { level1: [], level2: [m(TRANSFORMERS, 'Wedgehead'), m(42, 'Wedgehead')], level3: [] };
+  const will: Reach = { level1: [], level2: [m(SOLAR_CITY, 'Poit’s')], level3: [m(TRANSFORMERS)] };
+  const { reach, lately } = viewerReachOf(will);
+  const recs = mergeRecommendations(collasta, reach, new Map([[TRANSFORMERS, 50_000_000]]), REC_CAPS, lately);
+  const t = recs.find(r => r.machineId === TRANSFORMERS)!;
+  assert.equal(t.viewerCanReach, false);
+  assert.equal(t.viewerPlayedLately, true);
+  assert.equal(recs.filter(r => r.viewerCanReach).length, 0, 'nothing is "you can both reach"');
+  assert.equal(recs[0].machineId, TRANSFORMERS, 'played lately still ranks first within its level');
+  assert.equal('viewerPlayedLately' in recs.find(r => r.machineId === 42)!, false);
+});
+
+test('within a level: reach, then played lately, then has a score, then the rest', () => {
+  const recs = mergeRecommendations(
+    { ...empty, level2: [m(1), m(2), m(3), m(4)] }, new Set([4]), new Map([[2, 10], [3, 10]]), REC_CAPS, new Set([3]),
+  );
+  assert.deepEqual(recs.map(r => r.machineId), [4, 3, 2, 1]);
+  assert.deepEqual(recs.map(r => !!r.viewerPlayedLately), [false, true, false, false]);
+});
+
+test('a machine both reachable and played lately is just reachable', () => {
+  const recs = mergeRecommendations({ ...empty, level1: [m(1)] }, new Set([1]), noBest, REC_CAPS, new Set([1]));
+  assert.equal(recs[0].viewerCanReach, true);
+  assert.equal('viewerPlayedLately' in recs[0], false);
+});
+
+test('group merge carries played-lately too, and passes it through for one target', () => {
+  const bob: Reach = { level1: [m(1)], level2: [], level3: [] };
+  const carol: Reach = { level1: [m(1)], level2: [m(2)], level3: [] };
+  const recs = mergeGroupRecommendations([{ userId: 2, reach: bob }, { userId: 3, reach: carol }], new Set(), noBest, GROUP_REC_CAP, new Set([2])) as GroupRecommendation[];
+  assert.equal(recs.find(r => r.machineId === 2)!.viewerPlayedLately, true);
+  const one = mergeGroupRecommendations([{ userId: 2, reach: carol }], new Set(), noBest, GROUP_REC_CAP, new Set([2]));
+  assert.deepEqual(one, mergeRecommendations(carol, new Set(), noBest, REC_CAPS, new Set([2])));
 });
 
 test('rankRecentPlay: visits, then most recent', () => {

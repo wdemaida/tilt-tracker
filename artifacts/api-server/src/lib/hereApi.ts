@@ -81,6 +81,54 @@ export async function geocodeAddress(address: string): Promise<GeocodeResult | n
   }
 }
 
+/** A US ZIP's centroid, from HERE Geocode (feature/last-resort). */
+export interface PostalCodePoint {
+  lat: number;
+  lng: number;
+  city: string | null;
+  /** Two-letter state code ("MA"). */
+  state: string | null;
+}
+
+/**
+ * Geocodes a 5-digit US ZIP to its centroid — one HERE request (`qq=postalCode=…;country=USA`).
+ * Only a `postalCodePoint` result counts: a qualified query HERE can't place falls back to coarser
+ * results (a state, the country), which must not become someone's Last Resort centre.
+ * 'not_found' = HERE answered but doesn't know the ZIP; 'unavailable' = no key / HTTP / network error.
+ */
+export async function geocodePostalCode(postalCode: string): Promise<{ status: 'ok'; point: PostalCodePoint } | { status: 'not_found' | 'unavailable' }> {
+  if (!HERE_API_KEY) return { status: 'unavailable' };
+  const url = new URL('https://geocode.search.hereapi.com/v1/geocode');
+  url.searchParams.set('qq', `postalCode=${postalCode};country=USA`);
+  url.searchParams.set('types', 'postalCode');
+  url.searchParams.set('limit', '1');
+  url.searchParams.set('apiKey', HERE_API_KEY);
+  try {
+    const res = await fetch(url.toString());
+    if (!res.ok) return { status: 'unavailable' };
+    const data = (await res.json()) as {
+      items?: Array<{
+        resultType?: string;
+        position?: { lat: number; lng: number };
+        address?: { city?: string; stateCode?: string; state?: string; postalCode?: string; countryCode?: string };
+      }>;
+    };
+    const item = data.items?.find(i => i.resultType === 'postalCodePoint' && i.position
+      && (!i.address?.postalCode || i.address.postalCode === postalCode)
+      && (!i.address?.countryCode || i.address.countryCode === 'USA'));
+    if (!item?.position) return { status: 'not_found' };
+    return {
+      status: 'ok',
+      point: {
+        lat: item.position.lat, lng: item.position.lng,
+        city: item.address?.city ?? null, state: item.address?.stateCode ?? item.address?.state ?? null,
+      },
+    };
+  } catch {
+    return { status: 'unavailable' };
+  }
+}
+
 export interface AddressSuggestion {
   id: string;
   label: string;

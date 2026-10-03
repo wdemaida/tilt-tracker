@@ -49,8 +49,8 @@ API.** This is a standing rule, not a guideline:
 - **Development & testing:** outside production `PM_MODE` defaults to `offline` — requests are
   answered from recorded fixtures in `artifacts/api-server/fixtures/pm/` and anything unrecorded
   fails loudly. Use `live` only for a deliberate task and `record` to refresh fixtures
-  (`PM_MODE=record npx tsx record-pm-fixtures.ts --catalog --roster <pmId> --near <lat,lng>`).
-  Non-prod live calls go through an on-disk cache (`artifacts/api-server/.pm-cache/`, 7-day TTL,
+  (`PM_MODE=record npx tsx record-pm-fixtures.ts --catalog --roster <pmId> --near <lat,lng>`
+  `--area <lat,lng,miles>`). Non-prod live calls go through an on-disk cache (`artifacts/api-server/.pm-cache/`, 7-day TTL,
   gitignored) and a hard budget — 50 live calls/day per machine, 20 per process (`PM_DEV_BUDGET=<n>`
   overrides both); past it pmClient logs `PM DEV BUDGET EXHAUSTED` and refuses. Test scripts never
   hit PM live unless `PM_LIVE_TESTS=1`; migrations and seed scripts never call PM.
@@ -854,6 +854,14 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   "viewer has a score", caps 3 / 8 / 5 — then re-sorts the capped list so "viewer can reach it too"
   comes first across all levels (stable; same set, only the order changes — 2026-10-02). The group
   path with several targets is unaffected. The create form turns a picked recommendation into `matchMode 'exact'`.
+- **"Viewer can reach" = the viewer's levels 1–2 only** (fix/both-reach, migrate29, 2026-10-02). Will
+  played Transformers once in Chicago and it was recommended against collasta (Portland) as "you can
+  both reach". `reachIds(r, levels)` takes the levels; `viewerReachOf(mine)` → `{ reach: levels 1–2,
+  lately: level-3-only }`. A machine only in the viewer's level 3 gets `viewerPlayedLately: true`
+  (create form: "You played it lately"), ranks after "viewer can reach" and before "viewer has a
+  score" within its level, and is never in the "You can both reach" group. The friend's level 3 still
+  counts as their reach. Group recommendations use the same viewer reach. Within level 2, venues the
+  player added by hand (`source 'added'`) come before auto-seeded ones.
 - **Zero Pinball Map calls**: level 2 reads `pm_location_cache` directly (any age), then
   `venue_machine_history` (not removed), and a private venue's `venue_inventory`. Never
   `getVenueRoster` / pmClient; `challengeReach.ts` doesn't import them (test-challenges.ts checks).
@@ -889,9 +897,13 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   (the roster) and no `closest_by_lat_lon` beyond the Near-me tap's; recommendations 0. (Fixed
   2026-09-30: the card treated every Near-me place as already checked, so one Near me couldn't match
   — Land Ho, 4.7 mi out, PM #5388 — would have been added unlinked.)
-- **Seeding** (`ensureSeeded`, once — `users.challenge_venues_seeded_at`): up to 5 venues with ≥ 2 visits
+- **Seeding** (`ensureSeeded` — `users.challenge_venues_seeded_at`): up to 5 venues with ≥ 2 visits
   in 180 days, plus your own residence if it has an inventory. Runs on the first prefs read, yours or a
-  friend's recommendations request. After that removals stick; new candidates are `suggestions`.
+  friend's recommendations request. **Re-runs** (fix/both-reach) while the list is still empty, was
+  never hand-edited (`users.challenge_venues_edited_at` null — stamped by any prefs PUT with
+  `venueIds`) and the last seed is over 7 days old (`RESEED_AFTER_DAYS`): collasta's first seed ran
+  when he had one Wedgehead visit, found nothing, and never ran again. After a hand edit removals
+  stick; new candidates are `suggestions`.
 - **Answers**: decline takes `{ reason: 'cant_reach' | 'no_thanks' }` (`challenge_participants.decline_reason`,
   in the `challenge_declined` payload and the `challenge.declined` event). The stored column also takes
   `'backed_out'` (migrate24), set only by the server when an accepted player backs out of a group. `POST /api/challenges/:id/counter`
@@ -921,6 +933,66 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   fixtures for Red Nun Bar & Grill (#20676) — the nearby call must send the fixture's exact 5-decimal
   point, since the key is the raw `lat`/`lon`. It restores the `pm_location_cache` / `pm_catalog_cache`
   rows and machine fields pm-link touched, only when they changed.
+
+## Last Resort areas + Expand search (`areaMatch.ts`, `pmAreaCache.ts`, `challengeArea.ts`, migrate29, feature/last-resort, 2026-10-02)
+- **What it is.** "Favorite Challenge Locations" (level 2, unchanged) = places you like to play. A
+  **Last Resort area** = a US ZIP + radius (5/10/15/20/30/50 mi): anywhere you'd still drive to for a
+  challenge. Matchmaking ignores it until the viewer taps **Expand search** on the create form
+  (single friend only — no group expand). Origin: Solar City is at Poit's (Will, Cape Cod) and at
+  My-O-My near collasta (Portland), but no cached roster near collasta could ever surface it.
+- **Routes.** `GET/PUT/DELETE /api/me/challenge-area` (owner-only; PUT `{postalCode, radiusMiles}` →
+  400 `invalid_postal_code` / `invalid_radius`, 422 `postal_code_not_found`, 503 `geocode_unavailable`,
+  429 after 10 new-ZIP geocodes/user/day — a radius-only change costs nothing). `POST
+  /api/challenges/recommendations/:username/expand` (friends only; route limit 6/min + 60/h) →
+  `{ user, matches, areas: {mine, theirs: 'ok'|'none'|'unavailable'}, theirPlace, asOf, stale }`.
+  `POST …/expand/machine {pmMachineId}` creates a missing TiltTrack machine row from the **stored**
+  catalog (`upsertMachineByName(name, {catalog})`, 0 PM calls) — only for ids an Expand search
+  returned to that user in the last 30 min (404 `not_offered`). `GET /recommendations/:username`
+  gained `expand: { available, suggested, mine, theirs }` — `suggested` = available and `isThin()`
+  (fewer than 2 recs the viewer can reach). It says only *whether* each player has an area.
+- **Storage.** `user_challenge_areas` (own table so no `users` select can leak it): ZIP, centroid
+  rounded to 2 dp (~1 km), `place_label` ("Dennis, MA"), radius (CHECK), `cell_key`. Never an
+  address. Geocode = HERE `qq=postalCode=…;country=USA&types=postalCode`, only a `postalCodePoint`
+  for that ZIP counts (`geocodePostalCode`, hereApi.ts). The API never returns coordinates, not even
+  to the owner.
+- **Pinball Map.** One `closest_by_lat_lon?send_all_within_distance&no_details=1` per **0.1° cell**
+  (`areaCell()`: the grid point nearest the rounded centroid) out to **55 mi**
+  (`AREA_FETCH_RADIUS_MILES` = 50 max choice + 5 slack; a centroid is ≤ ≈ 4.9 mi from its grid
+  point — areaMatch.test.ts checks it), each location's `machine_ids` included. Each user's own area is
+  cut locally by haversine from their own centroid. Cached in `pm_area_cache` (trimmed: id, name,
+  city, state, lat, lon, machineIds), **7-day TTL**, in-flight de-dup, failures negatively cached 1 h
+  **in the row**, stale copy served on failure, `allowLive` charged only when a request would go out
+  (`takeAreaLive`, pmGuards.ts: **4/h + 10/day per user, 100/day global**, in memory). Never written
+  to `pm_location_cache` (no xref ids → would break score posting). Step 0 (2026-10-02): PM's
+  `locations_controller.rb` caps `max_distance` at 800 for no_details (500 otherwise), default 50,
+  **no result-count cap**; the one live recording (Portland cell 45.5,-122.7 at 55 mi) = 342
+  locations, 1,403 machine entries, ~250 KB, 762 ms. Fixture:
+  `fixtures/pm/locations_closest_by_lat_lon.json_lat=45.5_lon=-122.7_max_distance=55_…`
+  (`record-pm-fixtures.ts --area <lat,lng,miles>`).
+- **Matching** (`matchAreaSides`, pure): **exact model only** (same PM machine id). Both areas → the
+  machines in both; one area → it ∩ the other player's reach (viewer levels 1–2, friend 1–3) mapped to
+  PM ids via the stored catalog (name, else exact OPDB id). Rank: familiar (either player's picks /
+  scores or the friend's reach) → most spots on the scarcer side → viewer's nearest spot → id; cap
+  10. PM ids → TiltTrack rows by lowercased name, then exact OPDB id; `machineId: null` when none.
+- **Privacy.** The friend's half of a match is `{kind:'area', spotCount}` or `{kind:'reach', level}`
+  — built field by field, so no venue name, distance, ZIP or coordinate can ride along — plus
+  `theirPlace` (their ZIP's city). The viewer's half lists their own nearest 3 spots with miles and
+  `pmLocationUrl()` links (attribution). The activity log (`profile.challenge_area_updated`, standard
+  tier) records the radius and whether the ZIP changed — never the ZIP.
+- **Worst-case Pinball Map calls/day**: recommendations 0 · saving an area 0 (HERE only) · one
+  Expand ≤ 2 live (one per distinct cell, 0 when both cached, friends in one cell share 1) ·
+  expand/machine 0 · ≤ 10 per user per day · **≤ 100/day global hard cap** · steady state ≈ K/7 a
+  day for K active cells (today ≈ 0–2/day; 100 users in ~40 cells ≈ 6/day). Absolute worst:
+  min(100, 10 × active users).
+- `challengeReach.ts` still imports nothing Pinball Map (`challengeArea.ts` imports it, not the
+  reverse; test-challenges.ts checks).
+- Tests: `npx tsx --test src/lib/areaMatch.test.ts` (ZIP/radius, cell slack at US latitudes, ranking,
+  cap, privacy, the Solar City case on the Portland fixture);
+  `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/pmAreaCache.test.ts
+  src/lib/challengeArea.test.ts` (TTL hit = 0 calls, de-dup, negative cache, stale-on-failure,
+  `allowLive` refusal; PUT validation, the HERE ZIP geocode); `test-challenges.ts` "Last Resort"
+  section (dev branch; HERE double for ZIPs; one PM request from the fixture, then 0; friend side =
+  count + city; expand/machine; restores `pm_area_cache` and removes the areas).
 
 ## Full-size score photos (`src/lib/photoStore.ts`, `routes/scorePhotos.ts`, migrate17, added 2026-09-26)
 - **Storage:** Cloudflare R2, private buckets — `tilttrack-photos-dev` (local/dev) and `tilttrack-photos`

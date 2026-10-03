@@ -4,6 +4,9 @@ import {
 } from '../lib/challenges.js';
 import { parseDeclineReason } from '../lib/challengeRules.js';
 import { recommendationsFor, groupRecommendationsFor } from '../lib/challengeReach.js';
+import { expandFor, machineForAreaMatch } from '../lib/challengeArea.js';
+import { SlidingRateLimiter } from '../lib/nearbyLookup.js';
+import { refuseIfLimited, takeAreaLive } from '../lib/pmGuards.js';
 import { logActivity, actorOf } from '../lib/activity.js';
 
 // Challenges (feature/challenges, phase 2). Rules: lib/challengeRules.ts; orchestration:
@@ -77,6 +80,36 @@ router.get('/recommendations/:username', async (req, res) => {
   try {
     res.json(await recommendationsFor((req as any).appUser, req.params.username));
   } catch (err) { fail(res, err, 'Load recommendations'); }
+});
+
+// Last Resort "Expand search" (feature/last-resort). The route itself is cheap (our tables + a cached
+// cell) but rate limited anyway; the Pinball Map half is charged separately and only when a cell
+// actually goes live (takeAreaLive: 4/h + 10/day per user, 100/day for everyone — pmGuards.ts).
+const expandLimiter = new SlidingRateLimiter([{ ms: 60_000, max: 6 }, { ms: 60 * 60_000, max: 60 }]);
+setInterval(() => expandLimiter.sweep(), 10 * 60_000).unref();
+
+// POST /api/challenges/recommendations/:username/expand — machines you and this friend could meet on
+// using your Last Resort areas (exact model only). POST because it can reach Pinball Map: ≤ 1
+// closest_by_lat_lon per distinct 0.1° cell (so ≤ 2), only when that cell's cached copy is older than
+// 7 days. Friends only (403 not_friends). The friend's side is a spot count + their area's city —
+// never names, distances, ZIP or coordinates (lib/challengeArea.ts).
+router.post('/recommendations/:username/expand', async (req, res) => {
+  const user = (req as any).appUser;
+  if (refuseIfLimited(res, expandLimiter.take(String(user.id)), 'Too many searches — wait a moment and try again')) return;
+  try {
+    res.json(await expandFor(user, req.params.username, { allowLive: () => takeAreaLive(String(user.id)) }));
+  } catch (err) { fail(res, err, 'Expand search'); }
+});
+
+// POST /api/challenges/recommendations/:username/expand/machine {pmMachineId} — picking an Expand
+// match TiltTrack has no machine row for creates it from the STORED Pinball Map catalog (zero Pinball
+// Map requests). Only ids an Expand search returned to you in the last 30 min (404 not_offered).
+router.post('/recommendations/:username/expand/machine', async (req, res) => {
+  const user = (req as any).appUser;
+  if (refuseIfLimited(res, expandLimiter.take(String(user.id)), 'Too many searches — wait a moment and try again')) return;
+  try {
+    res.json(await machineForAreaMatch(user.id, req.body?.pmMachineId));
+  } catch (err) { fail(res, err, 'Add that machine'); }
 });
 
 // GET /api/challenges/:id — detail with live standings and each participant's counting scores.
