@@ -9,6 +9,7 @@ import { getAuth } from '@clerk/express';
 import { visibleScoreSql } from '../lib/venueActivity.js';
 import { hasFullPhotoSql, hasThumbnailSql } from '../lib/photoStore.js';
 import { machineInInventory } from '../lib/venueInventory.js';
+import { machineVenueCounts, venuesForMachine } from '../lib/machineVenues.js';
 import {
   parseComparisonScope, resolveComparisonScope, scopeFilterSql, scoreGroupSql, scopeView, POD_NOT_FOUND,
 } from '../lib/comparisonScope.js';
@@ -63,9 +64,35 @@ router.get('/', async (req, res) => {
       topScorerByMachineId = new Map(topScorers.map(t => [t.machineId, t.username]));
     }
 
-    res.json(rows.map(r => ({ ...r, topScorerUsername: topScorerByMachineId.get(r.id) ?? null })));
+    // "X Venues" pill: venues the machine is on the floor at right now — public venues plus private
+    // ones this requester may see activity for. Ignores ?mine (a fact about the machine, not about
+    // you). One GROUP BY over cached rosters + our own tables; zero Pinball Map calls (machineVenues.ts).
+    const venueCounts = await machineVenueCounts(q => db.execute(q), requester);
+
+    res.json(rows.map(r => ({
+      ...r,
+      topScorerUsername: topScorerByMachineId.get(r.id) ?? null,
+      venueCount: venueCounts.get(r.id) ?? 0,
+    })));
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch machines' });
+  }
+});
+
+// GET /api/machines/:id/venues — where this machine is on the floor, and where it used to be. Public
+// venues by name; others' private venues only as a count (never named); your own private venues
+// listed. Reads cached rosters only — zero Pinball Map calls. Registered before /:name.
+router.get('/:id/venues', async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid machine id' });
+  try {
+    const requester = await resolveRequester(req);
+    const [machine] = await db.select({ id: machines.id, name: machines.name }).from(machines).where(eq(machines.id, id)).limit(1);
+    if (!machine) return res.status(404).json({ error: 'Machine not found' });
+    res.json({ machine, ...(await venuesForMachine(q => db.execute(q), id, requester)) });
+  } catch (err) {
+    console.error('Machine venues error:', err);
+    res.status(500).json({ error: 'Failed to fetch machine venues' });
   }
 });
 

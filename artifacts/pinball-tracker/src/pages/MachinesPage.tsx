@@ -10,6 +10,7 @@ import { useScopeContext } from '../lib/ScopeContext';
 import { ScopeToggle } from '../components/ScopeToggle';
 import { PinballIcon } from '../components/PinballIcon';
 import UsernameLink from '../components/UsernameLink';
+import MachineVenuesModal from '../components/MachineVenuesModal';
 import { queryClient } from '../lib/queryClient';
 import { format } from 'date-fns';
 
@@ -23,6 +24,8 @@ interface Machine {
   playCount: number;
   lastPlayed: string | null;
   topScorerUsername: string | null;
+  /** Venues it's on the floor at now (public + private ones you may see), whatever the Mine toggle. */
+  venueCount?: number;
 }
 
 interface EditMachine {
@@ -42,6 +45,7 @@ export default function MachinesPage() {
   const [showUnplayed, setShowUnplayed] = useState(false);
   const [editMachine, setEditMachine] = useState<EditMachine | null>(null);
   const [deleteMachineId, setDeleteMachineId] = useState<number | null>(null);
+  const [venuesMachine, setVenuesMachine] = useState<{ id: number; name: string } | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>('name');
   const [sortDir, setSortDir] = useState<SortDir>('asc');
   const [, navigate] = useLocation();
@@ -229,8 +233,21 @@ export default function MachinesPage() {
                             </span>
                           )}
                         </div>
-                        {(m.manufacturer || m.year) && (
-                          <p className="text-xs text-muted-foreground">{[m.manufacturer, m.year].filter(Boolean).join(' · ')}</p>
+                        {(m.manufacturer || m.year || !!m.venueCount) && (
+                          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                            {(m.manufacturer || m.year) && (
+                              <p className="text-xs text-muted-foreground">{[m.manufacturer, m.year].filter(Boolean).join(' · ')}</p>
+                            )}
+                            {/* Where it's on the floor now — opens the venues modal, not the machine page. */}
+                            {!!m.venueCount && (
+                              <button
+                                onClick={e => { e.stopPropagation(); setVenuesMachine({ id: m.id, name: m.name }); }}
+                                className="text-xs px-1.5 py-0.5 rounded border bg-venue/10 border-venue/30 text-venue font-medium hover:bg-venue/20 transition-colors whitespace-nowrap"
+                              >
+                                {m.venueCount} {m.venueCount === 1 ? 'Venue' : 'Venues'}
+                              </button>
+                            )}
+                          </div>
                         )}
                       </div>
                     </div>
@@ -283,6 +300,8 @@ export default function MachinesPage() {
           </table>
         </div>
       )}
+
+      <MachineVenuesModal machine={venuesMachine} onClose={() => setVenuesMachine(null)} />
 
       {/* Edit dialog */}
       <Dialog.Root open={!!editMachine} onOpenChange={open => { if (!open) setEditMachine(null); }}>

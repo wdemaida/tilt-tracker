@@ -165,6 +165,7 @@ Feature-specific gotchas live in `artifacts/pinball-tracker/CLAUDE.md` (frontend
 | `artifacts/api-server/src/lib/venueHistory.ts` | Diffs live PM machine list vs. last snapshot; records arrivals/departures |
 | `artifacts/api-server/src/lib/venueRepair.ts` | Venue relink + score re-sync: permissions, machine-name matching, merge apply |
 | `artifacts/api-server/src/lib/pmRosterCache.ts` | 6h cache of PM machine rosters — the only sanctioned way to read a roster |
+| `artifacts/api-server/src/lib/machineVenues.ts` | Machines page "X Venues": on-the-floor / formerly-here venues per machine from cached rosters + inventories; others' homes only counted; 0 PM calls |
 | `artifacts/pinball-tracker/src/components/VenueRepairPanel.tsx` | 3-step repair UI on the venue page (HERE → Pinball Map → re-sync) |
 | `artifacts/pinball-tracker/src/components/ScoreResyncModal.tsx` | Preview-and-confirm modal for re-syncing a venue's scores |
 | `artifacts/api-server/src/lib/photoStore.ts` | Full-size score photos on Cloudflare R2 — presign, HEAD checks, delete, orphans |

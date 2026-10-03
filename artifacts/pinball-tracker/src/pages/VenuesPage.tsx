@@ -14,6 +14,7 @@ import { queryClient } from '../lib/queryClient';
 import MapPage from './MapPage';
 import { MAP_VIEW_ENABLED } from '../lib/mapView';
 import { missingAddressLabel } from '../lib/venueAddressLabel';
+import { parseState } from '../lib/venueState';
 
 // Someone else's home venue arrives trimmed to what its card needs (name, the address its privacy
 // tier allows, counts) — no ownerId, tier, coordinates or timezone. Hence the optional fields.
@@ -41,18 +42,6 @@ interface Venue {
   needsAddress?: boolean;
   /** Whether *this* viewer may repair the venue (admin / owner / creator) — decided server-side. */
   canRepair?: boolean;
-}
-
-// Addresses look like "..., City, ST" or "..., City, ST ZIP, United States" — the state
-// abbreviation is whichever comma-separated segment starts with two uppercase letters.
-function parseState(address: string | null): string | null {
-  if (!address) return null;
-  const segments = address.split(',').map(s => s.trim());
-  for (let i = segments.length - 1; i >= 0; i--) {
-    const m = segments[i].match(/^([A-Z]{2})\b/);
-    if (m) return m[1];
-  }
-  return null;
 }
 
 type VenuesView = 'list' | 'map';
