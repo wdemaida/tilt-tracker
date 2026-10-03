@@ -582,3 +582,35 @@ export const siteContent = pgTable('site_content', {
 });
 
 export type SiteContent = typeof siteContent.$inferSelect;
+
+// ── Last Resort areas (migrate29, feature/last-resort) ───────────────────────────────────────────
+// A user's "Last Resort" area: a US ZIP + radius — anywhere within N miles they'd still drive to for
+// a challenge. Its own table (not users columns) so no `users` select can ever leak it. Only the ZIP
+// and its centroid rounded to 2 decimals (~1 km) are stored — never an address. Owner-only API;
+// a friend's Expand search sees a spot count + `place_label` (the ZIP's city), never these values.
+export const userChallengeAreas = pgTable('user_challenge_areas', {
+  userId: integer('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
+  postalCode: text('postal_code').notNull(),
+  country: text('country').default('US').notNull(),
+  lat: real('lat').notNull(),
+  lng: real('lng').notNull(),
+  /** "Dennis, MA" — from the geocode. */
+  placeLabel: text('place_label'),
+  radiusMiles: integer('radius_miles').notNull(),
+  /** areaCell(lat, lng).key — the pm_area_cache row this area reads. */
+  cellKey: text('cell_key').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+// Pinball Map locations around a 0.1° cell (closest_by_lat_lon, one request per cell, 7-day TTL —
+// src/lib/pmAreaCache.ts). `locations` is trimmed (id, name, city, state, lat, lon, machineIds).
+// last_error(_at) is the 1-hour negative cache. Never mixed with pm_location_cache (no xref ids).
+export const pmAreaCache = pgTable('pm_area_cache', {
+  cellKey: text('cell_key').primaryKey(),
+  fetchRadiusMiles: integer('fetch_radius_miles').notNull(),
+  locations: jsonb('locations'),
+  locationCount: integer('location_count'),
+  fetchedAt: timestamp('fetched_at', { withTimezone: true }),
+  lastError: text('last_error'),
+  lastErrorAt: timestamp('last_error_at', { withTimezone: true }),
+});

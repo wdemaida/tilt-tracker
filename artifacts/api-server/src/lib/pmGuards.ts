@@ -30,8 +30,30 @@ export const pmAuthLimiter = new SlidingRateLimiter([{ ms: 15 * 60_000, max: 5 }
 /** POST /api/pinballmap/submit-score. PM's own limit is 80 per 2 min per IP — for all of us. */
 export const pmSubmitLimiter = new SlidingRateLimiter([{ ms: 60_000, max: 10 }]);
 
+/**
+ * Last Resort "Expand search" (feature/last-resort) — live area fetches only (pmAreaCache's
+ * `allowLive`; a cached cell costs nothing). Per user: 4 an hour, 10 a day.
+ */
+export const areaPmLimiter = new SlidingRateLimiter([
+  { ms: 60 * 60_000, max: 4 },
+  { ms: 24 * 60 * 60_000, max: 10 },
+]);
+/** …and for everyone together, a hard 100 live area fetches a day (key 'global'). */
+export const areaGlobalLimiter = new SlidingRateLimiter([{ ms: 24 * 60 * 60_000, max: 100 }]);
+export const AREA_GLOBAL_KEY = 'global';
+/**
+ * Charges one live area fetch to `userKey` and to the global cap; false = refuse. The global cap is
+ * checked by its own take() only after the user's has room, so a user over their limit never eats
+ * into everyone else's.
+ */
+export function takeAreaLive(userKey: string): boolean {
+  if (!areaPmLimiter.take(userKey).ok) return false;
+  return areaGlobalLimiter.take(AREA_GLOBAL_KEY).ok;
+}
+
 setInterval(() => {
   pmMachinesLimiter.sweep(); repairPmLimiter.sweep(); challengePmLimiter.sweep(); pmAuthLimiter.sweep(); pmSubmitLimiter.sweep();
+  areaPmLimiter.sweep(); areaGlobalLimiter.sweep();
 }, 10 * 60_000).unref();
 
 /** Sends the standard 429 for a refused decision. Returns true when it did. */

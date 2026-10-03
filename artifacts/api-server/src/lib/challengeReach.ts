@@ -1,6 +1,6 @@
 import {
   db, users, machines, venues, scores, venueMachineHistory, venueInventory, pmLocationCache,
-  userChallengeMachines, userChallengeVenues, friendships,
+  userChallengeMachines, userChallengeVenues, friendships, userChallengeAreas,
 } from '@workspace/db';
 import { and, asc, eq, gte, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { canSeeVenueActivity, visibleScoreSql, type Viewer } from './venueActivity.js';
@@ -413,9 +413,26 @@ export async function challengeMeFor(targetId: number, viewerId: number | null |
   return challengeMachines(targetId);
 }
 
+/**
+ * Whether the create form should offer Last Resort "Expand search" (feature/last-resort). Only says
+ * WHETHER each player has an area — never anything about it. The search itself is a separate POST
+ * (challengeArea.ts); this list never touches Pinball Map.
+ */
+export interface ExpandHint {
+  /** Either player has a Last Resort area, so Expand can find something. */
+  available: boolean;
+  /** available, and the list is thin (isThin) — the form shows a prominent button. */
+  suggested: boolean;
+  /** The viewer has an area (else the form links to setting one). */
+  mine: boolean;
+  /** The friend has one. */
+  theirs: boolean;
+}
+
 export interface RecommendationsView {
   user: UserRef;
   recommendations: Recommendation[];
+  expand: ExpandHint;
 }
 
 /** Fewer than this many recommendations the viewer can reach (levels 1–2) = a thin list. */
@@ -455,7 +472,15 @@ export async function recommendationsFor(viewer: AppUser, username: string, now 
   const best = await viewerBests(viewer.id, [...reachIds(theirs)]);
   // The viewer's reach is their levels 1–2; their recent play only earns "You played it lately".
   const { reach, lately } = viewerReachOf(mine);
-  return { user: target, recommendations: mergeRecommendations(theirs, reach, best, REC_CAPS, lately) };
+  const recommendations = mergeRecommendations(theirs, reach, best, REC_CAPS, lately);
+  const withArea = new Set((await db.select({ id: userChallengeAreas.userId }).from(userChallengeAreas)
+    .where(inArray(userChallengeAreas.userId, [viewer.id, target.id]))).map(r => r.id));
+  const available = withArea.size > 0;
+  return {
+    user: target,
+    recommendations,
+    expand: { available, suggested: available && isThin(recommendations), mine: withArea.has(viewer.id), theirs: withArea.has(target.id) },
+  };
 }
 
 export interface GroupRecommendationsView {
