@@ -178,12 +178,15 @@ router.get('/:name', async (req, res) => {
   }
 });
 
-// POST /api/machines — upsert a machine, enriching with PM data
-router.post('/', async (req, res) => {
+// POST /api/machines — upsert a machine, enriching with PM data. Signed-in app users only: it mints a
+// global machine row (from the stored catalog when the name resolves — machineCanonical.ts — else the
+// name as given), so it used to be an open way to create junk rows. Callers: AddScorePage's save and
+// EditScoreDialog, both through useApi() (authenticated) and both behind sign-in already.
+router.post('/', requireAppUser, async (req, res) => {
   const { name, opdbId, ipdbId, variant, manufacturer, year } = req.body;
-  if (!name) return res.status(400).json({ error: 'name is required' });
+  if (typeof name !== 'string' || !name.trim()) return res.status(400).json({ error: 'name is required' });
   try {
-    const row = await upsertMachineByName(name, { opdbId, ipdbId, variant, manufacturer, year });
+    const row = await upsertMachineByName(name.trim(), { opdbId, ipdbId, variant, manufacturer, year });
     res.status(201).json(row);
   } catch (err) {
     console.error('Upsert machine error:', err);

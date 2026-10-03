@@ -1,6 +1,7 @@
 import { db, machines } from '@workspace/db';
 import { sql } from 'drizzle-orm';
-import { getCatalogOrNull, catalogIndex, type PinballMachine } from './pinballMap.js';
+import { getCatalogOrNull, type PinballMachine } from './pinballMap.js';
+import { resolveCanonicalName } from './machineCanonical.js';
 
 interface UpsertMachineOptions {
   opdbId?: string;
@@ -15,13 +16,17 @@ interface UpsertMachineOptions {
   catalog?: PinballMachine[] | null;
 }
 
-export async function upsertMachineByName(name: string, opts: UpsertMachineOptions = {}) {
+export async function upsertMachineByName(rawName: string, opts: UpsertMachineOptions = {}) {
   const { opdbId, ipdbId, variant, manufacturer, year } = opts;
 
   // Enrich from the Pinball Map catalog (DB-cached, see pinballMap.ts); caller-provided
-  // manufacturer/year are fallbacks when the lookup misses.
+  // manufacturer/year are fallbacks when the lookup misses. The name itself is canonicalized first
+  // (machineCanonical.ts): an AI read like "Jaws Pro Edition" becomes the catalog's "JAWS (Pro)" and
+  // lands on that row, instead of a new image-less row of its own. A miss keeps the name as given.
   const catalog = opts.catalog !== undefined ? opts.catalog : await getCatalogOrNull();
-  const pm = catalog ? catalogIndex(catalog).get(name.toLowerCase()) : undefined;
+  const match = catalog ? resolveCanonicalName(rawName, { catalog }) : null;
+  const pm = match?.entry;
+  const name = match?.name ?? rawName;
 
   const [row] = await db
     .insert(machines)

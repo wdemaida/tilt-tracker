@@ -1,6 +1,6 @@
 import { db, machines, scores } from '@workspace/db';
 import { eq, sql } from 'drizzle-orm';
-import { normalizeMachineName } from './venueRepair.js';
+import { resolveCanonicalName } from './machineCanonical.js';
 
 export interface MachineScoreStats {
   machineId: number | null;
@@ -15,8 +15,8 @@ const EMPTY: MachineScoreStats = { machineId: null, machineName: null, count: 0,
 /**
  * Resolves a machine the same way scores are attached to one — machine rows are unique by name and
  * every score points at a row by id (see machineUpsert.ts). Tries the id, then a case-insensitive
- * exact name, then `normalizeMachineName` (only when exactly one row matches — ambiguity is not a
- * match, same rule as venue repair).
+ * exact name, then the shared canonical-name rule (machineCanonical.ts, catalog tiers: normalized
+ * base + edition, only when exactly one row matches — ambiguity is not a match).
  */
 async function resolveMachine(opts: { machineId?: number; name?: string }): Promise<{ id: number; name: string } | null> {
   if (opts.machineId != null && Number.isInteger(opts.machineId)) {
@@ -33,11 +33,8 @@ async function resolveMachine(opts: { machineId?: number; name?: string }): Prom
     .limit(1);
   if (exact) return exact;
 
-  const target = normalizeMachineName(name);
-  if (!target) return null;
   const all = await db.select({ id: machines.id, name: machines.name }).from(machines);
-  const hits = all.filter(m => normalizeMachineName(m.name) === target);
-  return hits.length === 1 ? hits[0] : null;
+  return resolveCanonicalName(name, { catalog: all })?.entry ?? null;
 }
 
 /** Read-only: count and median of the scores recorded on a machine. */

@@ -2,6 +2,7 @@ import { db, scores, machines, venueMachineHistory, venueInventory, challenges }
 import { and, eq, count, inArray } from 'drizzle-orm';
 import { upsertMachineByName } from './machineUpsert.js';
 import { getCatalogOrNull } from './pinballMap.js';
+import { machineNameKey, resolveCanonicalName } from './machineCanonical.js';
 import type { PmLocationMachineXref } from './pinballmapApi.js';
 
 export interface RepairableVenue {
@@ -26,23 +27,12 @@ export function canRepairVenue(venue: RepairableVenue, actor: RepairActor): bool
   return false;
 }
 
-// Strips the things that differ between what the AI read off a backglass and what Pinball Map calls
-// the same machine: case, punctuation, a leading article, and the edition suffix operators use
-// ("(Pro)", "(Premium)", "(LE)"). Deliberately does NOT strip subtitles — "King Kong: Myth of Terror
-// Island" and "King Kong" are different enough that collapsing them would be a guess, not a match.
-export function normalizeMachineName(name: string): string {
-  return name
-    .toLowerCase()
-    // Fold diacritics before the a-z0-9 filter below, or "Pokémon" becomes "pok mon" and stops
-    // matching Pinball Map's "Pokemon" — accented titles are common enough to matter.
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/\((pro|premium|le|limited edition|classic|special edition|se)\)/g, ' ')
-    .replace(/[^a-z0-9]+/g, ' ')
-    .replace(/^the /, '')
-    .trim()
-    .replace(/\s+/g, ' ');
-}
+// The comparable form of a machine name — one definition, in machineCanonical.ts: case, diacritics,
+// punctuation, a leading article, and the edition ("(Pro)", "Pro Edition", "(Remake LE)") kept as a
+// separate part of the key, so "JAWS (Pro)" and "Jaws Pro Edition" agree but Pro and Premium don't.
+// Deliberately does NOT strip subtitles — "King Kong: Myth of Terror Island" and "King Kong" are
+// different enough that collapsing them would be a guess, not a match.
+export const normalizeMachineName = machineNameKey;
 
 export type MatchConfidence = 'exact' | 'normalized' | 'fuzzy' | 'unmatched';
 
@@ -63,28 +53,15 @@ function matchAgainstPm(
   machineName: string,
   pmXrefs: PmLocationMachineXref[],
 ): { confidence: MatchConfidence; pm: PmLocationMachineXref | null } {
-  const exact = pmXrefs.find(x => x.machine.name.toLowerCase() === machineName.toLowerCase());
-  if (exact) return { confidence: 'exact', pm: exact };
-
-  const norm = normalizeMachineName(machineName);
-  if (!norm) return { confidence: 'unmatched', pm: null };
-
-  const normalized = pmXrefs.find(x => normalizeMachineName(x.machine.name) === norm);
-  if (normalized) return { confidence: 'normalized', pm: normalized };
-
-  // An operator's fuller title usually *starts* with what the backglass says ("Transformers" →
-  // "Transformers: More Than Meets the Eye"). Require the shorter side to be a whole-word prefix of
-  // the longer so "Rush" can't latch onto an unrelated title that merely contains those letters.
-  const fuzzy = pmXrefs.filter(x => {
-    const pmNorm = normalizeMachineName(x.machine.name);
-    if (!pmNorm) return false;
-    const [shorter, longer] = norm.length <= pmNorm.length ? [norm, pmNorm] : [pmNorm, norm];
-    return longer === shorter || longer.startsWith(`${shorter} `);
-  });
-  // Ambiguity is not a match — "Transformers" against both "(Pro)" and "(LE)" needs a human.
-  if (fuzzy.length === 1) return { confidence: 'fuzzy', pm: fuzzy[0] };
-
-  return { confidence: 'unmatched', pm: null };
+  // The roster tiers of resolveCanonicalName (machineCanonical.ts): exact → normalized (same base and
+  // edition, or no edition against a lone same-base title) → fuzzy (an operator's fuller title usually
+  // *starts* with what the backglass says — "Transformers" → "Transformers: More Than Meets the Eye" —
+  // as a whole-word prefix, so "Rush" can't latch onto a title that merely contains those letters).
+  // Every tier needs exactly one candidate: "Transformers" against both "(Pro)" and "(LE)" needs a human.
+  const roster = pmXrefs.map(x => ({ name: x.machine.name, xref: x }));
+  const match = resolveCanonicalName(machineName, { roster });
+  if (!match) return { confidence: 'unmatched', pm: null };
+  return { confidence: match.confidence, pm: match.entry.xref };
 }
 
 export interface RankedRosterEntry {

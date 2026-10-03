@@ -17,6 +17,7 @@ import {
 } from '../lib/fullSizePhoto';
 import { extractVideoFrames, isVideoFile, VideoFrameError, VIDEO_UNSUPPORTED_MESSAGE } from '../lib/videoFrames';
 import { pmLookupFor } from '../lib/pmLookup';
+import { resolveCanonicalName, machineNameParts } from '../lib/machineCanonical';
 import { markCameraPending, clearCameraPending, takeFreshCameraPending } from '../lib/cameraReturn';
 import { playedTimeLockFor, isLockedPlayedAt, lockedFromLabel, type PlayedTimeLock, type PlayedAtSource } from '../lib/captureTime';
 import { useAppUser } from '../lib/useAppUser';
@@ -503,34 +504,47 @@ export default function AddScorePage() {
     return [];
   }, [venueData, pmOnlyData]);
 
-  // Auto-select once PM data loads if the AI-detected name is an exact match
+  // The venue machine the photo's read resolves to, by the same rule the server uses when it saves a
+  // machine (lib/machineCanonical.ts — a byte-identical copy of the api-server's): exact, then
+  // punctuation/diacritics/edition-normalized ("Jaws Pro Edition" → "JAWS (Pro)"), then a unique
+  // whole-word prefix. Only a unique answer counts; "Jaws" at a venue with Pro and Premium is null.
+  const canonicalVenueMatch = useMemo(
+    () => (aiDetectedMachine && allVenueMachines.length > 0
+      ? resolveCanonicalName(aiDetectedMachine, { roster: allVenueMachines })?.entry ?? null
+      : null),
+    [allVenueMachines, aiDetectedMachine],
+  );
+
+  // Auto-select once the venue's machines load if the read resolves to exactly one of them.
   useEffect(() => {
-    if (machineAutoSelected.current || !aiDetectedMachine || allVenueMachines.length === 0) return;
-    const match = allVenueMachines.find(m => m.name.toLowerCase() === aiDetectedMachine.toLowerCase());
-    if (match) {
-      setSelectedMachine(match.name);
-      setMachineSearch(match.name);
-      setValue('machineName', match.name);
-      if (match.manufacturer || match.year) setSelectedMachineExtra({ manufacturer: match.manufacturer, year: match.year });
-      machineAutoSelected.current = true;
-    }
-  }, [allVenueMachines, aiDetectedMachine]);
+    if (machineAutoSelected.current || !canonicalVenueMatch) return;
+    const match = canonicalVenueMatch;
+    setSelectedMachine(match.name);
+    setMachineSearch(match.name);
+    setValue('machineName', match.name);
+    if (match.manufacturer || match.year) setSelectedMachineExtra({ manufacturer: match.manufacturer, year: match.year });
+    machineAutoSelected.current = true;
+  }, [canonicalVenueMatch]);
 
   const filteredVenueMachines = useMemo(() => {
     if (!machineSearch) return allVenueMachines;
     return allVenueMachines.filter(m => m.name.toLowerCase().includes(machineSearch.toLowerCase()));
   }, [allVenueMachines, machineSearch]);
 
-  // For PM list mode: all machines, AI-matching ones floated to top
+  // For PM list mode: all machines, AI-matching ones floated to top — the resolved match first, then
+  // anything sharing the read's title (so "Jaws" at a Pro + Premium venue lists both editions up top).
   const sortedVenueMachines = useMemo(() => {
     if (!aiDetectedMachine) return allVenueMachines;
     const ai = aiDetectedMachine.toLowerCase();
-    return [...allVenueMachines].sort((a, b) => {
-      const aMatch = a.name.toLowerCase().includes(ai) ? 0 : 1;
-      const bMatch = b.name.toLowerCase().includes(ai) ? 0 : 1;
-      return aMatch - bMatch;
-    });
-  }, [allVenueMachines, aiDetectedMachine]);
+    const aiBase = machineNameParts(aiDetectedMachine).base;
+    const rank = (m: { name: string }) => {
+      if (canonicalVenueMatch && m.name === canonicalVenueMatch.name) return 0;
+      if (m.name.toLowerCase().includes(ai)) return 1;
+      const base = machineNameParts(m.name).base;
+      return aiBase && base && (base === aiBase || base.startsWith(`${aiBase} `) || aiBase.startsWith(`${base} `)) ? 1 : 2;
+    };
+    return [...allVenueMachines].sort((a, b) => rank(a) - rank(b));
+  }, [allVenueMachines, aiDetectedMachine, canonicalVenueMatch]);
 
   // Fallback machine search (used when no PM machine data available)
   const { data: machineSuggestions = [] } = useQuery({
@@ -577,7 +591,7 @@ export default function AddScorePage() {
     staleTime: Infinity,
   });
 
-  const { register, handleSubmit, setValue, watch, formState: { errors, isSubmitting } } = useForm<FormData>({
+  const { register, handleSubmit, setValue, setError, clearErrors, watch, formState: { errors, isSubmitting } } = useForm<FormData>({
     resolver: zodResolver(schema),
     // Local wall clock, not UTC — see datetime.ts for why toISOString() is wrong here.
     defaultValues: { type: 'casual', playedAt: toLocalInput(new Date()), scoreUnfilled: 0 },
@@ -759,6 +773,12 @@ export default function AddScorePage() {
     return reasons;
   }, [currentScoreTemplate, scoreRead, machineScoreStats]);
 
+  // A venue machine list is showing and nothing is picked from it yet. The form's machineName still
+  // holds the photo's raw read (it pre-fills the free-text box), but that's a hint here, not a choice.
+  // Same condition the machine step uses to show the list (loading included), so a save can't slip
+  // the raw read through while the venue's machines are still on their way.
+  const needsMachinePick = (allVenueMachines.length > 0 || venueDataLoading || pmOnlyLoading) && !machineFreeText && !selectedMachine;
+
   // True when the effective machine name (selected or AI-detected) isn't in the PM list for this venue
   const effectiveMachineName = selectedMachine || aiDetectedMachine;
   const machineNotInPm = effectiveMachineName.length > 0
@@ -768,7 +788,7 @@ export default function AddScorePage() {
   const createScore = useMutation({
     mutationFn: async ({ scoreUnfilled: _unfilled, ...data }: FormData) => {
       const machine = await api.machines.upsert({ name: data.machineName, ...selectedMachineExtra });
-      return api.scores.create({
+      const created = await api.scores.create({
         ...data,
         // The form holds a *wall clock*. Which zone it belongs to is the venue's, not the
         // browser's — that's what makes uploading a Chicago photo after you've flown home store the
@@ -789,6 +809,9 @@ export default function AddScorePage() {
         venuePinballMapId: effectivePmId,
         photoThumbnail: thumbnail ?? undefined,
       });
+      // The server may have saved a typed name under its catalog spelling ("Jaws Pro Edition" →
+      // "JAWS (Pro)"); step 4 (and its Pinball Map post) should use the name actually saved.
+      return { ...created, savedMachineName: typeof machine?.name === 'string' ? machine.name : null };
     },
     onSuccess: (row, data) => {
       queryClient.invalidateQueries({ queryKey: ['scores'] });
@@ -806,7 +829,7 @@ export default function AddScorePage() {
       const challenges: ChallengeFit[] = Array.isArray(row.challenges) ? row.challenges : [];
       if (challenges.length) invalidateChallengeQueries();
       setSavedScore({
-        id: row.id, venueId: row.venueId, machineName: data.machineName, score: data.score, newBadges, challenges,
+        id: row.id, venueId: row.venueId, machineName: row.savedMachineName ?? data.machineName, score: data.score, newBadges, challenges,
         machineId: row.machineId, type: row.type === 'tournament' ? 'tournament' : 'casual', playedAt: row.playedAt,
         playedAtSource: row.playedAtSource ?? null,
         venueName: row.venueName ?? null, venueTimezone: selectedVenue?.timezone ?? null,
@@ -1156,6 +1179,7 @@ export default function AddScorePage() {
   }
 
   function selectMachine(name: string, manufacturer?: string, year?: number) {
+    clearErrors('machineName');
     setSelectedMachine(name);
     setMachineSearch(name);
     setValue('machineName', name);
@@ -1698,6 +1722,13 @@ export default function AddScorePage() {
       {/* Step 3: Score details */}
       {step === 3 && (
         <form onSubmit={handleSubmit(d => {
+          // At a venue with a machine list, the photo's read is only a hint: saving needs a pick, or an
+          // explicit "Use … directly" / "Not listed? Type it". Otherwise an unmatched AI read ("Jaws
+          // Pro Edition") would be saved as a machine of its own, with no image and no catalog data.
+          if (needsMachinePick) {
+            setError('machineName', { type: 'manual', message: 'Pick the machine from the list (or use one of the options below it)' });
+            return;
+          }
           if (machineNotInPm) {
             setPendingFormData(d);
             setShowMachineConfirm(true);
@@ -1744,12 +1775,12 @@ export default function AddScorePage() {
             {(allVenueMachines.length > 0 || venueDataLoading || pmOnlyLoading) && !machineFreeText ? (
               <div className="flex flex-col gap-2">
 
-                {/* AI detection context — shown when AI found a name but no exact PM match yet */}
+                {/* The photo's read — a hint, shown until a machine is picked (a unique match is auto-picked) */}
                 {aiDetectedMachine && !selectedMachine && (
                   <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-500/25 bg-amber-500/10 text-sm">
-                    <span className="text-xs font-bold uppercase tracking-wider text-amber-400 whitespace-nowrap">AI read</span>
+                    <span className="text-xs font-bold uppercase tracking-wider text-amber-400 whitespace-nowrap">Read from photo</span>
                     <span className="text-white/80 font-medium truncate">"{aiDetectedMachine}"</span>
-                    <span className="text-xs text-muted-foreground ml-auto whitespace-nowrap">select version below</span>
+                    <span className="text-xs text-muted-foreground ml-auto whitespace-nowrap">pick it below</span>
                   </div>
                 )}
 
@@ -1808,7 +1839,7 @@ export default function AddScorePage() {
                 {!venueDataLoading && !pmOnlyLoading && (
                   <button
                     type="button"
-                    onClick={() => { setMachineFreeText(true); setSelectedMachine(''); setMachineSearch(aiDetectedMachine); setValue('machineName', aiDetectedMachine); }}
+                    onClick={() => { clearErrors('machineName'); setMachineFreeText(true); setSelectedMachine(''); setMachineSearch(aiDetectedMachine); setValue('machineName', aiDetectedMachine); }}
                     className="text-xs text-center text-muted-foreground hover:text-white/70 transition-colors py-0.5"
                   >
                     Not listed? Type the machine name
@@ -1854,7 +1885,7 @@ export default function AddScorePage() {
               </div>
             )}
             {errors.machineName && <p className="err">{errors.machineName.message}</p>}
-            {machineNotInPm && (
+            {machineNotInPm && !needsMachinePick && (
               <p className="text-xs text-yellow-400 mt-1">
                 "{effectiveMachineName}" wasn't found in the Pinball Map machine list for this venue — you'll be asked to confirm before saving.
               </p>

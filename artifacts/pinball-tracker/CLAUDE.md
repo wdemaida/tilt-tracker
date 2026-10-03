@@ -166,6 +166,27 @@
   switches to the catalog search input; before, a roster venue offered no way to enter an unlisted
   machine unless the AI had read a name.
 
+## Machine step: the photo's read is a hint, not a choice (`src/lib/machineCanonical.ts`, 2026-10-03)
+- Prod had "Jaws Pro Edition" and "No Good Gofers!" saved as machines of their own (no image, no OPDB
+  id) next to the roster's "JAWS (Pro)" / "No Good Gofers": auto-select only fired on an exact
+  case-insensitive match, and the raw read sat in the form's `machineName`, so "Save Anyway" saved it.
+- **`lib/machineCanonical.ts` is a byte-identical copy of `artifacts/api-server/src/lib/machineCanonical.ts`**
+  (the server's `upsertMachineByName` uses the same rule). Edit the api-server file and copy it over —
+  `machineCanonical.test.ts` there fails if the two differ. It's pure (no imports); a copy rather than
+  a cross-package import because Vercel builds this package alone (root `artifacts/pinball-tracker`).
+- Auto-select: `canonicalVenueMatch` = `resolveCanonicalName(read, { roster: allVenueMachines })` —
+  exact → normalized (base + edition, NFD-folded, punctuation-free) → no-edition read against a lone
+  same-base title → unique whole-word prefix. Only a unique answer is picked; "Jaws" at a venue with
+  Pro and Premium picks nothing (both float to the top of the list). The happy path is unchanged: a
+  resolvable read is pre-selected and Save works straight away.
+- **With a machine list showing (or loading), Save needs a pick** (`needsMachinePick`): the raw read
+  is only shown in the "Read from photo" banner; submitting without a pick sets a `machineName` error
+  instead of saving. Saving the raw read stays possible, but only explicitly — **Use "…" directly**
+  or **Not listed? Type the machine name** (which pre-fills the box with the read). Venues with no
+  list (free-text mode) still pre-fill the read; the server canonicalizes it against the catalog.
+- Step 4 shows (and posts to Pinball Map with) the machine name the server actually saved
+  (`savedMachineName` from `POST /api/machines`), which can be the catalog spelling of what was typed.
+
 ## Home-venue inventory and the show-publicly switch (added 2026-09-25)
 - The Edit Venue dialog is one component, `EditVenueDialog.tsx`, used by the Venues page card and
   the venue detail page header — same pencil, same permission (the row's server-computed

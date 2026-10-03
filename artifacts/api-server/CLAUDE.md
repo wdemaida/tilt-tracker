@@ -136,10 +136,47 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
 ## Venue repair (`src/lib/venueRepair.ts`, routes under `/api/venues/:id/repair/*`, added 2026-09-11)
 - Recovery path for a venue the upload flow never resolved: **1)** re-run HERE off the (possibly after-the-fact) address, **2)** link a Pinball Map location by search or manual id, **3)** re-sync the scores already logged there.
 - Permissions: **admin, the venue's `ownerId`, or its `createdById`** (`canRepairVenue`). `createdById` was added because upload-flow venues have no owner — without it, any user whose venue failed to resolve would need an admin to rescue them. Score re-syncs are scoped: a non-admin only ever previews and moves **their own** scores.
-- `normalizeMachineName()` folds case, punctuation, a leading "The", and edition suffixes (`(Pro)`/`(Premium)`/`(LE)`) — and **folds diacritics via NFD first**, or "Pokémon" becomes `pok mon` and stops matching PM's "Pokemon". It deliberately does *not* strip subtitles; "King Kong" and "King Kong: Myth of Terror Island" are different machines.
+- `normalizeMachineName()` is now `machineNameKey()` from `machineCanonical.ts` (see "Machine names" below) — case, diacritics (NFD), punctuation, a leading "The", with the edition kept as its own part of the key, so "Jaws Pro Edition" = "JAWS (Pro)" but Pro ≠ Premium. It deliberately does *not* strip subtitles; "King Kong" and "King Kong: Myth of Terror Island" are different machines. `matchAgainstPm` is `resolveCanonicalName(name, { roster })`.
 - **Per-score repair** (`/api/scores/:id/repair`, `POST .../repair/machine`) is the same machinery scoped to one score, for the edit-score modal. `rankRosterForName()` returns the venue's whole roster ranked against one machine name so the UI can show a recommendation *and* let the user override it. `retireMachineIfUnused()` is shared with the bulk path so neither strands an orphan machine row.
 - **`PATCH /api/scores/:id` is owner-or-admin**, not admin-only (changed 2026-09-11). It was `requireAdmin`, which meant no ordinary user could correct their own misread machine name — the exact thing the repair flow exists to fix. Mirrors how `DELETE` already worked.
 - Match tiers: `exact` → `normalized` → `fuzzy` (whole-word prefix, and **only when exactly one** candidate matches — ambiguity is not a match) → `unmatched`. Only `normalized` is pre-ticked in the UI; `fuzzy` requires a deliberate click, because a machine row is global and merging it rewrites that machine's identity at every venue.
+
+## Machine names — one canonicalizer (`src/lib/machineCanonical.ts`, 2026-10-03)
+- **Why:** prod machines 1674 "Jaws Pro Edition" and 1542 "No Good Gofers!" were AI reads saved
+  verbatim (no image / OPDB id / manufacturer / year) because `upsertMachineByName` only looked up the
+  exact lowercased name, and the old `normalizeMachineName` only stripped a *parenthesized* "(Pro)".
+- **`resolveCanonicalName(raw, { catalog?, roster? })`** — pure, no imports. Tiers, each accepting only
+  a **unique** candidate name (the catalog's duplicate titles count once): (1) exact, case-insensitive —
+  first, so a real title with an edition word ("Big Buck Hunter Pro") is never split; (2) same
+  (base, edition) from `machineNameParts()`: NFD diacritic fold, lowercase, apostrophes dropped,
+  `&`→and, punctuation → space, leading "the" dropped, edition = Pro / Premium / LE (Limited
+  [Edition]) / SE (Special [Edition]) / CE (Collector's [Edition]) taken from a parenthesized group's
+  tail ("(Remake LE)") or bare at the end ("Pro Edition"); other groups ("(Remake)", "(50th
+  Anniversary)", "(Home Edition)") stay in the base; (3) a read with **no** edition against a lone
+  same-base title — so "The Munsters" vs the catalog's Pro/Premium/LE stays unmatched; (4) **roster
+  only**: unique whole-word prefix of the base either way, editions compatible. A roster is tried
+  first (all tiers), then the catalog (tiers 1–3).
+- **Users:** `upsertMachineByName` (catalog — the row is created/updated under the catalog's own
+  name, so an AI read lands on "JAWS (Pro)"; a miss keeps the name as given); venue repair's
+  `matchAgainstPm` / `rankRosterForName` (roster); `machineScoreStats` (machine rows as the
+  candidate list, catalog tiers); the Add Score auto-select via a **byte-identical frontend copy**
+  (`artifacts/pinball-tracker/src/lib/machineCanonical.ts`; `machineCanonical.test.ts` fails if they
+  differ — edit here, copy there). The frontend matches against the venue list it already has, so
+  there's no resolve endpoint and no extra request. **PM calls/day: 0** — nothing new reads PM; the
+  upsert path uses the same 24 h catalog cache as before.
+- **`POST /api/machines` requires `requireAppUser`** (it mints global rows; it was open). Its callers —
+  AddScorePage's save and EditScoreDialog — use `useApi()` and sit behind sign-in already.
+- **`cleanup-machine-dupes.ts`** (one-off, dry run by default, `--apply` in one transaction; never
+  calls PM — reads `pm_catalog_cache` directly): merges 55 "Pokemon (Pro)" → 219 "Pokémon (Pro)" and
+  64 "Pokemon (Premium)" → 296 "Pokémon (Premium)" (venue_machine_history / venue_inventory merged
+  per (venue, machine), user_challenge_machines per (user, machine); refuses if scores, challenges,
+  badge rules or an unknown FK reference the source — FKs are discovered from `pg_constraint`),
+  deletes 798 "Test Machine XYZ" if unreferenced, and fills null opdb_id / image / manufacturer / year
+  on rows whose name **exactly** matches a catalog name (titles listed twice with different OPDB ids
+  are skipped). Leaves 162, 163, 997, 1542, 1674 alone. `reenrichMachines()` isn't used: it goes
+  through `getCatalogOrNull()`, which may refresh the catalog from PM.
+- Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/machineCanonical.test.ts`
+  (recorded catalog + the Happy Fortune / Special When Lit rosters from the Portland area fixture).
 
 ## Address-less venues (`src/lib/venueAddress.ts`, `/repair/place-search` + `/repair/place`, added 2026-09-24)
 - A venue typed in by name at upload with location services off has **no address, coordinates, HERE
