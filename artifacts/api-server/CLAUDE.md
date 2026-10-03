@@ -1573,10 +1573,17 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   (URL-encoded). The frontend re-checks with its twin `lib/internalPath.ts` before linking.
   **Disabled users never receive one:** 'all' = `disabled_at IS NULL`; picked disabled/unknown ids are
   returned in `skipped`; both go through the pure `selectRecipients()`. The sender is included in 'all'.
-- If the admin activity tier is set to 0 (off), sends still deliver but leave no history and the
-  duplicate check can't see them.
+- **`admin.announcement_sent` is written with `insertActivity()`, not `logActivity()`** (2026-10-03):
+  duplicate detection, history and retract all read it, so it bypasses the retention gate (admin tier
+  at 0 used to mean no record → double submits not caught, retract 404) and a failed insert rolls
+  the send back instead of being swallowed. The retract event uses `logActivity(…, { always: true })`.
+  Still true: an admin tier at 0 or N days lets the daily purge delete these events later — after
+  that the announcement drops out of history and can't be retracted (its notifications remain).
 - Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/announcements.test.ts
   src/lib/adminAuth.test.ts` (normalisation, the link validator's open-redirect / `javascript:` /
-  protocol-relative / encoded / whitespace cases, audience parsing, recipient selection, payloads).
-  No dev-DB script yet — the transaction (lock, count check, duplicate check, bulk insert) is
-  unverified against a real database.
+  protocol-relative / encoded / whitespace cases, audience parsing, recipient selection, payloads),
+  and `src/lib/announcements.db.test.ts` — end to end in PGlite through the real router: the lock
+  SQL, disabled/unknown skips, 409 count changed, 409 duplicate (requestId; content within 10 min;
+  `allowDuplicate`), bulk insert + `notification.sent`, per-recipient `{username}`, history order and
+  live delivered/unread, retract. PGlite is one connection, so the advisory lock is executed but
+  never contended there (Neon supports `hashtext` and `pg_advisory_xact_lock`).

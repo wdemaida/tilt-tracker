@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { db, users, notifications, activityEvents } from '@workspace/db';
 import { and, desc, eq, gte, inArray, isNull, lt, sql } from 'drizzle-orm';
-import { logActivity, type ActivityInput } from './activity.js';
+import { insertActivity, logActivity, type ActivityInput } from './activity.js';
 import { raiseNotificationsBulk, type Executor } from './notify.js';
 
 // Admin announcements (feature/admin-announcements, 2026-10-03): an admin sends a short plain-text
@@ -301,7 +301,10 @@ export async function sendAnnouncement(
     }
     const announcementId = randomUUID();
     const sent = await raiseNotificationsBulk(tx, 'announcement', buildNotificationItems(announcementId, input.text, recipients), 'announcementId');
-    await logActivity({
+    // insertActivity, not logActivity: this event is load-bearing (duplicate detection, history and
+    // retract all read it), so it must be written even when the admin retention tier is set to
+    // "don't record", and a failed insert must roll the send back rather than be swallowed.
+    await insertActivity({
       type: 'admin.announcement_sent', ...meta, targetType: 'announcement', targetId: announcementId,
       payload: {
         announcementId, title: input.text.title, body: input.text.body, link: input.text.link,
@@ -309,7 +312,7 @@ export async function sendAnnouncement(
         userIds: recipients.slice(0, EVENT_USER_IDS).map(r => r.id),
         skippedCount: skipped.length, requestId: input.requestId,
       },
-    }, { tx });
+    }, tx);
     return { ok: true as const, announcementId, sent, skipped };
   });
 }
@@ -398,7 +401,7 @@ export async function retractAnnouncement(
     await logActivity({
       type: 'admin.announcement_retracted', ...meta, targetType: 'announcement', targetId: announcementId,
       payload: { announcementId, title: (sent.payload as any)?.title ?? null, removed: gone.length },
-    }, { tx });
+    }, { tx, always: true }); // history's retractedAt reads it, like the sent event above
     return { status: 200, body: { announcementId, removed: gone.length } };
   });
 }
