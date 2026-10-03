@@ -17,8 +17,8 @@ import type { MachineOption } from './MachinePicker';
 // Picking one challenges on that exact model, with no venue lock.
 
 const MINE_REACH: Record<1 | 2 | 3, string> = {
-  1: 'On your “Challenge me on” list',
-  2: 'At one of your favorite spots',
+  1: 'On your preferred machines list',
+  2: 'At one of your preferred venues',
   3: 'You played it lately',
 };
 
@@ -28,7 +28,7 @@ function theirsText(m: ChallengeAreaMatch, username: string, place: string | nul
     return `${n} spot${n === 1 ? '' : 's'} near @${username}${place ? `, ${place}` : ''}`;
   }
   return m.theirs.level === 1 ? `@${username} wants to be challenged on it`
-    : m.theirs.level === 2 ? `At one of @${username}’s favorite spots`
+    : m.theirs.level === 2 ? `At one of @${username}’s preferred venues`
       : `@${username} played it lately`;
 }
 
@@ -99,7 +99,7 @@ export default function ExpandSearch({ username, hint, thin, onPick }: {
       <p className="mb-4 text-[11px] text-muted-foreground flex items-start gap-1.5">
         <Radar className="w-3 h-3 mt-0.5 flex-shrink-0" aria-hidden />
         <span>
-          Not much in common? <Link href="/crew?tab=challenges" className="text-friend hover:underline">Set your Last Resort area</Link> — a ZIP and how far you’d drive — to search beyond your favorite spots.
+          Not much in common? <Link href="/crew?tab=challenges" className="text-friend hover:underline">Set your Last Resort area</Link> — a ZIP and how far you’d drive — to search beyond your preferred venues.
         </span>
       </p>
     );

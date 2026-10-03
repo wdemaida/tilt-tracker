@@ -209,7 +209,7 @@ const ERROR_COPY: Record<string, string> = {
 /** Recommendation groups on the create form, most reliable first. */
 export const REC_LEVEL_LABEL: Record<1 | 2 | 3, string> = {
   1: 'Wants to be challenged on',
-  2: 'At a favorite spot',
+  2: 'At a preferred venue',
   3: 'Played lately',
 };
 

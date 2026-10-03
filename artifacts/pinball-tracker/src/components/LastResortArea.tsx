@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { Loader2, Lock, Radar } from 'lucide-react';
+import { Footprints, Loader2, Lock } from 'lucide-react';
 import { useApi } from '../lib/useApi';
 import { queryClient } from '../lib/queryClient';
 import { CHALLENGE_AREA_KEY, challengeErrorText } from '../lib/challenges';
 import type { ChallengeAreaResponse } from '../lib/api';
 
-// "Last Resort" (feature/last-resort) — under Favorite Challenge Locations in the "Machines you can
+// "My Last Resort" (feature/last-resort) — under My Preferred Venues in the "Machines you can
 // get to" card (ChallengeMeCard.tsx). A US ZIP + a radius: anywhere within N miles you'd still drive
 // to for a challenge. Matchmaking only looks at it when someone taps Expand search on the create form
 // (NewChallengePage's ExpandSearch). The server stores the ZIP and a rounded centroid, never an
@@ -58,8 +58,8 @@ export default function LastResortArea() {
 
   return (
     <div className="mt-5">
-      <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5 flex items-center gap-1.5">
-        <Radar className="w-3 h-3" aria-hidden /> Last Resort
+      <p className="text-[11px] uppercase tracking-wider text-friend mb-1.5 flex items-center gap-1.5">
+        <Footprints className="w-3.5 h-3.5 flex-shrink-0" aria-hidden /> My Last Resort
       </p>
       <p className="text-xs text-muted-foreground mb-2">
         How far you’d still drive for a challenge. Only used when a friend’s recommendations come up short and one of you taps <span className="text-white/80">Expand search</span>.

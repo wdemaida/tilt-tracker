@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Link } from 'wouter';
-import { ChevronDown, Home, Loader2, LocateFixed, MapPin, Plus, Search, Swords, X } from 'lucide-react';
+import { Building2, ChevronDown, Home, Loader2, LocateFixed, Lock, MapPin, Plus, Search, Swords, X } from 'lucide-react';
 import { useApi } from '../lib/useApi';
 import { queryClient } from '../lib/queryClient';
 import { CHALLENGE_PREFS_KEY, challengeErrorText } from '../lib/challenges';
@@ -9,6 +9,7 @@ import { useVenueSearch, MIN_PLACE_SEARCH_CHARS } from '../lib/venueSearch';
 import { getCurrentPosition, geoFailureMessage, CurrentPositionError } from '../lib/photoLocation';
 import MachinePicker, { type MachineOption } from './MachinePicker';
 import { MachineThumb } from './ChallengeParts';
+import { PinballIcon } from './PinballIcon';
 import DuplicateVenuePrompt, { duplicateCandidates, type DuplicateCandidate } from './DuplicateVenuePrompt';
 import LastResortArea from './LastResortArea';
 import type { ChallengeMeMachine, ChallengePrefs, ChallengePrefVenue, ChallengeVenueHit } from '../lib/api';
@@ -20,7 +21,7 @@ import type { ChallengeMeMachine, ChallengePrefs, ChallengePrefVenue, ChallengeV
 //    A place that isn't on TiltTrack yet (a friend's regular bar nobody has logged at) can be added
 //    too, from "Near me" or the search's Places fallback — the Add Score venue step's own endpoints
 //    (feature/pm-challenge-locations, see AddLocation). Friends' create forms recommend from these.
-//    Saved on every change. Under the locations, the "Last Resort" area (LastResortArea.tsx,
+//    Saved on every change. Under the locations, the "My Last Resort" area (LastResortArea.tsx,
 //    feature/last-resort): a ZIP + radius used only when someone taps Expand search.
 //  - A friend's profile: their "Challenge me on" machines as chips that open the create form on
 //    that exact model. (Challenge locations never show on a profile — only in the create flow.)
@@ -417,7 +418,7 @@ export function ChallengeMeEditor({ where }: { where: 'profile' | 'challenges' }
             Machines you can get to
             {busy && <Loader2 className="w-3 h-3 animate-spin" aria-hidden />}
           </span>
-          <span className="block text-xs text-muted-foreground mt-0.5">Help friends challenge you on machines you can actually play</span>
+          <span className="block text-xs text-muted-foreground mt-0.5">Help friends challenge you on machines you can actually play — friends will have machines recommended based on the below</span>
           <span className={`sm:hidden block text-xs mt-1 ${setUp ? 'text-white/80' : 'text-muted-foreground italic'}`}>{summary}</span>
         </span>
         <span className={`hidden sm:block text-xs flex-shrink-0 ${setUp ? 'text-white/80' : 'text-muted-foreground italic'}`}>{summary}</span>
@@ -426,9 +427,8 @@ export function ChallengeMeEditor({ where }: { where: 'profile' | 'challenges' }
 
       {open && (
         <div className="px-4 pb-4 -mt-1">
-          <p className="text-xs text-muted-foreground mb-3">Friends see these as recommendations when they challenge you.</p>
-
-          <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1.5">Challenge me on <span className="text-white/60">{machines.length}/{limits.machines}</span></p>
+          <p className="text-[11px] uppercase tracking-wider text-friend mb-1.5 flex items-center gap-1.5">
+            <PinballIcon className="w-3.5 h-3.5 flex-shrink-0" aria-hidden /> My Preferred Machines <span className="text-white/60">{machines.length}/{limits.machines}</span></p>
           <div className="flex flex-wrap items-center gap-2">
             {machines.map(m => (
               <span key={m.id} className={`${chip} border-machine/40 text-machine`}>
@@ -460,7 +460,8 @@ export function ChallengeMeEditor({ where }: { where: 'profile' | 'challenges' }
             </div>
           )}
 
-          <p className="text-[11px] uppercase tracking-wider text-muted-foreground mt-4 mb-0.5">Favorite Challenge Locations <span className="text-white/60">{venues.length}/{limits.venues}</span></p>
+          <p className="text-[11px] uppercase tracking-wider text-friend mt-4 mb-0.5 flex items-center gap-1.5">
+            <Building2 className="w-3.5 h-3.5 flex-shrink-0" aria-hidden /> My Preferred Venues <span className="text-white/60">{venues.length}/{limits.venues}</span></p>
           <p className="text-xs text-muted-foreground mb-1.5">Places you like to play — friends’ challenges look here first.</p>
           <div className="flex flex-wrap items-center gap-2">
             {venues.map(v => (
@@ -484,7 +485,10 @@ export function ChallengeMeEditor({ where }: { where: 'profile' | 'challenges' }
           {venuesFull
             ? <p className="text-[11px] text-muted-foreground mt-2">That’s the limit of {limits.venues} — remove one to add another.</p>
             : <AddLocation listedIds={venueIds} onAddId={addVenue} busy={busy} />}
-          <p className="text-[11px] text-muted-foreground mt-3">Friends never see a home venue’s name — its machines just show as “at home”.</p>
+          <p className="text-[11px] text-muted-foreground mt-3 flex items-start gap-1.5">
+            <Lock className="w-3 h-3 mt-0.5 flex-shrink-0" aria-hidden />
+            <span>Friends never see a home venue’s name — its machines just show as “at home”.</span>
+          </p>
           {error && <p className="text-xs text-red-400 mt-2" role="alert">{error}</p>}
           <LastResortArea />
         </div>
@@ -499,7 +503,7 @@ export function ChallengeMeChips({ username, machines }: { username: string; mac
   return (
     <section className="rounded-xl border border-white/10 bg-card p-4 mb-6">
       <h2 className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-friend mb-3">
-        <Swords className="w-3.5 h-3.5" aria-hidden /> Challenge me on
+        <Swords className="w-3.5 h-3.5" aria-hidden /> Preferred Machines
       </h2>
       <div className="flex flex-wrap gap-2">
         {machines.map(m => (

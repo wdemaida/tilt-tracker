@@ -593,13 +593,18 @@
   add-venue form and this card all render it (`duplicateCandidates(e)` reads the 409's candidates).
 
 ## Favorite Challenge Locations + Last Resort (`LastResortArea.tsx`, `ExpandSearch.tsx`, feature/last-resort, 2026-10-02)
-- The "Machines you can get to" card (`ChallengeMeCard.tsx`) now says **Favorite Challenge
-  Locations** ("Places you like to play — friends' challenges look here first"); level 2 on the create
-  form is "At a favorite spot" (`REC_LEVEL_LABEL`). Under it, **Last Resort** (`LastResortArea.tsx`,
+- The "Machines you can get to" card (`ChallengeMeCard.tsx`) now says **My Preferred
+  Venues** ("Places you like to play — friends' challenges look here first"); level 2 on the create
+  form is "At a preferred venue" (`REC_LEVEL_LABEL`). Under it, **My Last Resort** (`LastResortArea.tsx`,
   rendered from inside the card — not from UserPage): ZIP (`inputMode=numeric`) + radius select
   (5/10/15/20/30/50, from the server's `radiusChoices`), Save / Change / Clear, "Within 15 mi of 02639
   (Dennis, MA)" and a privacy note. Saving invalidates `['challenges','recommendations']` (their
   `expand` hint depends on it).
+- **Section headings** (renamed 2026-10-02): **My Preferred Machines** (`PinballIcon`), **My Preferred
+  Venues** (lucide `Building2`, the Venues nav icon) and **My Last Resort** (lucide `Footprints`), all
+  `text-friend` (the challenge color). `PinballIcon` is an `<img>` forced white, so its flippers stay
+  white beside the green text. A friend's profile shows their picks under **Preferred Machines**
+  (`ChallengeMeChips`). Code identifiers and API fields still say challenge-me / challenge locations.
 - **Expand search** (`components/ExpandSearch.tsx`, single friend only, under the recommendations on
   `NewChallengePage`): a tap only (`useMutation` POST — it can reach Pinball Map). Prominent button when
   `expand.suggested` (fewer than 2 recs you can reach), a quiet link when only `available`, and a "Set
