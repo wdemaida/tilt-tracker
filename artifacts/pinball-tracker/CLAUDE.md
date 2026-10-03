@@ -597,7 +597,7 @@
 
 ## Favorite Challenge Locations + Last Resort (`LastResortArea.tsx`, `ExpandSearch.tsx`, feature/last-resort, 2026-10-02)
 - The "Machines you can get to" card (`ChallengeMeCard.tsx`) now says **My Preferred
-  Venues** ("Places you like to play — friends' challenges look here first"); level 2 on the create
+  Venues** ("Places you like to play or that are easy for you to get to"); level 2 on the create
   form is "At a preferred venue" (`REC_LEVEL_LABEL`). Under it, **My Last Resort** (`LastResortArea.tsx`,
   rendered from inside the card — not from UserPage): ZIP (`inputMode=numeric`) + radius select
   (5/10/15/20/30/50, from the server's `radiusChoices`), Save / Change / Clear, "Within 15 mi of 02639
