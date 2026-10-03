@@ -182,22 +182,23 @@
 - **Every read in `api.ts` now sends the token when signed in** (not just the `mine` variants),
   and UserPage/MachinePage use `useApi()` — what a score listing contains depends on who's asking.
 
-## Machines page "X Venues" pill (`components/MachineVenuesModal.tsx`, added 2026-10-02)
+## Machines page "X Venues" pill (`components/MachineVenuesModal.tsx`, added 2026-10-02, reworked 2026-10-03)
 - Each machine row shows a `bg-venue/10 border-venue/30` pill when `venueCount > 0` (from
-  `GET /api/machines`). It ignores the Mine toggle. Its `onClick` calls `stopPropagation` so the
-  row's navigation doesn't fire. It opens `MachineVenuesModal` (`api.machines.venues(id)`, query
-  `['machine-venues', id]`).
-- The modal has two sections:
-  - **On the floor**: rows link to `/venues/:id`, with a "Home" chip on your own private venues and a
-    "+N private collections" line. Others' homes are never named; the server only sends a count.
-  - **Formerly here**: public venues, with "left MMM yyyy".
-- It also has a state select, which shows when there are 2+ states, and Pinball Map attribution.
-  Per-venue CC BY-SA links stay on each venue's own page.
+  `GET /api/machines`): venues where a score on the machine has been logged that you may see —
+  TiltTrack's own data, not Pinball Map rosters. It ignores the Mine toggle. Its `onClick` calls
+  `stopPropagation` so the row's navigation doesn't fire. It opens `MachineVenuesModal`
+  (`api.machines.venues(id)`, query `['machine-venues', id]`).
+- The modal's title is "Where scores have been logged for" + the machine name (`text-machine`). One
+  list, **most recently played first** (server order): rows link to `/venues/:id` and show "N scores ·
+  last MMM yyyy", with a "Home" chip on your own private venues, then a "+N private collections" line.
+  Others' homes are never named; the server only sends a count. No "On the floor" / "Formerly here"
+  sections and no Pinball Map attribution any more (nothing shown comes from Pinball Map).
+- It also has a state select (`self-start shrink-0` — the `shrink-0` keeps it from collapsing on
+  phones), which shows when there are 2+ states.
 - The state filter is `parseState()`, moved to `src/lib/venueState.ts` and shared with VenuesPage.
   It always runs on the address the server sent (already redacted), so a hidden-tier home can never
   match a state. The private count has no location, so it shows only under "All states".
-- No "see every location on Pinball Map" link: its URL form couldn't be confirmed (see api-server
-  CLAUDE.md, "Machine venues").
+- Server rules: api-server CLAUDE.md, "Machine venues".
 - Tests: `npx tsx --test src/lib/venueState.test.ts`.
 
 ## Duplicate venues

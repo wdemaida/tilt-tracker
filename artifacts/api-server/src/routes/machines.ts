@@ -64,9 +64,9 @@ router.get('/', async (req, res) => {
       topScorerByMachineId = new Map(topScorers.map(t => [t.machineId, t.username]));
     }
 
-    // "X Venues" pill: venues the machine is on the floor at right now — public venues plus private
-    // ones this requester may see activity for. Ignores ?mine (a fact about the machine, not about
-    // you). One GROUP BY over cached rosters + our own tables; zero Pinball Map calls (machineVenues.ts).
+    // "X Venues" pill: venues where a score on this machine has been logged that this requester may
+    // see — public venues plus private ones they may see activity for. Ignores ?mine (a fact about the
+    // machine, not about you). One GROUP BY over scores + venues; zero Pinball Map calls (machineVenues.ts).
     const venueCounts = await machineVenueCounts(q => db.execute(q), requester);
 
     res.json(rows.map(r => ({
@@ -79,9 +79,10 @@ router.get('/', async (req, res) => {
   }
 });
 
-// GET /api/machines/:id/venues — where this machine is on the floor, and where it used to be. Public
-// venues by name; others' private venues only as a count (never named); your own private venues
-// listed. Reads cached rosters only — zero Pinball Map calls. Registered before /:name.
+// GET /api/machines/:id/venues — where scores on this machine have been logged (visible ones only),
+// with each venue's score count and last played. Public venues by name; others' private venues only as
+// a count (never named); your own private venues listed. Our own data only — zero Pinball Map calls.
+// Registered before /:name.
 router.get('/:id/venues', async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'Invalid machine id' });
