@@ -4,6 +4,7 @@ import { upsertMachineByName } from './machineUpsert.js';
 import { getCatalogOrNull } from './pinballMap.js';
 import { machineNameKey, resolveCanonicalName } from './machineCanonical.js';
 import type { PmLocationMachineXref } from './pinballmapApi.js';
+import type { Executor } from './notify.js';
 
 export interface RepairableVenue {
   id: number;
@@ -93,30 +94,31 @@ export function rankRosterForName(machineName: string, pmXrefs: PmLocationMachin
 
 // Deletes a machine row once nothing references it. Shared by the bulk re-sync and the single-score
 // repair so a merge never strands an orphan row, and never deletes one another user still points at.
-export async function retireMachineIfUnused(machineId: number): Promise<boolean> {
-  const [{ remaining }] = await db
+// `ex` lets the admin machine merge (machineMerge.ts) run it inside its transaction.
+export async function retireMachineIfUnused(machineId: number, ex: Executor = db): Promise<boolean> {
+  const [{ remaining }] = await ex
     .select({ remaining: count() })
     .from(scores)
     .where(eq(scores.machineId, machineId));
-  const [{ histRefs }] = await db
+  const [{ histRefs }] = await ex
     .select({ histRefs: count() })
     .from(venueMachineHistory)
     .where(eq(venueMachineHistory.machineId, machineId));
 
   // A home venue's inventory references machines too, current or former.
-  const [{ invRefs }] = await db
+  const [{ invRefs }] = await ex
     .select({ invRefs: count() })
     .from(venueInventory)
     .where(eq(venueInventory.machineId, machineId));
 
   // A challenge names its machine even when nobody has a score on it yet (a race to a set target).
-  const [{ challengeRefs }] = await db
+  const [{ challengeRefs }] = await ex
     .select({ challengeRefs: count() })
     .from(challenges)
     .where(eq(challenges.machineId, machineId));
 
   if (Number(remaining) === 0 && Number(histRefs) === 0 && Number(invRefs) === 0 && Number(challengeRefs) === 0) {
-    await db.delete(machines).where(eq(machines.id, machineId));
+    await ex.delete(machines).where(eq(machines.id, machineId));
     return true;
   }
   return false;

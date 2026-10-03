@@ -165,6 +165,8 @@ Feature-specific gotchas live in `artifacts/pinball-tracker/CLAUDE.md` (frontend
 | `artifacts/api-server/src/lib/pmGuards.ts` | Per-user PM rate limits, pm-machines id allowlist, shared nearby cache |
 | `artifacts/api-server/src/lib/venueHistory.ts` | Diffs live PM machine list vs. last snapshot; records arrivals/departures |
 | `artifacts/api-server/src/lib/venueRepair.ts` | Venue relink + score re-sync: permissions, machine-name matching, merge apply |
+| `artifacts/api-server/src/lib/machineMerge.ts` | Admin "Fix this machine": merge a mis-named machine row into the right one (one transaction, FK discovery) |
+| `artifacts/pinball-tracker/src/components/MachineMergeDialog.tsx` | Machine page's admin Fix machine dialog (suggestion, search, dry-run preview, confirm) |
 | `artifacts/api-server/src/lib/machineCanonical.ts` | The one "which machine is this name?" rule (upsert, repair, Add Score auto-select); frontend keeps a byte-identical copy |
 | `artifacts/api-server/src/lib/pmRosterCache.ts` | 6h cache of PM machine rosters — the only sanctioned way to read a roster |
 | `artifacts/api-server/src/lib/venueOwner.ts` | `ownerUsername` rule: a private venue's owner handle ("HOME (@owner)"), only when its activity is visible |

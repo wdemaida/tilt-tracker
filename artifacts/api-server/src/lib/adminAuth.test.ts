@@ -15,6 +15,7 @@ import adminAreaRouter from '../routes/adminArea.js';
 import adminBadgesRouter from '../routes/adminBadges.js';
 import adminContentRouter from '../routes/adminContent.js';
 import adminAnnouncementsRouter from '../routes/adminAnnouncements.js';
+import adminMachinesRouter from '../routes/adminMachines.js';
 import { getClerkActivity, setClerkBan, setClerkAdminForTests } from './clerkAdmin.js';
 
 const base = { username: 'u', displayName: 'U', pinballMapToken: null, pinballMapUsername: null, disabledReason: null, disabledById: null, createdAt: new Date() };
@@ -115,7 +116,12 @@ test('every admin route refuses guests, users, disabled admins and profile-less 
   ]) {
     assert.ok(announcementRoutes.some(r => r.method === m && r.path === p), `${m} ${p} is an admin announcements route`);
   }
-  for (const r of [...areaRoutes, ...badgeRoutes, ...contentRoutes, ...announcementRoutes]) {
+  // Machine merge ("Fix this machine" on the machine page).
+  const machineRoutes = routesOf(adminMachinesRouter);
+  for (const [m, p] of [['GET', '/machines/:id/merge-candidates'], ['POST', '/machines/:id/merge']]) {
+    assert.ok(machineRoutes.some(r => r.method === m && r.path === p), `${m} ${p} is an admin machines route`);
+  }
+  for (const r of [...areaRoutes, ...badgeRoutes, ...contentRoutes, ...announcementRoutes, ...machineRoutes]) {
     assert.ok(routes.some(x => x.method === r.method && x.path === r.path), `${r.method} ${r.path} is mounted inside the guarded admin router`);
   }
   for (const r of routes) {

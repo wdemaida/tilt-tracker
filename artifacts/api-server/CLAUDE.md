@@ -173,10 +173,71 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   badge rules or an unknown FK reference the source — FKs are discovered from `pg_constraint`),
   deletes 798 "Test Machine XYZ" if unreferenced, and fills null opdb_id / image / manufacturer / year
   on rows whose name **exactly** matches a catalog name (titles listed twice with different OPDB ids
-  are skipped). Leaves 162, 163, 997, 1542, 1674 alone. `reenrichMachines()` isn't used: it goes
-  through `getCatalogOrNull()`, which may refresh the catalog from PM.
+  are skipped). Leaves 162, 163, 997, 1542, 1674 alone (those are for the admin machine merge below).
+  `reenrichMachines()` isn't used: it goes through `getCatalogOrNull()`, which may refresh the catalog
+  from PM. Its FK discovery and per-venue merge statements are `machineMerge.ts`'s (shared).
 - Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/machineCanonical.test.ts`
   (recorded catalog + the Happy Fortune / Special When Lit rosters from the Portland area fixture).
+
+## Admin machine merge — "Fix this machine" (`src/lib/machineMerge.ts`, `routes/adminMachines.ts`, 2026-10-03)
+- **Why:** the per-score repair fixes one score at a time; a mis-named machine row ("Jaws Pro
+  Edition" #1674, "No Good Gofers!" #1542) needed fixing *as a machine*. Admin-only, from the machine
+  page. **No migration. PM calls/day: 0** — targets come from the stored catalog
+  (`getStoredCatalog()`, any age) and machine rows; a new target row is created by
+  `upsertMachineByName(name, { catalog, ex: tx })` (it now takes an executor) from that catalog only.
+- **Routes** (inside the guarded admin router; adminAuth.test.ts walks it):
+  `GET /api/admin/machines/:id/merge-candidates?q=` → `{ source (+scoreCount), suggestion, results,
+  catalogAvailable }` — `suggestion` = `resolveCanonicalName(source.name, { catalog })` when that's a
+  different spelling, else against the other machine rows; `results` = `searchIndex` over machine
+  rows then the stored catalog (8 each), each `{name, machineId|null, scoreCount, inCatalog, …}`.
+  `POST /api/admin/machines/:id/merge { targetId | targetName, dryRun?, confirmDifferentTitle?,
+  expectedScoreCount? }`: `dryRun: true` → `{ preview }` (reads only); else the merge →
+  `{ merged, source, target, targetCreated, scoresMoved, dependents, challengesRepointed,
+  badgesRepointed, recount }`. `targetName` must be an existing row's name or resolve to a catalog
+  title — a free-typed name is 400 `target_unknown` (never mints junk rows).
+- **Refusals:** 400 `same_machine`; 409 `titles_differ` when the canonicalizer says the two names
+  aren't the same title (`titlesMatch()` = `resolveCanonicalName(source, { catalog: [target] })`) and
+  `confirmDifferentTitle !== true`; 409 `merge_stale` (+ `scoreCount`) when `expectedScoreCount` no
+  longer matches; 409 `unknown_references` (+ `refs`) when an FK this code doesn't know references the
+  source; 409 `locked_scores_would_stop_counting` (+ `challengeIds`) — below. The preview carries the
+  same as `blocker` / `titlesMatch`.
+- **One transaction** (`applyMachineMerge`): resolve/create the target → lock both machine rows
+  `FOR UPDATE` in id order, then the source's scores and challenges → recompute the plan on the locked
+  rows → move scores → `mergeMachineDependents()` → re-point challenges and badge rules → check every
+  reference count is 0 → `retireMachineIfUnused(source, tx)` (it now takes an executor) → log
+  **`admin.machine_merged`** (admin tier; from/to ids + names, targetCreated, titlesMatched,
+  scoresMoved, players, the dependents counts, challengeIds, badgeIds, lockedScores) with `{ tx }`.
+  Any failure rolls all of it back.
+- **References** — FKs to `machines(id)` are discovered from `pg_constraint` (`machineForeignKeys`),
+  so a new one is refused rather than missed (or silently cascaded):
+  `scores` moved; `venue_machine_history` merged per (venue, machine) — earliest first-seen, latest
+  last-seen, still there if either row is; `venue_inventory` per (venue, machine) — the current stint
+  wins, both current → earlier start, both ended → later end; `user_challenge_machines` moved, a user
+  who already picks the target loses the duplicate (so the 3-pick cap holds); `challenges` re-pointed.
+  `mergeMachineDependents` / `machineForeignKeys` / `machineRefCounts` take a `RunSql` so
+  **`cleanup-machine-dupes.ts` runs the same statements** (rendered with `PgDialect` for raw postgres.js).
+- **Challenges (decision):** a challenge on the source is re-pointed to the target — same game. Its
+  `match_group` is kept; a `'game'`-mode challenge whose group is null (the AI-read source had no OPDB
+  id) takes the target's group, which is what "any model" meant. Locked scores move with their machine
+  and keep counting. Refused: a source score locked into a challenge on **another** machine via its
+  OPDB group the target isn't in — it would silently stop matching. **After the commit**, every
+  re-pointed challenge goes through `syncChallenge()` and every moved score that wasn't already locked
+  through `onScoreCreated()` (exactly as per-score repair does): a score that now matches a challenge
+  on the target counts, a race can resolve, opponents get `challenge_opponent_scored`. Already-locked
+  scores are skipped there so opponents aren't re-notified. Failures are logged and counted in
+  `recount.errors`; they can't undo the merge.
+- **Badge rules (decision): re-pointed, not refused.** `badges.rule.machine` (jsonb, no FK) naming the
+  source gets `machineId`/`name` of the target and, in `group` mode with no group, the target's group.
+  The rule meant that physical machine; refusing would leave a junk row nobody could fix from the UI.
+  Nothing awarded changes (no revocation, ever); moved scores can earn a rule badge on its next trigger
+  or via the admin's "Backfill now".
+- Tests: `DATABASE_URL=postgres://x:x@localhost:1/x npx tsx --test src/lib/machineMerge.db.test.ts` —
+  PGlite built from the **whole** Drizzle schema (`drizzle-kit/api` `generateMigration`, resolved from
+  `@workspace/db`'s dev dependency) so FK discovery sees the real FKs; the real router: candidates,
+  dryRun writes nothing, every refusal (incl. an unknown FK table), rollback on a mid-merge failure (a
+  trigger that refuses the DELETE), the full merge (history / inventory / picks merged, challenges
+  re-pointed with the group, lock rows + opponent notices after the recount, badge rule, event), a
+  merge into a catalog title with no row, the raw-SQL path, and guest 401 / user 403.
 
 ## Address-less venues (`src/lib/venueAddress.ts`, `/repair/place-search` + `/repair/place`, added 2026-09-24)
 - A venue typed in by name at upload with location services off has **no address, coordinates, HERE

@@ -13,6 +13,7 @@ import adminAreaRouter from './adminArea.js';
 import adminBadgesRouter from './adminBadges.js';
 import adminContentRouter from './adminContent.js';
 import adminAnnouncementsRouter from './adminAnnouncements.js';
+import adminMachinesRouter from './adminMachines.js';
 
 const router = Router();
 router.use(requireAppUser, requireAdmin);
@@ -376,5 +377,7 @@ router.use(adminBadgesRouter);
 router.use(adminContentRouter);
 // Announcements (/api/admin/announcements/*) — same guard.
 router.use(adminAnnouncementsRouter);
+// Machine merge — "Fix this machine" on the machine page (/api/admin/machines/*) — same guard.
+router.use(adminMachinesRouter);
 
 export default router;

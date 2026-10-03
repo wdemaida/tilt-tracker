@@ -22,6 +22,7 @@ import VenueName from '../components/VenueName';
 import { venueLabel } from '../lib/venueLabel';
 import { useAppUser } from '../lib/useAppUser';
 import { ChallengeLink } from '../components/ChallengeParts';
+import MachineMergeButton from '../components/MachineMergeDialog';
 import { FullPhotoButton } from '../components/PhotoViewer';
 import { useComparisonScope, scopeQuery, scopeKey } from '../lib/comparisonScope';
 import { usePodMembership } from '../lib/myPods';
@@ -854,6 +855,8 @@ export default function MachinePage() {
               {myUsername && (
                 <ChallengeLink machineId={machine.id} label="Challenge a friend" size="sm" variant="text" className="mt-2" />
               )}
+              {/* Admins: fold a mis-named row ("Jaws Pro Edition") into the right machine. */}
+              {(me as any)?.role === 'admin' && <div><MachineMergeButton machine={{ id: machine.id, name: machine.name }} /></div>}
             </div>
             <Link href="/add" className="flex items-center justify-center gap-2 w-full sm:w-auto px-4 py-2 rounded-lg border border-primary text-primary text-sm font-bold uppercase tracking-wider hover:bg-primary hover:text-white transition-colors flex-shrink-0">
               <PlusCircle className="w-4 h-4" /> Add Score

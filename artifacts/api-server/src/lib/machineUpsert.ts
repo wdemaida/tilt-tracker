@@ -2,6 +2,7 @@ import { db, machines } from '@workspace/db';
 import { sql } from 'drizzle-orm';
 import { getCatalogOrNull, type PinballMachine } from './pinballMap.js';
 import { resolveCanonicalName } from './machineCanonical.js';
+import type { Executor } from './notify.js';
 
 interface UpsertMachineOptions {
   opdbId?: string;
@@ -14,6 +15,8 @@ interface UpsertMachineOptions {
    * down) — `null` means "the caller tried and it's unavailable", so no lookup is attempted.
    */
   catalog?: PinballMachine[] | null;
+  /** Run the upsert on this executor (a transaction) instead of `db` — the admin machine merge. */
+  ex?: Executor;
 }
 
 export async function upsertMachineByName(rawName: string, opts: UpsertMachineOptions = {}) {
@@ -28,7 +31,7 @@ export async function upsertMachineByName(rawName: string, opts: UpsertMachineOp
   const pm = match?.entry;
   const name = match?.name ?? rawName;
 
-  const [row] = await db
+  const [row] = await (opts.ex ?? db)
     .insert(machines)
     .values({
       name,
