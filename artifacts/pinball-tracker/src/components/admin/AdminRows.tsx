@@ -203,7 +203,7 @@ export function AdminNotificationRow({ n, showUser = true }: { n: AdminNotificat
   const refresh = useRefreshAdmin();
   const [confirm, setConfirm] = useState(false);
   const p = n.payload ?? {};
-  const about = [p.username ? `@${p.username}` : null, p.machineName, p.challengeId ? `challenge #${p.challengeId}` : null, p.outcome].filter(Boolean).join(' · ');
+  const about = [p.username ? `@${p.username}` : null, typeof p.title === 'string' ? `“${p.title}”` : null, p.machineName, p.challengeId ? `challenge #${p.challengeId}` : null, p.outcome].filter(Boolean).join(' · ');
   return (
     <li className="px-3 sm:px-4 py-3 flex items-start gap-3">
       <div className="min-w-0 flex-1">

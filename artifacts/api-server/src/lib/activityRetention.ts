@@ -118,6 +118,8 @@ export const TIER_BY_TYPE: Readonly<Record<string, RetentionTier>> = {
   'admin.badge_order_changed': 'admin',
   'admin.content_updated': 'admin',
   'admin.content_reset': 'admin',
+  'admin.announcement_sent': 'admin',
+  'admin.announcement_retracted': 'admin',
   // system heartbeats — daily, routine. The overview's "last ran" only needs the newest one, and
   // 90 days of run history (incl. this purge's own system.activity_retention results) is plenty.
   'system.stat_snapshot': 'high_volume',

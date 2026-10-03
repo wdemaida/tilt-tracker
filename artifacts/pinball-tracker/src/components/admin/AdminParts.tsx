@@ -254,6 +254,8 @@ const TYPE_TEXT: Record<string, string> = {
   'admin.badge_order_changed': 'reordered the badges',
   'admin.content_updated': 'edited the welcome page',
   'admin.content_reset': 'reset a welcome page section',
+  'admin.announcement_sent': 'sent an announcement',
+  'admin.announcement_retracted': 'retracted an announcement',
   'badge.earned': 'earned a badge',
   'badge.granted': 'granted a badge to',
   'badge.revoked': 'revoked a badge from',
@@ -278,6 +280,7 @@ function targetLink(ev: ActivityEvent): ReactNode {
     case 'machine': return <span className="text-muted-foreground">machine #{id}</span>;
     case 'badge': return <Link href="/admin/badges" className="text-primary hover:underline">badge #{id}</Link>;
     case 'badge_series': return <Link href="/admin/badges" className="text-primary hover:underline">badge series #{id}</Link>;
+    case 'announcement': return <Link href="/admin/announcements" className="text-primary hover:underline">announcement</Link>;
     case 'site_content': return <Link href="/admin/config?tab=welcome" className="text-primary hover:underline">{id}</Link>;
     default: return null;
   }
@@ -305,7 +308,11 @@ function detail(ev: ActivityEvent): string | null {
         p.originalWidth && p.originalHeight ? `${p.originalWidth}×${p.originalHeight}` : null,
         p.detail,
       ].filter(Boolean).join(' · ');
-    case 'notification.sent': return String(p.kind ?? '');
+    case 'notification.sent': return [p.kind, p.kind === 'announcement' ? p.title : null].filter(Boolean).join(' · ');
+    case 'admin.announcement_sent':
+      return [`“${p.title ?? ''}”`, p.audience === 'all' ? 'everyone' : 'picked users', typeof p.recipientCount === 'number' ? `${p.recipientCount} recipients` : null, p.skippedCount ? `${p.skippedCount} skipped` : null].filter(Boolean).join(' · ');
+    case 'admin.announcement_retracted':
+      return [`“${p.title ?? ''}”`, typeof p.removed === 'number' ? `removed from ${p.removed} inboxes` : null].filter(Boolean).join(' · ');
     case 'badge.earned': case 'badge.granted': case 'badge.revoked':
       return [p.name, p.trigger && p.trigger !== 'grant' ? `via ${p.trigger}` : null, p.note, p.reason].filter(Boolean).join(' · ') || null;
     case 'admin.badge_updated':

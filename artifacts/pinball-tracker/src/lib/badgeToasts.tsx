@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { Megaphone } from 'lucide-react';
 import { useApi } from './useApi';
 import { queryClient } from './queryClient';
 import { toast } from './toast';
@@ -15,7 +16,8 @@ import type { AppNotification } from './api';
 //   only records one — no toast storm for an old inbox.
 // - Badges already shown on the Add Score "Score saved" step (POST /api/scores `newBadges`) are
 //   registered with markBadgesShown() and skipped, so they don't toast a second time.
-// - Only badge_earned for now. The same loop would carry other kinds (friend_request,
+// - badge_earned, and admin announcements ("New from TiltTrack: <title>", linking to the inbox,
+//   where the body is read — 2026-10-03). The same loop would carry other kinds (friend_request,
 //   challenge_received, challenge_result) by widening TOAST_KINDS and giving each a line of copy.
 
 const shownBadgeIds = new Set<number>();
@@ -36,7 +38,7 @@ function writeMark(userId: number, id: number) {
 }
 
 const memoryMark = new Map<number, number>();
-const TOAST_KINDS = new Set(['badge_earned']);
+const TOAST_KINDS = new Set(['badge_earned', 'announcement']);
 const MAX_SEPARATE = 3;
 
 function badgeOf(n: AppNotification) {
@@ -76,11 +78,29 @@ export function useBadgeToasts(userId: number | undefined, unreadCount: number |
         memoryMark.set(userId, newest);
         writeMark(userId, newest);
         if (mark == null) return; // first look on this browser: baseline only
-        const fresh = items
-          .filter(n => n.id > mark && !n.readAt && TOAST_KINDS.has(n.kind))
+        const unseen = items.filter(n => n.id > mark && !n.readAt && TOAST_KINDS.has(n.kind)).reverse();
+        // Announcements: one toast each (oldest first), at most MAX_SEPARATE, then a summary.
+        const announcements = unseen.filter(n => n.kind === 'announcement');
+        if (announcements.length > MAX_SEPARATE) {
+          toast({
+            id: 'announcements', tone: 'info', href: '/notifications', duration: 8000,
+            icon: <Megaphone className="w-5 h-5 text-primary" aria-hidden />,
+            title: `${announcements.length} new announcements from TiltTrack`,
+          });
+        } else {
+          for (const n of announcements) {
+            const title = typeof n.payload.title === 'string' ? n.payload.title : 'Announcement';
+            toast({
+              id: `announcement-${n.id}`, tone: 'info', href: '/notifications', duration: 8000,
+              icon: <Megaphone className="w-5 h-5 text-primary" aria-hidden />,
+              title: 'New from TiltTrack', body: title,
+            });
+          }
+        }
+        const fresh = unseen
+          .filter(n => n.kind === 'badge_earned')
           .map(badgeOf)
-          .filter(b => !shownBadgeIds.has(b.id))
-          .reverse(); // oldest first, so the newest ends on top
+          .filter(b => !shownBadgeIds.has(b.id)); // oldest first (unseen is reversed), so the newest ends on top
         if (!fresh.length) return;
         for (const b of fresh) shownBadgeIds.add(b.id);
         queryClient.invalidateQueries({ queryKey: BADGES_KEY });

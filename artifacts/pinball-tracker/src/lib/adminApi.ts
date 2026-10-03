@@ -290,6 +290,37 @@ export interface ContentSection {
   updatedBy: UserRef | null;
 }
 
+// Announcements (/api/admin/announcements, routes/adminAnnouncements.ts on the api-server). Plain
+// text; the link is an in-app path ({username} = each recipient's), validated by the server.
+export type AnnouncementAudience = 'all' | 'users';
+export interface AnnouncementDraft {
+  title: string; body: string; link: string | null;
+  audience: AnnouncementAudience;
+  /** Only for audience 'users'. */
+  userIds?: number[];
+}
+export interface AnnouncementLimits {
+  titleMax: number; bodyMax: number; linkMax: number; maxPicked: number; linkRoots: string[]; sendsPerHour: number;
+}
+export interface AnnouncementSkipped { id: number; username: string | null; reason: 'disabled' | 'unknown' }
+export interface AnnouncementDuplicate { announcementId: string; at: string; reason: 'request' | 'recent' }
+export interface AnnouncementPreview {
+  normalized: { title: string; body: string; link: string | null };
+  audience: AnnouncementAudience;
+  recipientCount: number;
+  sample: UserRef[];
+  skipped: AnnouncementSkipped[];
+  duplicateOf: AnnouncementDuplicate | null;
+}
+export interface AnnouncementSendResult { announcementId: string; sent: number; skipped: AnnouncementSkipped[] }
+export interface AnnouncementHistoryItem {
+  id: number; announcementId: string; sentAt: string; sentBy: UserRef | null;
+  title: string; body: string; link: string | null; audience: AnnouncementAudience; recipientCount: number;
+  /** Live: notifications still there (read ones go after 30 days; players can Clear all). */
+  delivered: number; unread: number;
+  retractedAt: string | null; retracted: number | null;
+}
+
 function qs(params: Record<string, string | number | null | undefined | boolean>): string {
   const p = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '' && v !== false) p.set(k, String(v));
@@ -363,6 +394,15 @@ export function createAdminApi(getToken: () => Promise<string | null>) {
     /** 400 `invalid_content` carries per-field `errors` ({"steps.1.body": "…"}) on the thrown error's body. */
     saveSiteContent: (key: string, value: Record<string, unknown>) =>
       put<Omit<ContentSection, 'spec'>>(`/admin/content/${encodeURIComponent(key)}`, { value }),
+    announcementLimits: () => get<AnnouncementLimits>('/admin/announcements/limits'),
+    /** 400 `invalid_announcement` carries per-field `errors` ({title, body, link}) on the thrown error's body. */
+    previewAnnouncement: (d: AnnouncementDraft) => post<AnnouncementPreview>('/admin/announcements/preview', d),
+    /** 409 `recipient_count_changed` (recipientCount) / `duplicate_send` (duplicateOf); 429 `rate_limited`. */
+    sendAnnouncement: (d: AnnouncementDraft & { confirmCount: number; requestId: string; allowDuplicate?: boolean }) =>
+      post<AnnouncementSendResult>('/admin/announcements', d),
+    announcements: (before?: number | null) => get<Paged<AnnouncementHistoryItem>>(`/admin/announcements${qs({ before })}`),
+    retractAnnouncement: (announcementId: string) =>
+      del<{ announcementId: string; removed: number }>(`/admin/announcements/${encodeURIComponent(announcementId)}`),
     resetSiteContent: (key: string) => del<Omit<ContentSection, 'spec'> & { removed: boolean }>(`/admin/content/${encodeURIComponent(key)}`),
   };
 }
