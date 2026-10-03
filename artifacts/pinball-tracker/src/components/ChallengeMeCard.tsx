@@ -428,7 +428,7 @@ export function ChallengeMeEditor({ where }: { where: 'profile' | 'challenges' }
       {open && (
         <div className="px-4 pb-4 -mt-1">
           <p className="text-[11px] uppercase tracking-wider text-friend mb-1.5 flex items-center gap-1.5">
-            <PinballIcon className="w-3.5 h-3.5 flex-shrink-0" aria-hidden /> My Preferred Machines <span className="text-white/60">{machines.length}/{limits.machines}</span></p>
+            <PinballIcon tint className="w-3.5 h-3.5 flex-shrink-0" aria-hidden /> My Preferred Machines <span className="text-white/60">{machines.length}/{limits.machines}</span></p>
           <div className="flex flex-wrap items-center gap-2">
             {machines.map(m => (
               <span key={m.id} className={`${chip} border-machine/40 text-machine`}>

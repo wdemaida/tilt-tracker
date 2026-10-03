@@ -82,8 +82,11 @@
   seeded from it: linking Pinball Map folds that step away immediately, and un-linking reopens it.
   Three stacked steps is too much panel for a venue that's already correct.
 - Step 3's icon is `PinballIcon`, the same flippers used for machines everywhere else — not a
-  lucide game controller. It's an `<img>` forced white by a CSS filter, so `text-*` classes don't
-  tint it; size it with `w-4 h-4` and let it sit on the white heading text.
+  lucide game controller. By default it's an `<img>` forced white by a CSS filter, so `text-*` classes
+  don't tint it (and don't add another `filter` to the img to recolor it); size it with `w-4 h-4` and
+  let it sit on the white heading text. For a colored icon pass `tint`: it renders a `<span>` with the
+  same PNG (a single-color silhouette on transparency) as a CSS `mask`, filled with `currentColor`, so
+  it takes the `text-*` color, e.g. `<PinballIcon tint className="w-3.5 h-3.5" />` in `text-friend`.
 - **A score with no venue renders `ScoreVenuePicker`, not `ScoreRepairSection`.** No venue means no
   Pinball Map location, so the machine can never be verified — the picker (search existing, or add a
   new venue inline) is what unblocks the rest. It `PATCH`es `venueId` immediately rather than waiting
@@ -602,8 +605,8 @@
   `expand` hint depends on it).
 - **Section headings** (renamed 2026-10-02): **My Preferred Machines** (`PinballIcon`), **My Preferred
   Venues** (lucide `Building2`, the Venues nav icon) and **My Last Resort** (lucide `Footprints`), all
-  `text-friend` (the challenge color). `PinballIcon` is an `<img>` forced white, so its flippers stay
-  white beside the green text. A friend's profile shows their picks under **Preferred Machines**
+  `text-friend` (the challenge color), icons included: the flippers use `PinballIcon tint` so they
+  match the green like the lucide icons. A friend's profile shows their picks under **Preferred Machines**
   (`ChallengeMeChips`). Code identifiers and API fields still say challenge-me / challenge locations.
 - **Expand search** (`components/ExpandSearch.tsx`, single friend only, under the recommendations on
   `NewChallengePage`): a tap only (`useMutation` POST — it can reach Pinball Map). Prominent button when
