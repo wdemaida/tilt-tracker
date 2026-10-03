@@ -269,39 +269,37 @@ it had posted. **Almost every PM failure is an HTTP 200** — never treat a 2xx 
   second runs `visibleScoreSql` in an in-process PGlite and checks it matches `canSeeScore` row for
   row, for each kind of viewer.
 
-## Machine venues — the Machines page "X Venues" pill (`src/lib/machineVenues.ts`, added 2026-10-02)
-- `GET /api/machines` rows carry **`venueCount`**: venues the machine is **on the floor** at now.
-  It ignores `?mine` (a fact about the machine). One `GROUP BY` (`machineVenueCounts`), no N+1.
-  `GET /api/machines/:id/venues` (optional auth, guests included) → `{ machine, onFloor[{id, name,
-  address, home}], privateCount, formerly[{id, name, address, removedAt}], venueCount }`, with
-  `venueCount = onFloor.length + privateCount` = the pill. Registered before `/:name`.
-- **Zero Pinball Map calls — PM calls/day: 0.** Rosters are read straight from `pm_location_cache`
-  (any age). `machineVenues.ts` must never import pmClient / pmRosterCache (`getVenueRoster`) /
-  pinballMap / pinballmapApi; `machineVenues.test.ts` reads the source and fails if it does.
-- **On the floor** (`onFloorSql`, a UNION):
-  - A public venue (not a residence, tier `full`) linked to PM **with** a cached roster: that
-    roster. Entries match `machines` by trimmed, case-insensitive name, as in challengeReach.ts.
-  - A linked public venue **without** a cached roster: its open `venue_machine_history` rows.
-    The cache wins over history when both exist: history can lag a cache refreshed by another path.
-  - A private venue: its open `venue_inventory` rows, only where the viewer may see activity
-    (`visibleVenueActivitySql`, the SQL twin of `canSeeVenueActivity`). If the owner switched
-    "Show my machines/scores publicly" off, the venue isn't counted at all, except for the owner
-    and admins.
-  - Unlinked public venues contribute nothing. "Played here" is deliberately not a source (Will,
-    2026-10-02). A private venue's `venue_machine_history` is never read: that data is PM-derived
-    and would publish its old listing.
+## Machine venues — the Machines page "X Venues" pill (`src/lib/machineVenues.ts`, added 2026-10-02, reworked 2026-10-03)
+- **TiltTrack's own data only** (Will, 2026-10-03: TiltTrack shouldn't act like a Pinball Map
+  competitor). The venues are the ones where **at least one score on the machine has been logged that
+  the viewer may see** — no PM rosters, no inventories, no "formerly here". It used to be "on the
+  floor" from `pm_location_cache` / `venue_machine_history` / `venue_inventory`; that's gone.
+- `GET /api/machines` rows carry **`venueCount`** (ignores `?mine` — a fact about the machine). One
+  `GROUP BY` (`machineVenueCounts`), no N+1. `GET /api/machines/:id/venues` (optional auth, guests
+  included) → `{ machine, venues[{id, name, address, home, scoreCount, lastPlayedAt}], privateCount,
+  venueCount }`, one `GROUP BY` (`scoredVenuesSql`), **most recently played first** (`max(played_at)`
+  desc, then id). `venueCount = venues.length + privateCount` = the pill; the pill is hidden at 0
+  (no visible logged score at any venue). `lastPlayedAt` goes through `dbTimestampToIso`. Registered
+  before `/:name`.
+- **Which scores count**: `visibleScoreSql(viewer)` (the predicate every score listing uses) **and**
+  `visibleVenueActivitySql(viewer)` on the venue (SQL twin of `canSeeVenueActivity`). The second
+  matters for a score's author: your score at a friend's home whose "Show my machines/scores
+  publicly" switch is off is still yours to see elsewhere, but doesn't put their home in the count.
+  Scores with no venue count nowhere.
+- **Zero Pinball Map calls — PM calls/day: 0.** Only `scores` and `venues` are read.
+  `machineVenues.ts` must never import pmClient / pmRosterCache (`getVenueRoster`) / pinballMap /
+  pinballmapApi, nor read the PM-derived tables; `machineVenues.test.ts` reads the source and fails
+  if it does.
 - **Privacy (Will, 2026-10-02):** someone else's private venue is **never named**. It only adds to
   `privateCount` ("+N private collections"), because listing homes by machine would make collections
-  easy to find. Your own private venues are listed (`home: true`). Admins get the count too, not
-  names. `shapeMachineVenues()` (pure) is where that split happens.
-- **Formerly here**: `venue_machine_history` rows with `removed_at` set, at **linked public venues
-  only**, unless the machine is back on the floor there. Newest first. `removedAt` is "first noticed
-  gone" (see "Venue machine history").
-- No outbound "every location on Pinball Map" link: no `by_machine_id`-style URL is confirmed in our
-  code or docs, and `machines` doesn't store PM's machine id. Only `?by_location_id=` is confirmed.
+  easy to find, and gets no score count or date. Your own private venues are listed (`home: true`).
+  Admins get the count too, not names. `shapeMachineVenues()` (pure) is where that split happens.
+- No outbound "every location on Pinball Map" link and no PM attribution in the modal (nothing in it
+  comes from Pinball Map).
 - Tests: `npx tsx --test src/lib/machineVenues.test.ts`. It runs in PGlite and covers the matrix:
-  owner, friend, stranger, admin and guest × every private tier × the switch. It also covers the
-  roster sources, "formerly", pill = modal count, and the no-PM-import guard.
+  owner, friend, stranger, admin and guest × every private tier × the switch, hidden-score visibility
+  (incl. the author case), score count / last played / ordering, pill = modal count, and the no-PM
+  guard.
 
 ## Duplicate venues (`src/lib/venueDedup.ts`, added 2026-09-13)
 - The unique index on `venues.here_id` only ever protected the **upload** flow. `POST /api/venues`

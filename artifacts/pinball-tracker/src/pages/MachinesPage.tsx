@@ -238,7 +238,7 @@ export default function MachinesPage() {
                             {(m.manufacturer || m.year) && (
                               <p className="text-xs text-muted-foreground">{[m.manufacturer, m.year].filter(Boolean).join(' · ')}</p>
                             )}
-                            {/* Where it's on the floor now — opens the venues modal, not the machine page. */}
+                            {/* Venues where scores on it have been logged — opens the venues modal, not the machine page. */}
                             {!!m.venueCount && (
                               <button
                                 onClick={e => { e.stopPropagation(); setVenuesMachine({ id: m.id, name: m.name }); }}

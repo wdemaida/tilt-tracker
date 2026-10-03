@@ -30,15 +30,15 @@ export interface VenueInventory {
 }
 
 /**
- * `GET /api/machines/:id/venues` — where a machine is on the floor now, and where it used to be.
- * Others' private venues are never named: they only add to `privateCount`. `home` = your own.
+ * `GET /api/machines/:id/venues` — venues where scores on this machine have been logged (only scores
+ * you may see), most recently played first. Others' private venues are never named: they only add
+ * to `privateCount`. `home` = your own. `lastPlayedAt` is an ISO instant.
  */
 export interface MachineVenues {
   machine: { id: number; name: string };
-  onFloor: Array<{ id: number; name: string; address: string | null; home: boolean }>;
+  venues: Array<{ id: number; name: string; address: string | null; home: boolean; scoreCount: number; lastPlayedAt: string }>;
   privateCount: number;
-  formerly: Array<{ id: number; name: string; address: string | null; removedAt: string }>;
-  /** onFloor.length + privateCount — the Machines page pill's number. */
+  /** venues.length + privateCount — the Machines page pill's number. */
   venueCount: number;
 }
 
